@@ -1,0 +1,21 @@
+*.abcl
+*.fasl
+*.dx32fsl
+*.dx64fsl
+*.lx32fsl
+*.lx64fsl
+*.x86f
+*~
+.#*
+
+# Machine-local MCP server config
+.mcp.json
+
+# Working documents (specs, plans) — not tracked
+/docs/superpowers/
+
+# Backend shared libraries extracted from wheels
+/vendor/
+
+# c2ffi build intermediates
+/tools/.c2ffi-build/
