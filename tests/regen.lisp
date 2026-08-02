@@ -67,6 +67,25 @@
               (and (string= ":long-double" (cl-gbdt.regen:unmapped-type-tag c))
                    (string= "SomeFunction" (cl-gbdt.regen:unmapped-type-context c)))))))))
 
+(deftest non-integer-constants-are-reported-not-dropped
+  (testing "emit-constant refuses a non-integer macro and says so"
+    (let ((entry (make-hash-table :test #'equal)))
+      (setf (gethash "tag" entry) "const"
+            (gethash "name" entry) "SOME_STRING_MACRO"
+            (gethash "value" entry) "not an integer")
+      (with-output-to-string (out)
+        (ng (cl-gbdt.regen::emit-constant entry out)
+            "a non-integer macro emits nothing and returns false"))))
+  (testing "an integer macro is emitted"
+    (let ((entry (make-hash-table :test #'equal)))
+      (setf (gethash "tag" entry) "const"
+            (gethash "name" entry) "C_API_DTYPE_FLOAT64"
+            (gethash "value" entry) 1)
+      (let ((text (with-output-to-string (out)
+                    (ok (cl-gbdt.regen::emit-constant entry out)))))
+        (ok (search "+c-api-dtype-float64+" text))
+        (ok (search " 1)" text))))))
+
 (deftest type-map-never-emits-architecture-dependent-types
   (testing "no entry in either map is :long, :unsigned-long, :llong or :ullong"
     (dolist (entry (append cl-gbdt.regen:+typedef-map+ cl-gbdt.regen:+builtin-map+))

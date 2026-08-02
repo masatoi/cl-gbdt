@@ -76,7 +76,12 @@ the following case boundary each emit a dash."
     (format stream ")~%~%")))
 
 (defun emit-constant (entry stream)
-  "Write a `defconstant' form for ENTRY to STREAM. Returns true when it emitted one."
+  "Write a `defconstant' form for ENTRY to STREAM.
+
+Returns true when a form was written. Only integer-valued macros become constants;
+a string or floating-point macro is reported to the caller rather than dropped,
+because a silently omitted definition is how a binding set ends up quietly
+incomplete."
   (let ((value (gethash "value" entry)))
     (when (integerp value)
       (format stream "~&(defconstant +~(~A~)+ ~D)~%" (lisp-name (gethash "name" entry)) value)
@@ -87,11 +92,14 @@ the following case boundary each emit a dash."
 
 Only entries declared in HEADER-NAME whose names start with one of PREFIXES are
 emitted, into PACKAGE. Returns the number of functions and constants written.
-Signals `unmapped-type' rather than skipping anything it cannot map."
+Returns a third value: the names of macros that could not become constants because
+their values are not integers. Signals `unmapped-type' rather than skipping any
+function it cannot map."
   (let* ((entries (spec-entries spec-path))
          (typedefs (collect-typedefs entries))
          (functions 0)
-         (constants 0))
+         (constants 0)
+         (skipped '()))
     (with-open-file (out output :direction :output :if-exists :supersede
                                 :external-format :utf-8)
       (format out ";;;; c-api.lisp --- CFFI bindings generated from ~A.~%~
@@ -105,5 +113,7 @@ Signals `unmapped-type' rather than skipping anything it cannot map."
                  (emit-function entry typedefs out)
                  (incf functions))
                 ((equal (gethash "tag" entry) "const")
-                 (when (emit-constant entry out) (incf constants)))))))
-    (values functions constants)))
+                 (if (emit-constant entry out)
+                     (incf constants)
+                     (push (gethash "name" entry) skipped)))))))
+    (values functions constants (nreverse skipped))))
