@@ -81,7 +81,7 @@ the test wired up, while every later call kept returning success regardless."
                                              dmatrix field descriptor))
                            (return-from round-trip)))))))
 
-               (testing "five boosting rounds run"
+               (testing "five boosting rounds run and the iteration count reads back"
                  (cffi:with-foreign-objects ((out :pointer) (matrices :pointer 1))
                    (setf (cffi:mem-aref matrices :pointer 0) dmatrix)
                    (unless (xgb-check (xgb::xg-booster-create matrices 1 out))
@@ -96,23 +96,28 @@ the test wired up, while every later call kept returning success regardless."
                                            ("eta" . "0.5")
                                            ("verbosity" . "0")))
                  (dotimes (iteration 5)
-                   (xgb-check (xgb::xg-booster-update-one-iter booster iteration dmatrix))))
+                   (xgb-check (xgb::xg-booster-update-one-iter booster iteration dmatrix)))
+                 (cffi:with-foreign-object (rounds :int)
+                   (unless (xgb-check (xgb::xg-booster-boosted-rounds booster rounds))
+                     (return-from round-trip))
+                   (ok (= 5 (cffi:mem-ref rounds :int))
+                       (format nil "boosted-rounds count is ~D" (cffi:mem-ref rounds :int)))))
 
                (testing "predictions come back with the right shape and ordering"
-                 (cffi:with-foreign-objects ((length :uint64) (out :pointer))
+                 (cffi:with-foreign-objects ((prediction-count :uint64) (out :pointer))
                    (unless (xgb-check (xgb::xg-booster-predict booster dmatrix 0 0 0
-                                                               length out))
+                                                               prediction-count out))
                      (return-from round-trip))
-                   (ok (= rows (cffi:mem-ref length :uint64))
+                   (ok (= rows (cffi:mem-ref prediction-count :uint64))
                        (format nil "prediction count is ~D, expected ~D"
-                               (cffi:mem-ref length :uint64) rows))
+                               (cffi:mem-ref prediction-count :uint64) rows))
                    ;; The buffer belongs to XGBoost and stays valid only until the next
                    ;; prediction on this booster, so copy the values out now.
                    (let ((buffer (cffi:mem-ref out :pointer))
                          (predictions (make-array rows :element-type 'single-float)))
                      (dotimes (index rows)
                        (setf (aref predictions index) (cffi:mem-aref buffer :float index)))
-                     (ok (predictions-separate-p predictions labels)
+                     (ok (predictions-separate-p predictions label-vector)
                          (format nil "predictions separate by label: ~S" predictions))))))
           (when booster (xgb::xg-booster-free booster))
           (when dmatrix (xgb::xgd-matrix-free dmatrix)))))))
