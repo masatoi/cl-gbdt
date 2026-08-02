@@ -15,10 +15,15 @@ repository-relative path ./tools/fetch-libs.sh writes to.")
   "Return the path to BACKEND's shared library, or NIL when it is not present.
 
 The environment variable wins over the vendored copy, so a developer can point the
-suite at a system-wide install without moving files around."
+suite at a system-wide install without moving files around. It is honoured strictly:
+a variable that names a path which does not exist is an error, not a fall-through.
+Falling through would run the tests against a different library than the developer
+asked for, and then report -- wrongly -- that the variable was unset."
   (destructuring-bind (variable relative) (cdr (assoc backend +backend-libraries+))
     (let ((override (uiop:getenv variable)))
-      (or (and override (plusp (length override)) (probe-file override))
+      (if (and override (plusp (length override)))
+          (or (probe-file override)
+              (error "~A is set to ~S, which does not exist." variable override))
           (probe-file (asdf:system-relative-pathname "cl-gbdt" relative))))))
 
 (defun ensure-backend-library (backend)
@@ -44,7 +49,11 @@ per test."
 
 A missing library is a skip rather than a failure, because `vendor/' is git-ignored and
 a fresh clone legitimately has none. The skip message names the script that fixes it,
-so the result is never silent."
+so the result is never silent.
+
+Note for callers: `rove:skip' records a pending assertion and returns normally rather
+than unwinding, so wrap the whole test body in this macro. Anything placed after the
+macro in the same `deftest' would still run with no library loaded."
   (let ((path (gensym "PATH")))
     `(let ((,path (ensure-backend-library ,backend)))
        (if (null ,path)
@@ -66,6 +75,8 @@ boundary intact, not that the libraries learn anything hard."
       (dotimes (j cols)
         (setf (aref matrix i j) (coerce (/ (+ i j) 10) 'double-float)))
       (setf (aref labels i) (if (> (aref matrix i 0) 0.35d0) 1.0 0.0)))
+    (when (or (every #'zerop labels) (notany #'zerop labels))
+      (error "ROWS = ~D yields only one label class; the fixture needs both." rows))
     (values matrix labels)))
 
 (defun predictions-separate-p (predictions labels)
@@ -75,13 +86,19 @@ This is the ordering property the round trips assert instead of exact values. Ex
 values would break on any upstream version bump without telling us anything new,
 whereas separation can only hold if the matrix arrived row-major with the right
 dimensions, the labels bound to the right rows, and the predictions came back in the
-right order."
-  (let ((highest-negative
-          (loop :for prediction :across predictions
-                :for label :across labels
-                :when (zerop label) :maximize prediction))
-        (lowest-positive
-          (loop :for prediction :across predictions
-                :for label :across labels
-                :when (plusp label) :minimize prediction)))
-    (< highest-negative lowest-positive)))
+right order.
+
+Signals an error when either class is empty. `loop ... maximize' over an empty
+selection returns 0 rather than nil, so a degenerate dataset would otherwise make this
+return a definite -- and wrong -- answer instead of complaining."
+  (let ((negatives (loop :for prediction :across predictions
+                         :for label :across labels
+                         :when (zerop label) :collect prediction))
+        (positives (loop :for prediction :across predictions
+                         :for label :across labels
+                         :when (plusp label) :collect prediction)))
+    (when (or (null negatives) (null positives))
+      (error "Cannot judge separation: ~D negative and ~D positive labels; both classes ~
+              must be present."
+             (length negatives) (length positives)))
+    (< (reduce #'max negatives) (reduce #'min positives))))
