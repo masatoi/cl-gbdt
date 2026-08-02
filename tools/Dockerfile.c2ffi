@@ -2,6 +2,10 @@
 # independent of whatever LLVM happens to be installed on the host.
 FROM ubuntu:24.04
 
+# Exact commit on c2ffi's llvm-18.1.0 branch. Pinned by SHA rather than by branch
+# name so an upstream force-push cannot change what this image contains.
+ARG C2FFI_COMMIT=d6eba0d91dfd58831e5c3133e868c62892595680
+
 RUN apt-get update && apt-get install -y --no-install-recommends \
         build-essential \
         cmake \
@@ -12,7 +16,8 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
         clang-18 \
     && rm -rf /var/lib/apt/lists/*
 
-RUN git clone --depth 1 --branch llvm-18.1.0 https://github.com/rpav/c2ffi /src/c2ffi \
+RUN git clone https://github.com/rpav/c2ffi /src/c2ffi \
+    && git -C /src/c2ffi checkout --detach "${C2FFI_COMMIT}" \
     && cmake -S /src/c2ffi -B /src/c2ffi/build \
              -DCMAKE_BUILD_TYPE=Release \
              -DLLVM_DIR=/usr/lib/llvm-18/lib/cmake/llvm \
