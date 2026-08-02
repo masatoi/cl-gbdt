@@ -15,6 +15,26 @@
 (defun binding-source (relative)
   (uiop:read-file-string (asdf:system-relative-pathname "cl-gbdt" relative)))
 
+(defparameter +regen-targets+
+  '(("ffi-spec/lightgbm/include/" "LightGBM/c_api.h" "cl-gbdt.lightgbm.ffi"
+     ("LGBM_" "C_API_") "src/lightgbm/c-api.lisp")
+    ("ffi-spec/xgboost/include/" "xgboost/c_api.h" "cl-gbdt.xgboost.ffi"
+     ("XGB" "XGD") "src/xgboost/c-api.lisp"))
+  "(spec-root header-name package prefixes committed-output) per backend, mirroring
+tools/regen.lisp's own settings. Used to check the committed bindings against the
+committed spec without running c2ffi.")
+
+(defun find-committed-spec (spec-root)
+  "Return the single c2ffi spec file under SPEC-ROOT, or nil when none is committed.
+
+Globs ffi-spec/<backend>/include/**/c_api.*.spec instead of hardcoding an
+architecture, since the spec's filename embeds whatever architecture last
+regenerated it (spec 5.2: local architecture only)."
+  (first (directory (merge-pathnames
+                     (make-pathname :directory '(:relative :wild-inferiors)
+                                    :name :wild :type "spec")
+                     spec-root))))
+
 (deftest generated-bindings-are-architecture-independent
   (testing "no aggregate types, whose layout would depend on the target"
     (loop :for (path) :in +generated-bindings+
@@ -73,3 +93,19 @@
     (dolist (name '("+C-API-DTYPE-FLOAT64+" "+C-API-PREDICT-NORMAL+"))
       (ok (find-symbol name (find-package :cl-gbdt.lightgbm.ffi))
           (format nil "~A is defined" name)))))
+
+(deftest committed-bindings-match-their-committed-spec
+  (testing "re-emitting from the committed c2ffi spec reproduces the committed file byte-for-byte"
+    ;; Catches a hand-edited c-api.lisp, or a bumped ffi-spec/VERSIONS with a
+    ;; forgotten regeneration. Needs no Docker and no network: this re-runs the
+    ;; pure emitter over the spec that is already checked in.
+    (dolist (target +regen-targets+)
+      (destructuring-bind (spec-root header-name package prefixes committed) target
+        (let ((spec (find-committed-spec (asdf:system-relative-pathname "cl-gbdt" spec-root))))
+          (if (null spec)
+              (skip (format nil "no c2ffi spec committed under ~A; nothing to check ~A against"
+                            spec-root committed))
+              (uiop:with-temporary-file (:pathname temp :type "lisp")
+                (cl-gbdt.regen:emit-bindings spec header-name package prefixes temp)
+                (ok (string= (binding-source committed) (uiop:read-file-string temp))
+                    (format nil "~A matches its committed spec" committed)))))))))
