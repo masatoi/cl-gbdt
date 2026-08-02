@@ -2,11 +2,12 @@
   :version "0.0.1"
   :author ""
   :license ""
-  :depends-on ()
+  :description "Common Lisp wrapper exposing LightGBM and XGBoost through one API"
+  :depends-on ("cffi" "alexandria" "trivial-garbage")
+  :serial t
   :components ((:module "src"
-                :components
-                ((:file "main"))))
-  :description ""
+                :components ((:file "package")
+                             (:file "conditions"))))
   :in-order-to ((test-op (test-op "cl-gbdt/tests"))))
 
 (defsystem "cl-gbdt/regen"
@@ -46,7 +47,7 @@
                 :serial t
                 :components
                 ((:file "package")
-                 (:file "main")
+                 (:file "conditions")
                  (:file "regen")
                  (:file "bindings"))))
   :description "Test system for cl-gbdt"
