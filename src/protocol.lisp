@@ -70,16 +70,33 @@ KIND is `:split' (how often a feature was used to split) or `:gain' (total gain)
   "Bind VAR to the dataset FORM returns, evaluate BODY, and always free it.
 
 Explicit resource management is the first-class pattern; finalizers are only a
-safety net."
-  `(let ((,var ,form))
-     (unwind-protect (locally ,@body)
-       (free-dataset ,var))))
+safety net.
+
+Declarations at the head of BODY are moved onto a fresh binding of VAR that
+shadows the one FORM's value is stored in, scoped to BODY alone. Splicing them
+onto the outer binding instead -- the one `unwind-protect''s cleanup clause also
+reads to call `free-dataset' -- would put an `(ignore VAR)' declaration from
+BODY in the same scope as that read, which SBCL flags as \"reading an ignored
+variable\" (verified empirically; do not simplify this back to `progn' or a
+single binding)."
+  (multiple-value-bind (forms declarations) (alexandria:parse-body body)
+    `(let ((,var ,form))
+       (unwind-protect
+            (let ((,var ,var))
+              ,@declarations
+              ,@forms)
+         (free-dataset ,var)))))
 
 (defmacro with-booster ((var form) &body body)
   "Bind VAR to the booster FORM returns, evaluate BODY, and always free it.
 
 A booster holds a strong reference to the dataset it was trained on, so nesting this
-inside `with-dataset' cannot invert the release order."
-  `(let ((,var ,form))
-     (unwind-protect (locally ,@body)
-       (free-booster ,var))))
+inside `with-dataset' cannot invert the release order. Declarations at the head of
+BODY are shadow-bound as in `with-dataset', for the same reason."
+  (multiple-value-bind (forms declarations) (alexandria:parse-body body)
+    `(let ((,var ,form))
+       (unwind-protect
+            (let ((,var ,var))
+              ,@declarations
+              ,@forms)
+         (free-booster ,var)))))
