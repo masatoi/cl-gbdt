@@ -64,8 +64,15 @@ To run a single test from the REPL:
 `cl-gbdt/functional-tests` is a separate system that calls the real LightGBM and
 XGBoost shared libraries -- design doc section 12, layer 2. It exercises the raw FFI
 directly: loading each library, reading its version, and running a small train/predict
-round trip against a trivially separable dataset, asserting only that positive-label
+round trip against a trivially separable dataset. Each round trip asserts more than
+final prediction values -- every handle it creates is non-null, every output buffer's
+length matches the row count, and the boosting iteration count reads back correctly --
+and, as the property that ties the FFI plumbing together, that positive-label
 predictions come back higher than negative-label ones.
+
+This system is SBCL-only: both round trips pin arrays with `sb-sys` primitives
+directly, unlike `src/data.lisp`'s `#+sbcl`-guarded idiom, and have no portable
+fallback.
 
 Run `./tools/fetch-libs.sh` first to vendor the libraries into `vendor/`. Then:
 
