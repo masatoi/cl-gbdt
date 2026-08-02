@@ -10,7 +10,8 @@
   "Evaluate FORM, a LightGBM call, and assert it returned the success status.
 
 On failure the report carries the library's own message, which is far more useful than
-the bare status code."
+the bare status code.
+Returns what `ok' returns, so a caller can gate the rest of a sequence on it."
   `(let ((status ,form))
      (ok (zerop status)
          (format nil "~A returned ~D~@[: ~A~]"
@@ -29,6 +30,19 @@ the bare status code."
         (ok (stringp message))
         (ok (plusp (length message)) (format nil "message was ~S" message))))))
 
+(defparameter +dataset-parameters+
+  "min_data_in_leaf=1 min_data_in_bin=1 verbose=-1"
+  "LightGBM dataset parameters for the eight-row fixture.
+
+The two minima are required: the defaults refuse to bin or split so few rows, which
+would leave every prediction identical and fail the separation assertion for a reason
+that has nothing to do with the FFI. `verbose=-1' keeps the library off standard
+output during the suite.")
+
+(defparameter +booster-parameters+
+  "objective=binary num_leaves=2 min_data_in_leaf=1 min_data_in_bin=1 verbose=-1"
+  "LightGBM booster parameters for the eight-row fixture. See +dataset-parameters+.")
+
 (deftest lightgbm-trains-and-predicts
   (with-backend-library (:lightgbm)
     (multiple-value-bind (matrix labels) (make-separable-dataset)
@@ -36,35 +50,47 @@ the bare status code."
             (dataset nil)
             (booster nil))
         (unwind-protect
-             (progn
+             ;; Each handle-creating step gates the rest. rove's `ok' records a failure
+             ;; and returns rather than unwinding, so without these guards a failed
+             ;; creation would carry a null or garbage handle into the next C call --
+             ;; and a segfault there would take the whole process down, skipping this
+             ;; `unwind-protect' and leaking whatever had been allocated.
+             (block round-trip
                (testing "a dataset is built from a 2D double-float array"
                  (cffi:with-foreign-object (out :pointer)
                    (cl-gbdt:with-foreign-matrix (pointer nrow ncol element-type) matrix
                      (declare (ignore element-type))
-                     (cffi:with-foreign-string (parameters
-                                                "min_data_in_leaf=1 min_data_in_bin=1 verbose=-1")
-                       (lgbm-check (lgbm::lgbm-dataset-create-from-mat
-                                    pointer 1 nrow ncol 1 parameters
-                                    (cffi:null-pointer) out))))
+                     (cffi:with-foreign-string (parameters +dataset-parameters+)
+                       (unless (lgbm-check (lgbm::lgbm-dataset-create-from-mat
+                                            pointer 1 nrow ncol 1 parameters
+                                            (cffi:null-pointer) out))
+                         (return-from round-trip))))
                    (setf dataset (cffi:mem-ref out :pointer))
-                   (ok (not (cffi:null-pointer-p dataset)) "the dataset handle is non-null")))
+                   (unless (ok (not (cffi:null-pointer-p dataset))
+                               "the dataset handle is non-null")
+                     (return-from round-trip))))
 
                (testing "labels attach to the dataset"
                  (sb-sys:with-pinned-objects (labels)
                    (let ((pointer (cffi:make-pointer
                                    (sb-sys:sap-int (sb-sys:vector-sap labels)))))
                      (cffi:with-foreign-string (field "label")
-                       (lgbm-check (lgbm::lgbm-dataset-set-field
-                                    dataset field pointer rows 0))))))
+                       (unless (lgbm-check (lgbm::lgbm-dataset-set-field
+                                            dataset field pointer rows 0))
+                         (return-from round-trip))))))
 
                (testing "five boosting rounds run and the iteration count reads back"
                  (cffi:with-foreign-object (out :pointer)
-                   (cffi:with-foreign-string (parameters
-                                              "objective=binary num_leaves=2 min_data_in_leaf=1 min_data_in_bin=1 verbose=-1")
-                     (lgbm-check (lgbm::lgbm-booster-create dataset parameters out)))
-                   (setf booster (cffi:mem-ref out :pointer)))
+                   (cffi:with-foreign-string (parameters +booster-parameters+)
+                     (unless (lgbm-check (lgbm::lgbm-booster-create dataset parameters out))
+                       (return-from round-trip)))
+                   (setf booster (cffi:mem-ref out :pointer))
+                   (unless (ok (not (cffi:null-pointer-p booster))
+                               "the booster handle is non-null")
+                     (return-from round-trip)))
                  (cffi:with-foreign-object (finished :int)
-                   (dotimes (iteration 5)
+                   (dotimes (round 5)
+                     (declare (ignore round))
                      (lgbm-check (lgbm::lgbm-booster-update-one-iter booster finished))))
                  (cffi:with-foreign-object (iterations :int)
                    (lgbm-check (lgbm::lgbm-booster-get-current-iteration booster iterations))
@@ -76,9 +102,10 @@ the bare status code."
                    (declare (ignore element-type))
                    (cffi:with-foreign-objects ((length :int64) (out :double rows))
                      (cffi:with-foreign-string (parameters "")
-                       (lgbm-check (lgbm::lgbm-booster-predict-for-mat
-                                    booster pointer 1 nrow ncol 1 0 0 -1 parameters
-                                    length out)))
+                       (unless (lgbm-check (lgbm::lgbm-booster-predict-for-mat
+                                            booster pointer 1 nrow ncol 1 0 0 -1
+                                            parameters length out))
+                         (return-from round-trip)))
                      (ok (= rows (cffi:mem-ref length :int64))
                          (format nil "prediction count is ~D, expected ~D"
                                  (cffi:mem-ref length :int64) rows))
