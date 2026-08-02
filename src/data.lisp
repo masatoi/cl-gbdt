@@ -70,8 +70,8 @@ method here to support a new input format."))
   "Copy MATRIX into a foreign buffer and call FUNCTION.
 
 Fallback path used when pinning is unavailable."
-  (let* ((cffi-type (foreign-element-type element-type))
-         (size (array-total-size matrix)))
+  (let ((cffi-type (foreign-element-type element-type))
+        (size (array-total-size matrix)))
     (cffi:with-foreign-object (buffer cffi-type size)
       (dotimes (index size)
         (setf (cffi:mem-aref buffer cffi-type index)
@@ -81,12 +81,21 @@ Fallback path used when pinning is unavailable."
 
 #+sbcl
 (defun %call-with-pinned-matrix (matrix element-type function)
-  "Pin MATRIX and call FUNCTION with a pointer to its storage.
+  "Pin MATRIX's storage and call FUNCTION with a pointer to it.
 
 On SBCL the storage of a 2D simple-array is a contiguous row-major vector, so it can
-be handed to C without copying."
+be handed to C without copying.
+
+STORAGE must be pinned, not just MATRIX. An array of rank other than one is a header
+object holding a reference to a separately allocated data vector, so MATRIX and
+STORAGE are two distinct objects at two distinct addresses.
+`sb-sys:with-pinned-objects' pins exactly the objects it is given and does not follow
+references, so pinning only MATRIX would leave the garbage collector free to relocate
+STORAGE while C holds a pointer into it -- a use-after-move that surfaces only under
+collection pressure. MATRIX is pinned as well because it costs nothing and keeps the
+pairing obvious."
   (let ((storage (sb-ext:array-storage-vector matrix)))
-    (sb-sys:with-pinned-objects (matrix)
+    (sb-sys:with-pinned-objects (matrix storage)
       (funcall function
                (cffi:make-pointer (sb-sys:sap-int (sb-sys:vector-sap storage)))
                (array-dimension matrix 0)

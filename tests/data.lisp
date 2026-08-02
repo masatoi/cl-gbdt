@@ -94,6 +94,23 @@
           (ok (= 2 ncol))
           (ok (eq 'double-float element-type)))))))
 
+(deftest pinned-matrix-survives-garbage-collection
+  (testing "the pointer stays valid across a collection during the call"
+    (let ((matrix (make-array '(8 8) :element-type 'double-float)))
+      (dotimes (i 8)
+        (dotimes (j 8)
+          (setf (aref matrix i j) (coerce (+ (* i 8) j) 'double-float))))
+      (cl-gbdt:with-foreign-matrix (pointer nrow ncol element-type) matrix
+        (declare (ignore nrow ncol element-type))
+        ;; Allocate enough to provoke a collection while C would be holding POINTER.
+        (dotimes (i 200)
+          (make-array 4096 :element-type 'double-float))
+        #+sbcl (sb-ext:gc :full t)
+        (ok (loop :for k :below 64
+                  :always (= (coerce k 'double-float)
+                             (cffi:mem-aref pointer :double k)))
+            "every element still reads back correctly after a full GC")))))
+
 (deftest foreign-element-type-maps-to-cffi-keywords
   (testing "Lisp element types map to CFFI type keywords"
     (ok (eq :double (cl-gbdt:foreign-element-type 'double-float)))
