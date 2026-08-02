@@ -2,7 +2,7 @@
 
 (in-package #:cl-gbdt/functional-tests)
 
-(defparameter +backend-libraries+
+(defparameter *backend-libraries*
   '((:lightgbm "CL_GBDT_LIGHTGBM_LIB" "vendor/lightgbm/lib/lib_lightgbm.so")
     (:xgboost "CL_GBDT_XGBOOST_LIB" "vendor/xgboost/lib/libxgboost.so"))
   "For each backend: the environment variable that overrides discovery, and the
@@ -19,7 +19,7 @@ suite at a system-wide install without moving files around. It is honoured stric
 a variable that names a path which does not exist is an error, not a fall-through.
 Falling through would run the tests against a different library than the developer
 asked for, and then report -- wrongly -- that the variable was unset."
-  (destructuring-bind (variable relative) (cdr (assoc backend +backend-libraries+))
+  (destructuring-bind (variable relative) (cdr (assoc backend *backend-libraries*))
     (let ((override (uiop:getenv variable)))
       (if (and override (plusp (length override)))
           (or (probe-file override)
@@ -40,7 +40,7 @@ per test."
 
 (defun missing-library-message (backend)
   "Return the skip message naming what is missing and how to obtain it."
-  (destructuring-bind (variable relative) (cdr (assoc backend +backend-libraries+))
+  (destructuring-bind (variable relative) (cdr (assoc backend *backend-libraries*))
     (format nil "~A not found under ~A and ~A is unset. Run ./tools/fetch-libs.sh first."
             (file-namestring relative) (directory-namestring relative) variable)))
 
@@ -70,16 +70,16 @@ exceeds 0.35 and 0.0 otherwise, which splits the default eight rows into four an
 The problem is deliberately trivial: these tests check that data crosses the FFI
 boundary intact, not that the libraries learn anything hard."
   (let ((matrix (make-array (list rows cols) :element-type 'double-float))
-        (labels (make-array rows :element-type 'single-float)))
+        (label-vector (make-array rows :element-type 'single-float)))
     (dotimes (i rows)
       (dotimes (j cols)
         (setf (aref matrix i j) (coerce (/ (+ i j) 10) 'double-float)))
-      (setf (aref labels i) (if (> (aref matrix i 0) 0.35d0) 1.0 0.0)))
-    (when (or (every #'zerop labels) (notany #'zerop labels))
+      (setf (aref label-vector i) (if (> (aref matrix i 0) 0.35d0) 1.0 0.0)))
+    (when (or (every #'zerop label-vector) (notany #'zerop label-vector))
       (error "ROWS = ~D yields only one label class; the fixture needs both." rows))
-    (values matrix labels)))
+    (values matrix label-vector)))
 
-(defun predictions-separate-p (predictions labels)
+(defun predictions-separate-p (predictions label-vector)
   "True when every positive-label prediction exceeds every negative-label one.
 
 This is the ordering property the round trips assert instead of exact values. Exact
@@ -88,14 +88,17 @@ whereas separation can only hold if the matrix arrived row-major with the right
 dimensions, the labels bound to the right rows, and the predictions came back in the
 right order.
 
-Signals an error when either class is empty. `loop ... maximize' over an empty
-selection returns 0 rather than nil, so a degenerate dataset would otherwise make this
-return a definite -- and wrong -- answer instead of complaining."
+Signals an error when either class is empty, guarding against a caller passing a
+single-class dataset -- for example a fixture whose ROWS is too small for
+`make-separable-dataset' to split into both labels. `reduce' signals on an empty
+list, so without this check that degenerate input would raise a bare CL error deep
+inside `reduce' rather than one naming the actual problem; a clear error here beats
+letting an empty selection produce a confident but meaningless answer."
   (let ((negatives (loop :for prediction :across predictions
-                         :for label :across labels
+                         :for label :across label-vector
                          :when (zerop label) :collect prediction))
         (positives (loop :for prediction :across predictions
-                         :for label :across labels
+                         :for label :across label-vector
                          :when (plusp label) :collect prediction)))
     (when (or (null negatives) (null positives))
       (error "Cannot judge separation: ~D negative and ~D positive labels; both classes ~
