@@ -7,7 +7,8 @@
   :serial t
   :components ((:module "src"
                 :components ((:file "package")
-                             (:file "conditions"))))
+                             (:file "conditions")
+                             (:file "data"))))
   :in-order-to ((test-op (test-op "cl-gbdt/tests"))))
 
 (defsystem "cl-gbdt/regen"
@@ -48,6 +49,7 @@
                 :components
                 ((:file "package")
                  (:file "conditions")
+                 (:file "data")
                  (:file "regen")
                  (:file "bindings"))))
   :description "Test system for cl-gbdt"

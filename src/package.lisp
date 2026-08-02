@@ -22,4 +22,13 @@
    #:dimension-mismatch
    #:unsupported-element-type
    #:unsupported-element-type-given
-   #:untested-backend-version))
+   #:untested-backend-version
+   ;; Data handoff
+   #:foreign-matrix
+   #:foreign-matrix-pointer
+   #:foreign-matrix-rows
+   #:foreign-matrix-cols
+   #:foreign-matrix-element-type
+   #:call-with-foreign-matrix
+   #:with-foreign-matrix
+   #:foreign-element-type))
