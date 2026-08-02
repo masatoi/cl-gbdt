@@ -57,3 +57,14 @@
                  (:file "backend"))))
   :description "Test system for cl-gbdt"
   :perform (test-op (op c) (symbol-call :rove :run c)))
+
+(defsystem "cl-gbdt/functional-tests"
+  :description "Tests that call the real LightGBM and XGBoost shared libraries."
+  :depends-on ("cl-gbdt" "cl-gbdt/lightgbm" "cl-gbdt/xgboost" "rove")
+  :serial t
+  :components ((:module "tests/functional"
+                :components ((:file "package")
+                             (:file "support")
+                             (:file "lightgbm")
+                             (:file "xgboost"))))
+  :perform (test-op (op c) (symbol-call :rove :run c)))
