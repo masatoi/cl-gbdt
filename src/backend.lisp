@@ -96,5 +96,5 @@ Keys are `:name', `:version', `:capabilities', `:library-path' and `:open'."
 
 Returns nil when all are present. This is how version mismatches are detected. It
 cannot catch a function whose name stayed the same while its signature changed;
-those are avoided by design instead (spec section 10.3, the ABI blacklist)."
+those are avoided by design instead (see ffi-spec/ABI-BLACKLIST.md)."
   (remove-if (lambda (name) (cffi:foreign-symbol-pointer name)) names))

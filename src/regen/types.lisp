@@ -30,7 +30,8 @@ the output architecture-dependent.")
   "C basic types and their CFFI equivalents.
 
 Structs and unions map to `:pointer' because this API only ever passes them by
-address, and every function that does is on the ABI blacklist.")
+address, and every function that does is on the ABI blacklist
+(ffi-spec/ABI-BLACKLIST.md).")
 
 (define-condition unmapped-type (error)
   ((tag :initarg :tag :reader unmapped-type-tag)
