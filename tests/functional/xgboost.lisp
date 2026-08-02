@@ -7,7 +7,9 @@
   (cffi:foreign-string-to-lisp (xgb::xgb-get-last-error)))
 
 (defmacro xgb-check (form)
-  "Evaluate FORM, an XGBoost call, and assert it returned the success status."
+  "Evaluate FORM, an XGBoost call, and assert it returned the success status.
+
+Returns what `ok' returns, so a caller can gate the rest of a sequence on it."
   `(let ((status ,form))
      (ok (zerop status)
          (format nil "~A returned ~D~@[: ~A~]"
@@ -44,7 +46,11 @@
             (dmatrix nil)
             (booster nil))
         (unwind-protect
-             (progn
+             ;; Gated the same way as the LightGBM round trip: rove's `ok' records a
+             ;; failure and returns rather than unwinding, so without these an invalid
+             ;; handle would reach the next C call, and a segfault there would kill the
+             ;; process, skip this `unwind-protect' and leak.
+             (block round-trip
                (testing "a DMatrix is built through the array interface"
                  (cffi:with-foreign-object (out :pointer)
                    (cl-gbdt:with-foreign-matrix (pointer nrow ncol element-type) matrix
@@ -52,9 +58,13 @@
                      (cffi:with-foreign-string
                          (data (array-interface-json pointer "<f8" nrow ncol))
                        (cffi:with-foreign-string (config "{\"missing\":NaN}")
-                         (xgb-check (xgb::xgd-matrix-create-from-dense data config out)))))
+                         (unless (xgb-check (xgb::xgd-matrix-create-from-dense
+                                             data config out))
+                           (return-from round-trip)))))
                    (setf dmatrix (cffi:mem-ref out :pointer))
-                   (ok (not (cffi:null-pointer-p dmatrix)) "the DMatrix handle is non-null")))
+                   (unless (ok (not (cffi:null-pointer-p dmatrix))
+                               "the DMatrix handle is non-null")
+                     (return-from round-trip))))
 
                (testing "labels attach through the array interface"
                  (sb-sys:with-pinned-objects (labels)
@@ -63,14 +73,19 @@
                      (cffi:with-foreign-string (field "label")
                        (cffi:with-foreign-string
                            (descriptor (array-interface-json pointer "<f4" rows))
-                         (xgb-check (xgb::xgd-matrix-set-info-from-interface
-                                     dmatrix field descriptor)))))))
+                         (unless (xgb-check (xgb::xgd-matrix-set-info-from-interface
+                                             dmatrix field descriptor))
+                           (return-from round-trip)))))))
 
                (testing "five boosting rounds run"
                  (cffi:with-foreign-objects ((out :pointer) (matrices :pointer 1))
                    (setf (cffi:mem-aref matrices :pointer 0) dmatrix)
-                   (xgb-check (xgb::xg-booster-create matrices 1 out))
-                   (setf booster (cffi:mem-ref out :pointer)))
+                   (unless (xgb-check (xgb::xg-booster-create matrices 1 out))
+                     (return-from round-trip))
+                   (setf booster (cffi:mem-ref out :pointer))
+                   (unless (ok (not (cffi:null-pointer-p booster))
+                               "the booster handle is non-null")
+                     (return-from round-trip)))
                  (set-booster-parameters booster
                                          '(("objective" . "binary:logistic")
                                            ("max_depth" . "2")
@@ -81,10 +96,14 @@
 
                (testing "predictions come back with the right shape and ordering"
                  (cffi:with-foreign-objects ((length :uint64) (out :pointer))
-                   (xgb-check (xgb::xg-booster-predict booster dmatrix 0 0 0 length out))
+                   (unless (xgb-check (xgb::xg-booster-predict booster dmatrix 0 0 0
+                                                               length out))
+                     (return-from round-trip))
                    (ok (= rows (cffi:mem-ref length :uint64))
                        (format nil "prediction count is ~D, expected ~D"
                                (cffi:mem-ref length :uint64) rows))
+                   ;; The buffer belongs to XGBoost and stays valid only until the next
+                   ;; prediction on this booster, so copy the values out now.
                    (let ((buffer (cffi:mem-ref out :pointer))
                          (predictions (make-array rows :element-type 'single-float)))
                      (dotimes (index rows)
