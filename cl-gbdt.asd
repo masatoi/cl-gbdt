@@ -8,7 +8,9 @@
   :components ((:module "src"
                 :components ((:file "package")
                              (:file "conditions")
-                             (:file "data"))))
+                             (:file "data")
+                             (:file "backend")
+                             (:file "protocol"))))
   :in-order-to ((test-op (test-op "cl-gbdt/tests"))))
 
 (defsystem "cl-gbdt/regen"
@@ -51,6 +53,7 @@
                  (:file "conditions")
                  (:file "data")
                  (:file "regen")
-                 (:file "bindings"))))
+                 (:file "bindings")
+                 (:file "backend"))))
   :description "Test system for cl-gbdt"
   :perform (test-op (op c) (symbol-call :rove :run c)))
