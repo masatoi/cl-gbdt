@@ -19,3 +19,6 @@
 
 # c2ffi build intermediates
 /tools/.c2ffi-build/
+
+# Subagent-driven development scratch (ledger, briefs, review packages)
+/.superpowers/

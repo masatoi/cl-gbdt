@@ -1,0 +1,29 @@
+# Build c2ffi pinned to LLVM 18 so that the same input always yields the same spec,
+# independent of whatever LLVM happens to be installed on the host.
+FROM ubuntu:24.04
+
+# Exact commit on c2ffi's llvm-18.1.0 branch. Pinned by SHA rather than by branch
+# name so an upstream force-push cannot change what this image contains.
+ARG C2FFI_COMMIT=d6eba0d91dfd58831e5c3133e868c62892595680
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+        build-essential \
+        cmake \
+        git \
+        ca-certificates \
+        llvm-18-dev \
+        libclang-18-dev \
+        clang-18 \
+    && rm -rf /var/lib/apt/lists/*
+
+RUN git clone https://github.com/rpav/c2ffi /src/c2ffi \
+    && git -C /src/c2ffi checkout --detach "${C2FFI_COMMIT}" \
+    && cmake -S /src/c2ffi -B /src/c2ffi/build \
+             -DCMAKE_BUILD_TYPE=Release \
+             -DLLVM_DIR=/usr/lib/llvm-18/lib/cmake/llvm \
+             -DClang_DIR=/usr/lib/llvm-18/lib/cmake/clang \
+    && cmake --build /src/c2ffi/build -j"$(nproc)" \
+    && cp /src/c2ffi/build/bin/c2ffi /usr/local/bin/c2ffi \
+    && rm -rf /src/c2ffi
+
+ENTRYPOINT ["c2ffi"]
