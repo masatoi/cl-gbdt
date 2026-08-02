@@ -30,7 +30,7 @@ Returns what `ok' returns, so a caller can gate the rest of a sequence on it."
         (ok (stringp message))
         (ok (plusp (length message)) (format nil "message was ~S" message))))))
 
-(defparameter +dataset-parameters+
+(defparameter *dataset-parameters*
   "min_data_in_leaf=1 min_data_in_bin=1 verbose=-1"
   "LightGBM dataset parameters for the eight-row fixture.
 
@@ -39,13 +39,13 @@ would leave every prediction identical and fail the separation assertion for a r
 that has nothing to do with the FFI. `verbose=-1' keeps the library off standard
 output during the suite.")
 
-(defparameter +booster-parameters+
+(defparameter *booster-parameters*
   "objective=binary num_leaves=2 min_data_in_leaf=1 min_data_in_bin=1 verbose=-1"
-  "LightGBM booster parameters for the eight-row fixture. See +dataset-parameters+.")
+  "LightGBM booster parameters for the eight-row fixture. See *dataset-parameters*.")
 
 (deftest lightgbm-trains-and-predicts
   (with-backend-library (:lightgbm)
-    (multiple-value-bind (matrix labels) (make-separable-dataset)
+    (multiple-value-bind (matrix label-vector) (make-separable-dataset)
       (let ((rows (array-dimension matrix 0))
             (dataset nil)
             (booster nil))
@@ -60,7 +60,7 @@ output during the suite.")
                  (cffi:with-foreign-object (out :pointer)
                    (cl-gbdt:with-foreign-matrix (pointer nrow ncol element-type) matrix
                      (declare (ignore element-type))
-                     (cffi:with-foreign-string (parameters +dataset-parameters+)
+                     (cffi:with-foreign-string (parameters *dataset-parameters*)
                        (unless (lgbm-check (lgbm::lgbm-dataset-create-from-mat
                                             pointer 1 nrow ncol 1 parameters
                                             (cffi:null-pointer) out))
@@ -71,9 +71,9 @@ output during the suite.")
                      (return-from round-trip))))
 
                (testing "labels attach to the dataset"
-                 (sb-sys:with-pinned-objects (labels)
+                 (sb-sys:with-pinned-objects (label-vector)
                    (let ((pointer (cffi:make-pointer
-                                   (sb-sys:sap-int (sb-sys:vector-sap labels)))))
+                                   (sb-sys:sap-int (sb-sys:vector-sap label-vector)))))
                      (cffi:with-foreign-string (field "label")
                        (unless (lgbm-check (lgbm::lgbm-dataset-set-field
                                             dataset field pointer rows 0))
@@ -81,7 +81,7 @@ output during the suite.")
 
                (testing "five boosting rounds run and the iteration count reads back"
                  (cffi:with-foreign-object (out :pointer)
-                   (cffi:with-foreign-string (parameters +booster-parameters+)
+                   (cffi:with-foreign-string (parameters *booster-parameters*)
                      (unless (lgbm-check (lgbm::lgbm-booster-create dataset parameters out))
                        (return-from round-trip)))
                    (setf booster (cffi:mem-ref out :pointer))
@@ -89,8 +89,8 @@ output during the suite.")
                                "the booster handle is non-null")
                      (return-from round-trip)))
                  (cffi:with-foreign-object (finished :int)
-                   (dotimes (round 5)
-                     (declare (ignore round))
+                   (dotimes (iteration 5)
+                     (declare (ignore iteration))
                      (lgbm-check (lgbm::lgbm-booster-update-one-iter booster finished))))
                  (cffi:with-foreign-object (iterations :int)
                    (lgbm-check (lgbm::lgbm-booster-get-current-iteration booster iterations))
@@ -100,19 +100,25 @@ output during the suite.")
                (testing "predictions come back with the right shape and ordering"
                  (cl-gbdt:with-foreign-matrix (pointer nrow ncol element-type) matrix
                    (declare (ignore element-type))
-                   (cffi:with-foreign-objects ((length :int64) (out :double rows))
+                   ;; `rows' is the correct output-buffer length only because this
+                   ;; fixture's objective is "binary", where LightGBM's num_class is 1
+                   ;; and the required length is num_class * num_data (c_api.h:1307-1311).
+                   ;; Production code must not assume num_class = 1 and instead size the
+                   ;; buffer from `LGBM_BoosterCalcNumPredict', bound as
+                   ;; `lgbm-booster-calc-num-predict' at src/lightgbm/c-api.lisp:423.
+                   (cffi:with-foreign-objects ((prediction-count :int64) (out :double rows))
                      (cffi:with-foreign-string (parameters "")
                        (unless (lgbm-check (lgbm::lgbm-booster-predict-for-mat
                                             booster pointer 1 nrow ncol 1 0 0 -1
-                                            parameters length out))
+                                            parameters prediction-count out))
                          (return-from round-trip)))
-                     (ok (= rows (cffi:mem-ref length :int64))
+                     (ok (= rows (cffi:mem-ref prediction-count :int64))
                          (format nil "prediction count is ~D, expected ~D"
-                                 (cffi:mem-ref length :int64) rows))
+                                 (cffi:mem-ref prediction-count :int64) rows))
                      (let ((predictions (make-array rows :element-type 'double-float)))
                        (dotimes (index rows)
                          (setf (aref predictions index) (cffi:mem-aref out :double index)))
-                       (ok (predictions-separate-p predictions labels)
+                       (ok (predictions-separate-p predictions label-vector)
                            (format nil "predictions separate by label: ~S" predictions)))))))
           (when booster (lgbm::lgbm-booster-free booster))
           (when dataset (lgbm::lgbm-dataset-free dataset)))))))
