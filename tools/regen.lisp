@@ -78,14 +78,23 @@
         (unless (probe-file spec)
           (die "c2ffi produced no spec at ~A." spec))
         (ensure-directories-exist output-path)
-        (multiple-value-bind (functions constants skipped)
-            (cl-gbdt.regen:emit-bindings spec header-name package prefixes output-path)
-          (validate output-path required minimum-functions functions)
-          (format t "    ~D functions, ~D constants -> ~A~%"
-                  functions constants output)
-          (when skipped
-            (format t "    ~D macro(s) were not integer-valued and became no constant:~
-                       ~{~%      ~A~}~%"
-                    (length skipped) skipped)))))))
+        ;; Emit to a temporary path first. A failed VALIDATE calls DIE, which exits
+        ;; through this UNWIND-PROTECT, so a validation failure never leaves a
+        ;; deficient file at OUTPUT-PATH for the next quickload to load unnoticed.
+        (let ((temp-path (make-pathname :name (format nil "~A-tmp" (pathname-name output-path))
+                                         :defaults output-path)))
+          (unwind-protect
+               (multiple-value-bind (functions constants skipped)
+                   (cl-gbdt.regen:emit-bindings spec header-name package prefixes temp-path)
+                 (validate temp-path required minimum-functions functions)
+                 (uiop:rename-file-overwriting-target temp-path output-path)
+                 (format t "    ~D functions, ~D constants -> ~A~%"
+                         functions constants output)
+                 (when skipped
+                   (format t "    ~D macro(s) were not integer-valued and became no constant:~
+                              ~{~%      ~A~}~%"
+                           (length skipped) skipped)))
+            (when (probe-file temp-path)
+              (delete-file temp-path))))))))
 
 (format t "~&done~%")
