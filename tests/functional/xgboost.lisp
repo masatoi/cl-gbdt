@@ -40,12 +40,14 @@ the test wired up, while every later call kept returning success regardless."
         (let ((version (list (cffi:mem-ref major :int)
                              (cffi:mem-ref minor :int)
                              (cffi:mem-ref patch :int))))
-          (ok (every #'integerp version) (format nil "version is ~S" version))
+          (ok (and (every (lambda (component) (>= component 0)) version)
+                   (>= (first version) 1))
+              (format nil "version is a plausible triple: ~S" version))
           (ok (plusp (first version)) "the major version is positive"))))))
 
 (deftest xgboost-trains-and-predicts
   (with-backend-library (:xgboost)
-    (multiple-value-bind (matrix labels) (make-separable-dataset)
+    (multiple-value-bind (matrix label-vector) (make-separable-dataset)
       (let ((rows (array-dimension matrix 0))
             (dmatrix nil)
             (booster nil))
@@ -71,9 +73,9 @@ the test wired up, while every later call kept returning success regardless."
                      (return-from round-trip))))
 
                (testing "labels attach through the array interface"
-                 (sb-sys:with-pinned-objects (labels)
+                 (sb-sys:with-pinned-objects (label-vector)
                    (let ((pointer (cffi:make-pointer
-                                   (sb-sys:sap-int (sb-sys:vector-sap labels)))))
+                                   (sb-sys:sap-int (sb-sys:vector-sap label-vector)))))
                      (cffi:with-foreign-string (field "label")
                        (cffi:with-foreign-string
                            (descriptor (array-interface-json pointer "<f4" rows))
