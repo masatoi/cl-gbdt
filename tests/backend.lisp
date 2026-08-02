@@ -59,9 +59,14 @@
       (ng (cl-gbdt:backend-open-p backend)))))
 
 (deftest open-backend-rejects-unknown-name
-  (testing "an unregistered backend name is an error"
+  (testing "an unregistered backend name signals unknown-backend, not backend-not-open"
     (ok (handler-case (progn (cl-gbdt:open-backend :no-such-backend) nil)
-          (cl-gbdt:backend-error () t)))))
+          (cl-gbdt:unknown-backend () t))))
+  (testing "the report names the requested backend and lists the registered ones"
+    (let ((text (handler-case (progn (cl-gbdt:open-backend :no-such-backend) nil)
+                  (cl-gbdt:unknown-backend (c) (princ-to-string c)))))
+      (ok (search "NO-SUCH-BACKEND" text))
+      (ok (search "MOCK" text)))))
 
 (deftest initialization-failure-propagates
   (testing "open-backend propagates an initialization failure"

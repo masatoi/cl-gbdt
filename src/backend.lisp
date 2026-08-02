@@ -65,7 +65,10 @@ condition when NAME is unregistered or initialization fails. Close a successful
 instance with `close-backend'."
   (let ((class-name (find-backend-class name)))
     (unless class-name
-      (error 'backend-not-open :backend name))
+      (error 'unknown-backend
+             :backend name
+             :registered (loop :for registered :being :the :hash-keys :of *backend-classes*
+                                :collect registered)))
     (let ((backend (make-instance class-name :name name)))
       (initialize-backend backend :path path)
       (setf (backend-openp backend) t)

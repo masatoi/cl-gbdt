@@ -64,6 +64,22 @@ Detected by symbol probing. This is the most reliable signal of a version mismat
              (backend-error-backend condition))))
   (:documentation "An operation was attempted on a backend that is not open."))
 
+(define-condition unknown-backend (backend-error)
+  ((registered :initarg :registered
+               :initform nil
+               :reader unknown-backend-registered
+               :documentation "List of currently registered backend names."))
+  (:report
+   (lambda (condition stream)
+     (format stream "~A is not a registered backend. Registered:~{~%  ~A~}"
+             (backend-error-backend condition)
+             (unknown-backend-registered condition))))
+  (:documentation "OPEN-BACKEND was called with a name no backend system has registered.
+
+Distinct from `backend-not-open', which is about an operation attempted on a
+backend instance that exists but has not been opened yet; this is about a name
+that `find-backend-class' does not know at all."))
+
 (define-condition foreign-call-error (gbdt-error)
   ((function-name :initarg :function-name
                   :initform nil

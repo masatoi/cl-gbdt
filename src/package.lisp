@@ -10,19 +10,29 @@
    #:backend-library-not-found
    #:backend-library-not-found-searched
    #:backend-library-load-failed
+   #:backend-library-load-failed-path
+   #:backend-library-load-failed-cause
    #:missing-foreign-symbols
    #:missing-foreign-symbols-names
    #:backend-not-open
+   #:unknown-backend
+   #:unknown-backend-registered
    #:foreign-call-error
    #:foreign-call-error-code
    #:foreign-call-error-message
    #:foreign-call-error-function-name
    #:released-handle-error
+   #:released-handle-error-object
    #:data-error
    #:dimension-mismatch
+   #:dimension-mismatch-expected
+   #:dimension-mismatch-given
    #:unsupported-element-type
    #:unsupported-element-type-given
    #:untested-backend-version
+   #:untested-backend-version-backend
+   #:untested-backend-version-version
+   #:untested-backend-version-tested
    ;; Data handoff
    #:foreign-matrix
    #:foreign-matrix-pointer

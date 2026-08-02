@@ -9,6 +9,7 @@
                     cl-gbdt:backend-library-load-failed
                     cl-gbdt:missing-foreign-symbols
                     cl-gbdt:backend-not-open
+                    cl-gbdt:unknown-backend
                     cl-gbdt:foreign-call-error
                     cl-gbdt:released-handle-error
                     cl-gbdt:data-error
