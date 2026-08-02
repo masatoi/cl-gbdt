@@ -5,6 +5,11 @@
 
 (defpackage #:cl-gbdt/functional-tests
   (:use #:cl #:rove)
+  ;; The generated FFI packages deliberately export nothing -- their own docstrings say
+  ;; nothing outside the backend systems should call them directly. These tests are the
+  ;; exception: their whole purpose is to exercise that raw layer. They therefore reach in
+  ;; with a double colon, which keeps the trespass visible at every call site rather than
+  ;; hiding it behind an export list the design does not want.
   (:local-nicknames (#:lgbm #:cl-gbdt.lightgbm.ffi)
                     (#:xgb #:cl-gbdt.xgboost.ffi))
   (:export #:backend-library-path
