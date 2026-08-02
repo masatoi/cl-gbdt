@@ -12,50 +12,50 @@
 (cffi:defcfun ("XGBuildInfo" xg-build-info) :int
   (out :pointer))
 
-(cffi:defcfun ("XGBGetLastError" xgb-get-last-error) :string)
+(cffi:defcfun ("XGBGetLastError" xgb-get-last-error) :pointer)
 
 (cffi:defcfun ("XGBRegisterLogCallback" xgb-register-log-callback) :int
   (callback :pointer))
 
 (cffi:defcfun ("XGBSetGlobalConfig" xgb-set-global-config) :int
-  (config :string))
+  (config :pointer))
 
 (cffi:defcfun ("XGBGetGlobalConfig" xgb-get-global-config) :int
   (out-config :pointer))
 
 (cffi:defcfun ("XGDMatrixCreateFromFile" xgd-matrix-create-from-file) :int
-  (fname :string)
+  (fname :pointer)
   (silent :int)
   (out :pointer))
 
 (cffi:defcfun ("XGDMatrixCreateFromURI" xgd-matrix-create-from-uri) :int
-  (config :string)
+  (config :pointer)
   (out :pointer))
 
 (cffi:defcfun ("XGDMatrixCreateFromColumnar" xgd-matrix-create-from-columnar) :int
-  (data :string)
-  (config :string)
+  (data :pointer)
+  (config :pointer)
   (out :pointer))
 
 (cffi:defcfun ("XGDMatrixCreateFromCSR" xgd-matrix-create-from-csr) :int
-  (indptr :string)
-  (indices :string)
-  (data :string)
+  (indptr :pointer)
+  (indices :pointer)
+  (data :pointer)
   (ncol :uint64)
-  (config :string)
+  (config :pointer)
   (out :pointer))
 
 (cffi:defcfun ("XGDMatrixCreateFromDense" xgd-matrix-create-from-dense) :int
-  (data :string)
-  (config :string)
+  (data :pointer)
+  (config :pointer)
   (out :pointer))
 
 (cffi:defcfun ("XGDMatrixCreateFromCSC" xgd-matrix-create-from-csc) :int
-  (indptr :string)
-  (indices :string)
-  (data :string)
+  (indptr :pointer)
+  (indices :pointer)
+  (data :pointer)
   (nrow :uint64)
-  (config :string)
+  (config :pointer)
   (out :pointer))
 
 (cffi:defcfun ("XGDMatrixCreateFromMat" xgd-matrix-create-from-mat) :int
@@ -74,19 +74,19 @@
   (nthread :int))
 
 (cffi:defcfun ("XGDMatrixCreateFromCudaColumnar" xgd-matrix-create-from-cuda-columnar) :int
-  (data :string)
-  (config :string)
+  (data :pointer)
+  (config :pointer)
   (out :pointer))
 
 (cffi:defcfun ("XGDMatrixCreateFromCudaArrayInterface" xgd-matrix-create-from-cuda-array-interface) :int
-  (data :string)
-  (config :string)
+  (data :pointer)
+  (config :pointer)
   (out :pointer))
 
 (cffi:defcfun ("XGDMatrixCreateFromDataIter" xgd-matrix-create-from-data-iter) :int
   (data-handle :pointer)
   (callback :pointer)
-  (cache-info :string)
+  (cache-info :pointer)
   (missing :float)
   (out :pointer))
 
@@ -95,7 +95,7 @@
   (proxy :pointer)
   (reset :pointer)
   (next :pointer)
-  (config :string)
+  (config :pointer)
   (out :pointer))
 
 (cffi:defcfun ("XGDMatrixSliceDMatrix" xgd-matrix-slice-d-matrix) :int
@@ -116,46 +116,46 @@
 
 (cffi:defcfun ("XGDMatrixSaveBinary" xgd-matrix-save-binary) :int
   (handle :pointer)
-  (fname :string)
+  (fname :pointer)
   (silent :int))
 
 (cffi:defcfun ("XGDMatrixSetInfoFromInterface" xgd-matrix-set-info-from-interface) :int
   (handle :pointer)
-  (field :string)
-  (data :string))
+  (field :pointer)
+  (data :pointer))
 
 (cffi:defcfun ("XGDMatrixSetFloatInfo" xgd-matrix-set-float-info) :int
   (handle :pointer)
-  (field :string)
+  (field :pointer)
   (array :pointer)
   (len :uint64))
 
 (cffi:defcfun ("XGDMatrixSetUIntInfo" xgd-matrix-set-u-int-info) :int
   (handle :pointer)
-  (field :string)
+  (field :pointer)
   (array :pointer)
   (len :uint64))
 
 (cffi:defcfun ("XGDMatrixSetStrFeatureInfo" xgd-matrix-set-str-feature-info) :int
   (handle :pointer)
-  (field :string)
+  (field :pointer)
   (features :pointer)
   (size :uint64))
 
 (cffi:defcfun ("XGDMatrixGetStrFeatureInfo" xgd-matrix-get-str-feature-info) :int
   (handle :pointer)
-  (field :string)
+  (field :pointer)
   (size :pointer)
   (out-features :pointer))
 
 (cffi:defcfun ("XGDMatrixGetCategories" xgd-matrix-get-categories) :int
   (handle :pointer)
-  (config :string)
+  (config :pointer)
   (out :pointer))
 
 (cffi:defcfun ("XGDMatrixGetCategoriesExportToArrow" xgd-matrix-get-categories-export-to-arrow) :int
   (handle :pointer)
-  (config :string)
+  (config :pointer)
   (out :pointer)
   (export-out :pointer))
 
@@ -164,25 +164,25 @@
 
 (cffi:defcfun ("XGDMatrixSetDenseInfo" xgd-matrix-set-dense-info) :int
   (handle :pointer)
-  (field :string)
+  (field :pointer)
   (data :pointer)
   (size :uint64)
   (type :int))
 
 (cffi:defcfun ("XGDMatrixGetInfoRef" xgd-matrix-get-info-ref) :int
   (handle :pointer)
-  (field :string)
+  (field :pointer)
   (out-array :pointer))
 
 (cffi:defcfun ("XGDMatrixGetFloatInfo" xgd-matrix-get-float-info) :int
   (handle :pointer)
-  (field :string)
+  (field :pointer)
   (out-len :pointer)
   (out-dptr :pointer))
 
 (cffi:defcfun ("XGDMatrixGetUIntInfo" xgd-matrix-get-u-int-info) :int
   (handle :pointer)
-  (field :string)
+  (field :pointer)
   (out-len :pointer)
   (out-dptr :pointer))
 
@@ -204,14 +204,14 @@
 
 (cffi:defcfun ("XGDMatrixGetDataAsCSR" xgd-matrix-get-data-as-csr) :int
   (handle :pointer)
-  (config :string)
+  (config :pointer)
   (out-indptr :pointer)
   (out-indices :pointer)
   (out-data :pointer))
 
 (cffi:defcfun ("XGDMatrixGetQuantileCut" xgd-matrix-get-quantile-cut) :int
   (handle :pointer)
-  (config :string)
+  (config :pointer)
   (out-indptr :pointer)
   (out-data :pointer))
 
@@ -239,8 +239,8 @@
 
 (cffi:defcfun ("XGBoosterSetParam" xg-booster-set-param) :int
   (handle :pointer)
-  (name :string)
-  (value :string))
+  (name :pointer)
+  (value :pointer))
 
 (cffi:defcfun ("XGBoosterGetNumFeature" xg-booster-get-num-feature) :int
   (handle :pointer)
@@ -262,8 +262,8 @@
   (handle :pointer)
   (dtrain :pointer)
   (iter :int)
-  (grad :string)
-  (hess :string))
+  (grad :pointer)
+  (hess :pointer))
 
 (cffi:defcfun ("XGBoosterEvalOneIter" xg-booster-eval-one-iter) :int
   (handle :pointer)
@@ -285,15 +285,15 @@
 (cffi:defcfun ("XGBoosterPredictFromDMatrix" xg-booster-predict-from-d-matrix) :int
   (handle :pointer)
   (dmat :pointer)
-  (config :string)
+  (config :pointer)
   (out-shape :pointer)
   (out-dim :pointer)
   (out-result :pointer))
 
 (cffi:defcfun ("XGBoosterPredictFromDense" xg-booster-predict-from-dense) :int
   (handle :pointer)
-  (values :string)
-  (config :string)
+  (values :pointer)
+  (config :pointer)
   (m :pointer)
   (out-shape :pointer)
   (out-dim :pointer)
@@ -301,8 +301,8 @@
 
 (cffi:defcfun ("XGBoosterPredictFromColumnar" xg-booster-predict-from-columnar) :int
   (handle :pointer)
-  (values :string)
-  (config :string)
+  (values :pointer)
+  (config :pointer)
   (m :pointer)
   (out-shape :pointer)
   (out-dim :pointer)
@@ -310,11 +310,11 @@
 
 (cffi:defcfun ("XGBoosterPredictFromCSR" xg-booster-predict-from-csr) :int
   (handle :pointer)
-  (indptr :string)
-  (indices :string)
-  (values :string)
+  (indptr :pointer)
+  (indices :pointer)
+  (values :pointer)
   (ncol :uint64)
-  (config :string)
+  (config :pointer)
   (m :pointer)
   (out-shape :pointer)
   (out-dim :pointer)
@@ -322,8 +322,8 @@
 
 (cffi:defcfun ("XGBoosterPredictFromCudaArray" xg-booster-predict-from-cuda-array) :int
   (handle :pointer)
-  (values :string)
-  (config :string)
+  (values :pointer)
+  (config :pointer)
   (proxy :pointer)
   (out-shape :pointer)
   (out-dim :pointer)
@@ -331,8 +331,8 @@
 
 (cffi:defcfun ("XGBoosterPredictFromCudaColumnar" xg-booster-predict-from-cuda-columnar) :int
   (handle :pointer)
-  (data :string)
-  (config :string)
+  (data :pointer)
+  (config :pointer)
   (proxy :pointer)
   (out-shape :pointer)
   (out-dim :pointer)
@@ -340,11 +340,11 @@
 
 (cffi:defcfun ("XGBoosterLoadModel" xg-booster-load-model) :int
   (handle :pointer)
-  (fname :string))
+  (fname :pointer))
 
 (cffi:defcfun ("XGBoosterSaveModel" xg-booster-save-model) :int
   (handle :pointer)
-  (fname :string))
+  (fname :pointer))
 
 (cffi:defcfun ("XGBoosterLoadModelFromBuffer" xg-booster-load-model-from-buffer) :int
   (handle :pointer)
@@ -353,7 +353,7 @@
 
 (cffi:defcfun ("XGBoosterSaveModelToBuffer" xg-booster-save-model-to-buffer) :int
   (handle :pointer)
-  (config :string)
+  (config :pointer)
   (out-len :pointer)
   (out-dptr :pointer))
 
@@ -374,20 +374,20 @@
 
 (cffi:defcfun ("XGBoosterLoadJsonConfig" xg-booster-load-json-config) :int
   (handle :pointer)
-  (config :string))
+  (config :pointer))
 
 (cffi:defcfun ("XGBoosterDumpModel" xg-booster-dump-model) :int
   (handle :pointer)
-  (fmap :string)
+  (fmap :pointer)
   (with-stats :int)
   (out-len :pointer)
   (out-dump-array :pointer))
 
 (cffi:defcfun ("XGBoosterDumpModelEx" xg-booster-dump-model-ex) :int
   (handle :pointer)
-  (fmap :string)
+  (fmap :pointer)
   (with-stats :int)
-  (format :string)
+  (format :pointer)
   (out-len :pointer)
   (out-dump-array :pointer))
 
@@ -406,31 +406,31 @@
   (fname :pointer)
   (ftype :pointer)
   (with-stats :int)
-  (format :string)
+  (format :pointer)
   (out-len :pointer)
   (out-models :pointer))
 
 (cffi:defcfun ("XGBoosterGetCategories" xg-booster-get-categories) :int
   (handle :pointer)
-  (config :string)
+  (config :pointer)
   (out :pointer))
 
 (cffi:defcfun ("XGBoosterGetCategoriesExportToArrow" xg-booster-get-categories-export-to-arrow) :int
   (handle :pointer)
-  (config :string)
+  (config :pointer)
   (out :pointer)
   (export-out :pointer))
 
 (cffi:defcfun ("XGBoosterGetAttr" xg-booster-get-attr) :int
   (handle :pointer)
-  (key :string)
+  (key :pointer)
   (out :pointer)
   (success :pointer))
 
 (cffi:defcfun ("XGBoosterSetAttr" xg-booster-set-attr) :int
   (handle :pointer)
-  (key :string)
-  (value :string))
+  (key :pointer)
+  (value :pointer))
 
 (cffi:defcfun ("XGBoosterGetAttrNames" xg-booster-get-attr-names) :int
   (handle :pointer)
@@ -439,19 +439,19 @@
 
 (cffi:defcfun ("XGBoosterSetStrFeatureInfo" xg-booster-set-str-feature-info) :int
   (handle :pointer)
-  (field :string)
+  (field :pointer)
   (features :pointer)
   (size :uint64))
 
 (cffi:defcfun ("XGBoosterGetStrFeatureInfo" xg-booster-get-str-feature-info) :int
   (handle :pointer)
-  (field :string)
+  (field :pointer)
   (len :pointer)
   (out-features :pointer))
 
 (cffi:defcfun ("XGBoosterFeatureScore" xg-booster-feature-score) :int
   (handle :pointer)
-  (config :string)
+  (config :pointer)
   (out-n-features :pointer)
   (out-features :pointer)
   (out-dim :pointer)

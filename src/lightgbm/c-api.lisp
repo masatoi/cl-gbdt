@@ -4,24 +4,24 @@
 
 (in-package #:cl-gbdt.lightgbm.ffi)
 
-(cffi:defcfun ("LGBM_GetLastError" lgbm-get-last-error) :string)
+(cffi:defcfun ("LGBM_GetLastError" lgbm-get-last-error) :pointer)
 
 (cffi:defcfun ("LGBM_DumpParamAliases" lgbm-dump-param-aliases) :int
   (buffer-len :int64)
   (out-len :pointer)
-  (out-str :string))
+  (out-str :pointer))
 
 (cffi:defcfun ("LGBM_RegisterLogCallback" lgbm-register-log-callback) :int
   (callback :pointer))
 
 (cffi:defcfun ("LGBM_GetSampleCount" lgbm-get-sample-count) :int
   (num-total-row :int32)
-  (parameters :string)
+  (parameters :pointer)
   (out :pointer))
 
 (cffi:defcfun ("LGBM_SampleIndices" lgbm-sample-indices) :int
   (num-total-row :int32)
-  (parameters :string)
+  (parameters :pointer)
   (out :pointer)
   (out-len :pointer))
 
@@ -34,8 +34,8 @@
   (handle :pointer))
 
 (cffi:defcfun ("LGBM_DatasetCreateFromFile" lgbm-dataset-create-from-file) :int
-  (filename :string)
-  (parameters :string)
+  (filename :pointer)
+  (parameters :pointer)
   (reference :pointer)
   (out :pointer))
 
@@ -47,7 +47,7 @@
   (num-sample-row :int32)
   (num-local-row :int32)
   (num-dist-row :int64)
-  (parameters :string)
+  (parameters :pointer)
   (out :pointer))
 
 (cffi:defcfun ("LGBM_DatasetCreateByReference" lgbm-dataset-create-by-reference) :int
@@ -69,7 +69,7 @@
   (ref-buffer-size :int32)
   (num-row :int64)
   (num-classes :int32)
-  (parameters :string)
+  (parameters :pointer)
   (out :pointer))
 
 (cffi:defcfun ("LGBM_DatasetPushRows" lgbm-dataset-push-rows) :int
@@ -137,7 +137,7 @@
   (nindptr :int64)
   (nelem :int64)
   (num-col :int64)
-  (parameters :string)
+  (parameters :pointer)
   (reference :pointer)
   (out :pointer))
 
@@ -145,7 +145,7 @@
   (get-row-funptr :pointer)
   (num-rows :int)
   (num-col :int64)
-  (parameters :string)
+  (parameters :pointer)
   (reference :pointer)
   (out :pointer))
 
@@ -158,7 +158,7 @@
   (ncol-ptr :int64)
   (nelem :int64)
   (num-row :int64)
-  (parameters :string)
+  (parameters :pointer)
   (reference :pointer)
   (out :pointer))
 
@@ -168,7 +168,7 @@
   (nrow :int32)
   (ncol :int32)
   (is-row-major :int)
-  (parameters :string)
+  (parameters :pointer)
   (reference :pointer)
   (out :pointer))
 
@@ -179,7 +179,7 @@
   (nrow :pointer)
   (ncol :int32)
   (is-row-major :pointer)
-  (parameters :string)
+  (parameters :pointer)
   (reference :pointer)
   (out :pointer))
 
@@ -187,13 +187,13 @@
   (n-chunks :int64)
   (chunks :pointer)
   (schema :pointer)
-  (parameters :string)
+  (parameters :pointer)
   (reference :pointer)
   (out :pointer))
 
 (cffi:defcfun ("LGBM_DatasetCreateFromArrowStream" lgbm-dataset-create-from-arrow-stream) :int
   (stream :pointer)
-  (parameters :string)
+  (parameters :pointer)
   (reference :pointer)
   (out :pointer))
 
@@ -201,7 +201,7 @@
   (handle :pointer)
   (used-row-indices :pointer)
   (num-used-row-indices :int32)
-  (parameters :string)
+  (parameters :pointer)
   (out :pointer))
 
 (cffi:defcfun ("LGBM_DatasetSetFeatureNames" lgbm-dataset-set-feature-names) :int
@@ -222,7 +222,7 @@
 
 (cffi:defcfun ("LGBM_DatasetSaveBinary" lgbm-dataset-save-binary) :int
   (handle :pointer)
-  (filename :string))
+  (filename :pointer))
 
 (cffi:defcfun ("LGBM_DatasetSerializeReferenceToBinary" lgbm-dataset-serialize-reference-to-binary) :int
   (handle :pointer)
@@ -231,37 +231,37 @@
 
 (cffi:defcfun ("LGBM_DatasetDumpText" lgbm-dataset-dump-text) :int
   (handle :pointer)
-  (filename :string))
+  (filename :pointer))
 
 (cffi:defcfun ("LGBM_DatasetSetField" lgbm-dataset-set-field) :int
   (handle :pointer)
-  (field-name :string)
+  (field-name :pointer)
   (field-data :pointer)
   (num-element :int)
   (type :int))
 
 (cffi:defcfun ("LGBM_DatasetSetFieldFromArrow" lgbm-dataset-set-field-from-arrow) :int
   (handle :pointer)
-  (field-name :string)
+  (field-name :pointer)
   (n-chunks :int64)
   (chunks :pointer)
   (schema :pointer))
 
 (cffi:defcfun ("LGBM_DatasetSetFieldFromArrowStream" lgbm-dataset-set-field-from-arrow-stream) :int
   (handle :pointer)
-  (field-name :string)
+  (field-name :pointer)
   (stream :pointer))
 
 (cffi:defcfun ("LGBM_DatasetGetField" lgbm-dataset-get-field) :int
   (handle :pointer)
-  (field-name :string)
+  (field-name :pointer)
   (out-len :pointer)
   (out-ptr :pointer)
   (out-type :pointer))
 
 (cffi:defcfun ("LGBM_DatasetUpdateParamChecking" lgbm-dataset-update-param-checking) :int
-  (old-parameters :string)
-  (new-parameters :string))
+  (old-parameters :pointer)
+  (new-parameters :pointer))
 
 (cffi:defcfun ("LGBM_DatasetGetNumData" lgbm-dataset-get-num-data) :int
   (handle :pointer)
@@ -286,16 +286,16 @@
 
 (cffi:defcfun ("LGBM_BoosterCreate" lgbm-booster-create) :int
   (train-data :pointer)
-  (parameters :string)
+  (parameters :pointer)
   (out :pointer))
 
 (cffi:defcfun ("LGBM_BoosterCreateFromModelfile" lgbm-booster-create-from-modelfile) :int
-  (filename :string)
+  (filename :pointer)
   (out-num-iterations :pointer)
   (out :pointer))
 
 (cffi:defcfun ("LGBM_BoosterLoadModelFromString" lgbm-booster-load-model-from-string) :int
-  (model-str :string)
+  (model-str :pointer)
   (out-num-iterations :pointer)
   (out :pointer))
 
@@ -303,7 +303,7 @@
   (handle :pointer)
   (buffer-len :int64)
   (out-len :pointer)
-  (out-str :string))
+  (out-str :pointer))
 
 (cffi:defcfun ("LGBM_BoosterFree" lgbm-booster-free) :int
   (handle :pointer))
@@ -327,7 +327,7 @@
 
 (cffi:defcfun ("LGBM_BoosterResetParameter" lgbm-booster-reset-parameter) :int
   (handle :pointer)
-  (parameters :string))
+  (parameters :pointer))
 
 (cffi:defcfun ("LGBM_BoosterGetNumClasses" lgbm-booster-get-num-classes) :int
   (handle :pointer)
@@ -412,13 +412,13 @@
 
 (cffi:defcfun ("LGBM_BoosterPredictForFile" lgbm-booster-predict-for-file) :int
   (handle :pointer)
-  (data-filename :string)
+  (data-filename :pointer)
   (data-has-header :int)
   (predict-type :int)
   (start-iteration :int)
   (num-iteration :int)
-  (parameter :string)
-  (result-filename :string))
+  (parameter :pointer)
+  (result-filename :pointer))
 
 (cffi:defcfun ("LGBM_BoosterCalcNumPredict" lgbm-booster-calc-num-predict) :int
   (handle :pointer)
@@ -444,7 +444,7 @@
   (predict-type :int)
   (start-iteration :int)
   (num-iteration :int)
-  (parameter :string)
+  (parameter :pointer)
   (out-len :pointer)
   (out-result :pointer))
 
@@ -461,7 +461,7 @@
   (predict-type :int)
   (start-iteration :int)
   (num-iteration :int)
-  (parameter :string)
+  (parameter :pointer)
   (matrix-type :int)
   (out-len :pointer)
   (out-indptr :pointer)
@@ -488,7 +488,7 @@
   (predict-type :int)
   (start-iteration :int)
   (num-iteration :int)
-  (parameter :string)
+  (parameter :pointer)
   (out-len :pointer)
   (out-result :pointer))
 
@@ -499,7 +499,7 @@
   (num-iteration :int)
   (data-type :int)
   (num-col :int64)
-  (parameter :string)
+  (parameter :pointer)
   (out-fast-config :pointer))
 
 (cffi:defcfun ("LGBM_BoosterPredictForCSRSingleRowFast" lgbm-booster-predict-for-csr-single-row-fast) :int
@@ -526,7 +526,7 @@
   (predict-type :int)
   (start-iteration :int)
   (num-iteration :int)
-  (parameter :string)
+  (parameter :pointer)
   (out-len :pointer)
   (out-result :pointer))
 
@@ -540,7 +540,7 @@
   (predict-type :int)
   (start-iteration :int)
   (num-iteration :int)
-  (parameter :string)
+  (parameter :pointer)
   (out-len :pointer)
   (out-result :pointer))
 
@@ -553,7 +553,7 @@
   (predict-type :int)
   (start-iteration :int)
   (num-iteration :int)
-  (parameter :string)
+  (parameter :pointer)
   (out-len :pointer)
   (out-result :pointer))
 
@@ -564,7 +564,7 @@
   (num-iteration :int)
   (data-type :int)
   (ncol :int32)
-  (parameter :string)
+  (parameter :pointer)
   (out-fast-config :pointer))
 
 (cffi:defcfun ("LGBM_BoosterPredictForMatSingleRowFast" lgbm-booster-predict-for-mat-single-row-fast) :int
@@ -582,7 +582,7 @@
   (predict-type :int)
   (start-iteration :int)
   (num-iteration :int)
-  (parameter :string)
+  (parameter :pointer)
   (out-len :pointer)
   (out-result :pointer))
 
@@ -594,7 +594,7 @@
   (predict-type :int)
   (start-iteration :int)
   (num-iteration :int)
-  (parameter :string)
+  (parameter :pointer)
   (out-len :pointer)
   (out-result :pointer))
 
@@ -604,7 +604,7 @@
   (predict-type :int)
   (start-iteration :int)
   (num-iteration :int)
-  (parameter :string)
+  (parameter :pointer)
   (out-len :pointer)
   (out-result :pointer))
 
@@ -613,7 +613,7 @@
   (start-iteration :int)
   (num-iteration :int)
   (feature-importance-type :int)
-  (filename :string))
+  (filename :pointer))
 
 (cffi:defcfun ("LGBM_BoosterSaveModelToString" lgbm-booster-save-model-to-string) :int
   (handle :pointer)
@@ -622,7 +622,7 @@
   (feature-importance-type :int)
   (buffer-len :int64)
   (out-len :pointer)
-  (out-str :string))
+  (out-str :pointer))
 
 (cffi:defcfun ("LGBM_BoosterDumpModel" lgbm-booster-dump-model) :int
   (handle :pointer)
@@ -631,7 +631,7 @@
   (feature-importance-type :int)
   (buffer-len :int64)
   (out-len :pointer)
-  (out-str :string))
+  (out-str :pointer))
 
 (cffi:defcfun ("LGBM_BoosterGetLeafValue" lgbm-booster-get-leaf-value) :int
   (handle :pointer)
@@ -660,7 +660,7 @@
   (out-results :pointer))
 
 (cffi:defcfun ("LGBM_NetworkInit" lgbm-network-init) :int
-  (machines :string)
+  (machines :pointer)
   (local-listen-port :int)
   (listen-time-out :int)
   (num-machines :int))
@@ -680,17 +680,17 @@
   (out :pointer))
 
 (cffi:defcfun ("LGBM_SetLastError" lgbm-set-last-error) :void
-  (msg :string))
+  (msg :pointer))
 
-(defconstant +c-api-predict-raw-score+ 1)
-(defconstant +c-api-predict-normal+ 0)
-(defconstant +c-api-dtype-int64+ 3)
-(defconstant +c-api-dtype-int32+ 2)
 (defconstant +c-api-dtype-float64+ 1)
 (defconstant +c-api-dtype-float32+ 0)
-(defconstant +c-api-feature-importance-gain+ 1)
-(defconstant +c-api-feature-importance-split+ 0)
-(defconstant +c-api-matrix-type-csc+ 1)
-(defconstant +c-api-matrix-type-csr+ 0)
+(defconstant +c-api-dtype-int64+ 3)
+(defconstant +c-api-dtype-int32+ 2)
+(defconstant +c-api-predict-raw-score+ 1)
+(defconstant +c-api-predict-normal+ 0)
 (defconstant +c-api-predict-contrib+ 3)
 (defconstant +c-api-predict-leaf-index+ 2)
+(defconstant +c-api-matrix-type-csc+ 1)
+(defconstant +c-api-matrix-type-csr+ 0)
+(defconstant +c-api-feature-importance-gain+ 1)
+(defconstant +c-api-feature-importance-split+ 0)

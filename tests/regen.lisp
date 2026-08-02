@@ -39,9 +39,14 @@
 
 (deftest pointer-types-map-correctly
   (let ((typedefs (typedef-table)))
-    (testing "char* becomes :string"
-      (ok (eq :string (cl-gbdt.regen:cffi-type
-                       (c-type ":pointer" (c-type ":char")) typedefs "t"))))
+    (testing "char* becomes :pointer, not :string"
+      ;; c2ffi discards const qualifiers, so a `const char *' input and a
+      ;; caller-allocated `char *' output buffer are indistinguishable in the spec
+      ;; (spec 5.1). CFFI's :string is an input translation that copies a Lisp
+      ;; string into a fresh allocation sized to that string; applied to an output
+      ;; buffer it would let C write past the end of that allocation with no error.
+      (ok (eq :pointer (cl-gbdt.regen:cffi-type
+                        (c-type ":pointer" (c-type ":char")) typedefs "t"))))
     (testing "every other pointer becomes :pointer"
       (ok (eq :pointer (cl-gbdt.regen:cffi-type
                         (c-type ":pointer" (c-type ":void")) typedefs "t")))

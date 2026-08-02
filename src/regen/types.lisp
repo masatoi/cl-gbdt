@@ -52,11 +52,12 @@ whatever is being emitted, for the error message. Signals `unmapped-type' when n
 mapping applies."
   (let ((tag (gethash "tag" type)))
     (cond
-      ((string= tag ":pointer")
-       (let ((pointee (gethash "type" type)))
-         (if (and pointee (string= (gethash "tag" pointee) ":char"))
-             :string
-             :pointer)))
+      ;; Every pointer maps to :pointer, char* included. See spec 5.1: c2ffi
+      ;; discards const qualifiers, so a `const char *' input and a caller-allocated
+      ;; `char *' output buffer are indistinguishable in the spec, and CFFI's
+      ;; :string translation applied to an output buffer would let C write past the
+      ;; end of an allocation sized to copy a Lisp string in, not to receive one.
+      ((string= tag ":pointer") :pointer)
       ((cdr (assoc tag +typedef-map+ :test #'string=)))
       ((cdr (assoc tag +builtin-map+ :test #'string=)))
       ((gethash tag typedefs)

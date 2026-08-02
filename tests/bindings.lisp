@@ -27,7 +27,19 @@
           :for text := (binding-source path)
           :do (dolist (forbidden '(":long)" ":unsigned-long)" ":llong)" ":ullong)"))
                 (ng (search forbidden text)
-                    (format nil "~A contains no ~A" path forbidden))))))
+                    (format nil "~A contains no ~A" path forbidden)))))
+  (testing "no :string translation on any pointer"
+    ;; c2ffi discards const qualifiers, so a `const char *' input and a
+    ;; caller-allocated `char *' output buffer are indistinguishable in the spec
+    ;; (design doc 5.1). CFFI's :string translation copies a Lisp string into a
+    ;; fresh foreign allocation sized to that string; applied to an output buffer,
+    ;; the C call would write past the end of that allocation with no error. If
+    ;; this test starts failing, something reintroduced the special case in
+    ;; `cffi-type' rather than mapping every pointer to :pointer uniformly.
+    (loop :for (path) :in +generated-bindings+
+          :for text := (binding-source path)
+          :do (ng (search ":string" text)
+                  (format nil "~A contains no :string" path)))))
 
 (deftest generated-bindings-are-complete
   (loop :for (path package minimum required) :in +generated-bindings+
