@@ -16,11 +16,15 @@ Returns what `ok' returns, so a caller can gate the rest of a sequence on it."
                  ',(first form) status (unless (zerop status) (xgb-last-error))))))
 
 (defun set-booster-parameters (booster parameters)
-  "Apply PARAMETERS, an alist of name and value strings, to BOOSTER."
+  "Apply PARAMETERS, an alist of name and value strings, to BOOSTER.
+
+Asserts every `XGBoosterSetParam' call rather than discarding its status: a silently
+rejected parameter would leave the booster training under different settings than
+the test wired up, while every later call kept returning success regardless."
   (loop :for (name . value) :in parameters
         :do (cffi:with-foreign-string (foreign-name name)
               (cffi:with-foreign-string (foreign-value value)
-                (xgb::xg-booster-set-param booster foreign-name foreign-value)))))
+                (xgb-check (xgb::xg-booster-set-param booster foreign-name foreign-value))))))
 
 (deftest xgboost-library-loads
   (with-backend-library (:xgboost)
