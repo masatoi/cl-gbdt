@@ -59,10 +59,12 @@
   :perform (test-op (op c) (symbol-call :rove :run c)))
 
 (defsystem "cl-gbdt/functional-tests"
-  :description "Tests that call the real LightGBM and XGBoost shared libraries."
+  :description "Tests that call the real LightGBM and XGBoost shared libraries. SBCL
+only: the round trips pin arrays with sb-sys directly, unlike src/data.lisp's #+sbcl
+guard, and have no portable fallback."
   :depends-on ("cl-gbdt" "cl-gbdt/lightgbm" "cl-gbdt/xgboost" "rove")
-  :serial t
   :components ((:module "tests/functional"
+                :serial t
                 :components ((:file "package")
                              (:file "support")
                              (:file "lightgbm")
