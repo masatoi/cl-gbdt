@@ -59,6 +59,28 @@ To run a single test from the REPL:
 (rove:run-test 'cl-gbdt/tests::some-test-name)
 ```
 
+## Running the functional tests
+
+`cl-gbdt/functional-tests` is a separate system that calls the real LightGBM and
+XGBoost shared libraries -- design doc section 12, layer 2. It exercises the raw FFI
+directly: loading each library, reading its version, and running a small train/predict
+round trip against a trivially separable dataset, asserting only that positive-label
+predictions come back higher than negative-label ones.
+
+Run `./tools/fetch-libs.sh` first to vendor the libraries into `vendor/`. Then:
+
+```bash
+ros run -- --non-interactive \
+  --eval '(ql:quickload :cl-gbdt/functional-tests :silent t)' \
+  --eval '(asdf:test-system :cl-gbdt/functional-tests)'
+```
+
+A backend whose library is missing skips rather than fails, naming
+`./tools/fetch-libs.sh` in the skip message -- `vendor/` is git-ignored, so a fresh
+clone legitimately has neither library yet. `CL_GBDT_LIGHTGBM_LIB` and
+`CL_GBDT_XGBOOST_LIB` override discovery, for pointing the suite at a system-wide
+install instead of the vendored copy.
+
 ## Regenerating the bindings
 
 `src/lightgbm/c-api.lisp` and `src/xgboost/c-api.lisp` are generated, checked in,

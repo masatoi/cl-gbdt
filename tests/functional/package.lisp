@@ -16,4 +16,5 @@
            #:ensure-backend-library
            #:with-backend-library
            #:make-separable-dataset
-           #:predictions-separate-p))
+           #:predictions-separate-p
+           #:array-interface-json))
