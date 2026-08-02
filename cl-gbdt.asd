@@ -18,17 +18,36 @@
                              (:file "types")
                              (:file "emit")))))
 
+(defsystem "cl-gbdt/lightgbm"
+  :description "LightGBM backend for cl-gbdt"
+  :depends-on ("cl-gbdt" "cffi")
+  :serial t
+  :components ((:module "src/lightgbm"
+                :components ((:file "package")
+                             (:file "c-api")))))
+
+(defsystem "cl-gbdt/xgboost"
+  :description "XGBoost backend for cl-gbdt"
+  :depends-on ("cl-gbdt" "cffi")
+  :serial t
+  :components ((:module "src/xgboost"
+                :components ((:file "package")
+                             (:file "c-api")))))
+
 (defsystem "cl-gbdt/tests"
   :author ""
   :license ""
   :depends-on ("cl-gbdt"
                "cl-gbdt/regen"
+               "cl-gbdt/lightgbm"
+               "cl-gbdt/xgboost"
                "rove")
   :components ((:module "tests"
                 :serial t
                 :components
                 ((:file "package")
                  (:file "main")
-                 (:file "regen"))))
+                 (:file "regen")
+                 (:file "bindings"))))
   :description "Test system for cl-gbdt"
   :perform (test-op (op c) (symbol-call :rove :run c)))
