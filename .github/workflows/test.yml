@@ -1,0 +1,75 @@
+name: tests
+
+# Split from lint.yml so the two report separately: a GitHub Actions badge is
+# per workflow file, not per job, so "tests" and "lint" cannot be distinguished
+# in the README while they share one workflow.
+
+on:
+  push:
+    branches: [master]
+  pull_request:
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  test:
+    # The matrix is the point of this workflow. The bindings are generated on one
+    # machine and committed, so "they work on the machine that generated them"
+    # proves very little; running them on a second architecture and a second
+    # operating system is what turns that into evidence. macOS in particular is
+    # the first real exercise of the .dylib discovery path -- until this workflow
+    # existed it was correct by construction and by nothing else.
+    name: ${{ matrix.name }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - {os: ubuntu-latest, name: linux-x86_64}
+          - {os: ubuntu-24.04-arm, name: linux-aarch64}
+          - {os: macos-latest, name: macos-aarch64}
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Roswell
+        run: |
+          curl -fsSL https://raw.githubusercontent.com/roswell/roswell/master/scripts/install-for-ci.sh | sh
+          echo "$HOME/.roswell/bin" >> "$GITHUB_PATH"
+
+      - name: Report the Lisp this runner resolved
+        run: |
+          ros run -- --non-interactive --eval '
+            (format t "~&~A ~A / ~A ~A~%"
+                    (lisp-implementation-type) (lisp-implementation-version)
+                    (machine-type) (software-type))'
+
+      - name: Make the checkout visible to ASDF
+        # The suites load cl-gbdt by name, so the checkout has to be somewhere ASDF
+        # looks. This mirrors how the project is set up for development.
+        run: |
+          mkdir -p ~/.roswell/local-projects
+          ln -sfn "$GITHUB_WORKSPACE" ~/.roswell/local-projects/cl-gbdt
+
+      - name: Layer 1 - runs with no external artifact
+        env:
+          CL_GBDT_TEST_SYSTEM: cl-gbdt/tests
+        run: ros run -- --non-interactive --load tools/ci/run-tests.lisp
+
+      - name: Install the OpenMP runtime (macOS only)
+        # The macOS wheels link against @rpath/libomp.dylib and, unlike the manylinux
+        # ones, do not vendor it -- the first run of this workflow failed with
+        # "Library not loaded: @rpath/libomp.dylib". Homebrew supplies it.
+        if: runner.os == 'macOS'
+        run: brew install libomp
+
+      - name: Fetch the backend shared libraries
+        run: ./tools/fetch-libs.sh
+
+      - name: Layer 2 - the real LightGBM and XGBoost
+        env:
+          CL_GBDT_TEST_SYSTEM: cl-gbdt/functional-tests
+        run: ros run -- --non-interactive --load tools/ci/run-tests.lisp
