@@ -88,6 +88,36 @@ clone legitimately has neither library yet. `CL_GBDT_LIGHTGBM_LIB` and
 `CL_GBDT_XGBOOST_LIB` override discovery, for pointing the suite at a system-wide
 install instead of the vendored copy.
 
+## Continuous integration
+
+`.github/workflows/ci.yml` runs the suites on three targets — Linux x86_64, Linux aarch64
+and macOS aarch64 — plus a static-check job. The matrix is the point: the bindings are
+generated on one machine and committed, so passing on that machine proves little. macOS is
+also the only place the `.dylib` discovery path is exercised at all.
+
+The logic lives in scripts rather than in the YAML, so the same checks run locally:
+
+```bash
+CL_GBDT_TEST_SYSTEM=cl-gbdt/tests ros run -- --non-interactive \
+  --load tools/ci/run-tests.lisp          # layer 1
+CL_GBDT_TEST_SYSTEM=cl-gbdt/functional-tests ros run -- --non-interactive \
+  --load tools/ci/run-tests.lisp          # layer 2, needs ./tools/fetch-libs.sh first
+ros run -- --non-interactive --load tools/ci/lint.lisp
+```
+
+Two things those scripts do that the plain commands above do not, and that CI needs:
+
+- **They exit non-zero when a test fails.** `asdf:test-system` exits 0 regardless, so a job
+  invoking it directly would be permanently green. `rove:run` returns false on failure and
+  the script turns that into a status.
+- **They check which foreign libraries were opened.** Layer 1 must open none; layer 2 must
+  open both. A functional run where every test skipped for want of `vendor/` prints the same
+  summary as one where every test passed, so the difference has to be asserted rather than
+  inferred.
+
+`tools/ci/lint.lisp` runs mallet *and* a column-width check, because mallet does not check
+line length — a 132-column file passes it without comment.
+
 ## Regenerating the bindings
 
 `src/lightgbm/c-api.lisp` and `src/xgboost/c-api.lisp` are generated, checked in,

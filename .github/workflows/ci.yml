@@ -1,0 +1,99 @@
+name: CI
+
+on:
+  push:
+    branches: [master]
+  pull_request:
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  test:
+    # The matrix is the point of this job. The bindings are generated on one machine
+    # and committed, so "they work on the machine that generated them" proves very
+    # little; running them on a second architecture and a second operating system is
+    # what turns that into evidence. macOS in particular is the first real exercise
+    # of the .dylib discovery path -- until this workflow existed it was correct by
+    # construction and by nothing else.
+    name: test / ${{ matrix.name }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - {os: ubuntu-latest, name: linux-x86_64}
+          - {os: ubuntu-24.04-arm, name: linux-aarch64}
+          - {os: macos-latest, name: macos-aarch64}
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Roswell
+        run: |
+          curl -fsSL https://raw.githubusercontent.com/roswell/roswell/master/scripts/install-for-ci.sh | sh
+          echo "$HOME/.roswell/bin" >> "$GITHUB_PATH"
+
+      - name: Report the Lisp this runner resolved
+        run: |
+          ros run -- --non-interactive --eval '
+            (format t "~&~A ~A / ~A ~A~%"
+                    (lisp-implementation-type) (lisp-implementation-version)
+                    (machine-type) (software-type))'
+
+      - name: Make the checkout visible to ASDF
+        # The suites load cl-gbdt by name, so the checkout has to be somewhere ASDF
+        # looks. This mirrors how the project is set up for development.
+        run: |
+          mkdir -p ~/.roswell/local-projects
+          ln -sfn "$GITHUB_WORKSPACE" ~/.roswell/local-projects/cl-gbdt
+
+      - name: Layer 1 - runs with no external artifact
+        env:
+          CL_GBDT_TEST_SYSTEM: cl-gbdt/tests
+        run: ros run -- --non-interactive --load tools/ci/run-tests.lisp
+
+      - name: Fetch the backend shared libraries
+        run: ./tools/fetch-libs.sh
+
+      - name: Layer 2 - the real LightGBM and XGBoost
+        env:
+          CL_GBDT_TEST_SYSTEM: cl-gbdt/functional-tests
+        run: ros run -- --non-interactive --load tools/ci/run-tests.lisp
+
+  check:
+    # One architecture is enough here: nothing these checks look at varies by machine.
+    name: static checks
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Roswell
+        run: |
+          curl -fsSL https://raw.githubusercontent.com/roswell/roswell/master/scripts/install-for-ci.sh | sh
+          echo "$HOME/.roswell/bin" >> "$GITHUB_PATH"
+
+      - name: Make the checkout visible to ASDF
+        run: |
+          mkdir -p ~/.roswell/local-projects
+          ln -sfn "$GITHUB_WORKSPACE" ~/.roswell/local-projects/cl-gbdt
+
+      - name: Lint and column width
+        # mallet does not check line length -- a 132-column file passes it -- so the
+        # script checks both. See tools/ci/lint.lisp.
+        run: ros run -- --non-interactive --load tools/ci/lint.lisp
+
+      - name: Compile every system without warnings
+        run: |
+          ros run -- --non-interactive \
+            --eval '(ql:quickload (list "cl-gbdt" "cl-gbdt/lightgbm" "cl-gbdt/xgboost") :silent t)' \
+            --eval '(dolist (s (list "cl-gbdt" "cl-gbdt/lightgbm" "cl-gbdt/xgboost"))
+                      (asdf:compile-system s :force t))' 2>&1 | tee /tmp/compile.log
+          if grep -iE 'caught .*(WARNING|ERROR)' /tmp/compile.log; then
+            echo "::error::compilation emitted warnings"
+            exit 1
+          fi
+          echo "no compiler warnings"
