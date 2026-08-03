@@ -116,7 +116,14 @@ Two things those scripts do that the plain commands above do not, and that CI ne
   inferred.
 
 `tools/ci/lint.lisp` runs mallet *and* a column-width check, because mallet does not check
-line length — a 132-column file passes it without comment.
+line length — a 132-column file passes it without comment. mallet is not in the Quicklisp
+dist; the workflow clones it into `~/.roswell/local-projects/`, pinned, and a current ASDF is
+installed first because Roswell ships 3.3.1, which predates `:local-nicknames` in
+`uiop:define-package`.
+
+**On macOS the functional tests also need `brew install libomp`.** The macOS wheels link
+against `@rpath/libomp.dylib` and, unlike the manylinux ones, do not vendor an OpenMP
+runtime, so `dlopen` fails without it.
 
 ## Regenerating the bindings
 
