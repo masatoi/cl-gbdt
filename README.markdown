@@ -1,5 +1,8 @@
 # cl-gbdt
 
+[![tests](https://github.com/masatoi/cl-gbdt/actions/workflows/test.yml/badge.svg?branch=master)](https://github.com/masatoi/cl-gbdt/actions/workflows/test.yml)
+[![lint](https://github.com/masatoi/cl-gbdt/actions/workflows/lint.yml/badge.svg?branch=master)](https://github.com/masatoi/cl-gbdt/actions/workflows/lint.yml)
+
 A Common Lisp library that wraps two gradient boosting decision tree
 implementations -- [LightGBM](https://github.com/microsoft/LightGBM) and
 [XGBoost](https://github.com/dmlc/xgboost) -- behind a single high-level API.
@@ -90,10 +93,15 @@ install instead of the vendored copy.
 
 ## Continuous integration
 
-`.github/workflows/ci.yml` runs the suites on three targets — Linux x86_64, Linux aarch64
-and macOS aarch64 — plus a static-check job. The matrix is the point: the bindings are
-generated on one machine and committed, so passing on that machine proves little. macOS is
-also the only place the `.dylib` discovery path is exercised at all.
+Two workflows, so the badges above report independently — a GitHub Actions badge covers a
+whole workflow file, not a job:
+
+- `.github/workflows/test.yml` runs both suites on Linux x86_64, Linux aarch64 and macOS
+  aarch64. The matrix is the point: the bindings are generated on one machine and
+  committed, so passing on that machine proves little. macOS is also the only place the
+  `.dylib` discovery path is exercised at all.
+- `.github/workflows/lint.yml` runs the static checks on one target, since nothing they
+  look at varies by machine.
 
 The logic lives in scripts rather than in the YAML, so the same checks run locally:
 
