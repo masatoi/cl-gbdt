@@ -1,0 +1,130 @@
+name: CI
+
+on:
+  push:
+    branches: [master]
+  pull_request:
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  test:
+    # The matrix is the point of this job. The bindings are generated on one machine
+    # and committed, so "they work on the machine that generated them" proves very
+    # little; running them on a second architecture and a second operating system is
+    # what turns that into evidence. macOS in particular is the first real exercise
+    # of the .dylib discovery path -- until this workflow existed it was correct by
+    # construction and by nothing else.
+    name: test / ${{ matrix.name }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - {os: ubuntu-latest, name: linux-x86_64}
+          - {os: ubuntu-24.04-arm, name: linux-aarch64}
+          - {os: macos-latest, name: macos-aarch64}
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Roswell
+        run: |
+          curl -fsSL https://raw.githubusercontent.com/roswell/roswell/master/scripts/install-for-ci.sh | sh
+          echo "$HOME/.roswell/bin" >> "$GITHUB_PATH"
+
+      - name: Report the Lisp this runner resolved
+        run: |
+          ros run -- --non-interactive --eval '
+            (format t "~&~A ~A / ~A ~A~%"
+                    (lisp-implementation-type) (lisp-implementation-version)
+                    (machine-type) (software-type))'
+
+      - name: Make the checkout visible to ASDF
+        # The suites load cl-gbdt by name, so the checkout has to be somewhere ASDF
+        # looks. This mirrors how the project is set up for development.
+        run: |
+          mkdir -p ~/.roswell/local-projects
+          ln -sfn "$GITHUB_WORKSPACE" ~/.roswell/local-projects/cl-gbdt
+
+      - name: Layer 1 - runs with no external artifact
+        env:
+          CL_GBDT_TEST_SYSTEM: cl-gbdt/tests
+        run: ros run -- --non-interactive --load tools/ci/run-tests.lisp
+
+      - name: Install the OpenMP runtime (macOS only)
+        # The macOS wheels link against @rpath/libomp.dylib and, unlike the manylinux
+        # ones, do not vendor it -- the first run of this workflow failed with
+        # "Library not loaded: @rpath/libomp.dylib". Homebrew supplies it.
+        if: runner.os == 'macOS'
+        run: brew install libomp
+
+      - name: Fetch the backend shared libraries
+        run: ./tools/fetch-libs.sh
+
+      - name: Layer 2 - the real LightGBM and XGBoost
+        env:
+          CL_GBDT_TEST_SYSTEM: cl-gbdt/functional-tests
+        run: ros run -- --non-interactive --load tools/ci/run-tests.lisp
+
+  check:
+    # One architecture is enough here: nothing these checks look at varies by machine.
+    name: static checks
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Roswell
+        run: |
+          curl -fsSL https://raw.githubusercontent.com/roswell/roswell/master/scripts/install-for-ci.sh | sh
+          echo "$HOME/.roswell/bin" >> "$GITHUB_PATH"
+
+      - name: Make the checkout visible to ASDF
+        run: |
+          mkdir -p ~/.roswell/local-projects
+          ln -sfn "$GITHUB_WORKSPACE" ~/.roswell/local-projects/cl-gbdt
+
+      - name: Install a current ASDF
+        # Roswell ships ASDF 3.3.1, whose uiop:define-package predates
+        # :local-nicknames; trivial-glob below will not load without a newer one.
+        run: ros install asdf
+
+      - name: Install mallet
+        # mallet is not in the Quicklisp dist, so it is cloned into the local-projects
+        # tree where ASDF looks. Both are pinned by commit: an unpinned linter turns CI
+        # red on someone else's release, which is a bad reason for a build to fail.
+        # These are the exact revisions tools/ci/lint.lisp was developed against.
+        # Note the mallet pin is a commit, not the 0.9.2 tag -- mallet:lint-files, the
+        # programmatic entry point the script uses, postdates that release.
+        env:
+          MALLET_REF: '25c13e8596e472197cba81d3f08bf825b5ddc03a'
+          TRIVIAL_GLOB_REF: '0c2675d9452ed164970f2fc4a0e41784ebee819a'
+        run: |
+          projects=~/.roswell/local-projects/fukamachi
+          mkdir -p "$projects"
+          for repo in trivial-glob mallet; do
+            git clone --quiet "https://github.com/fukamachi/$repo" "$projects/$repo"
+          done
+          git -C "$projects/trivial-glob" checkout --quiet "$TRIVIAL_GLOB_REF"
+          git -C "$projects/mallet" checkout --quiet "$MALLET_REF"
+
+      - name: Lint and column width
+        # mallet does not check line length -- a 132-column file passes it -- so the
+        # script checks both. See tools/ci/lint.lisp.
+        run: ros run -- --non-interactive --load tools/ci/lint.lisp
+
+      - name: Compile every system without warnings
+        run: |
+          ros run -- --non-interactive \
+            --eval '(ql:quickload (list "cl-gbdt" "cl-gbdt/lightgbm" "cl-gbdt/xgboost") :silent t)' \
+            --eval '(dolist (s (list "cl-gbdt" "cl-gbdt/lightgbm" "cl-gbdt/xgboost"))
+                      (asdf:compile-system s :force t))' 2>&1 | tee /tmp/compile.log
+          if grep -iE 'caught .*(WARNING|ERROR)' /tmp/compile.log; then
+            echo "::error::compilation emitted warnings"
+            exit 1
+          fi
+          echo "no compiler warnings"
