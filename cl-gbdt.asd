@@ -45,8 +45,7 @@ guard, and have no portable fallback."
   :depends-on ("cl-gbdt" "cl-gbdt/lightgbm" "cl-gbdt/xgboost" "rove")
   :components ((:module "tests/functional"
                 :serial t
-                :components ((:file "package")
-                             (:file "support")
+                :components ((:file "support")
                              (:file "lightgbm")
                              (:file "xgboost"))))
   :perform (test-op (op c) (symbol-call :rove :run c)))
