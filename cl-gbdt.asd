@@ -16,20 +16,14 @@
 (defsystem "cl-gbdt/lightgbm"
   :description "LightGBM backend for cl-gbdt"
   :license "MIT"
-  :depends-on ("cl-gbdt" "cffi")
-  :serial t
-  :components ((:module "src/lightgbm"
-                :components ((:file "package")
-                             (:file "c-api")))))
+  :class :package-inferred-system
+  :depends-on ("cl-gbdt/src/lightgbm/c-api"))
 
 (defsystem "cl-gbdt/xgboost"
   :description "XGBoost backend for cl-gbdt"
   :license "MIT"
-  :depends-on ("cl-gbdt" "cffi")
-  :serial t
-  :components ((:module "src/xgboost"
-                :components ((:file "package")
-                             (:file "c-api")))))
+  :class :package-inferred-system
+  :depends-on ("cl-gbdt/src/xgboost/c-api"))
 
 (defsystem "cl-gbdt/tests"
   :author "Satoshi Imai <satoshi.imai@gmail.com>"

@@ -6,9 +6,9 @@
 (in-package #:cl-gbdt/tests)
 
 (defparameter +generated-bindings+
-  '(("src/lightgbm/c-api.lisp" :cl-gbdt.lightgbm.ffi 90
+  '(("src/lightgbm/c-api.lisp" :cl-gbdt/src/lightgbm/c-api 90
      ("LGBM_BoosterCreate" "LGBM_DatasetCreateFromMat" "LGBM_GetLastError"))
-    ("src/xgboost/c-api.lisp" :cl-gbdt.xgboost.ffi 70
+    ("src/xgboost/c-api.lisp" :cl-gbdt/src/xgboost/c-api 70
      ("XGBoosterCreate" "XGDMatrixCreateFromDense" "XGBGetLastError")))
   "(path package minimum-functions required-c-names) for each generated file.")
 
@@ -16,9 +16,9 @@
   (uiop:read-file-string (asdf:system-relative-pathname "cl-gbdt" relative)))
 
 (defparameter +regen-targets+
-  '(("ffi-spec/lightgbm/include/" "LightGBM/c_api.h" "cl-gbdt.lightgbm.ffi"
+  '(("ffi-spec/lightgbm/include/" "LightGBM/c_api.h" "cl-gbdt/src/lightgbm/c-api"
      ("LGBM_" "C_API_") "src/lightgbm/c-api.lisp")
-    ("ffi-spec/xgboost/include/" "xgboost/c_api.h" "cl-gbdt.xgboost.ffi"
+    ("ffi-spec/xgboost/include/" "xgboost/c_api.h" "cl-gbdt/src/xgboost/c-api"
      ("XGB" "XGD") "src/xgboost/c-api.lisp"))
   "(spec-root header-name package prefixes committed-output) per backend, mirroring
 tools/regen.lisp's own settings. Used to check the committed bindings against the
@@ -78,10 +78,10 @@ regenerated it (spec 5.2: local architecture only)."
 
 (deftest generated-bindings-define-callable-symbols
   (testing "the emitted symbols exist and are fbound after loading"
-    (dolist (spec '((:cl-gbdt.lightgbm.ffi "LGBM-DATASET-CREATE-FROM-MAT")
-                    (:cl-gbdt.lightgbm.ffi "LGBM-BOOSTER-CREATE")
-                    (:cl-gbdt.xgboost.ffi  "XGD-MATRIX-CREATE-FROM-DENSE")
-                    (:cl-gbdt.xgboost.ffi  "XGB-GET-LAST-ERROR")))
+    (dolist (spec '((:cl-gbdt/src/lightgbm/c-api "LGBM-DATASET-CREATE-FROM-MAT")
+                    (:cl-gbdt/src/lightgbm/c-api "LGBM-BOOSTER-CREATE")
+                    (:cl-gbdt/src/xgboost/c-api  "XGD-MATRIX-CREATE-FROM-DENSE")
+                    (:cl-gbdt/src/xgboost/c-api  "XGB-GET-LAST-ERROR")))
       (destructuring-bind (package name) spec
         (let ((symbol (find-symbol name (find-package package))))
           (ok symbol (format nil "~A::~A exists" package name))
@@ -91,7 +91,7 @@ regenerated it (spec 5.2: local architecture only)."
 (deftest lightgbm-constants-are-generated
   (testing "the C_API_ constants used by the wrapper are present"
     (dolist (name '("+C-API-DTYPE-FLOAT64+" "+C-API-PREDICT-NORMAL+"))
-      (ok (find-symbol name (find-package :cl-gbdt.lightgbm.ffi))
+      (ok (find-symbol name (find-package :cl-gbdt/src/lightgbm/c-api))
           (format nil "~A is defined" name)))))
 
 (deftest committed-bindings-match-their-committed-spec

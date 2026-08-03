@@ -10,8 +10,8 @@
   ;; exception: their whole purpose is to exercise that raw layer. They therefore reach in
   ;; with a double colon, which keeps the trespass visible at every call site rather than
   ;; hiding it behind an export list the design does not want.
-  (:local-nicknames (#:lgbm #:cl-gbdt.lightgbm.ffi)
-                    (#:xgb #:cl-gbdt.xgboost.ffi))
+  (:local-nicknames (#:lgbm #:cl-gbdt/src/lightgbm/c-api)
+                    (#:xgb #:cl-gbdt/src/xgboost/c-api))
   (:export #:backend-library-path
            #:ensure-backend-library
            #:with-backend-library

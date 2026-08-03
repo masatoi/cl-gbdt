@@ -22,7 +22,7 @@
      :header "ffi-spec/lightgbm/include/LightGBM/c_api.h"
      :header-name "LightGBM/c_api.h"
      :sys-includes ("ffi-spec/lightgbm/include/")
-     :package "cl-gbdt.lightgbm.ffi"
+     :package "cl-gbdt/src/lightgbm/c-api"
      :prefixes ("LGBM_" "C_API_")
      :output "src/lightgbm/c-api.lisp"
      :minimum-functions 90
@@ -31,7 +31,7 @@
      :header "ffi-spec/xgboost/include/xgboost/c_api.h"
      :header-name "xgboost/c_api.h"
      :sys-includes ()
-     :package "cl-gbdt.xgboost.ffi"
+     :package "cl-gbdt/src/xgboost/c-api"
      :prefixes ("XGB" "XGD")
      :output "src/xgboost/c-api.lisp"
      :minimum-functions 70
