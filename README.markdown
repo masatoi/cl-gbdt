@@ -145,6 +145,8 @@ MIT; see `LICENSE`.
 
 The upstream C API headers vendored under `ffi-spec/` remain under their own terms --
 LightGBM's are MIT, XGBoost's are Apache 2.0 -- and each retains its upstream copyright
-notice. `THIRD-PARTY-LICENSES.md` records what is redistributed and under what. cl-gbdt does
+notice, and both upstream licence texts are vendored verbatim under `LICENSES/` so that
+recipients receive a copy rather than a link. `THIRD-PARTY-LICENSES.md` records what is
+redistributed and under what. cl-gbdt does
 not bundle either backend's compiled library; `tools/fetch-libs.sh` fetches those into the
 git-ignored `vendor/` directory for development only.

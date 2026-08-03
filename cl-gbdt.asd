@@ -15,6 +15,7 @@
 
 (defsystem "cl-gbdt/regen"
   :description "Binding emitter. Development only; never part of a build."
+  :license "MIT"
   :depends-on ("cffi/c2ffi" "com.inuoe.jzon" "alexandria")
   :serial t
   :components ((:module "src/regen"
@@ -24,6 +25,7 @@
 
 (defsystem "cl-gbdt/lightgbm"
   :description "LightGBM backend for cl-gbdt"
+  :license "MIT"
   :depends-on ("cl-gbdt" "cffi")
   :serial t
   :components ((:module "src/lightgbm"
@@ -32,6 +34,7 @@
 
 (defsystem "cl-gbdt/xgboost"
   :description "XGBoost backend for cl-gbdt"
+  :license "MIT"
   :depends-on ("cl-gbdt" "cffi")
   :serial t
   :components ((:module "src/xgboost"
@@ -62,6 +65,7 @@
   :description "Tests that call the real LightGBM and XGBoost shared libraries. SBCL
 only: the round trips pin arrays with sb-sys directly, unlike src/data.lisp's #+sbcl
 guard, and have no portable fallback."
+  :license "MIT"
   :depends-on ("cl-gbdt" "cl-gbdt/lightgbm" "cl-gbdt/xgboost" "rove")
   :components ((:module "tests/functional"
                 :serial t
