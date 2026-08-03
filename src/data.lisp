@@ -7,7 +7,22 @@
 ;;;; Dataset or DMatrix is constructed, so pinning is only needed for the duration of
 ;;;; that construction call.
 
-(in-package #:cl-gbdt)
+(uiop:define-package #:cl-gbdt/src/data
+  (:use #:cl)
+  (:import-from #:cffi)
+  (:import-from #:cl-gbdt/src/conditions
+                #:dimension-mismatch
+                #:unsupported-element-type)
+  (:export #:foreign-matrix
+           #:foreign-matrix-pointer
+           #:foreign-matrix-rows
+           #:foreign-matrix-cols
+           #:foreign-matrix-element-type
+           #:call-with-foreign-matrix
+           #:with-foreign-matrix
+           #:foreign-element-type))
+
+(in-package #:cl-gbdt/src/data)
 
 (defclass foreign-matrix ()
   ((pointer :initarg :pointer

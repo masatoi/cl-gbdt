@@ -3,14 +3,8 @@
   :author "Satoshi Imai <satoshi.imai@gmail.com>"
   :license "MIT"
   :description "Common Lisp wrapper exposing LightGBM and XGBoost through one API"
-  :depends-on ("cffi" "alexandria" "trivial-garbage")
-  :serial t
-  :components ((:module "src"
-                :components ((:file "package")
-                             (:file "conditions")
-                             (:file "data")
-                             (:file "backend")
-                             (:file "protocol"))))
+  :class :package-inferred-system
+  :depends-on ("cl-gbdt/src/all")
   :in-order-to ((test-op (test-op "cl-gbdt/tests"))))
 
 (defsystem "cl-gbdt/regen"
