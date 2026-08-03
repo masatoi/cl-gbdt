@@ -20,11 +20,13 @@ Returns what `ok' returns, so a caller can gate the rest of a sequence on it."
 (deftest lightgbm-library-loads
   (with-backend-library (:lightgbm)
     (testing "the shared library loads standalone from its vendored layout"
-      (ok (find "lib_lightgbm.so" (cffi:list-foreign-libraries)
-                :key (lambda (library)
-                       (file-namestring (cffi:foreign-library-pathname library)))
-                :test #'string=)
-          "lib_lightgbm.so is among the loaded foreign libraries"))
+      (let ((basename (file-namestring (backend-library-path :lightgbm))))
+        (ok (find basename (cffi:list-foreign-libraries)
+                  :key (lambda (library)
+                         (let ((pathname (cffi:foreign-library-pathname library)))
+                           (and pathname (file-namestring pathname))))
+                  :test #'equal)
+            (format nil "~A is among the loaded foreign libraries" basename))))
     (testing "a string return value crosses the boundary intact"
       (let ((message (lgbm-last-error)))
         (ok (stringp message))

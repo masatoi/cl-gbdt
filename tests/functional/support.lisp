@@ -3,10 +3,13 @@
 (in-package #:cl-gbdt/functional-tests)
 
 (defparameter *backend-libraries*
-  '((:lightgbm "CL_GBDT_LIGHTGBM_LIB" "vendor/lightgbm/lib/lib_lightgbm.so")
-    (:xgboost "CL_GBDT_XGBOOST_LIB" "vendor/xgboost/lib/libxgboost.so"))
-  "For each backend: the environment variable that overrides discovery, and the
-repository-relative path ./tools/fetch-libs.sh writes to.")
+  '((:lightgbm "CL_GBDT_LIGHTGBM_LIB" "vendor/lightgbm/lib/" "lib_lightgbm.*")
+    (:xgboost "CL_GBDT_XGBOOST_LIB" "vendor/xgboost/lib/" "libxgboost.*"))
+  "For each backend: the environment variable that overrides discovery, the
+repository-relative directory ./tools/fetch-libs.sh writes to, and a basename pattern to
+find its library within that directory. The pattern's extension is wild because
+./tools/fetch-libs.sh preserves whatever the platform's wheel ships -- `.so' on Linux,
+`.dylib' on macOS -- and discovery must not assume either.")
 
 (defvar *loaded-libraries* (make-hash-table :test #'eq)
   "Backends whose shared library this image has already loaded.")
@@ -14,17 +17,28 @@ repository-relative path ./tools/fetch-libs.sh writes to.")
 (defun backend-library-path (backend)
   "Return the path to BACKEND's shared library, or NIL when it is not present.
 
-The environment variable wins over the vendored copy, so a developer can point the
-suite at a system-wide install without moving files around. It is honoured strictly:
-a variable that names a path which does not exist is an error, not a fall-through.
-Falling through would run the tests against a different library than the developer
-asked for, and then report -- wrongly -- that the variable was unset."
-  (destructuring-bind (variable relative) (cdr (assoc backend *backend-libraries*))
+The environment variable wins over the vendored directory, so a developer can point the
+suite at a system-wide install without moving files around. It is honoured strictly: a
+variable that names a path which does not exist is an error, not a fall-through. Falling
+through would run the tests against a different library than the developer asked for, and
+then report -- wrongly -- that the variable was unset.
+
+Absent an override, the vendored directory is searched for the basename pattern with
+`directory'. More than one match is an error rather than an arbitrary pick, since a
+silent choice between candidates could run the tests against the wrong file."
+  (destructuring-bind (variable directory pattern) (cdr (assoc backend *backend-libraries*))
     (let ((override (uiop:getenv variable)))
       (if (and override (plusp (length override)))
           (or (probe-file override)
               (error "~A is set to ~S, which does not exist." variable override))
-          (probe-file (asdf:system-relative-pathname "cl-gbdt" relative))))))
+          (let ((matches (directory (merge-pathnames
+                                      pattern
+                                      (asdf:system-relative-pathname "cl-gbdt" directory)))))
+            (case (length matches)
+              (0 nil)
+              (1 (first matches))
+              (t (error "~D files match ~A under ~A, expected at most one: ~{~A~^, ~}."
+                        (length matches) pattern directory matches))))))))
 
 (defun ensure-backend-library (backend)
   "Load BACKEND's shared library if it has not been loaded yet.
@@ -40,9 +54,10 @@ per test."
 
 (defun missing-library-message (backend)
   "Return the skip message naming what is missing and how to obtain it."
-  (destructuring-bind (variable relative) (cdr (assoc backend *backend-libraries*))
-    (format nil "~A not found under ~A and ~A is unset. Run ./tools/fetch-libs.sh first."
-            (file-namestring relative) (directory-namestring relative) variable)))
+  (destructuring-bind (variable directory pattern) (cdr (assoc backend *backend-libraries*))
+    (format nil "No file matching ~A found under ~A and ~A is unset. ~
+                 Run ./tools/fetch-libs.sh first."
+            pattern directory variable)))
 
 (defmacro with-backend-library ((backend) &body body)
   "Evaluate BODY with BACKEND's shared library loaded, or skip when it is absent.

@@ -29,11 +29,13 @@ the test wired up, while every later call kept returning success regardless."
 (deftest xgboost-library-loads
   (with-backend-library (:xgboost)
     (testing "the shared library loads standalone from its vendored layout"
-      (ok (find "libxgboost.so" (cffi:list-foreign-libraries)
-                :key (lambda (library)
-                       (file-namestring (cffi:foreign-library-pathname library)))
-                :test #'string=)
-          "libxgboost.so is among the loaded foreign libraries"))
+      (let ((basename (file-namestring (backend-library-path :xgboost))))
+        (ok (find basename (cffi:list-foreign-libraries)
+                  :key (lambda (library)
+                         (let ((pathname (cffi:foreign-library-pathname library)))
+                           (and pathname (file-namestring pathname))))
+                  :test #'equal)
+            (format nil "~A is among the loaded foreign libraries" basename))))
     (testing "the version reads back through three out-parameters"
       (cffi:with-foreign-objects ((major :int) (minor :int) (patch :int))
         (xgb::xg-boost-version major minor patch)
