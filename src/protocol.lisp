@@ -9,7 +9,6 @@
 (uiop:define-package #:cl-gbdt/src/protocol
   (:use #:cl)
   (:import-from #:alexandria #:parse-body)
-  (:import-from #:cl-gbdt/src/data)
   (:import-from #:cl-gbdt/src/backend #:backend)
   (:export #:make-dataset
            #:dataset-num-rows
