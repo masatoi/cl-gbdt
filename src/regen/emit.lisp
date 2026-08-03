@@ -146,6 +146,10 @@ than skipping any function it cannot map."
                  (incf functions))
                 ((equal (gethash "tag" entry) "const")
                  (push entry const-entries)))))
+      ;; The sort key is total: C macro names are unique within a translation unit, so no
+      ;; two entries tie and the result does not depend on `sort' being stable. `stable-sort'
+      ;; would not help if they did tie -- it would preserve c2ffi's order, which is the
+      ;; non-determinism this sort exists to remove.
       (dolist (entry (sort (nreverse const-entries) #'string<
                             :key (lambda (entry) (gethash "name" entry))))
         (if (emit-constant entry out)
