@@ -1,6 +1,15 @@
 ;;;; emit.lisp --- Emit CFFI definitions from a c2ffi spec file.
 
-(in-package #:cl-gbdt.regen)
+(uiop:define-package #:cl-gbdt/src/regen/emit
+  (:use #:cl)
+  (:import-from #:alexandria)
+  (:local-nicknames (#:jzon #:com.inuoe.jzon))
+  (:import-from #:cl-gbdt/src/regen/types
+                #:cffi-type)
+  (:export #:lisp-name
+           #:emit-bindings))
+
+(in-package #:cl-gbdt/src/regen/emit)
 
 (defun decamelize (string)
   "Insert dashes at underscore and camelCase boundaries, and downcase."

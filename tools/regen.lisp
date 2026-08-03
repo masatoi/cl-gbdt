@@ -10,6 +10,10 @@
 
 (asdf:load-system "cl-gbdt/regen")
 
+;;; cffi/c2ffi is used only here, not by src/regen/ itself, so it is not a
+;;; dependency of the cl-gbdt/regen defsystem; this script quickloads it directly.
+(ql:quickload "cffi/c2ffi" :silent t)
+
 (setf cffi/c2ffi::*c2ffi-executable*
       (namestring (merge-pathnames "tools/c2ffi.sh" (uiop:getcwd))))
 
@@ -85,7 +89,7 @@
                                          :defaults output-path)))
           (unwind-protect
                (multiple-value-bind (functions constants skipped)
-                   (cl-gbdt.regen:emit-bindings spec header-name package prefixes temp-path)
+                   (cl-gbdt/src/regen/all:emit-bindings spec header-name package prefixes temp-path)
                  (validate temp-path required minimum-functions functions)
                  (uiop:rename-file-overwriting-target temp-path output-path)
                  (format t "    ~D functions, ~D constants -> ~A~%"

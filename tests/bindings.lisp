@@ -106,6 +106,6 @@ regenerated it (spec 5.2: local architecture only)."
               (skip (format nil "no c2ffi spec committed under ~A; nothing to check ~A against"
                             spec-root committed))
               (uiop:with-temporary-file (:pathname temp :type "lisp")
-                (cl-gbdt.regen:emit-bindings spec header-name package prefixes temp)
+                (cl-gbdt/src/regen/all:emit-bindings spec header-name package prefixes temp)
                 (ok (string= (binding-source committed) (uiop:read-file-string temp))
                     (format nil "~A matches its committed spec" committed)))))))))

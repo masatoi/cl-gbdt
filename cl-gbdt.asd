@@ -10,12 +10,8 @@
 (defsystem "cl-gbdt/regen"
   :description "Binding emitter. Development only; never part of a build."
   :license "MIT"
-  :depends-on ("cffi/c2ffi" "com.inuoe.jzon" "alexandria")
-  :serial t
-  :components ((:module "src/regen"
-                :components ((:file "package")
-                             (:file "types")
-                             (:file "emit")))))
+  :class :package-inferred-system
+  :depends-on ("cl-gbdt/src/regen/all"))
 
 (defsystem "cl-gbdt/lightgbm"
   :description "LightGBM backend for cl-gbdt"
