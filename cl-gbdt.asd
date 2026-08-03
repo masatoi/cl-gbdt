@@ -28,21 +28,13 @@
 (defsystem "cl-gbdt/tests"
   :author "Satoshi Imai <satoshi.imai@gmail.com>"
   :license "MIT"
-  :depends-on ("cl-gbdt"
-               "cl-gbdt/regen"
-               "cl-gbdt/lightgbm"
-               "cl-gbdt/xgboost"
-               "rove")
-  :components ((:module "tests"
-                :serial t
-                :components
-                ((:file "package")
-                 (:file "conditions")
-                 (:file "data")
-                 (:file "regen")
-                 (:file "bindings")
-                 (:file "backend"))))
   :description "Test system for cl-gbdt"
+  :class :package-inferred-system
+  :depends-on ("cl-gbdt/tests/conditions"
+               "cl-gbdt/tests/data"
+               "cl-gbdt/tests/regen"
+               "cl-gbdt/tests/bindings"
+               "cl-gbdt/tests/backend")
   :perform (test-op (op c) (symbol-call :rove :run c)))
 
 (defsystem "cl-gbdt/functional-tests"

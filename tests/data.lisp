@@ -2,7 +2,12 @@
 ;;;;
 ;;;; These tests require no shared library (layer 1).
 
-(in-package #:cl-gbdt/tests)
+(uiop:define-package #:cl-gbdt/tests/data
+  (:use #:cl #:rove)
+  (:import-from #:cffi)
+  (:import-from #:cl-gbdt))
+
+(in-package #:cl-gbdt/tests/data)
 
 (defun read-back-doubles (pointer count)
   "Read COUNT doubles from POINTER and return them as a list."

@@ -3,7 +3,14 @@
 ;;;; These need no shared library: they check the generated source, and that the
 ;;;; definitions load without opening anything (layer 1).
 
-(in-package #:cl-gbdt/tests)
+(uiop:define-package #:cl-gbdt/tests/bindings
+  (:use #:cl #:rove)
+  (:import-from #:cffi)
+  (:import-from #:cl-gbdt/src/lightgbm/c-api)
+  (:import-from #:cl-gbdt/src/xgboost/c-api)
+  (:import-from #:cl-gbdt/src/regen/all))
+
+(in-package #:cl-gbdt/tests/bindings)
 
 (defparameter +generated-bindings+
   '(("src/lightgbm/c-api.lisp" :cl-gbdt/src/lightgbm/c-api 90

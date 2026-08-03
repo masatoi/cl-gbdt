@@ -1,6 +1,10 @@
 ;;;; regen.lisp --- Tests for the binding emitter's pure parts.
 
-(in-package #:cl-gbdt/tests)
+(uiop:define-package #:cl-gbdt/tests/regen
+  (:use #:cl #:rove)
+  (:import-from #:cl-gbdt/src/regen/all))
+
+(in-package #:cl-gbdt/tests/regen)
 
 (defun typedef-table (&rest pairs)
   "Build a c2ffi-shaped typedef table from NAME/TYPE-ALIST PAIRS."

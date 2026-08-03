@@ -2,7 +2,11 @@
 ;;;;
 ;;;; A mock backend is used, so no shared library is required (layer 1).
 
-(in-package #:cl-gbdt/tests)
+(uiop:define-package #:cl-gbdt/tests/backend
+  (:use #:cl #:rove)
+  (:import-from #:cl-gbdt))
+
+(in-package #:cl-gbdt/tests/backend)
 
 (defclass mock-backend (cl-gbdt:backend)
   ((initialize-count :initform 0 :accessor mock-backend-initialize-count)
