@@ -112,5 +112,10 @@ why, independent of whether they happen to be emitted.
 
 ## License
 
-Not yet determined -- no `LICENSE` file exists in this repository and none is
-referenced elsewhere in it.
+MIT; see `LICENSE`.
+
+The upstream C API headers vendored under `ffi-spec/` remain under their own terms --
+LightGBM's are MIT, XGBoost's are Apache 2.0 -- and each retains its upstream copyright
+notice. `THIRD-PARTY-LICENSES.md` records what is redistributed and under what. cl-gbdt does
+not bundle either backend's compiled library; `tools/fetch-libs.sh` fetches those into the
+git-ignored `vendor/` directory for development only.

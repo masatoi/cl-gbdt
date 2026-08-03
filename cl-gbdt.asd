@@ -1,7 +1,7 @@
 (defsystem "cl-gbdt"
   :version "0.0.1"
   :author "Satoshi Imai <satoshi.imai@gmail.com>"
-  :license ""
+  :license "MIT"
   :description "Common Lisp wrapper exposing LightGBM and XGBoost through one API"
   :depends-on ("cffi" "alexandria" "trivial-garbage")
   :serial t
@@ -40,7 +40,7 @@
 
 (defsystem "cl-gbdt/tests"
   :author "Satoshi Imai <satoshi.imai@gmail.com>"
-  :license ""
+  :license "MIT"
   :depends-on ("cl-gbdt"
                "cl-gbdt/regen"
                "cl-gbdt/lightgbm"
