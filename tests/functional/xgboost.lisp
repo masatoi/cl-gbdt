@@ -112,9 +112,13 @@ the test wired up, while every later call kept returning success regardless."
                    (unless (xgb-check (xgb::xg-booster-predict booster dmatrix 0 0 0
                                                                prediction-count out))
                      (return-from round-trip))
-                   (ok (= rows (cffi:mem-ref prediction-count :uint64))
-                       (format nil "prediction count is ~D, expected ~D"
-                               (cffi:mem-ref prediction-count :uint64) rows))
+                   ;; `buffer' below is XGBoost's own memory, sized to what it actually
+                   ;; produced; a short count means reading ROWS floats out of it would
+                   ;; be an out-of-bounds foreign read, so the copy must not proceed.
+                   (unless (ok (= rows (cffi:mem-ref prediction-count :uint64))
+                               (format nil "prediction count is ~D, expected ~D"
+                                       (cffi:mem-ref prediction-count :uint64) rows))
+                     (return-from round-trip))
                    ;; The buffer belongs to XGBoost and stays valid only until the next
                    ;; prediction on this booster, so copy the values out now.
                    (let ((buffer (cffi:mem-ref out :pointer))

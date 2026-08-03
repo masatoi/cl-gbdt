@@ -114,9 +114,13 @@ output during the suite.")
                                             booster pointer 1 nrow ncol 1 0 0 -1
                                             parameters prediction-count out))
                          (return-from round-trip)))
-                     (ok (= rows (cffi:mem-ref prediction-count :int64))
-                         (format nil "prediction count is ~D, expected ~D"
-                                 (cffi:mem-ref prediction-count :int64) rows))
+                     ;; `out' is our own with-foreign-objects allocation of ROWS doubles;
+                     ;; a short count leaves its remainder uninitialised, so the copy
+                     ;; below must not run when the count assertion fails.
+                     (unless (ok (= rows (cffi:mem-ref prediction-count :int64))
+                                 (format nil "prediction count is ~D, expected ~D"
+                                         (cffi:mem-ref prediction-count :int64) rows))
+                       (return-from round-trip))
                      (let ((predictions (make-array rows :element-type 'double-float)))
                        (dotimes (index rows)
                          (setf (aref predictions index) (cffi:mem-aref out :double index)))
