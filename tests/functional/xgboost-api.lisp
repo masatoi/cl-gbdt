@@ -496,3 +496,73 @@ binary, so COLUMN is always 0, but the shape still has to be unpacked by hand."
                          (cl-gbdt:wrong-backend-reference () t))
                        "train accepted a booster inside :valid-sets"))))
           (cl-gbdt:close-backend backend))))))
+
+;;; `make-dataset' signals `unsupported-argument' for :REFERENCE and :GROUP rather than
+;;; silently ignoring them -- see `%check-unsupported''s docstring. Neither had a test at
+;;; all before this: LightGBM's own :REFERENCE and :GROUP are real features, exercised by
+;;; four of its own tests in tests/functional/lightgbm-api.lisp, and this backend's refusal
+;;; is the deliberate substitute for that behaviour, not dead code with nothing depending
+;;; on it. This proves both signal.
+
+(deftest xgboost-api-make-dataset-with-reference-signals-unsupported-argument
+  (with-backend-library (:xgboost)
+    (multiple-value-bind (matrix label-vector) (make-separable-dataset)
+      (let ((backend (cl-gbdt:open-backend :xgboost)))
+        (unwind-protect
+             (cl-gbdt:with-dataset (reference (cl-gbdt:make-dataset
+                                                backend matrix :label label-vector))
+               (testing "make-dataset with :reference signals unsupported-argument"
+                 ;; handler-case, not rove's `signals' -- see this file's other guard
+                 ;; tests for why.
+                 (ok (handler-case
+                         (progn (cl-gbdt:make-dataset backend matrix :label label-vector
+                                                       :reference reference)
+                                nil)
+                       (cl-gbdt:unsupported-argument () t))
+                     "make-dataset with :reference did not signal unsupported-argument")))
+          (cl-gbdt:close-backend backend))))))
+
+(deftest xgboost-api-make-dataset-with-group-signals-unsupported-argument
+  (with-backend-library (:xgboost)
+    (multiple-value-bind (matrix label-vector) (make-separable-dataset)
+      (let ((backend (cl-gbdt:open-backend :xgboost)))
+        (unwind-protect
+             (testing "make-dataset with :group signals unsupported-argument"
+               ;; handler-case, not rove's `signals' -- see this file's other guard
+               ;; tests for why.
+               (ok (handler-case
+                       (progn (cl-gbdt:make-dataset backend matrix :label label-vector
+                                                     :group '(4 4))
+                              nil)
+                     (cl-gbdt:unsupported-argument () t))
+                   "make-dataset with :group did not signal unsupported-argument"))
+          (cl-gbdt:close-backend backend))))))
+
+;;; `save-model' signals `unsupported-argument' when NUM-ITERATION is supplied --
+;;; `XGBoosterSaveModel' has no iteration limit, unlike LightGBM's `LGBM_BoosterSaveModel'
+;;; -- see that method's docstring. This proves it does, one of five `unsupported-argument'
+;;; call sites in this file with no test at all before this.
+
+(deftest xgboost-api-save-model-with-num-iteration-signals-unsupported-argument
+  (with-backend-library (:xgboost)
+    (multiple-value-bind (matrix label-vector) (make-separable-dataset)
+      (let ((backend (cl-gbdt:open-backend :xgboost))
+            (dataset nil)
+            (booster nil))
+        (unwind-protect
+             (progn
+               (setf dataset (cl-gbdt:make-dataset backend matrix :label label-vector))
+               (setf booster (cl-gbdt:train backend dataset :num-rounds 1
+                                             :parameters *booster-parameters*))
+               (uiop:with-temporary-file (:pathname path :type "json")
+                 (testing "save-model with :num-iteration signals unsupported-argument"
+                   ;; handler-case, not rove's `signals' -- see this file's other guard
+                   ;; tests for why.
+                   (ok (handler-case
+                           (progn (cl-gbdt:save-model booster path :num-iteration 1) nil)
+                         (cl-gbdt:unsupported-argument () t))
+                       "save-model with :num-iteration did not signal unsupported-argument"))))
+          (progn
+            (when booster (cl-gbdt:free-booster booster))
+            (when dataset (cl-gbdt:free-dataset dataset))
+            (cl-gbdt:close-backend backend)))))))
