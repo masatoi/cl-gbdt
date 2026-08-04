@@ -28,6 +28,22 @@
     (ok (equal '(("learning_rate" . "0.05"))
                (cl-gbdt:normalize-parameters '(:learning-rate 0.05d0))))))
 
+;;; Both float types, because fixing one by pinning `*read-default-float-format*' breaks
+;;; the other -- and single-float is what a default reader produces, so `:learning-rate
+;;; 0.05' is the spelling a caller reaches for first. A first attempt at this fix pinned
+;;; the special to `double-float' and turned that spelling into "0.05f0"; this assertion
+;;; is what would have caught it.
+
+(deftest normalize-parameters-prints-single-float-without-a-type-marker
+  (testing "0.05 -- a single-float, as the default reader produces -- prints as 0.05"
+    (ok (equal '(("learning_rate" . "0.05"))
+               (cl-gbdt:normalize-parameters '(:learning-rate 0.05))))))
+
+(deftest normalize-parameters-prints-a-ratio-as-a-bare-decimal
+  (testing "1/3 becomes a decimal with no type marker"
+    (ok (equal '(("bagging_fraction" . "0.3333333333333333"))
+               (cl-gbdt:normalize-parameters '(:bagging-fraction 1/3))))))
+
 (deftest normalize-parameters-prints-small-double-float-without-a-type-marker
   (testing "1.0d-7 prints with an e exponent marker, not a d one"
     (ok (equal '(("min_gain_to_split" . "1.0e-7"))
