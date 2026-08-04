@@ -27,12 +27,20 @@
 
 (in-package #:cl-gbdt/src/protocol)
 
-(defgeneric make-dataset (backend matrix &key label weight group feature-names parameters)
+(defgeneric make-dataset (backend matrix
+                           &key label weight group feature-names parameters reference)
   (:documentation "Build a training dataset for BACKEND from MATRIX.
 
 MATRIX is anything `with-foreign-matrix' accepts. LABEL is the target vector, WEIGHT
 the per-sample weights, GROUP the group sizes for ranking, and FEATURE-NAMES a list
 of feature name strings. PARAMETERS is a plist passed through to the backend.
+
+REFERENCE, when supplied, is an existing dataset from the same backend whose bin mapper
+the new dataset aligns to instead of computing its own. A validation dataset destined
+for `train''s :VALID-SETS must be built with the training dataset as its REFERENCE, or
+the backend will refuse to attach it: two independently-binned datasets are not
+comparable, and LightGBM, for example, rejects LGBM_BoosterAddValidData outright when
+the bin mappers differ.
 
 Free the result with `free-dataset' or wrap it in `with-dataset'."))
 

@@ -38,6 +38,35 @@ against the raw FFI.")
   '(:objective "binary" :num-leaves 2 :min-data-in-leaf 1 :min-data-in-bin 1 :verbose -1)
   "LightGBM booster parameters for the eight-row fixture. See *dataset-parameters*.")
 
+(defun %single-column-matrix (values)
+  "Return VALUES, a list of reals, as a `(simple-array double-float (N 1))' matrix with
+one row per element and a single feature column."
+  (let* ((rows (length values))
+         (matrix (make-array (list rows 1) :element-type 'double-float)))
+    (loop :for value :in values
+          :for row :from 0
+          :do (setf (aref matrix row 0) (coerce value 'double-float)))
+    matrix))
+
+(defparameter *reference-training-values* '(0.0 5.0 0.0 5.0 0.0 5.0 0.0 5.0)
+  "Two distinct feature values for the training set in the :reference tests below.
+LightGBM bins a dataset built from just these two values very differently from one
+built from *reference-validation-values*, which shares none of them -- exactly the
+mismatch `LGBM_BoosterAddValidData' rejects unless the validation set was built with
+`:reference' pointing at the training set.")
+
+(defparameter *reference-training-labels*
+  (make-array 8 :element-type 'single-float
+                :initial-contents '(0.0 1.0 0.0 1.0 0.0 1.0 0.0 1.0))
+  "Binary labels matching *reference-training-values*, row for row -- `train''s
+\"binary\" objective needs a label on the training set regardless of what the
+:reference tests below are checking.")
+
+(defparameter *reference-validation-values* '(0.3 1.1 1.7 2.3 2.9 3.5 4.1 4.9)
+  "Feature values spread across the training set's range but sharing none of
+*reference-training-values*, so a dataset built from these bins independently unless
+:reference aligns it with the training set.")
+
 (defun %column (matrix column)
   "Return COLUMN of the 2D array MATRIX as a fresh `(simple-array double-float (*))'.
 
@@ -406,3 +435,111 @@ COLUMN is always 0, but the shape still has to be unpacked by hand."
           (progn
             (when booster (cl-gbdt:free-booster booster))
             (when dataset (cl-gbdt:free-dataset dataset))))))))
+
+;;; P1: `make-dataset' used to always pass a null `reference' to
+;;; `LGBM_DatasetCreateFromMat', so a validation dataset always computed its own,
+;;; independent bin mapper -- regardless of what training set it was meant to validate
+;;; against. `LGBM_BoosterAddValidData' refuses to attach a validation dataset whose bin
+;;; mapper differs from the training set's; confirmed directly against the vendored
+;;; library using *reference-training-values* and *reference-validation-values* above,
+;;; which share no values and so bin independently. `train''s :valid-sets was therefore
+;;; unusable for real held-out data -- it only appeared to work in
+;;; `lightgbm-api-round-trip' because that test reuses the same matrix for both training
+;;; and validation, which happens to produce identical bins. This proves the fix: a
+;;; validation dataset built with `:reference' set to the training dataset attaches
+;;; successfully.
+
+(deftest lightgbm-api-make-dataset-with-reference-attaches-as-valid-set
+  (with-backend-library (:lightgbm)
+    (let ((backend (cl-gbdt:open-backend :lightgbm))
+          (training-set nil)
+          (validation-set nil)
+          (booster nil))
+      (unwind-protect
+           (progn
+             (setf training-set
+                   (cl-gbdt:make-dataset
+                    backend (%single-column-matrix *reference-training-values*)
+                    :label *reference-training-labels*
+                    :parameters *dataset-parameters*))
+             (setf validation-set
+                   (cl-gbdt:make-dataset
+                    backend (%single-column-matrix *reference-validation-values*)
+                    :reference training-set
+                    :parameters *dataset-parameters*))
+             (testing "train attaches a validation set built with :reference"
+               (ok (handler-case
+                       (progn (setf booster
+                                    (cl-gbdt:train backend training-set :num-rounds 1
+                                                   :valid-sets (list validation-set)
+                                                   :parameters *booster-parameters*))
+                              t)
+                     (cl-gbdt:foreign-call-error () nil))
+                   "train signaled foreign-call-error for a :reference-built valid set")))
+        (progn
+          (when booster (cl-gbdt:free-booster booster))
+          (when validation-set (cl-gbdt:free-dataset validation-set))
+          (when training-set (cl-gbdt:free-dataset training-set))
+          (cl-gbdt:close-backend backend))))))
+
+;;; Same two distributions, but the validation dataset is built without :reference this
+;;; time -- documenting why the option above exists, and, since this is the same
+;;; assertion as before the fix, would notice a future change that silently stopped
+;;; threading REFERENCE through to `LGBM_DatasetCreateFromMat'.
+
+(deftest lightgbm-api-make-dataset-without-reference-valid-set-is-refused
+  (with-backend-library (:lightgbm)
+    (let ((backend (cl-gbdt:open-backend :lightgbm))
+          (training-set nil)
+          (validation-set nil))
+      (unwind-protect
+           (progn
+             (setf training-set
+                   (cl-gbdt:make-dataset
+                    backend (%single-column-matrix *reference-training-values*)
+                    :label *reference-training-labels*
+                    :parameters *dataset-parameters*))
+             (setf validation-set
+                   (cl-gbdt:make-dataset
+                    backend (%single-column-matrix *reference-validation-values*)
+                    :parameters *dataset-parameters*))
+             (testing "train refuses a valid set with its own, independently-binned mapper"
+               (ok (handler-case
+                       (progn (cl-gbdt:train backend training-set :num-rounds 1
+                                              :valid-sets (list validation-set)
+                                              :parameters *booster-parameters*)
+                              nil)
+                     (cl-gbdt:foreign-call-error () t))
+                   "train did not signal foreign-call-error for a mismatched bin mapper")))
+        (progn
+          (when validation-set (cl-gbdt:free-dataset validation-set))
+          (when training-set (cl-gbdt:free-dataset training-set))
+          (cl-gbdt:close-backend backend))))))
+
+;;; `%reference-pointer' reads :reference through `handle-live-pointer' before handing
+;;; its pointer to `LGBM_DatasetCreateFromMat', the same guard every other handle read in
+;;; this file goes through: a freed reference passed straight to C would be a segfault,
+;;; not a catchable condition. This proves the guard runs.
+
+(deftest lightgbm-api-make-dataset-with-freed-reference-signals
+  (with-backend-library (:lightgbm)
+    (let ((backend (cl-gbdt:open-backend :lightgbm))
+          (training-set nil))
+      (unwind-protect
+           (progn
+             (setf training-set
+                   (cl-gbdt:make-dataset
+                    backend (%single-column-matrix *reference-training-values*)
+                    :label *reference-training-labels*
+                    :parameters *dataset-parameters*))
+             (cl-gbdt:free-dataset training-set)
+             (testing "make-dataset with a freed :reference signals released-handle-error"
+               (ok (handler-case
+                       (progn (cl-gbdt:make-dataset
+                               backend (%single-column-matrix *reference-validation-values*)
+                               :reference training-set
+                               :parameters *dataset-parameters*)
+                              nil)
+                     (cl-gbdt:released-handle-error () t))
+                   "make-dataset did not signal released-handle-error for a freed :reference")))
+        (cl-gbdt:close-backend backend)))))

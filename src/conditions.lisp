@@ -24,6 +24,9 @@
            #:foreign-call-error-function-name
            #:released-handle-error
            #:released-handle-error-object
+           #:wrong-backend-reference
+           #:wrong-backend-reference-backend
+           #:wrong-backend-reference-given
            #:unfreed-handle-warning
            #:unfreed-handle-warning-kind
            #:data-error
@@ -178,6 +181,29 @@ guarantee that order."))
              "Element type ~A is not supported. Use DOUBLE-FLOAT or SINGLE-FLOAT."
              (unsupported-element-type-given condition))))
   (:documentation "An array with an unsupported element type was supplied."))
+
+(define-condition wrong-backend-reference (data-error)
+  ((backend :initarg :backend
+            :initform nil
+            :reader wrong-backend-reference-backend
+            :documentation "Name of the backend `make-dataset' was building a dataset for.")
+   (given :initarg :given
+          :initform nil
+          :reader wrong-backend-reference-given
+          :documentation "The class of the object actually passed as :REFERENCE."))
+  (:report
+   (lambda (condition stream)
+     (format stream "make-dataset's :reference must be a dataset built by ~A itself, not ~A."
+             (wrong-backend-reference-backend condition)
+             (wrong-backend-reference-given condition))))
+  (:documentation "`make-dataset''s :REFERENCE argument was not a dataset belonging to the
+same backend as the dataset being built.
+
+A dataset handle is an opaque pointer as far as the underlying C API is concerned: handing
+a dataset built by one backend to another's *DatasetCreateFromMat as its :reference is
+undefined behaviour once it crosses the FFI boundary, not something the C library can
+reject on its own. This is checked here, before any foreign call, so the failure is a
+condition instead of a crash or silent corruption."))
 
 (define-condition untested-backend-version (warning)
   ((backend :initarg :backend :initform nil :reader untested-backend-version-backend)

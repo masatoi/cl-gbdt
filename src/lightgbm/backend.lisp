@@ -71,7 +71,8 @@
                 #:missing-foreign-symbols
                 #:backend-not-open
                 #:foreign-call-error
-                #:released-handle-error)
+                #:released-handle-error
+                #:wrong-backend-reference)
   (:import-from #:cl-gbdt/src/parameters
                 #:normalize-parameters)
   (:import-from #:cl-gbdt/src/data
@@ -358,16 +359,40 @@ calls `foreign-string-free' on an uninitialized foreign-object slot."
         (dotimes (index allocated)
           (cffi:foreign-string-free (cffi:mem-aref names :pointer index)))))))
 
+(defun %reference-pointer (backend reference)
+  "Return the foreign pointer `make-dataset' should pass as
+`LGBM_DatasetCreateFromMat''s `reference' argument for REFERENCE, or a null pointer
+when REFERENCE is NIL.
+
+Signals `wrong-backend-reference' when REFERENCE is not a `lightgbm-dataset' --
+a dataset built by another backend is just an opaque pointer as far as this C API
+is concerned, and handing it to `LGBM_DatasetCreateFromMat' would be undefined
+behaviour, not something the library can reject on its own. Otherwise reads
+REFERENCE's pointer through `handle-live-pointer', the same guard every other
+handle read in this file goes through: a freed or foreign reference handed to a C
+function that dereferences it directly is a segfault, not a catchable condition."
+  (if (null reference)
+      (cffi:null-pointer)
+      (progn
+        (unless (typep reference 'lightgbm-dataset)
+          (error 'wrong-backend-reference
+                 :backend (backend-name backend)
+                 :given (class-name (class-of reference))))
+        (handle-live-pointer reference))))
+
 (defmethod make-dataset ((backend lightgbm-backend) matrix
-                          &key label weight group feature-names parameters)
+                          &key label weight group feature-names parameters reference)
   "Build a LightGBM dataset from MATRIX via `LGBM_DatasetCreateFromMat', attaching
 LABEL, WEIGHT and GROUP with `LGBM_DatasetSetField' and FEATURE-NAMES with
 `LGBM_DatasetSetFeatureNames' when supplied. See the `make-dataset' generic
-function's docstring for what each argument means.
+function's docstring for what each argument means, including REFERENCE.
 
 Signals `foreign-call-error' when dataset creation reports success but writes a
 null handle -- a library-contract violation, but one every later call through
-this handle would otherwise dereference blindly.
+this handle would otherwise dereference blindly. Signals `wrong-backend-reference'
+when REFERENCE is supplied but is not a `lightgbm-dataset', `released-handle-error'
+when it has already been freed, and `backend-not-open' when its backend has since
+been closed -- see `%reference-pointer'.
 
 The raw dataset handle exists in C from the moment `LGBM_DatasetCreateFromMat'
 returns, but `make-handle' does not take ownership of it until the very end --
@@ -378,7 +403,8 @@ ran; when it did not, the raw dataset is freed here instead of orphaned.
 Signals `backend-not-open' before any of that when BACKEND is not open -- see
 `%check-backend-open'."
   (%check-backend-open backend)
-  (let* ((parameter-string (%parameter-string parameters))
+  (let* ((reference-pointer (%reference-pointer backend reference))
+         (parameter-string (%parameter-string parameters))
          (dataset-pointer
            (with-foreign-matrix (data-pointer nrow ncol element-type) matrix
              (let ((data-type (ecase element-type
@@ -388,7 +414,7 @@ Signals `backend-not-open' before any of that when BACKEND is not open -- see
                  (cffi:with-foreign-object (out :pointer)
                    (check-lgbm (lgbm-dataset-create-from-mat
                                 data-pointer data-type nrow ncol 1
-                                parameter-cstring (cffi:null-pointer) out)
+                                parameter-cstring reference-pointer out)
                                "LGBM_DatasetCreateFromMat")
                    (cffi:mem-ref out :pointer)))))))
     (when (cffi:null-pointer-p dataset-pointer)
