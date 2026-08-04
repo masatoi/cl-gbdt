@@ -157,3 +157,31 @@ COLUMN is always 0, but the shape still has to be unpacked by hand."
           (progn
             (when booster (cl-gbdt:free-booster booster))
             (cl-gbdt:close-backend backend)))))))
+
+;;; I2: `LGBM_DatasetCreateFromMat' produces a fully-binned raw dataset before
+;;; `make-dataset' ever attaches label/weight/group/feature-names, and `make-handle'
+;;; does not take ownership of that raw pointer until every attachment step has
+;;; succeeded. A wrong-length `:label' -- the commonest way `LGBM_DatasetSetField'
+;;; fails -- used to leave that raw dataset permanently orphaned: `make-dataset'
+;;; signaled without ever returning a handle the caller could free. This proves the
+;;; signal still happens; see this file's final report for how the leak fix itself
+;;; (freeing the raw pointer in `make-dataset''s `unwind-protect' before propagating)
+;;; was checked, since a leaked *raw* C pointer here has no Lisp object or finalizer
+;;; to observe going missing.
+
+(deftest lightgbm-api-make-dataset-wrong-length-label-signals-without-leaking
+  (with-backend-library (:lightgbm)
+    (multiple-value-bind (matrix label-vector) (make-separable-dataset)
+      (declare (ignore label-vector))
+      (let ((backend (cl-gbdt:open-backend :lightgbm))
+            (wrong-length-label (make-array 1 :element-type 'single-float
+                                               :initial-element 0.0)))
+        (unwind-protect
+             (testing "a wrong-length label signals foreign-call-error"
+               (ok (handler-case
+                       (progn (cl-gbdt:make-dataset backend matrix :label wrong-length-label
+                                                     :parameters *dataset-parameters*)
+                              nil)
+                     (cl-gbdt:foreign-call-error () t))
+                   "make-dataset with a wrong-length label did not signal foreign-call-error"))
+          (cl-gbdt:close-backend backend))))))

@@ -302,16 +302,25 @@ CFFI-TYPE; DTYPE is the matching C_API_DTYPE constant."
 
 (defun %set-feature-names (dataset-pointer feature-names)
   "Attach FEATURE-NAMES, a list of strings, to DATASET-POINTER via
-`LGBM_DatasetSetFeatureNames'."
-  (let ((count (length feature-names)))
+`LGBM_DatasetSetFeatureNames'.
+
+Every string successfully allocated is freed on any exit, including one signaled
+partway through the allocation loop itself -- ALLOCATED tracks exactly how many
+of the COUNT slots hold a real `foreign-string-alloc' result, so cleanup never
+calls `foreign-string-free' on an uninitialized foreign-object slot."
+  (let ((count (length feature-names))
+        (allocated 0))
     (cffi:with-foreign-object (names :pointer count)
-      (loop :for name :in feature-names
-            :for index :from 0
-            :do (setf (cffi:mem-aref names :pointer index) (cffi:foreign-string-alloc name)))
       (unwind-protect
-           (check-lgbm (lgbm-dataset-set-feature-names dataset-pointer names count)
-                       "LGBM_DatasetSetFeatureNames")
-        (dotimes (index count)
+           (progn
+             (loop :for name :in feature-names
+                   :for index :from 0
+                   :do (setf (cffi:mem-aref names :pointer index)
+                             (cffi:foreign-string-alloc name))
+                       (setf allocated (1+ index)))
+             (check-lgbm (lgbm-dataset-set-feature-names dataset-pointer names count)
+                         "LGBM_DatasetSetFeatureNames"))
+        (dotimes (index allocated)
           (cffi:foreign-string-free (cffi:mem-aref names :pointer index)))))))
 
 (defmethod make-dataset ((backend lightgbm-backend) matrix
@@ -323,7 +332,13 @@ function's docstring for what each argument means.
 
 Signals `foreign-call-error' when dataset creation reports success but writes a
 null handle -- a library-contract violation, but one every later call through
-this handle would otherwise dereference blindly."
+this handle would otherwise dereference blindly.
+
+The raw dataset handle exists in C from the moment `LGBM_DatasetCreateFromMat'
+returns, but `make-handle' does not take ownership of it until the very end --
+attaching LABEL, WEIGHT, GROUP or FEATURE-NAMES can each signal first (a
+wrong-length `:label' is the commonest way). OWNED tracks whether `make-handle'
+ran; when it did not, the raw dataset is freed here instead of orphaned."
   (let* ((parameter-string (%parameter-string parameters))
          (dataset-pointer
            (with-foreign-matrix (data-pointer nrow ncol element-type) matrix
@@ -342,23 +357,26 @@ this handle would otherwise dereference blindly."
              :function-name "LGBM_DatasetCreateFromMat"
              :code 0
              :message "reported success but returned a null dataset handle"))
-    (when label
-      (%set-dataset-field dataset-pointer "label" label :float +c-api-dtype-float32+
-                           (lambda (value) (coerce value 'single-float))))
-    (when weight
-      (%set-dataset-field dataset-pointer "weight" weight :float +c-api-dtype-float32+
-                           (lambda (value) (coerce value 'single-float))))
-    (when group
-      (%set-dataset-field dataset-pointer "group" group :int32 +c-api-dtype-int32+ #'round))
-    (when feature-names
-      (%set-feature-names dataset-pointer feature-names))
-    (make-handle 'lightgbm-dataset dataset-pointer (backend-name backend) :dataset)))
-
-;;; `dataset' is the single handle class shared by every backend (see
-;;; `cl-gbdt/src/handle'); this plan is LightGBM-only, so specializing directly on
-;;; it is unambiguous today. A second backend implementing these same three
-;;; methods on the same class would need its own dataset subclass to disambiguate
-;;; -- deliberately left for whichever plan adds XGBoost.
+    (let ((owned nil))
+      (unwind-protect
+           (progn
+             (when label
+               (%set-dataset-field dataset-pointer "label" label :float +c-api-dtype-float32+
+                                    (lambda (value) (coerce value 'single-float))))
+             (when weight
+               (%set-dataset-field dataset-pointer "weight" weight :float +c-api-dtype-float32+
+                                    (lambda (value) (coerce value 'single-float))))
+             (when group
+               (%set-dataset-field dataset-pointer "group" group :int32 +c-api-dtype-int32+
+                                    #'round))
+             (when feature-names
+               (%set-feature-names dataset-pointer feature-names))
+             (prog1
+                 (make-handle 'lightgbm-dataset dataset-pointer (backend-name backend) :dataset)
+               (setf owned t)))
+        (unless owned
+          (handler-case (lgbm-dataset-free dataset-pointer)
+            (error () nil)))))))
 
 (defmethod dataset-num-rows ((dataset lightgbm-dataset))
   "Return DATASET's row count, read via `LGBM_DatasetGetNumData'."
@@ -439,15 +457,29 @@ when not supplied.
 
 The returned booster retains DATASET as its training set, keeping it alive for
 the booster's lifetime. Free the result with `free-booster' or wrap it in
-`with-booster'."
+`with-booster'.
+
+The raw booster handle exists in C from the moment `LGBM_BoosterCreate' returns,
+but `make-handle' does not take ownership of it until the very end -- a stale
+VALID-SETS entry or a mid-loop failure can each signal first. OWNED tracks
+whether `make-handle' ran; when it did not, the raw booster is freed here
+instead of orphaned."
   (let ((booster-pointer (%create-booster (handle-live-pointer dataset)
                                            (%parameter-string parameters))))
-    (%add-valid-data booster-pointer valid-sets)
-    (dotimes (round num-rounds)
-      (declare (ignorable round))
-      (%update-one-iteration booster-pointer))
-    (make-handle 'lightgbm-booster booster-pointer (backend-name backend) :booster
-                 :training-set dataset)))
+    (let ((owned nil))
+      (unwind-protect
+           (progn
+             (%add-valid-data booster-pointer valid-sets)
+             (dotimes (round num-rounds)
+               (declare (ignorable round))
+               (%update-one-iteration booster-pointer))
+             (prog1
+                 (make-handle 'lightgbm-booster booster-pointer (backend-name backend) :booster
+                              :training-set dataset)
+               (setf owned t)))
+        (unless owned
+          (handler-case (lgbm-booster-free booster-pointer)
+            (error () nil)))))))
 
 (defun %check-training-set-live (booster)
   "Signal `released-handle-error' when BOOSTER's training set has already been
