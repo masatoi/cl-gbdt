@@ -27,12 +27,20 @@
 
 (in-package #:cl-gbdt/src/protocol)
 
-(defgeneric make-dataset (backend matrix &key label weight group feature-names parameters)
+(defgeneric make-dataset (backend matrix
+                           &key label weight group feature-names parameters reference)
   (:documentation "Build a training dataset for BACKEND from MATRIX.
 
 MATRIX is anything `with-foreign-matrix' accepts. LABEL is the target vector, WEIGHT
 the per-sample weights, GROUP the group sizes for ranking, and FEATURE-NAMES a list
 of feature name strings. PARAMETERS is a plist passed through to the backend.
+
+REFERENCE, when supplied, is an existing dataset from the same backend whose bin mapper
+the new dataset aligns to instead of computing its own. A validation dataset destined
+for `train''s :VALID-SETS must be built with the training dataset as its REFERENCE, or
+the backend will refuse to attach it: two independently-binned datasets are not
+comparable, and LightGBM, for example, rejects LGBM_BoosterAddValidData outright when
+the bin mappers differ.
 
 Free the result with `free-dataset' or wrap it in `with-dataset'."))
 
@@ -89,7 +97,10 @@ KIND is `:split' (how often a feature was used to split) or `:gain' (total gain)
   "Bind VAR to the dataset FORM returns, evaluate BODY, and always free it.
 
 Explicit resource management is the first-class pattern; finalizers are only a
-safety net.
+safety net, and that net reports and does not free: running the C free from
+whatever thread the garbage collector chose would give no ordering guarantee
+between a booster and the dataset it holds, and `with-booster' nested inside
+this macro exists precisely to guarantee that order.
 
 Declarations at the head of BODY are moved onto a fresh binding of VAR that
 shadows the one FORM's value is stored in, scoped to BODY alone. Splicing them

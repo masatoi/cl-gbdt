@@ -104,6 +104,36 @@
   (testing "a libc function is found"
     (ok (null (cl-gbdt:probe-foreign-symbols '("strlen"))))))
 
+;;; F3: `probe-foreign-symbols' used to call `cffi:foreign-symbol-pointer' with no
+;;; `:library', which searches every foreign library the image currently has
+;;; loaded. It now accepts a LIBRARY keyword and passes it straight through. This
+;;; layer stays free of any real foreign library (see this file's header
+;;; comment), so it cannot load a second, distinguishable LightGBM here. What it
+;;; can prove without loading anything: the default keeps today's behavior
+;;; working, and LIBRARY reaches `cffi:foreign-symbol-pointer' rather than being
+;;; silently dropped -- a designator CFFI has never loaded signals instead of
+;;; falling back to a global search. It does NOT prove LIBRARY actually scopes
+;;; the search on this project's platform: verified by hand against the vendored
+;;; LightGBM and XGBoost libraries (see `probe-foreign-symbols''s docstring),
+;;; SBCL's own `cffi-sbcl.lisp' validates LIBRARY and then ignores it, always
+;;; resolving through SBCL's global linkage table. That caveat belongs in the
+;;; docstring, which carries it; this test only covers what it can actually
+;;; observe without a real library.
+
+(deftest probe-foreign-symbols-honors-library-keyword
+  (testing "an explicit :default keyword behaves exactly like omitting it"
+    (ok (null (cl-gbdt:probe-foreign-symbols '("strlen") :library :default))))
+  (testing "LIBRARY reaches cffi:foreign-symbol-pointer instead of being ignored"
+    ;; A designator CFFI has never loaded signals rather than silently searching
+    ;; globally -- this is only observable at all if LIBRARY is actually threaded
+    ;; through, not dropped on the floor.
+    (ok (handler-case
+            (progn (cl-gbdt:probe-foreign-symbols
+                    '("strlen") :library :cl-gbdt-tests-unregistered-library)
+                   nil)
+          (error () t))
+        "probing an unregistered LIBRARY did not signal")))
+
 (deftest protocol-generic-functions-exist
   (testing "every unified API generic function is defined"
     (dolist (name '(cl-gbdt:make-dataset

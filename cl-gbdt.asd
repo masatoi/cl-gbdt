@@ -17,7 +17,7 @@
   :description "LightGBM backend for cl-gbdt"
   :license "MIT"
   :class :package-inferred-system
-  :depends-on ("cl-gbdt/src/lightgbm/c-api"))
+  :depends-on ("cl-gbdt/src/lightgbm/backend"))
 
 (defsystem "cl-gbdt/xgboost"
   :description "XGBoost backend for cl-gbdt"
@@ -39,7 +39,9 @@
                "cl-gbdt/tests/data"
                "cl-gbdt/tests/regen"
                "cl-gbdt/tests/bindings"
-               "cl-gbdt/tests/backend")
+               "cl-gbdt/tests/backend"
+               "cl-gbdt/tests/handle"
+               "cl-gbdt/tests/parameters")
   :perform (test-op (op c) (symbol-call :rove :run c)))
 
 ;;; Named for its path, like every other system here. That is not only for consistency:
@@ -56,5 +58,6 @@ guard, and have no portable fallback."
   :license "MIT"
   :class :package-inferred-system
   :depends-on ("cl-gbdt/tests/functional/lightgbm"
+               "cl-gbdt/tests/functional/lightgbm-api"
                "cl-gbdt/tests/functional/xgboost")
   :perform (test-op (op c) (symbol-call :rove :run c)))

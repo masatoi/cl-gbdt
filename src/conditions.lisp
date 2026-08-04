@@ -24,6 +24,12 @@
            #:foreign-call-error-function-name
            #:released-handle-error
            #:released-handle-error-object
+           #:wrong-backend-reference
+           #:wrong-backend-reference-backend
+           #:wrong-backend-reference-given
+           #:wrong-backend-reference-argument
+           #:unfreed-handle-warning
+           #:unfreed-handle-warning-kind
            #:data-error
            #:dimension-mismatch
            #:dimension-mismatch-expected
@@ -136,6 +142,21 @@ MESSAGE holds whatever LGBM_GetLastError or XGBGetLastError reported."))
              (released-handle-error-object condition))))
   (:documentation "A handle was used after it had been freed."))
 
+(define-condition unfreed-handle-warning (warning)
+  ((kind :initarg :kind :initform nil :reader unfreed-handle-warning-kind))
+  (:report
+   (lambda (condition stream)
+     (format stream "A ~(~A~) handle was garbage-collected without being freed. ~
+                     Wrap it in `with-dataset' or `with-booster', or call the matching ~
+                     `free-' function."
+             (or (unfreed-handle-warning-kind condition) "gbdt"))))
+  (:documentation "A handle was collected while still holding a live foreign pointer.
+
+Signalled from a finalizer, which reports and does **not** free: running the C free from
+whatever thread the GC chose would give no ordering guarantee between a booster and the
+dataset it holds, and `with-booster' nested inside `with-dataset' exists precisely to
+guarantee that order."))
+
 (define-condition data-error (gbdt-error)
   ()
   (:documentation "Base type for errors in the supplied data."))
@@ -161,6 +182,43 @@ MESSAGE holds whatever LGBM_GetLastError or XGBGetLastError reported."))
              "Element type ~A is not supported. Use DOUBLE-FLOAT or SINGLE-FLOAT."
              (unsupported-element-type-given condition))))
   (:documentation "An array with an unsupported element type was supplied."))
+
+(define-condition wrong-backend-reference (data-error)
+  ((backend :initarg :backend
+            :initform nil
+            :reader wrong-backend-reference-backend
+            :documentation "Name of the backend the caller was operating against.")
+   (given :initarg :given
+          :initform nil
+          :reader wrong-backend-reference-given
+          :documentation "The class of the object actually passed where a dataset built by
+BACKEND was expected.")
+   (argument :initarg :argument
+             :initform nil
+             :reader wrong-backend-reference-argument
+             :documentation "Description of which caller-supplied argument received the wrong
+value, e.g. \"make-dataset's :reference\" or \"train's dataset argument\", for the report."))
+  (:report
+   (lambda (condition stream)
+     (format stream "~A must be a dataset built by ~A itself, not ~A."
+             (or (wrong-backend-reference-argument condition) "The argument")
+             (wrong-backend-reference-backend condition)
+             (wrong-backend-reference-given condition))))
+  (:documentation "A caller-supplied dataset argument did not belong to the same backend as
+the operation it was passed to.
+
+Several entry points funnel through this same condition: `make-dataset''s :REFERENCE,
+`train''s DATASET argument, and each entry of `train''s :VALID-SETS. All three hand a
+caller-supplied handle straight to a foreign function that expects a `DatasetHandle',
+without a CLOS specializer to rule out the wrong kind of handle first -- `make-dataset' and
+`train' both dispatch on the backend, not on the handle, so a dataset built by a different
+backend, or a booster, or any other non-dataset handle, would otherwise reach the foreign
+call unexamined.
+
+A dataset handle is an opaque pointer as far as the underlying C API is concerned: handing
+it the wrong one is undefined behaviour once it crosses the FFI boundary, not something the
+C library can reject on its own. This is checked here, before any foreign call, so the
+failure is a condition instead of a crash or silent corruption."))
 
 (define-condition untested-backend-version (warning)
   ((backend :initarg :backend :initform nil :reader untested-backend-version-backend)

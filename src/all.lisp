@@ -16,7 +16,9 @@
   (:use-reexport #:cl-gbdt/src/conditions
                  #:cl-gbdt/src/data
                  #:cl-gbdt/src/backend
-                 #:cl-gbdt/src/protocol))
+                 #:cl-gbdt/src/protocol
+                 #:cl-gbdt/src/handle
+                 #:cl-gbdt/src/parameters))
 
 ;;; package-inferred-system infers a file's dependencies from the file's *first*
 ;;; defpackage form only. This second form's :use-reexport clause is therefore
