@@ -34,6 +34,7 @@
                 #:free-dataset)
   (:import-from #:cl-gbdt/src/handle
                 #:dataset
+                #:booster
                 #:make-handle
                 #:release-handle
                 #:handle-live-pointer)
@@ -184,6 +185,19 @@ cl-gbdt's unified backend protocol."))
 
 (register-backend :lightgbm 'lightgbm-backend)
 
+;;; Handles must be subclassed per backend, not shared. `make-dataset' and `train'
+;;; dispatch on the backend, so they would be unambiguous either way -- but
+;;; `dataset-num-rows', `predict', `free-dataset' and `free-booster' dispatch on the
+;;; HANDLE. A method on the core `dataset' class would be replaced, not specialized,
+;;; the moment the XGBoost backend defined its own, and the failure would be a
+;;; LightGBM dataset silently answering through XGBoost's C API.
+
+(defclass lightgbm-dataset (dataset) ()
+  (:documentation "A dataset held by the LightGBM library."))
+
+(defclass lightgbm-booster (booster) ()
+  (:documentation "A booster held by the LightGBM library."))
+
 (defmethod initialize-backend ((backend lightgbm-backend) &key path)
   "Load LightGBM's shared library and record its capabilities on BACKEND.
 
@@ -302,7 +316,7 @@ this handle would otherwise dereference blindly."
       (%set-dataset-field dataset-pointer "group" group :int32 +c-api-dtype-int32+ #'round))
     (when feature-names
       (%set-feature-names dataset-pointer feature-names))
-    (make-handle 'dataset dataset-pointer (backend-name backend) :dataset)))
+    (make-handle 'lightgbm-dataset dataset-pointer (backend-name backend) :dataset)))
 
 ;;; `dataset' is the single handle class shared by every backend (see
 ;;; `cl-gbdt/src/handle'); this plan is LightGBM-only, so specializing directly on
@@ -310,21 +324,21 @@ this handle would otherwise dereference blindly."
 ;;; methods on the same class would need its own dataset subclass to disambiguate
 ;;; -- deliberately left for whichever plan adds XGBoost.
 
-(defmethod dataset-num-rows ((dataset dataset))
+(defmethod dataset-num-rows ((dataset lightgbm-dataset))
   "Return DATASET's row count, read via `LGBM_DatasetGetNumData'."
   (let ((pointer (handle-live-pointer dataset)))
     (cffi:with-foreign-object (out :int32)
       (check-lgbm (lgbm-dataset-get-num-data pointer out) "LGBM_DatasetGetNumData")
       (cffi:mem-ref out :int32))))
 
-(defmethod dataset-num-features ((dataset dataset))
+(defmethod dataset-num-features ((dataset lightgbm-dataset))
   "Return DATASET's feature count, read via `LGBM_DatasetGetNumFeature'."
   (let ((pointer (handle-live-pointer dataset)))
     (cffi:with-foreign-object (out :int32)
       (check-lgbm (lgbm-dataset-get-num-feature pointer out) "LGBM_DatasetGetNumFeature")
       (cffi:mem-ref out :int32))))
 
-(defmethod free-dataset ((dataset dataset))
+(defmethod free-dataset ((dataset lightgbm-dataset))
   "Free DATASET via `LGBM_DatasetFree'. Does nothing if it was already freed."
   (release-handle
    dataset
