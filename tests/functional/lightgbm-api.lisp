@@ -543,3 +543,32 @@ COLUMN is always 0, but the shape still has to be unpacked by hand."
                      (cl-gbdt:released-handle-error () t))
                    "make-dataset did not signal released-handle-error for a freed :reference")))
         (cl-gbdt:close-backend backend)))))
+
+;;; The cross-backend guard is reachable today, without an XGBoost `make-dataset' to
+;;; produce a foreign dataset: any handle that is not a `lightgbm-dataset' trips it, and a
+;;; booster is one. Worth asserting now rather than when XGBoost lands, because what this
+;;; guards against -- handing `LGBM_DatasetCreateFromMat' a pointer to something that is
+;;; not a LightGBM dataset -- is undefined behaviour the library cannot reject for us.
+
+(deftest lightgbm-api-make-dataset-with-a-non-dataset-reference-signals
+  (with-backend-library (:lightgbm)
+    (let ((backend (cl-gbdt:open-backend :lightgbm))
+          (matrix (%single-column-matrix *reference-training-values*)))
+      (unwind-protect
+           (cl-gbdt:with-dataset (training-set (cl-gbdt:make-dataset
+                                                 backend matrix
+                                                 :label *reference-training-labels*
+                                                 :parameters *dataset-parameters*))
+             (cl-gbdt:with-booster (booster (cl-gbdt:train
+                                              backend training-set :num-rounds 1
+                                              :parameters *booster-parameters*))
+               (testing "make-dataset with a booster as :reference signals"
+                 (ok (handler-case
+                         (progn (cl-gbdt:make-dataset
+                                 backend (%single-column-matrix *reference-validation-values*)
+                                 :reference booster
+                                 :parameters *dataset-parameters*)
+                                nil)
+                       (cl-gbdt:wrong-backend-reference () t))
+                     "make-dataset accepted a booster as :reference"))))
+        (cl-gbdt:close-backend backend)))))
