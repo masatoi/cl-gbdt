@@ -260,7 +260,10 @@ Discovery order: PATH, then *library-env-var*, then the vendored directory under
 conditions each failure mode signals.
 
 Once a library is loaded, every name in *required-symbols* must resolve via
-`probe-foreign-symbols' or this signals `missing-foreign-symbols' -- the
+`probe-foreign-symbols', passed the `cffi:foreign-library' just loaded as
+:LIBRARY -- see that function's docstring for the SBCL caveat: it validates
+the library argument but, on this platform, cannot actually scope the symbol
+search to it -- or this signals `missing-foreign-symbols' -- the
 version-mismatch check that function exists for. LightGBM's C API has no
 runtime version query, so `backend-version' is left NIL rather than guessed.
 
@@ -279,7 +282,7 @@ BACKEND dropped and nothing left able to close it."
            (setf (%lightgbm-foreign-library backend) library)
            (setf (backend-library-path backend)
                  (namestring (cffi:foreign-library-pathname library)))
-           (let ((missing (probe-foreign-symbols *required-symbols*)))
+           (let ((missing (probe-foreign-symbols *required-symbols* :library library)))
              (when missing
                (error 'missing-foreign-symbols :backend (backend-name backend) :names missing)))
            (setf (backend-version backend) nil)
