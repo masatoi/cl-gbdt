@@ -20,7 +20,8 @@
                  #:cl-gbdt/src/handle
                  #:cl-gbdt/src/parameters
                  #:cl-gbdt/src/library
-                 #:cl-gbdt/src/foreign))
+                 #:cl-gbdt/src/foreign
+                 #:cl-gbdt/src/xgboost/array-interface))
 
 ;;; package-inferred-system infers a file's dependencies from the file's *first*
 ;;; defpackage form only. This second form's :use-reexport clause is therefore

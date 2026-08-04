@@ -28,6 +28,10 @@
            #:wrong-backend-reference-backend
            #:wrong-backend-reference-given
            #:wrong-backend-reference-argument
+           #:unsupported-argument
+           #:unsupported-argument-backend
+           #:unsupported-argument-argument
+           #:unsupported-argument-reason
            #:unfreed-handle-warning
            #:unfreed-handle-warning-kind
            #:data-error
@@ -219,6 +223,36 @@ A dataset handle is an opaque pointer as far as the underlying C API is concerne
 it the wrong one is undefined behaviour once it crosses the FFI boundary, not something the
 C library can reject on its own. This is checked here, before any foreign call, so the
 failure is a condition instead of a crash or silent corruption."))
+
+(define-condition unsupported-argument (data-error)
+  ((backend :initarg :backend
+            :initform nil
+            :reader unsupported-argument-backend
+            :documentation "Name of the backend the argument was passed to.")
+   (argument :initarg :argument
+             :initform nil
+             :reader unsupported-argument-argument
+             :documentation "Description of which caller-supplied argument is unsupported,
+e.g. \"make-dataset's :reference\", for the report.")
+   (reason :initarg :reason
+           :initform nil
+           :reader unsupported-argument-reason
+           :documentation "Why BACKEND cannot honor the argument."))
+  (:report
+   (lambda (condition stream)
+     (format stream "~A is not supported by ~A~@[: ~A~]."
+             (or (unsupported-argument-argument condition) "The argument")
+             (unsupported-argument-backend condition)
+             (unsupported-argument-reason condition))))
+  (:documentation "A caller supplied an argument that BACKEND has no way to honor.
+
+Unlike `wrong-backend-reference', which is about a caller-supplied *handle* built by the
+wrong backend, this is about an argument naming a concept the backend does not have at all
+-- `make-dataset''s :REFERENCE on XGBoost, for example, which has no bin-mapper to align to.
+Signalling here, instead of silently discarding the argument, is deliberate: this project has
+repeatedly found a silently-dropped argument to be the failure mode where a caller moves
+working code from one backend to the other and gets different, wrong behaviour with no
+indication anything changed."))
 
 (define-condition untested-backend-version (warning)
   ((backend :initarg :backend :initform nil :reader untested-backend-version-backend)

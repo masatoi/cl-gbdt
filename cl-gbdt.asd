@@ -23,7 +23,7 @@
   :description "XGBoost backend for cl-gbdt"
   :license "MIT"
   :class :package-inferred-system
-  :depends-on ("cl-gbdt/src/xgboost/c-api"))
+  :depends-on ("cl-gbdt/src/xgboost/backend"))
 
 (defsystem "cl-gbdt/tests"
   :author "Satoshi Imai <satoshi.imai@gmail.com>"

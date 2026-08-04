@@ -3,6 +3,8 @@
 (uiop:define-package #:cl-gbdt/tests/functional/support
   (:use #:cl #:rove)
   (:import-from #:cffi)
+  (:import-from #:cl-gbdt/src/xgboost/array-interface
+                #:array-interface-json)
   (:export #:backend-library-path
            #:ensure-backend-library
            #:with-backend-library
@@ -130,15 +132,3 @@ letting an empty selection produce a confident but meaningless answer."
               must be present."
              (length negatives) (length positives)))
     (< (reduce #'max negatives) (reduce #'min positives))))
-
-(defun array-interface-json (pointer typestr &rest shape)
-  "Return a NumPy array-interface descriptor for POINTER as a JSON string.
-
-XGBoost's current entry points take the buffer this way rather than as a bare pointer.
-TYPESTR is a NumPy type code -- \"<f8\" for double-float, \"<f4\" for single-float. The
-descriptor's shape is fixed, so no JSON library is needed to emit it.
-
-The buffer must stay pinned and alive for as long as XGBoost reads it, which for
-`XGDMatrixCreateFromDense' is the duration of that call."
-  (format nil "{\"data\":[~D,false],\"typestr\":\"~A\",\"shape\":[~{~D~^,~}],\"version\":3}"
-          (cffi:pointer-address pointer) typestr shape))
