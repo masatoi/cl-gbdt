@@ -65,13 +65,20 @@ on one column alone.")
 is 0.0, column 2's value when column 0 is 1.0.")
 
 (defparameter *round-trip-booster-parameters*
-  '(:objective "binary:logistic" :max-depth 3 :eta 0.5 :verbosity 0
-    :min-child-weight 0 :lambda 0.1)
-  "XGBoost booster parameters for `xgboost-api-round-trip'. :MIN-CHILD-WEIGHT 0 and a
-reduced :LAMBDA are both needed for the model to actually recover the multiplexer in
-*ROUND-TRIP-MATRIX* -- confirmed empirically: this file's default
-*BOOSTER-PARAMETERS* above, applied to the same data, converge to a single split on
-one column and leave `feature-importance' with one entry instead of three.")
+  '(:objective "binary:logistic" :max-depth 2 :eta 0.5 :verbosity 0 :min-child-weight 0)
+  "XGBoost booster parameters for `xgboost-api-round-trip'. :MIN-CHILD-WEIGHT 0 is needed
+for the model to actually recover the multiplexer in *ROUND-TRIP-MATRIX* -- confirmed
+empirically: this file's default *BOOSTER-PARAMETERS* above, applied to the same data,
+converge to a single split on one column, which cannot separate every row -- see
+*ROUND-TRIP-MATRIX*'s docstring for why the fixture rules that out.
+
+A reduced :LAMBDA was also part of this plist before `feature-importance' was fixed to
+return a dense, per-column vector: with the old sparse result, the \"one entry per
+feature\" assertion below only passed because these exact parameters happened to drive
+every one of the three columns into a split. Now that the result's length no longer
+depends on which columns were actually split on, that reduced :LAMBDA is not needed for
+either assertion to hold and is dropped -- otherwise identical to *BOOSTER-PARAMETERS*
+above but for :MIN-CHILD-WEIGHT 0, confirmed empirically to still separate.")
 
 (defparameter *multiclass-booster-parameters*
   '(:objective "multi:softprob" :num-class 3 :max-depth 3 :eta 0.5 :verbosity 0)
