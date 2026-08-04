@@ -11,6 +11,22 @@
 
 (in-package #:cl-gbdt/tests/handle)
 
+(defclass %mock-backend (cl-gbdt:backend) ()
+  (:documentation "A backend stand-in for handle tests: opens and closes without any
+real foreign library, so `handle-live-pointer''s backend-open check has something to
+test against without needing LightGBM or XGBoost installed. Mirrors tests/backend.lisp's
+`mock-backend', kept separate rather than shared to avoid a cross-test-file
+dependency between two otherwise-independent leaf systems."))
+
+(defmethod cl-gbdt:initialize-backend ((backend %mock-backend) &key path)
+  (declare (ignore path))
+  backend)
+
+(defmethod cl-gbdt:shutdown-backend ((backend %mock-backend))
+  backend)
+
+(cl-gbdt:register-backend :handle-test '%mock-backend)
+
 (defun counting-free ()
   "Return (values FREE-FUNCTION COUNT-CELL). FREE-FUNCTION ignores its argument and
 increments the car of COUNT-CELL each time it is called."
@@ -50,9 +66,23 @@ increments the car of COUNT-CELL each time it is called."
 
 (deftest live-pointer-on-live-handle-returns-the-pointer
   (testing "handle-live-pointer returns the pointer the handle was made with"
-    (let* ((pointer (cffi:make-pointer 1))
-           (handle (cl-gbdt:make-handle 'cl-gbdt:dataset pointer :mock :dataset)))
-      (ok (cffi:pointer-eq pointer (cl-gbdt:handle-live-pointer handle))))))
+    (let* ((backend (cl-gbdt:open-backend :handle-test))
+           (pointer (cffi:make-pointer 1))
+           (handle (cl-gbdt:make-handle 'cl-gbdt:dataset pointer backend :dataset)))
+      (unwind-protect
+           (ok (cffi:pointer-eq pointer (cl-gbdt:handle-live-pointer handle)))
+        (cl-gbdt:close-backend backend)))))
+
+(deftest live-pointer-on-handle-whose-backend-is-closed-signals-backend-not-open
+  (testing "handle-live-pointer signals backend-not-open once the backend is closed"
+    (let* ((backend (cl-gbdt:open-backend :handle-test))
+           (handle (cl-gbdt:make-handle 'cl-gbdt:dataset (cffi:make-pointer 1)
+                                         backend :dataset)))
+      (cl-gbdt:close-backend backend)
+      ;; handler-case, not rove's `signals' -- see live-pointer-on-released-handle-signals
+      ;; above for why.
+      (ok (handler-case (progn (cl-gbdt:handle-live-pointer handle) nil)
+            (cl-gbdt:backend-not-open () t))))))
 
 (deftest finalizer-closure-reports-only-when-unreleased
   ;; Invoking the closure directly, not provoking a collection: depending on GC

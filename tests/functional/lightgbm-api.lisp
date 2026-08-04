@@ -224,3 +224,50 @@ COLUMN is always 0, but the shape still has to be unpacked by hand."
                      (cl-gbdt:foreign-call-error () t))
                    "make-dataset with a wrong-length label did not signal foreign-call-error"))
           (cl-gbdt:close-backend backend))))))
+
+;;; `close-backend' calls `cffi:close-foreign-library', which may unmap the shared
+;;; library from the process; POSIX does not guarantee it, but does not forbid it
+;;; either. Before this fix, a handle stored only its backend's keyword name, so
+;;; nothing connected a live dataset back to the backend that owned it, and any
+;;; operation after `close-backend' ran foreign code that might no longer be mapped --
+;;; a segfault, not a catchable condition. `handle-live-pointer' now checks
+;;; `backend-open-p' before returning a pointer, turning that into `backend-not-open'.
+;;; This proves it does, using `dataset-num-rows' as a representative operation.
+
+(deftest lightgbm-api-operation-after-close-backend-signals-backend-not-open
+  (with-backend-library (:lightgbm)
+    (multiple-value-bind (matrix label-vector) (make-separable-dataset)
+      (let* ((backend (cl-gbdt:open-backend :lightgbm))
+             (dataset (cl-gbdt:make-dataset backend matrix
+                                             :label label-vector
+                                             :parameters *dataset-parameters*)))
+        (cl-gbdt:close-backend backend)
+        (unwind-protect
+             (testing "dataset-num-rows after close-backend signals backend-not-open"
+               ;; handler-case, not rove's `signals' -- see this file's other guard
+               ;; tests for why.
+               (ok (handler-case (progn (cl-gbdt:dataset-num-rows dataset) nil)
+                     (cl-gbdt:backend-not-open () t))
+                   "dataset-num-rows did not signal backend-not-open"))
+          (cl-gbdt:free-dataset dataset))))))
+
+;;; `free-dataset' is deliberately the exception to the guard above: it runs from
+;;; `with-dataset''s `unwind-protect' cleanup, and signalling `backend-not-open' there
+;;; during a non-local exit would replace the condition already unwinding the stack
+;;; instead of letting it propagate. It must also not crash -- the exact hazard this
+;;; whole finding is about -- so it does not call `LGBM_DatasetFree' once the backend
+;;; is closed; the handle is just marked released and a warning notes the leak. This
+;;; proves freeing after `close-backend' neither signals nor brings the process down.
+
+(deftest lightgbm-api-free-dataset-after-close-backend-does-not-signal
+  (with-backend-library (:lightgbm)
+    (multiple-value-bind (matrix label-vector) (make-separable-dataset)
+      (let* ((backend (cl-gbdt:open-backend :lightgbm))
+             (dataset (cl-gbdt:make-dataset backend matrix
+                                             :label label-vector
+                                             :parameters *dataset-parameters*)))
+        (cl-gbdt:close-backend backend)
+        (testing "free-dataset after close-backend does not signal"
+          (ok (handler-case (progn (cl-gbdt:free-dataset dataset) t)
+                (error () nil))
+              "free-dataset signaled after its backend was closed"))))))

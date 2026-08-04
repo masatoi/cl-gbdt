@@ -8,8 +8,12 @@
 (uiop:define-package #:cl-gbdt/src/handle
   (:use #:cl)
   (:import-from #:trivial-garbage #:finalize)
+  (:import-from #:cl-gbdt/src/backend
+                #:backend-open-p
+                #:backend-name)
   (:import-from #:cl-gbdt/src/conditions
                 #:released-handle-error
+                #:backend-not-open
                 #:unfreed-handle-warning)
   (:export #:handle #:dataset #:booster
            #:handle-pointer #:handle-backend #:booster-training-set
@@ -34,7 +38,11 @@ The cons cell is reachable from both the handle and the closure without either o
 keeping the other alive.")
    (backend :initarg :backend
             :reader handle-backend
-            :documentation "Backend name, either `:lightgbm' or `:xgboost'."))
+            :documentation "The `backend' instance that owns this handle's foreign
+pointer. Read through this, never assumed still open, so `handle-live-pointer' can
+tell whether that backend has since been closed -- a pointer into a backend whose
+shared library `close-backend' has unmapped is exactly as dangerous as one already
+freed."))
   (:documentation "A CLOS wrapper around a foreign dataset or booster pointer.
 
 Build instances with `make-handle', never directly."))
@@ -95,15 +103,21 @@ Free the result with `release-handle'."
 
 (defun handle-live-pointer (handle)
   "Return HANDLE's foreign pointer, or signal `released-handle-error' when HANDLE has
-already been released.
+already been released, or `backend-not-open' when HANDLE's backend has since been
+closed.
 
 Every operation that reaches into a backend's C API must read the pointer through this
 function, never `handle-pointer' directly: passing an already-freed pointer back to C
 is a segfault, which is not a catchable Lisp condition -- it kills the process
-outright, skipping `unwind-protect' and leaking everything else."
-  (if (handle-released-p handle)
-      (error 'released-handle-error :object handle)
-      (handle-pointer handle)))
+outright, skipping `unwind-protect' and leaking everything else. A pointer into a
+backend whose shared library `close-backend' has since closed is the same hazard --
+nothing clears it -- so that is checked here too, turning it into a catchable
+condition instead of a possible crash."
+  (cond
+    ((handle-released-p handle) (error 'released-handle-error :object handle))
+    ((not (backend-open-p (handle-backend handle)))
+     (error 'backend-not-open :backend (backend-name (handle-backend handle))))
+    (t (handle-pointer handle))))
 
 (defun release-handle (handle free-function)
   "Call FREE-FUNCTION on HANDLE's pointer exactly once, then mark HANDLE released.

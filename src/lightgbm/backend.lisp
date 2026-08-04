@@ -37,6 +37,7 @@
                 #:backend-name
                 #:backend-library-path
                 #:backend-version
+                #:backend-open-p
                 #:probe-foreign-symbols
                 #:register-backend
                 #:initialize-backend
@@ -61,6 +62,7 @@
                 #:release-handle
                 #:handle-live-pointer
                 #:handle-released-p
+                #:handle-backend
                 #:booster-training-set
                 #:booster-validation-sets)
   (:import-from #:cl-gbdt/src/conditions
@@ -388,7 +390,7 @@ ran; when it did not, the raw dataset is freed here instead of orphaned."
              (when feature-names
                (%set-feature-names dataset-pointer feature-names))
              (prog1
-                 (make-handle 'lightgbm-dataset dataset-pointer (backend-name backend) :dataset)
+                 (make-handle 'lightgbm-dataset dataset-pointer backend :dataset)
                (setf owned t)))
         (unless owned
           (handler-case (lgbm-dataset-free dataset-pointer)
@@ -409,10 +411,27 @@ ran; when it did not, the raw dataset is freed here instead of orphaned."
       (cffi:mem-ref out :int32))))
 
 (defmethod free-dataset ((dataset lightgbm-dataset))
-  "Free DATASET via `LGBM_DatasetFree'. Does nothing if it was already freed."
-  (release-handle
-   dataset
-   (lambda (pointer) (check-lgbm (lgbm-dataset-free pointer) "LGBM_DatasetFree"))))
+  "Free DATASET via `LGBM_DatasetFree'. Does nothing if it was already freed.
+
+Unlike every other operation in this file, this does not go through
+`handle-live-pointer' and so does not signal `backend-not-open' when DATASET's
+backend has already been closed. `free-dataset' runs from `with-dataset''s
+`unwind-protect' cleanup form, and a non-local exit is exactly when that cleanup
+runs; signalling there would replace whatever condition is already unwinding the
+stack instead of letting it propagate. So when the backend is closed, the handle is
+instead marked released without calling `LGBM_DatasetFree' -- the shared library may
+no longer be mapped into the process, so that call cannot be trusted not to crash --
+and a `warn' reports the foreign memory as leaked, since it is genuinely
+unreclaimable at that point."
+  (if (backend-open-p (handle-backend dataset))
+      (release-handle
+       dataset
+       (lambda (pointer) (check-lgbm (lgbm-dataset-free pointer) "LGBM_DatasetFree")))
+      (let ((already-released (handle-released-p dataset)))
+        (release-handle dataset (lambda (pointer) (declare (ignore pointer))))
+        (unless already-released
+          (warn "Freeing a LightGBM dataset after its backend was closed: the foreign ~
+                 dataset was not freed and its memory is leaked.")))))
 
 ;;; ---------------------------------------------------------------------------
 ;;; Training
@@ -492,7 +511,7 @@ instead of orphaned."
                (declare (ignorable round))
                (%update-one-iteration booster-pointer))
              (prog1
-                 (make-handle 'lightgbm-booster booster-pointer (backend-name backend) :booster
+                 (make-handle 'lightgbm-booster booster-pointer backend :booster
                               :training-set dataset :validation-sets valid-sets)
                (setf owned t)))
         (unless owned
@@ -531,10 +550,20 @@ or any of its validation sets, has already been freed -- see
   (zerop (%update-one-iteration (handle-live-pointer booster))))
 
 (defmethod free-booster ((booster lightgbm-booster))
-  "Free BOOSTER via `LGBM_BoosterFree'. Does nothing if it was already freed."
-  (release-handle
-   booster
-   (lambda (pointer) (check-lgbm (lgbm-booster-free pointer) "LGBM_BoosterFree"))))
+  "Free BOOSTER via `LGBM_BoosterFree'. Does nothing if it was already freed.
+
+See `free-dataset''s docstring for why this does not signal `backend-not-open' when
+BOOSTER's backend has already been closed -- the same `with-booster' cleanup-form
+reasoning applies here."
+  (if (backend-open-p (handle-backend booster))
+      (release-handle
+       booster
+       (lambda (pointer) (check-lgbm (lgbm-booster-free pointer) "LGBM_BoosterFree")))
+      (let ((already-released (handle-released-p booster)))
+        (release-handle booster (lambda (pointer) (declare (ignore pointer))))
+        (unless already-released
+          (warn "Freeing a LightGBM booster after its backend was closed: the foreign ~
+                 booster was not freed and its memory is leaked.")))))
 
 ;;; ---------------------------------------------------------------------------
 ;;; Inference
@@ -658,7 +687,7 @@ documentation -- since PATH names a model, not a dataset."
              :function-name "LGBM_BoosterCreateFromModelfile"
              :code 0
              :message "reported success but returned a null booster handle"))
-    (make-handle 'lightgbm-booster booster-pointer (backend-name backend) :booster)))
+    (make-handle 'lightgbm-booster booster-pointer backend :booster)))
 
 (defun %save-model-to-string (booster-pointer num-iteration)
   "Return BOOSTER-POINTER's model as a Lisp string via the two-call
