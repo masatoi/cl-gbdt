@@ -40,6 +40,17 @@ where only one of the two shared libraries is present.
 
 ## Running the tests
 
+**First, once: ASDF 3.3.7 or newer is required.** Roswell ships 3.3.1, whose
+`package-inferred-system` dependency scanner does not know the `:local-nicknames`
+clause; loading any system that reaches `src/regen/emit.lisp` dies with
+`:LOCAL-NICKNAMES fell through ECASE expression` before a single test runs.
+
+```bash
+ros install asdf
+```
+
+Then:
+
 ```lisp
 (ql:quickload :cl-gbdt/tests)
 (asdf:test-system :cl-gbdt/tests)
