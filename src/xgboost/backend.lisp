@@ -755,7 +755,12 @@ MATRIX is built into a transient DMatrix via `%create-dmatrix' first --
 `XGBoosterPredictFromDMatrix' takes a DMatrix handle, unlike LightGBM's
 `LGBM_BoosterPredictForMat', which predicts straight off a raw pointer and row/column
 counts. The transient DMatrix is freed before this returns, on every exit path, since
-nothing else retains it.
+nothing else retains it. Its free is checked with `check-xgb', not discarded outright:
+a failure there is reported with `warn' rather than an error, matching `free-dataset''s
+own reasoning for warning instead of signalling, since raising an error from cleanup
+would replace whatever condition is already propagating on an unwinding exit -- but on
+the ordinary success path, a failed free still leaks foreign memory and is worth
+reporting rather than passing over in silence.
 
 The output buffer's total element count comes from `XGBoosterPredictFromDMatrix''s own
 `out_shape'/`out_dim' report, not from the row count alone -- the row count is only
@@ -797,8 +802,10 @@ this returns."
                                                      (+ (* row ncol-result) col))
                                      'double-float))))
                    result)))
-          (handler-case (xgd-matrix-free dmatrix-pointer)
-            (error () nil)))))))
+          (handler-case (check-xgb (xgd-matrix-free dmatrix-pointer) "XGDMatrixFree")
+            (error (condition)
+              (warn "Freeing predict's temporary XGBoost dataset failed: the foreign ~
+                     dataset was not freed and its memory is leaked. ~A" condition))))))))
 
 ;;; ---------------------------------------------------------------------------
 ;;; Persistence
