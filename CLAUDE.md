@@ -101,6 +101,20 @@ be registered for the session. Source lives at `~/cl-mcp`
 `.mcp.json` is machine-local configuration — keep it out of version control
 (see `.gitignore`).
 
+## Requirements
+
+**ASDF 3.3.7 or newer.** Roswell ships 3.3.1, whose package-inferred-system dependency
+scanner does not know the `:local-nicknames` clause and dies with `:LOCAL-NICKNAMES fell
+through ECASE expression` on any system that reaches `src/regen/emit.lisp`. Install a
+current one once:
+
+```bash
+ros install asdf
+```
+
+Both CI workflows do this. The requirement arrived with the package-inferred-system
+conversion -- before it, that clause was never parsed for dependency inference.
+
 ## Testing & Linting
 
 Load and test (layer 1 — no shared library required):
