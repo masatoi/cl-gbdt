@@ -100,3 +100,28 @@ COLUMN is always 0, but the shape still has to be unpacked by hand."
           (cl-gbdt:close-backend backend))
         (testing "close-backend marks the backend closed"
           (ng (cl-gbdt:backend-open-p backend)))))))
+
+;;; Mutation testing on the round trip above found that `free-dataset' could be replaced
+;;; with a no-op and every assertion stayed green: nothing there frees explicitly, nothing
+;;; double-frees, and the leak finalizer only reports on collection -- which a short-lived
+;;; test process never provokes. This closes that gap. A `free-dataset' that does not
+;;; release leaves the handle usable, and `released-handle-error' is what notices.
+
+(deftest lightgbm-api-free-dataset-releases-the-handle
+  (with-backend-library (:lightgbm)
+    (multiple-value-bind (matrix label-vector) (make-separable-dataset)
+      (let ((backend (cl-gbdt:open-backend :lightgbm)))
+        (unwind-protect
+             (let ((dataset (cl-gbdt:make-dataset backend matrix
+                                                   :label label-vector
+                                                   :parameters *dataset-parameters*)))
+               (cl-gbdt:free-dataset dataset)
+               (testing "reading a freed dataset signals released-handle-error"
+                 (ok (handler-case (progn (cl-gbdt:dataset-num-rows dataset) nil)
+                       (cl-gbdt:released-handle-error () t))
+                     "dataset-num-rows on a freed dataset did not signal"))
+               (testing "freeing a second time is a no-op"
+                 (ok (handler-case (progn (cl-gbdt:free-dataset dataset) t)
+                       (error () nil))
+                     "a second free-dataset signaled")))
+          (cl-gbdt:close-backend backend))))))
