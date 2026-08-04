@@ -16,6 +16,7 @@
                 #:xg-booster-create
                 #:xg-booster-free
                 #:xg-booster-set-param
+                #:xg-booster-get-num-feature
                 #:xg-booster-boosted-rounds
                 #:xg-booster-update-one-iter
                 #:xg-booster-predict-from-d-matrix
@@ -892,6 +893,42 @@ different importance measure."
     (:split "weight")
     (:gain "total_gain")))
 
+(defun %booster-num-features (booster-pointer)
+  "Return BOOSTER-POINTER's feature count, read via `XGBoosterGetNumFeature'.
+
+`feature-importance' uses this to size its result -- see that method's docstring for
+why `XGBoosterFeatureScore''s own `out_n_features' cannot be used for that instead."
+  (cffi:with-foreign-object (out :uint64)
+    (check-xgb (xg-booster-get-num-feature booster-pointer out) "XGBoosterGetNumFeature")
+    (cffi:mem-ref out :uint64)))
+
+(defun %feature-score-index (name)
+  "Return the 0-based column index that `XGBoosterFeatureScore''s feature name NAME
+identifies -- XGBoost's own default naming convention, the letter `\"f\"' followed by
+the index, e.g. `\"f0\"', `\"f1\"'.
+
+`XGBoosterFeatureScore' reports each score against a feature *name*, not a column
+index, and `feature-importance' needs the index to scatter that score into a dense,
+per-column result. This backend never attaches feature names to the booster itself --
+confirmed empirically against the vendored library: a DMatrix built with
+`make-dataset''s FEATURE-NAMES still reports `\"f1\"', not the caller's own name, from
+this call -- so NAME is always XGBoost's default form, never a caller-supplied one.
+
+Signals `foreign-call-error' when NAME does not match that form: a value reaching here
+in any other shape would mean XGBoost's naming convention no longer matches what this
+function assumes, and trusting an unparsed guess at the index would risk scattering a
+score into the wrong column silently."
+  (if (and (> (length name) 1)
+           (char= (char name 0) #\f)
+           (every #'digit-char-p (subseq name 1)))
+      (parse-integer name :start 1)
+      (error 'foreign-call-error
+             :function-name "XGBoosterFeatureScore"
+             :code 0
+             :message (format nil "unexpected feature name ~S in out_features; expected ~
+                                    XGBoost's default \"f<index>\" form"
+                               name))))
+
 (defmethod feature-importance ((booster xgboost-booster) &key (kind :split) num-iteration)
   "Return BOOSTER's per-feature importances via `XGBoosterFeatureScore'.
 
@@ -901,10 +938,17 @@ config JSON has no iteration-limiting key, only `importance_type', `feature_map'
 backend does not do, so this refuses rather than silently scoring every round instead of
 the requested subset.
 
-The result has one entry per feature, in the order `XGBoosterFeatureScore' reports
-through `out_n_features' and `out_scores' -- for a tree model, `out_n_features' always
-equals the number of scores, per the C API's own documentation, which is the case this
-backend targets."
+The result has one entry per feature, indexed by column, matching
+`cl-gbdt/src/lightgbm/backend''s `feature-importance' -- zero for a feature never used
+in a split. `XGBoosterFeatureScore' itself reports the opposite: `out_n_features' and
+`out_scores' cover only features that appear in at least one split, so a feature never
+split on is absent from its report, not present with a zero -- confirmed directly
+against the vendored library and documented upstream. Left as `XGBoosterFeatureScore'
+returns it, the result's length would be the number of *used* features, not the
+dataset's column count, and its indices would not correspond to column positions --
+sparse where LightGBM's equivalent is always dense. This builds a dense vector of
+`%booster-num-features' entries instead, initialized to zero, and scatters each
+reported score into the column `%feature-score-index' recovers from its feature name."
   (%check-unsupported (handle-backend booster) "feature-importance's :num-iteration"
                        num-iteration "XGBoosterFeatureScore has no iteration limit")
   (let ((pointer (handle-live-pointer booster))
@@ -916,10 +960,14 @@ backend targets."
         (check-xgb (xg-booster-feature-score
                     pointer config out-n-features out-features out-dim out-shape out-scores)
                    "XGBoosterFeatureScore")
-        (let* ((count (cffi:mem-ref out-n-features :uint64))
-               (scores-pointer (cffi:mem-ref out-scores :pointer))
-               (result (make-array count :element-type 'double-float)))
-          (dotimes (index count)
-            (setf (aref result index)
-                  (coerce (cffi:mem-aref scores-pointer :float index) 'double-float)))
-          result)))))
+        (let ((used-count (cffi:mem-ref out-n-features :uint64))
+              (features-pointer (cffi:mem-ref out-features :pointer))
+              (scores-pointer (cffi:mem-ref out-scores :pointer))
+              (result (make-array (%booster-num-features pointer)
+                                   :element-type 'double-float :initial-element 0.0d0)))
+          (dotimes (used-index used-count result)
+            (let* ((name (cffi:foreign-string-to-lisp
+                          (cffi:mem-aref features-pointer :pointer used-index)))
+                   (column (%feature-score-index name)))
+              (setf (aref result column)
+                    (coerce (cffi:mem-aref scores-pointer :float used-index) 'double-float)))))))))
