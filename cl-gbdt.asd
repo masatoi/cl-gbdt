@@ -30,6 +30,11 @@
   :license "MIT"
   :description "Test system for cl-gbdt"
   :class :package-inferred-system
+  ;; Hand-maintained: package-inferred-system does not scan tests/ on its own, so a
+  ;; new tests/*.lisp file needs a matching entry added here by hand. Forget one and
+  ;; rove happily runs one suite fewer, all green -- a green run of a suite that
+  ;; simply never existed, not a red one. tests/bindings.lisp's
+  ;; test-suite-depends-on-lists-every-test-file asserts this list stays complete.
   :depends-on ("cl-gbdt/tests/conditions"
                "cl-gbdt/tests/data"
                "cl-gbdt/tests/regen"

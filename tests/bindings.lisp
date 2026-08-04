@@ -101,6 +101,30 @@ regenerated it (spec 5.2: local architecture only)."
       (ok (find-symbol name (find-package :cl-gbdt/src/lightgbm/c-api))
           (format nil "~A is defined" name)))))
 
+(deftest test-suite-depends-on-lists-every-test-file
+  (testing "cl-gbdt.asd's cl-gbdt/tests :depends-on names every tests/*.lisp file"
+    ;; That :depends-on list is hand-maintained (see the comment at its definition):
+    ;; package-inferred-system does not scan tests/ on its own. Add a tests/foo.lisp
+    ;; and forget to list it there, and rove silently runs one suite fewer, all
+    ;; green -- a green run of a suite that was never asked for, not a red one. This
+    ;; is the one hand-maintained list in this project with a real assertion behind
+    ;; it, because unlike src/all.lisp's reexport list (see its comment), the
+    ;; failure here is not "the file never loads" -- it is "the file loads under
+    ;; asdf:test-system but rove never runs it," which by itself leaves no trace.
+    (let* ((declared (asdf:component-sideway-dependencies (asdf:find-system "cl-gbdt/tests")))
+           ;; asdf:system-relative-pathname escapes "*" rather than treating it as a
+           ;; wildcard -- verified -- so the glob goes through plain merge-pathnames
+           ;; against the system's source directory instead, as check-leaf-systems.lisp
+           ;; already does for the same reason.
+           (tests-root (merge-pathnames "tests/*.lisp" (asdf:system-source-directory "cl-gbdt")))
+           (on-disk (mapcar (lambda (path) (format nil "cl-gbdt/tests/~(~A~)" (pathname-name path)))
+                             (directory tests-root)))
+           (missing (sort (set-difference on-disk declared :test #'string=) #'string<)))
+      (ok (null missing)
+          (if missing
+              (format nil "missing from cl-gbdt/tests's :depends-on: ~{~A~^, ~}" missing)
+              "every tests/*.lisp file is in cl-gbdt/tests's :depends-on")))))
+
 (deftest committed-bindings-match-their-committed-spec
   (testing "re-emitting from the committed c2ffi spec reproduces the committed file byte-for-byte"
     ;; Catches a hand-edited c-api.lisp, or a bumped ffi-spec/VERSIONS with a
