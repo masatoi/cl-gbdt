@@ -18,7 +18,11 @@
 (require :asdf)
 
 (defparameter +leaf-roots+ '("src" "tests")
-  "Directories searched, recursively, for `.lisp' files naming a leaf system.")
+  "Directories searched, recursively, for `.lisp' files naming a leaf system.
+
+Hardcoded to these two. `leaf-systems' below is automatic only in the sense that
+a new file *under one of these roots* needs no update here -- a file added under
+some other root would not be picked up at all.")
 
 (defparameter +system-prefix+ "cl-gbdt/"
   "Every leaf system's name is this prefix followed by its path.")
@@ -67,10 +71,18 @@ SBCL defers undefined-name warnings to the end of the compilation unit, where
 unrelated pre-existing style warnings such as the ignored-variable ones in
 tests/functional/lightgbm.lisp.
 
+These two are not exhaustive, either. A dropped import of a *condition or class*
+name -- `(error 'dimension-mismatch)' with no clause naming the package that
+exports `dimension-mismatch' -- interns a fresh, unrelated symbol in the local
+package at read time. That symbol is never used as a function or variable, so it
+triggers neither a READ error nor an undefined-function warning; the file loads
+fine and silently signals the wrong condition (or none, if nothing ever handles
+the impostor symbol).
+
 The trade-off: a dependency library emitting such a warning during its own first
 compile would fail this check too. That is the right direction to err -- a loud,
 diagnosable failure rather than a silent pass -- and this project's dependencies
-(cffi, alexandria, rove, jzon, trivial-garbage) compile clean."
+(cffi, alexandria, rove, jzon) compile clean."
   (or (search "undefined function" output)
       (search "undefined variable" output)))
 
@@ -83,7 +95,14 @@ starts with nothing loaded but Quicklisp's client, so SYSTEM's own
 `uiop:define-package' clauses are the only thing that can pull in a dependency.
 
 The exit status alone catches only half the failure mode, which is why the output
-is scanned too. See `undefined-reference-p'."
+is scanned too. See `undefined-reference-p'.
+
+After loading, the subprocess also asserts that a package named after SYSTEM
+actually exists. ASDF derives a package-inferred-system's name from the file's
+*path*, never from the name inside its `uiop:define-package' form -- a file at
+`src/foo.lisp' declaring `#:cl-gbdt/src/bar' loads cleanly and, without this
+check, would report PASS. This is the enforcement for the path-is-the-name
+convention the rest of this project relies on."
   (multiple-value-bind (output error-output status)
       (uiop:run-program (list "ros" "run" "--" "--non-interactive"
                                ;; quickload proves the leaf resolves with only its declared
@@ -92,9 +111,14 @@ is scanned too. See `undefined-reference-p'."
                                ;; recompiled with `asdf:load-system :force t', which does
                                ;; print, giving `undefined-reference-p' something to read.
                                ;; :force t forces this system only, not its dependencies.
-                               "--eval" (format nil "(progn (ql:quickload ~S :silent t)~
-                                                     (asdf:load-system ~S :force t))"
-                                                system system))
+                               "--eval" (format nil
+                                                "(progn (ql:quickload ~S :silent t)~
+                                                 (asdf:load-system ~S :force t)~
+                                                 (unless (find-package (string-upcase ~S))~
+                                                   (format t \"no package named ~~A after ~
+                                                              loading system ~~A~~%\" ~S ~S)~
+                                                   (uiop:quit 3)))"
+                                                system system system system system))
                          :output :string
                          :error-output :string
                          :ignore-error-status t)
