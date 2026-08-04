@@ -20,7 +20,9 @@
   (:import-from #:cl-gbdt/tests/functional/support
                 #:with-backend-library
                 #:make-separable-dataset
-                #:predictions-separate-p))
+                #:predictions-separate-p
+                #:make-multiclass-dataset
+                #:predictions-match-labels-p))
 
 (in-package #:cl-gbdt/tests/functional/lightgbm-api)
 
@@ -37,6 +39,19 @@ against the raw FFI.")
 (defparameter *booster-parameters*
   '(:objective "binary" :num-leaves 2 :min-data-in-leaf 1 :min-data-in-bin 1 :verbose -1)
   "LightGBM booster parameters for the eight-row fixture. See *dataset-parameters*.")
+
+(defparameter *multiclass-dataset-parameters*
+  '(:min-data-in-leaf 1 :min-data-in-bin 1 :verbose -1)
+  "LightGBM dataset parameters for the nine-row, three-class fixture. Same values as
+*dataset-parameters*, for the same reason: the defaults refuse to bin or split so few
+rows.")
+
+(defparameter *multiclass-booster-parameters*
+  '(:objective "multiclass" :num-class 3 :num-leaves 4 :min-data-in-leaf 1
+    :min-data-in-bin 1 :verbose -1)
+  "LightGBM booster parameters for the nine-row, three-class fixture. `:num-class'
+must equal `make-multiclass-dataset''s NUM-CLASSES for `predict' to size its second
+dimension correctly -- see `lightgbm-api-multiclass-round-trip'.")
 
 (defun %single-column-matrix (values)
   "Return VALUES, a list of reals, as a `(simple-array double-float (N 1))' matrix with
@@ -129,6 +144,39 @@ COLUMN is always 0, but the shape still has to be unpacked by hand."
           (cl-gbdt:close-backend backend))
         (testing "close-backend marks the backend closed"
           (ng (cl-gbdt:backend-open-p backend)))))))
+
+;;; The LightGBM branch that first built this fixture recorded that its single
+;;; objective, "binary", is structurally unable to catch a `predict' buffer sized as
+;;; the row count alone: a single-class objective's row count and true element count
+;;; are the same number, so a bug that dropped `LGBM_BoosterCalcNumPredict' entirely
+;;; would leave every assertion in `lightgbm-api-round-trip' green. A three-class
+;;; `multiclass' booster does not have that coincidence -- `predict''s result has
+;;; three columns, not one -- so this closes the gap that branch could only document.
+
+(deftest lightgbm-api-multiclass-round-trip
+  (with-backend-library (:lightgbm)
+    (multiple-value-bind (matrix label-vector) (make-multiclass-dataset)
+      (let ((rows (array-dimension matrix 0))
+            (backend (cl-gbdt:open-backend :lightgbm)))
+        (unwind-protect
+             (cl-gbdt:with-dataset (dataset (cl-gbdt:make-dataset
+                                              backend matrix :label label-vector
+                                              :parameters *multiclass-dataset-parameters*))
+               (cl-gbdt:with-booster (booster (cl-gbdt:train
+                                                backend dataset :num-rounds 10
+                                                :parameters *multiclass-booster-parameters*))
+                 (let ((predictions (cl-gbdt:predict booster matrix)))
+                   (testing "predict's second dimension equals the class count"
+                     (ok (= rows (array-dimension predictions 0))
+                         (format nil "predict's row count is ~D, expected ~D"
+                                 (array-dimension predictions 0) rows))
+                     (ok (= 3 (array-dimension predictions 1))
+                         (format nil "predict's column count is ~D, expected 3 classes"
+                                 (array-dimension predictions 1))))
+                   (testing "predictions pick out the right class per row"
+                     (ok (predictions-match-labels-p predictions label-vector)
+                         (format nil "predictions: ~S" predictions))))))
+          (cl-gbdt:close-backend backend))))))
 
 ;;; Mutation testing on the round trip above found that `free-dataset' could be replaced
 ;;; with a no-op and every assertion stayed green: nothing there frees explicitly, nothing

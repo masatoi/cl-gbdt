@@ -10,6 +10,8 @@
            #:with-backend-library
            #:make-separable-dataset
            #:predictions-separate-p
+           #:make-multiclass-dataset
+           #:predictions-match-labels-p
            #:array-interface-json))
 
 (in-package #:cl-gbdt/tests/functional/support)
@@ -132,3 +134,52 @@ letting an empty selection produce a confident but meaningless answer."
               must be present."
              (length negatives) (length positives)))
     (< (reduce #'max negatives) (reduce #'min positives))))
+
+(defun make-multiclass-dataset (&key (rows-per-class 3) (num-classes 3) (cols 3))
+  "Return two values: a feature matrix and its labels, for a trivially separable
+NUM-CLASSES-way classification problem.
+
+The matrix is a `(simple-array double-float (ROWS COLS))', ROWS = ROWS-PER-CLASS *
+NUM-CLASSES, grouped by class: row I belongs to class `(floor I ROWS-PER-CLASS)', and
+every element of that row is `(class * 10) + offset + column', where OFFSET is the
+row's position within its class -- large enough a step between classes that no bin a
+backend chooses can straddle two of them, while rows within a class still differ so
+they are not literally identical inputs. The labels are a `(simple-array single-float
+(ROWS))', 0.0 through `(NUM-CLASSES - 1).0', grouped the same way.
+
+The defaults produce a nine-row, three-class fixture -- verified against XGBoost's
+`multi:softprob' objective to make `predict' return shape (9 3).
+
+The problem is deliberately trivial, in the same spirit as `make-separable-dataset':
+these tests check that data and per-class predictions cross the FFI boundary intact,
+not that the libraries learn anything hard."
+  (let* ((rows (* rows-per-class num-classes))
+         (matrix (make-array (list rows cols) :element-type 'double-float))
+         (label-vector (make-array rows :element-type 'single-float)))
+    (dotimes (row rows)
+      (let ((class (floor row rows-per-class))
+            (offset (mod row rows-per-class)))
+        (dotimes (col cols)
+          (setf (aref matrix row col) (coerce (+ (* class 10) offset col) 'double-float)))
+        (setf (aref label-vector row) (coerce class 'single-float))))
+    (values matrix label-vector)))
+
+(defun predictions-match-labels-p (predictions label-vector)
+  "True when every row of PREDICTIONS, a 2D array of per-class scores as `predict'
+returns for a multiclass booster, has its largest value in the column LABEL-VECTOR
+names for that row.
+
+This is `make-multiclass-dataset''s analogue of `predictions-separate-p': the ordering
+property a multiclass round trip can check without depending on exact probabilities,
+which would break on any upstream version bump without telling us anything new."
+  (let ((rows (array-dimension predictions 0))
+        (cols (array-dimension predictions 1)))
+    (loop :for row :below rows
+          :always (let ((label (round (aref label-vector row))))
+                    (loop :with best-column := 0
+                          :with best-value := (aref predictions row 0)
+                          :for column :from 1 :below cols
+                          :when (> (aref predictions row column) best-value)
+                            :do (setf best-value (aref predictions row column)
+                                      best-column column)
+                          :finally (return (= best-column label)))))))
