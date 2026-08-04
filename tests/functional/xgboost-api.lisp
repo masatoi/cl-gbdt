@@ -207,6 +207,35 @@ binary, so COLUMN is always 0, but the shape still has to be unpacked by hand."
                      "a second free-dataset signaled")))
           (cl-gbdt:close-backend backend))))))
 
+;;; `XGDMatrixCreateFromDense' produces the raw DMatrix before `make-dataset' ever
+;;; attaches label/weight/feature-names, and `make-handle' does not take ownership of
+;;; that raw pointer until every attachment step has succeeded -- see `make-dataset''s
+;;; docstring. A wrong-length :LABEL is the commonest way `XGDMatrixSetInfoFromInterface'
+;;; fails; without the `unwind-protect' freeing the raw pointer when OWNED stays nil,
+;;; this would leave that DMatrix permanently orphaned: `make-dataset' would signal
+;;; without ever returning a handle the caller could free. Ported from
+;;; tests/functional/lightgbm-api.lisp's identical test, which this backend had no
+;;; equivalent of -- this leak-prevention path had never executed, nor had
+;;; `foreign-call-error', anywhere in this file before this test.
+
+(deftest xgboost-api-make-dataset-wrong-length-label-signals-without-leaking
+  (with-backend-library (:xgboost)
+    (multiple-value-bind (matrix label-vector) (make-separable-dataset)
+      (declare (ignore label-vector))
+      (let ((backend (cl-gbdt:open-backend :xgboost))
+            (wrong-length-label (make-array 1 :element-type 'single-float
+                                               :initial-element 0.0)))
+        (unwind-protect
+             (testing "a wrong-length label signals foreign-call-error"
+               ;; handler-case, not rove's `signals' -- see this file's other guard
+               ;; tests for why.
+               (ok (handler-case
+                       (progn (cl-gbdt:make-dataset backend matrix :label wrong-length-label)
+                              nil)
+                     (cl-gbdt:foreign-call-error () t))
+                   "make-dataset with a wrong-length label did not signal foreign-call-error"))
+          (cl-gbdt:close-backend backend))))))
+
 ;;; `XGBoosterUpdateOneIter' dereferences the DMatrix pointer handed to it directly --
 ;;; unlike LightGBM, which reads its training set through an internal pointer,
 ;;; XGBoost's version takes it as an explicit argument, read back from
