@@ -121,6 +121,45 @@ never reached by `LGBM_DatasetCreateFromMat', `LGBM_BoosterCreate' or
   (unless (backend-open-p backend)
     (error 'backend-not-open :backend (backend-name backend))))
 
+(defun %check-lightgbm-dataset (backend dataset argument-description)
+  "Return DATASET's live foreign pointer, after confirming DATASET is a
+`lightgbm-dataset'. ARGUMENT-DESCRIPTION names which caller-supplied argument
+DATASET came from -- e.g. \"train's dataset argument\" -- for
+`wrong-backend-reference''s report.
+
+Every caller-supplied dataset argument in this file -- `make-dataset''s
+:REFERENCE, `train''s DATASET, and each entry of `train''s :VALID-SETS -- must
+pass through here before reaching a foreign call that expects a
+`DatasetHandle'. `handle-live-pointer' alone is not enough: it only guards
+against a released handle or a closed backend, and happily returns *any*
+handle's pointer regardless of kind, including a booster's -- `make-dataset'
+and `train' both dispatch on the backend, not on the handle, so unlike
+`dataset-num-rows' or `free-dataset' there is no CLOS specializer already
+ruling out the wrong kind of handle. A booster's own pointer reaching
+`LGBM_BoosterCreate' as its training-set argument is exactly the corruption
+this check exists to prevent.
+
+Signals `wrong-backend-reference' when DATASET is not a `lightgbm-dataset' --
+built by a different backend, or not a dataset at all -- and whatever
+`handle-live-pointer' signals otherwise: `released-handle-error' for an
+already-freed DATASET, `backend-not-open' when DATASET's own backend has since
+been closed.
+
+This does not additionally check that DATASET was built by BACKEND
+specifically, only that it is *a* `lightgbm-dataset'. Two `lightgbm-backend'
+instances over the same shared library are a legitimate way for a caller to
+hold datasets from -- both read through the same C API, so rejecting a
+dataset built by one while training on the other would break working code for
+no safety gain. The dangerous case, a handle whose own backend has been
+closed, is already caught above, by `handle-live-pointer''s `backend-open-p'
+check on DATASET's own backend, not BACKEND."
+  (unless (typep dataset 'lightgbm-dataset)
+    (error 'wrong-backend-reference
+           :backend (backend-name backend)
+           :given (class-name (class-of dataset))
+           :argument argument-description))
+  (handle-live-pointer dataset))
+
 ;;; ---------------------------------------------------------------------------
 ;;; Library discovery
 
@@ -364,21 +403,13 @@ calls `foreign-string-free' on an uninitialized foreign-object slot."
 `LGBM_DatasetCreateFromMat''s `reference' argument for REFERENCE, or a null pointer
 when REFERENCE is NIL.
 
-Signals `wrong-backend-reference' when REFERENCE is not a `lightgbm-dataset' --
-a dataset built by another backend is just an opaque pointer as far as this C API
-is concerned, and handing it to `LGBM_DatasetCreateFromMat' would be undefined
-behaviour, not something the library can reject on its own. Otherwise reads
-REFERENCE's pointer through `handle-live-pointer', the same guard every other
-handle read in this file goes through: a freed or foreign reference handed to a C
-function that dereferences it directly is a segfault, not a catchable condition."
+Delegates everything else to `%check-lightgbm-dataset': signals
+`wrong-backend-reference' when REFERENCE is not a `lightgbm-dataset', or whatever
+`handle-live-pointer' signals when it is one but already freed or its own backend
+has since closed."
   (if (null reference)
       (cffi:null-pointer)
-      (progn
-        (unless (typep reference 'lightgbm-dataset)
-          (error 'wrong-backend-reference
-                 :backend (backend-name backend)
-                 :given (class-name (class-of reference))))
-        (handle-live-pointer reference))))
+      (%check-lightgbm-dataset backend reference "make-dataset's :reference")))
 
 (defmethod make-dataset ((backend lightgbm-backend) matrix
                           &key label weight group feature-names parameters reference)
@@ -504,19 +535,20 @@ dereference it blindly."
              :message "reported success but returned a null booster handle"))
     booster-pointer))
 
-(defun %add-valid-data (booster-pointer valid-sets)
-  "Attach each dataset in VALID-SETS to BOOSTER-POINTER via
+(defun %add-valid-data (booster-pointer valid-set-pointers)
+  "Attach each pointer in VALID-SET-POINTERS to BOOSTER-POINTER via
 `LGBM_BoosterAddValidData'.
 
-Each VALID-SET's liveness is checked, via `handle-live-pointer', before it is
-passed to C -- the same guard `update-one-iteration' applies to a booster's
-training set: `LGBM_BoosterAddValidData' dereferences the raw pointer directly,
-and one already freed by `free-dataset' is a segfault, not a catchable
-condition."
-  (dolist (valid-set valid-sets)
-    (let ((pointer (handle-live-pointer valid-set)))
-      (check-lgbm (lgbm-booster-add-valid-data booster-pointer pointer)
-                  "LGBM_BoosterAddValidData"))))
+`train' has already run every entry of its VALID-SETS through
+`%check-lightgbm-dataset' -- type-checked and read to a live pointer -- before
+this is ever called, so this function makes no check of its own: it exists
+only to keep the foreign-call loop separate from that validation.
+`LGBM_BoosterAddValidData' dereferences each pointer directly, so a stale or
+wrong-kind one reaching this point is a segfault, not a catchable condition,
+which is exactly what the caller's validation pass exists to rule out first."
+  (dolist (pointer valid-set-pointers)
+    (check-lgbm (lgbm-booster-add-valid-data booster-pointer pointer)
+                "LGBM_BoosterAddValidData")))
 
 (defun %update-one-iteration (booster-pointer)
   "Advance BOOSTER-POINTER by one boosting iteration via
@@ -536,6 +568,16 @@ VALID-SETS with `LGBM_BoosterAddValidData', then drives
 `LGBM_BoosterUpdateOneIter' NUM-ROUNDS times. See the `train' generic
 function's docstring for what each argument means; NUM-ROUNDS defaults to 100
 when not supplied.
+
+DATASET and every entry of VALID-SETS are each run through
+`%check-lightgbm-dataset' before any foreign call. `train' dispatches on
+BACKEND, not on DATASET, so unlike `dataset-num-rows' or `free-dataset' there
+is no CLOS specializer here to rule out the wrong kind of handle first --
+without this, `handle-live-pointer' would happily hand `LGBM_BoosterCreate' a
+booster's own pointer to use as its training-set `DatasetHandle'. Signals
+`wrong-backend-reference' when DATASET or a VALID-SETS entry is not a
+`lightgbm-dataset', and `released-handle-error' or `backend-not-open' when one
+is but has already been freed or had its own backend closed.
 
 The returned booster retains DATASET as its training set and a fresh copy of
 VALID-SETS as its validation sets, keeping all of them alive for the booster's
@@ -559,13 +601,18 @@ instead of orphaned.
 Signals `backend-not-open' before any of that when BACKEND is not open -- see
 `%check-backend-open'."
   (%check-backend-open backend)
-  (let ((valid-sets (copy-list valid-sets)))
-    (let ((booster-pointer (%create-booster (handle-live-pointer dataset)
-                                             (%parameter-string parameters))))
+  (let* ((valid-sets (copy-list valid-sets))
+         (train-data-pointer
+           (%check-lightgbm-dataset backend dataset "train's dataset argument"))
+         (valid-set-pointers
+           (mapcar (lambda (valid-set)
+                     (%check-lightgbm-dataset backend valid-set "a train :valid-sets entry"))
+                   valid-sets)))
+    (let ((booster-pointer (%create-booster train-data-pointer (%parameter-string parameters))))
       (let ((owned nil))
         (unwind-protect
              (progn
-               (%add-valid-data booster-pointer valid-sets)
+               (%add-valid-data booster-pointer valid-set-pointers)
                (dotimes (round num-rounds)
                  (declare (ignorable round))
                  (%update-one-iteration booster-pointer))
