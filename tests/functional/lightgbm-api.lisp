@@ -572,3 +572,61 @@ COLUMN is always 0, but the shape still has to be unpacked by hand."
                        (cl-gbdt:wrong-backend-reference () t))
                      "make-dataset accepted a booster as :reference"))))
         (cl-gbdt:close-backend backend)))))
+
+;;; Round 4: `train' dispatches on BACKEND, not on DATASET, so unlike
+;;; `dataset-num-rows' or `free-dataset' there was no CLOS specializer ruling out a
+;;; booster passed where a dataset belongs. `handle-live-pointer' does not check
+;;; kind, only liveness and the owning backend's open state, so a booster's own
+;;; pointer used to reach `LGBM_BoosterCreate' as its training-set argument --
+;;; confirmed directly against the vendored library to corrupt SBCL's heap and kill
+;;; the process outright, not raise a catchable condition. This proves `train' now
+;;; rejects it with `wrong-backend-reference' before any foreign call runs.
+
+(deftest lightgbm-api-train-with-a-booster-as-dataset-signals
+  (with-backend-library (:lightgbm)
+    (let ((backend (cl-gbdt:open-backend :lightgbm))
+          (matrix (%single-column-matrix *reference-training-values*)))
+      (unwind-protect
+           (cl-gbdt:with-dataset (training-set (cl-gbdt:make-dataset
+                                                 backend matrix
+                                                 :label *reference-training-labels*
+                                                 :parameters *dataset-parameters*))
+             (cl-gbdt:with-booster (booster (cl-gbdt:train
+                                              backend training-set :num-rounds 1
+                                              :parameters *booster-parameters*))
+               (testing "train with a booster as its dataset argument signals"
+                 (ok (handler-case
+                         (progn (cl-gbdt:train backend booster :num-rounds 1
+                                                :parameters *booster-parameters*)
+                                nil)
+                       (cl-gbdt:wrong-backend-reference () t))
+                     "train accepted a booster as its dataset argument"))))
+        (cl-gbdt:close-backend backend)))))
+
+;;; Same hazard, reached through :valid-sets instead of DATASET itself:
+;;; `LGBM_BoosterAddValidData' dereferences each entry's pointer directly, and
+;;; `%add-valid-data' used to check only liveness, never kind. This proves a
+;;; booster inside :valid-sets is rejected the same way, before
+;;; `LGBM_BoosterAddValidData' -- or even `LGBM_BoosterCreate' -- ever runs.
+
+(deftest lightgbm-api-train-with-a-booster-in-valid-sets-signals
+  (with-backend-library (:lightgbm)
+    (let ((backend (cl-gbdt:open-backend :lightgbm))
+          (matrix (%single-column-matrix *reference-training-values*)))
+      (unwind-protect
+           (cl-gbdt:with-dataset (training-set (cl-gbdt:make-dataset
+                                                 backend matrix
+                                                 :label *reference-training-labels*
+                                                 :parameters *dataset-parameters*))
+             (cl-gbdt:with-booster (other-booster (cl-gbdt:train
+                                                    backend training-set :num-rounds 1
+                                                    :parameters *booster-parameters*))
+               (testing "train with a booster inside :valid-sets signals"
+                 (ok (handler-case
+                         (progn (cl-gbdt:train backend training-set :num-rounds 1
+                                                :valid-sets (list other-booster)
+                                                :parameters *booster-parameters*)
+                                nil)
+                       (cl-gbdt:wrong-backend-reference () t))
+                     "train accepted a booster inside :valid-sets"))))
+        (cl-gbdt:close-backend backend)))))
