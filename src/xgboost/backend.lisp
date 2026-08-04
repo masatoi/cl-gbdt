@@ -75,10 +75,25 @@
   (:import-from #:cl-gbdt/src/library
                 #:resolve-and-load-library)
   (:import-from #:cl-gbdt/src/foreign
-                #:check-foreign-call)
+                #:check-foreign-call
+                #:with-foreign-float-traps-masked)
   (:export #:xgboost-backend))
 
 (in-package #:cl-gbdt/src/xgboost/backend)
+
+;;; ---------------------------------------------------------------------------
+;;; Floating-point trap safety
+;;;
+;;; Every method below that reaches into libxgboost.so -- all twelve protocol methods
+;;; plus `initialize-backend' (`XGBoostVersion') and `shutdown-backend' (closing the
+;;; library can run its own static finalizers) -- wraps its entire body in
+;;; `with-foreign-float-traps-masked'. See that macro's docstring in
+;;; `cl-gbdt/src/foreign' for why: SBCL enables floating-point traps by default on
+;;; x86-64 and not on aarch64, and XGBoost's own numeric code -- confirmed for the
+;;; softmax normalization behind a `multi:softprob' prediction -- was written and
+;;; tested against the C convention of those traps staying masked. Method-body
+;;; granularity, not per-call, so a call added later inside an already-wrapped method
+;;; cannot reopen this gap by omission.
 
 ;;; ---------------------------------------------------------------------------
 ;;; Error checking
@@ -264,27 +279,29 @@ once this method returns normally. So if the symbol probe (or anything else afte
 library loads) signals, the library is closed right here before the condition propagates;
 otherwise it would stay mapped into the process with BACKEND dropped and nothing left able
 to close it."
-  (multiple-value-bind (library library-path)
-      (resolve-and-load-library backend :path path
-                                         :env-var *library-env-var*
-                                         :directory *vendor-library-directory*
-                                         :pattern *vendor-library-pattern*
-                                         :default-name *default-library-name*)
-    (let ((succeeded nil))
-      (unwind-protect
-           (progn
-             (setf (%xgboost-foreign-library backend) library)
-             (setf (backend-library-path backend) library-path)
-             (let ((missing (probe-foreign-symbols *required-symbols* :library library)))
-               (when missing
-                 (error 'missing-foreign-symbols :backend (backend-name backend) :names missing)))
-             (setf (backend-version backend) (%read-version))
-             (setf succeeded t))
-        (unless succeeded
-          (handler-case (cffi:close-foreign-library library)
-            (error () nil))
-          (setf (%xgboost-foreign-library backend) nil)))
-      backend)))
+  (with-foreign-float-traps-masked
+    (multiple-value-bind (library library-path)
+        (resolve-and-load-library backend :path path
+                                           :env-var *library-env-var*
+                                           :directory *vendor-library-directory*
+                                           :pattern *vendor-library-pattern*
+                                           :default-name *default-library-name*)
+      (let ((succeeded nil))
+        (unwind-protect
+             (progn
+               (setf (%xgboost-foreign-library backend) library)
+               (setf (backend-library-path backend) library-path)
+               (let ((missing (probe-foreign-symbols *required-symbols* :library library)))
+                 (when missing
+                   (error 'missing-foreign-symbols
+                          :backend (backend-name backend) :names missing)))
+               (setf (backend-version backend) (%read-version))
+               (setf succeeded t))
+          (unless succeeded
+            (handler-case (cffi:close-foreign-library library)
+              (error () nil))
+            (setf (%xgboost-foreign-library backend) nil)))
+        backend))))
 
 (defmethod shutdown-backend ((backend xgboost-backend))
   "Close XGBoost's shared library.
@@ -293,11 +310,12 @@ to close it."
 loader honors `dlclose' reference counting, may unmap the library; POSIX does not
 guarantee an actual unload, so this cannot promise the library's code and data are gone
 from the process afterward -- only that cl-gbdt no longer holds it open."
-  (let ((library (%xgboost-foreign-library backend)))
-    (when library
-      (cffi:close-foreign-library library)
-      (setf (%xgboost-foreign-library backend) nil)))
-  backend)
+  (with-foreign-float-traps-masked
+    (let ((library (%xgboost-foreign-library backend)))
+      (when library
+        (cffi:close-foreign-library library)
+        (setf (%xgboost-foreign-library backend) nil)))
+    backend))
 
 ;;; ---------------------------------------------------------------------------
 ;;; Datasets
@@ -415,46 +433,50 @@ instead of orphaned.
 Signals `backend-not-open' before any of that when BACKEND is not open -- see
 `%check-backend-open'."
   (declare (ignore parameters))
-  (%check-backend-open backend)
-  (%check-unsupported backend "make-dataset's :reference" reference
-                       "XGBoost has no bin-mapper alignment; :reference is a LightGBM-only concept")
-  (%check-unsupported backend "make-dataset's :group" group
-                       "ranking group sizes are not yet attached by this backend")
-  (let ((dataset-pointer (%create-dmatrix matrix)))
-    (when (cffi:null-pointer-p dataset-pointer)
-      (error 'foreign-call-error
-             :function-name "XGDMatrixCreateFromDense"
-             :code 0
-             :message "reported success but returned a null dataset handle"))
-    (let ((owned nil))
-      (unwind-protect
-           (progn
-             (when label
-               (%set-info-field dataset-pointer "label" label))
-             (when weight
-               (%set-info-field dataset-pointer "weight" weight))
-             (when feature-names
-               (%set-feature-names dataset-pointer feature-names))
-             (prog1
-                 (make-handle 'xgboost-dataset dataset-pointer backend :dataset)
-               (setf owned t)))
-        (unless owned
-          (handler-case (xgd-matrix-free dataset-pointer)
-            (error () nil)))))))
+  (with-foreign-float-traps-masked
+    (%check-backend-open backend)
+    (%check-unsupported
+     backend "make-dataset's :reference" reference
+     "XGBoost has no bin-mapper alignment; :reference is a LightGBM-only concept")
+    (%check-unsupported backend "make-dataset's :group" group
+                         "ranking group sizes are not yet attached by this backend")
+    (let ((dataset-pointer (%create-dmatrix matrix)))
+      (when (cffi:null-pointer-p dataset-pointer)
+        (error 'foreign-call-error
+               :function-name "XGDMatrixCreateFromDense"
+               :code 0
+               :message "reported success but returned a null dataset handle"))
+      (let ((owned nil))
+        (unwind-protect
+             (progn
+               (when label
+                 (%set-info-field dataset-pointer "label" label))
+               (when weight
+                 (%set-info-field dataset-pointer "weight" weight))
+               (when feature-names
+                 (%set-feature-names dataset-pointer feature-names))
+               (prog1
+                   (make-handle 'xgboost-dataset dataset-pointer backend :dataset)
+                 (setf owned t)))
+          (unless owned
+            (handler-case (xgd-matrix-free dataset-pointer)
+              (error () nil))))))))
 
 (defmethod dataset-num-rows ((dataset xgboost-dataset))
   "Return DATASET's row count, read via `XGDMatrixNumRow'."
-  (let ((pointer (handle-live-pointer dataset)))
-    (cffi:with-foreign-object (out :uint64)
-      (check-xgb (xgd-matrix-num-row pointer out) "XGDMatrixNumRow")
-      (cffi:mem-ref out :uint64))))
+  (with-foreign-float-traps-masked
+    (let ((pointer (handle-live-pointer dataset)))
+      (cffi:with-foreign-object (out :uint64)
+        (check-xgb (xgd-matrix-num-row pointer out) "XGDMatrixNumRow")
+        (cffi:mem-ref out :uint64)))))
 
 (defmethod dataset-num-features ((dataset xgboost-dataset))
   "Return DATASET's feature count, read via `XGDMatrixNumCol'."
-  (let ((pointer (handle-live-pointer dataset)))
-    (cffi:with-foreign-object (out :uint64)
-      (check-xgb (xgd-matrix-num-col pointer out) "XGDMatrixNumCol")
-      (cffi:mem-ref out :uint64))))
+  (with-foreign-float-traps-masked
+    (let ((pointer (handle-live-pointer dataset)))
+      (cffi:with-foreign-object (out :uint64)
+        (check-xgb (xgd-matrix-num-col pointer out) "XGDMatrixNumCol")
+        (cffi:mem-ref out :uint64)))))
 
 (defmethod free-dataset ((dataset xgboost-dataset))
   "Free DATASET via `XGDMatrixFree'. Does nothing if it was already freed.
@@ -468,15 +490,16 @@ backend is closed, the handle is instead marked released without calling `XGDMat
 the shared library may no longer be mapped into the process, so that call cannot be
 trusted not to crash -- and a `warn' reports the foreign memory as leaked, since it is
 genuinely unreclaimable at that point."
-  (if (backend-open-p (handle-backend dataset))
-      (release-handle
-       dataset
-       (lambda (pointer) (check-xgb (xgd-matrix-free pointer) "XGDMatrixFree")))
-      (let ((already-released (handle-released-p dataset)))
-        (release-handle dataset (lambda (pointer) (declare (ignore pointer))))
-        (unless already-released
-          (warn "Freeing an XGBoost dataset after its backend was closed: the foreign ~
-                 dataset was not freed and its memory is leaked.")))))
+  (with-foreign-float-traps-masked
+    (if (backend-open-p (handle-backend dataset))
+        (release-handle
+         dataset
+         (lambda (pointer) (check-xgb (xgd-matrix-free pointer) "XGDMatrixFree")))
+        (let ((already-released (handle-released-p dataset)))
+          (release-handle dataset (lambda (pointer) (declare (ignore pointer))))
+          (unless already-released
+            (warn "Freeing an XGBoost dataset after its backend was closed: the foreign ~
+                   dataset was not freed and its memory is leaked."))))))
 
 ;;; ---------------------------------------------------------------------------
 ;;; Training
@@ -594,29 +617,30 @@ did not, the raw booster is freed here instead of orphaned.
 
 Signals `backend-not-open' before any of that when BACKEND is not open -- see
 `%check-backend-open'."
-  (%check-backend-open backend)
-  (let* ((valid-sets (copy-list valid-sets))
-         (train-data-pointer
-           (%check-xgboost-dataset backend dataset "train's dataset argument"))
-         (valid-set-pointers
-           (mapcar (lambda (valid-set)
-                     (%check-xgboost-dataset backend valid-set "a train :valid-sets entry"))
-                   valid-sets)))
-    (let ((booster-pointer (%create-booster (cons train-data-pointer valid-set-pointers))))
-      (let ((owned nil))
-        (unwind-protect
-             (progn
-               (%set-parameters booster-pointer parameters)
-               (dotimes (round num-rounds)
-                 (declare (ignorable round))
-                 (%update-one-iteration booster-pointer train-data-pointer))
-               (prog1
-                   (make-handle 'xgboost-booster booster-pointer backend :booster
-                                :training-set dataset :validation-sets valid-sets)
-                 (setf owned t)))
-          (unless owned
-            (handler-case (xg-booster-free booster-pointer)
-              (error () nil))))))))
+  (with-foreign-float-traps-masked
+    (%check-backend-open backend)
+    (let* ((valid-sets (copy-list valid-sets))
+           (train-data-pointer
+             (%check-xgboost-dataset backend dataset "train's dataset argument"))
+           (valid-set-pointers
+             (mapcar (lambda (valid-set)
+                       (%check-xgboost-dataset backend valid-set "a train :valid-sets entry"))
+                     valid-sets)))
+      (let ((booster-pointer (%create-booster (cons train-data-pointer valid-set-pointers))))
+        (let ((owned nil))
+          (unwind-protect
+               (progn
+                 (%set-parameters booster-pointer parameters)
+                 (dotimes (round num-rounds)
+                   (declare (ignorable round))
+                   (%update-one-iteration booster-pointer train-data-pointer))
+                 (prog1
+                     (make-handle 'xgboost-booster booster-pointer backend :booster
+                                  :training-set dataset :validation-sets valid-sets)
+                   (setf owned t)))
+            (unless owned
+              (handler-case (xg-booster-free booster-pointer)
+                (error () nil)))))))))
 
 (defun %check-booster-datasets-live (booster)
   "Signal `released-handle-error' when any dataset BOOSTER depends on -- its training set,
@@ -661,12 +685,13 @@ sets, has already been freed -- see `%check-booster-datasets-live'. Signals
 booster, which never went through `train' -- since handing `XGBoosterUpdateOneIter' a
 null DMatrixHandle in that case is a null-pointer dereference, not something it can
 reject with a status code."
-  (%check-booster-datasets-live booster)
-  (let ((training-set (booster-training-set booster)))
-    (unless training-set
-      (error 'missing-training-set :booster booster))
-    (%update-one-iteration (handle-live-pointer booster) (handle-live-pointer training-set)))
-  t)
+  (with-foreign-float-traps-masked
+    (%check-booster-datasets-live booster)
+    (let ((training-set (booster-training-set booster)))
+      (unless training-set
+        (error 'missing-training-set :booster booster))
+      (%update-one-iteration (handle-live-pointer booster) (handle-live-pointer training-set)))
+    t))
 
 (defmethod free-booster ((booster xgboost-booster))
   "Free BOOSTER via `XGBoosterFree'. Does nothing if it was already freed.
@@ -674,15 +699,16 @@ reject with a status code."
 See `free-dataset''s docstring for why this does not signal `backend-not-open' when
 BOOSTER's backend has already been closed -- the same `with-booster' cleanup-form
 reasoning applies here."
-  (if (backend-open-p (handle-backend booster))
-      (release-handle
-       booster
-       (lambda (pointer) (check-xgb (xg-booster-free pointer) "XGBoosterFree")))
-      (let ((already-released (handle-released-p booster)))
-        (release-handle booster (lambda (pointer) (declare (ignore pointer))))
-        (unless already-released
-          (warn "Freeing an XGBoost booster after its backend was closed: the foreign ~
-                 booster was not freed and its memory is leaked.")))))
+  (with-foreign-float-traps-masked
+    (if (backend-open-p (handle-backend booster))
+        (release-handle
+         booster
+         (lambda (pointer) (check-xgb (xg-booster-free pointer) "XGBoosterFree")))
+        (let ((already-released (handle-released-p booster)))
+          (release-handle booster (lambda (pointer) (declare (ignore pointer))))
+          (unless already-released
+            (warn "Freeing an XGBoost booster after its backend was closed: the foreign ~
+                   booster was not freed and its memory is leaked."))))))
 
 ;;; ---------------------------------------------------------------------------
 ;;; Inference
@@ -771,41 +797,55 @@ tells a three-class `multi:softprob' model's predictions apart from a binary mod
 
 `out_result' is XGBoost's own memory, valid only until the next call into this booster,
 so every element is copied out, coerced from `single-float' to `double-float', before
-this returns."
-  (let ((booster-pointer (handle-live-pointer booster))
-        (predict-type (%predict-type kind))
-        (iteration-end (%resolve-num-iteration num-iteration)))
-    (with-foreign-matrix (data-pointer nrow ncol element-type) matrix
-      (let ((dmatrix-pointer (%create-dmatrix matrix)))
-        (when (cffi:null-pointer-p dmatrix-pointer)
-          (error 'foreign-call-error
-                 :function-name "XGDMatrixCreateFromDense"
-                 :code 0
-                 :message "reported success but returned a null dataset handle"))
-        (unwind-protect
-             (cffi:with-foreign-string (config (%predict-config-json predict-type iteration-end))
-               (cffi:with-foreign-objects ((out-shape :pointer) (out-dim :uint64)
-                                            (out-result :pointer))
-                 (check-xgb (xg-booster-predict-from-d-matrix
-                             booster-pointer dmatrix-pointer config out-shape out-dim out-result)
-                            "XGBoosterPredictFromDMatrix")
-                 (let* ((dim (cffi:mem-ref out-dim :uint64))
-                        (shape-pointer (cffi:mem-ref out-shape :pointer))
-                        (element-count (%total-element-count shape-pointer dim))
-                        (ncol-result (%predict-ncol element-count nrow))
-                        (result-buffer (cffi:mem-ref out-result :pointer))
-                        (result (make-array (list nrow ncol-result) :element-type 'double-float)))
-                   (dotimes (row nrow)
-                     (dotimes (col ncol-result)
-                       (setf (aref result row col)
-                             (coerce (cffi:mem-aref result-buffer :float
-                                                     (+ (* row ncol-result) col))
-                                     'double-float))))
-                   result)))
-          (handler-case (check-xgb (xgd-matrix-free dmatrix-pointer) "XGDMatrixFree")
-            (error (condition)
-              (warn "Freeing predict's temporary XGBoost dataset failed: the foreign ~
-                     dataset was not freed and its memory is leaked. ~A" condition))))))))
+this returns.
+
+Deliberately does not scan the result for NaN or infinity. `with-foreign-float-traps-masked'
+around this method's body stops SBCL from turning an intermediate invalid operation inside
+XGBoost's own computation -- e.g. `multi:softprob''s softmax normalization -- into a signal;
+it does not, and cannot, stop XGBoost from legitimately returning a non-finite value as a
+final result (`:raw' scores in particular are not bounded the way a transformed prediction
+is). Rejecting or flagging one here would be a policy this wrapper does not otherwise
+impose on any other method's output, invented for this fix rather than driven by a
+reported failure -- a caller that cannot tolerate a non-finite prediction should check for
+one itself."
+  (with-foreign-float-traps-masked
+    (let ((booster-pointer (handle-live-pointer booster))
+          (predict-type (%predict-type kind))
+          (iteration-end (%resolve-num-iteration num-iteration)))
+      (with-foreign-matrix (data-pointer nrow ncol element-type) matrix
+        (let ((dmatrix-pointer (%create-dmatrix matrix)))
+          (when (cffi:null-pointer-p dmatrix-pointer)
+            (error 'foreign-call-error
+                   :function-name "XGDMatrixCreateFromDense"
+                   :code 0
+                   :message "reported success but returned a null dataset handle"))
+          (unwind-protect
+               (cffi:with-foreign-string
+                   (config (%predict-config-json predict-type iteration-end))
+                 (cffi:with-foreign-objects ((out-shape :pointer) (out-dim :uint64)
+                                              (out-result :pointer))
+                   (check-xgb (xg-booster-predict-from-d-matrix
+                               booster-pointer dmatrix-pointer config
+                               out-shape out-dim out-result)
+                              "XGBoosterPredictFromDMatrix")
+                   (let* ((dim (cffi:mem-ref out-dim :uint64))
+                          (shape-pointer (cffi:mem-ref out-shape :pointer))
+                          (element-count (%total-element-count shape-pointer dim))
+                          (ncol-result (%predict-ncol element-count nrow))
+                          (result-buffer (cffi:mem-ref out-result :pointer))
+                          (result (make-array (list nrow ncol-result)
+                                               :element-type 'double-float)))
+                     (dotimes (row nrow)
+                       (dotimes (col ncol-result)
+                         (setf (aref result row col)
+                               (coerce (cffi:mem-aref result-buffer :float
+                                                       (+ (* row ncol-result) col))
+                                       'double-float))))
+                     result)))
+            (handler-case (check-xgb (xgd-matrix-free dmatrix-pointer) "XGDMatrixFree")
+              (error (condition)
+                (warn "Freeing predict's temporary XGBoost dataset failed: the foreign ~
+                       dataset was not freed and its memory is leaked. ~A" condition)))))))))
 
 ;;; ---------------------------------------------------------------------------
 ;;; Persistence
@@ -819,12 +859,14 @@ saves every boosted round -- and silently ignoring the argument would be exactly
 failure mode `unsupported-argument' exists to prevent, per `%check-unsupported'.
 
 Returns PATH."
-  (%check-unsupported (handle-backend booster) "save-model's :num-iteration" num-iteration
-                       "XGBoosterSaveModel has no iteration limit; every boosted round is saved")
-  (let ((pointer (handle-live-pointer booster)))
-    (cffi:with-foreign-string (filename (namestring path))
-      (check-xgb (xg-booster-save-model pointer filename) "XGBoosterSaveModel")))
-  path)
+  (with-foreign-float-traps-masked
+    (%check-unsupported
+     (handle-backend booster) "save-model's :num-iteration" num-iteration
+     "XGBoosterSaveModel has no iteration limit; every boosted round is saved")
+    (let ((pointer (handle-live-pointer booster)))
+      (cffi:with-foreign-string (filename (namestring path))
+        (check-xgb (xg-booster-save-model pointer filename) "XGBoosterSaveModel")))
+    path))
 
 (defmethod load-model ((backend xgboost-backend) path)
   "Load an XGBoost model from PATH and return a new booster.
@@ -844,19 +886,21 @@ freed here instead of orphaned.
 
 Signals `backend-not-open' before any of that when BACKEND is not open -- see
 `%check-backend-open'."
-  (%check-backend-open backend)
-  (let ((booster-pointer (%create-booster nil)))
-    (let ((owned nil))
-      (unwind-protect
-           (progn
-             (cffi:with-foreign-string (filename (namestring path))
-               (check-xgb (xg-booster-load-model booster-pointer filename) "XGBoosterLoadModel"))
-             (prog1
-                 (make-handle 'xgboost-booster booster-pointer backend :booster)
-               (setf owned t)))
-        (unless owned
-          (handler-case (xg-booster-free booster-pointer)
-            (error () nil)))))))
+  (with-foreign-float-traps-masked
+    (%check-backend-open backend)
+    (let ((booster-pointer (%create-booster nil)))
+      (let ((owned nil))
+        (unwind-protect
+             (progn
+               (cffi:with-foreign-string (filename (namestring path))
+                 (check-xgb (xg-booster-load-model booster-pointer filename)
+                            "XGBoosterLoadModel"))
+               (prog1
+                   (make-handle 'xgboost-booster booster-pointer backend :booster)
+                 (setf owned t)))
+          (unless owned
+            (handler-case (xg-booster-free booster-pointer)
+              (error () nil))))))))
 
 (defmethod model-to-string ((booster xgboost-booster) &key num-iteration)
   "Return BOOSTER's model as a JSON string via `XGBoosterSaveModelToBuffer'.
@@ -868,15 +912,16 @@ same guard on the sibling entry point, and for why silently ignoring it is not a
 `out_dptr' is XGBoost's own memory, copied out via `foreign-string-to-lisp' with an
 explicit `:count' from `out_len' rather than trusted to be null-terminated at the right
 place."
-  (%check-unsupported (handle-backend booster) "model-to-string's :num-iteration" num-iteration
-                       "XGBoosterSaveModelToBuffer has no iteration limit")
-  (let ((pointer (handle-live-pointer booster)))
-    (cffi:with-foreign-string (config "{\"format\":\"json\"}")
-      (cffi:with-foreign-objects ((out-len :uint64) (out-dptr :pointer))
-        (check-xgb (xg-booster-save-model-to-buffer pointer config out-len out-dptr)
-                   "XGBoosterSaveModelToBuffer")
-        (cffi:foreign-string-to-lisp (cffi:mem-ref out-dptr :pointer)
-                                      :count (cffi:mem-ref out-len :uint64))))))
+  (with-foreign-float-traps-masked
+    (%check-unsupported (handle-backend booster) "model-to-string's :num-iteration"
+                         num-iteration "XGBoosterSaveModelToBuffer has no iteration limit")
+    (let ((pointer (handle-live-pointer booster)))
+      (cffi:with-foreign-string (config "{\"format\":\"json\"}")
+        (cffi:with-foreign-objects ((out-len :uint64) (out-dptr :pointer))
+          (check-xgb (xg-booster-save-model-to-buffer pointer config out-len out-dptr)
+                     "XGBoosterSaveModelToBuffer")
+          (cffi:foreign-string-to-lisp (cffi:mem-ref out-dptr :pointer)
+                                        :count (cffi:mem-ref out-len :uint64)))))))
 
 ;;; ---------------------------------------------------------------------------
 ;;; Feature importance
@@ -956,25 +1001,28 @@ dataset's column count, and its indices would not correspond to column positions
 sparse where LightGBM's equivalent is always dense. This builds a dense vector of
 `%booster-num-features' entries instead, initialized to zero, and scatters each
 reported score into the column `%feature-score-index' recovers from its feature name."
-  (%check-unsupported (handle-backend booster) "feature-importance's :num-iteration"
-                       num-iteration "XGBoosterFeatureScore has no iteration limit")
-  (let ((pointer (handle-live-pointer booster))
-        (importance-type (%feature-importance-type kind)))
-    (cffi:with-foreign-string
-        (config (format nil "{\"importance_type\":\"~A\"}" importance-type))
-      (cffi:with-foreign-objects ((out-n-features :uint64) (out-features :pointer)
-                                   (out-dim :uint64) (out-shape :pointer) (out-scores :pointer))
-        (check-xgb (xg-booster-feature-score
-                    pointer config out-n-features out-features out-dim out-shape out-scores)
-                   "XGBoosterFeatureScore")
-        (let ((used-count (cffi:mem-ref out-n-features :uint64))
-              (features-pointer (cffi:mem-ref out-features :pointer))
-              (scores-pointer (cffi:mem-ref out-scores :pointer))
-              (result (make-array (%booster-num-features pointer)
-                                   :element-type 'double-float :initial-element 0.0d0)))
-          (dotimes (used-index used-count result)
-            (let* ((name (cffi:foreign-string-to-lisp
-                          (cffi:mem-aref features-pointer :pointer used-index)))
-                   (column (%feature-score-index name)))
-              (setf (aref result column)
-                    (coerce (cffi:mem-aref scores-pointer :float used-index) 'double-float)))))))))
+  (with-foreign-float-traps-masked
+    (%check-unsupported (handle-backend booster) "feature-importance's :num-iteration"
+                         num-iteration "XGBoosterFeatureScore has no iteration limit")
+    (let ((pointer (handle-live-pointer booster))
+          (importance-type (%feature-importance-type kind)))
+      (cffi:with-foreign-string
+          (config (format nil "{\"importance_type\":\"~A\"}" importance-type))
+        (cffi:with-foreign-objects ((out-n-features :uint64) (out-features :pointer)
+                                     (out-dim :uint64) (out-shape :pointer)
+                                     (out-scores :pointer))
+          (check-xgb (xg-booster-feature-score
+                      pointer config out-n-features out-features out-dim out-shape out-scores)
+                     "XGBoosterFeatureScore")
+          (let ((used-count (cffi:mem-ref out-n-features :uint64))
+                (features-pointer (cffi:mem-ref out-features :pointer))
+                (scores-pointer (cffi:mem-ref out-scores :pointer))
+                (result (make-array (%booster-num-features pointer)
+                                     :element-type 'double-float :initial-element 0.0d0)))
+            (dotimes (used-index used-count result)
+              (let* ((name (cffi:foreign-string-to-lisp
+                            (cffi:mem-aref features-pointer :pointer used-index)))
+                     (column (%feature-score-index name)))
+                (setf (aref result column)
+                      (coerce (cffi:mem-aref scores-pointer :float used-index)
+                              'double-float))))))))))
