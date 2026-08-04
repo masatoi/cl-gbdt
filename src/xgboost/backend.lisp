@@ -64,7 +64,8 @@
                 #:foreign-call-error
                 #:released-handle-error
                 #:wrong-backend-reference
-                #:unsupported-argument)
+                #:unsupported-argument
+                #:missing-training-set)
   (:import-from #:cl-gbdt/src/parameters
                 #:normalize-parameters)
   (:import-from #:cl-gbdt/src/data
@@ -654,12 +655,15 @@ a successful call; the generic function's \"returns false when no further split 
 possible\" applies only insofar as a backend can report it, which this one cannot.
 
 Signals `released-handle-error' when BOOSTER's training set, or any of its validation
-sets, has already been freed -- see `%check-booster-datasets-live'."
+sets, has already been freed -- see `%check-booster-datasets-live'. Signals
+`missing-training-set' when BOOSTER has no training set at all -- a `load-model'
+booster, which never went through `train' -- since handing `XGBoosterUpdateOneIter' a
+null DMatrixHandle in that case is a null-pointer dereference, not something it can
+reject with a status code."
   (%check-booster-datasets-live booster)
   (let ((training-set (booster-training-set booster)))
     (unless training-set
-      (error "Cannot advance this XGBoost booster with UPDATE-ONE-ITERATION: it has no ~
-              training set -- was it returned by LOAD-MODEL?"))
+      (error 'missing-training-set :booster booster))
     (%update-one-iteration (handle-live-pointer booster) (handle-live-pointer training-set)))
   t)
 

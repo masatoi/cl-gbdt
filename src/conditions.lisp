@@ -32,6 +32,8 @@
            #:unsupported-argument-backend
            #:unsupported-argument-argument
            #:unsupported-argument-reason
+           #:missing-training-set
+           #:missing-training-set-booster
            #:unfreed-handle-warning
            #:unfreed-handle-warning-kind
            #:data-error
@@ -253,6 +255,26 @@ Signalling here, instead of silently discarding the argument, is deliberate: thi
 repeatedly found a silently-dropped argument to be the failure mode where a caller moves
 working code from one backend to the other and gets different, wrong behaviour with no
 indication anything changed."))
+
+(define-condition missing-training-set (data-error)
+  ((booster :initarg :booster
+            :initform nil
+            :reader missing-training-set-booster
+            :documentation "The booster UPDATE-ONE-ITERATION was called on."))
+  (:report
+   (lambda (condition stream)
+     (format stream "~A has no training set to advance with UPDATE-ONE-ITERATION -- ~
+                     was it returned by LOAD-MODEL?"
+             (missing-training-set-booster condition))))
+  (:documentation "UPDATE-ONE-ITERATION was called on a booster with no training set.
+
+A `load-model' booster has no training set -- see the `booster' class' documentation --
+so there is no dataset to advance it against. XGBoost's `XGBoosterUpdateOneIter' takes
+the training DMatrix as an explicit argument, unlike LightGBM's, which reads its own
+internal training-set pointer implicitly; a null DMatrixHandle would not come back as a
+status code the way a bad parameter does, but as a null-pointer dereference inside
+XGBoost's own implementation. This is signalled before that foreign call runs, for the
+same reason `%check-booster-datasets-live' checks the pointers it does."))
 
 (define-condition untested-backend-version (warning)
   ((backend :initarg :backend :initform nil :reader untested-backend-version-backend)
