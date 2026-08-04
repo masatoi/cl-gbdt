@@ -111,6 +111,7 @@ CL_GBDT_TEST_SYSTEM=cl-gbdt/tests ros run -- --non-interactive \
 CL_GBDT_TEST_SYSTEM=cl-gbdt/tests/functional ros run -- --non-interactive \
   --load tools/ci/run-tests.lisp          # layer 2, needs ./tools/fetch-libs.sh first
 ros run -- --non-interactive --load tools/ci/lint.lisp
+ros run -- --non-interactive --load tools/ci/check-leaf-systems.lisp
 ```
 
 Two things those scripts do that the plain commands above do not, and that CI needs:
@@ -128,6 +129,27 @@ line length — a 132-column file passes it without comment. mallet is not in th
 dist; the workflow clones it into `~/.roswell/local-projects/`, pinned, and a current ASDF is
 installed first because Roswell ships 3.3.1, which predates `:local-nicknames` in
 `uiop:define-package`.
+
+**`tools/ci/check-leaf-systems.lisp` loads every leaf system alone, each in its own fresh
+`ros run` subprocess.** This guards the principal risk this library's
+`:package-inferred-system` layout carries: ASDF infers a file's dependencies *only* from its
+`uiop:define-package` clauses — `:use`, `:import-from` (even one naming zero symbols), and
+`:local-nicknames`. A file that calls, say, `cffi:defcfun` without naming `#:cffi` in one of
+those clauses gets no declared dependency on CFFI; it loads correctly whenever something else
+in the same image happened to load CFFI first, and breaks the moment load order shifts. Because
+that failure is order-dependent, loading every leaf into one shared image — the obvious way to
+"prove" they all load — proves nothing: the first file's load satisfies the next file's
+undeclared dependency. Each leaf therefore gets a subprocess with a fresh image, where nothing
+but what it declares is on hand.
+
+The check also doubles as the enforcement mechanism for this project's naming convention: **a
+leaf system's name is `cl-gbdt/` followed by its path from the repository root, extension
+dropped** — `src/lightgbm/c-api.lisp` names `cl-gbdt/src/lightgbm/c-api`, and its
+`uiop:define-package` form must name that same symbol. The checker derives its list of systems
+to check from the filesystem (every `.lisp` file under `src/` and `tests/`, generated files
+included) rather than from a hardcoded list, so a new file is picked up automatically the next
+time CI runs — a contributor adding one only needs to follow the path-is-the-name rule and give
+the package the `defpackage` clauses its file actually needs.
 
 **On macOS the functional tests also need `brew install libomp`.** The macOS wheels link
 against `@rpath/libomp.dylib` and, unlike the manylinux ones, do not vendor an OpenMP

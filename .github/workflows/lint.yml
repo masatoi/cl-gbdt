@@ -62,6 +62,12 @@ jobs:
         # script checks both. See tools/ci/lint.lisp.
         run: ros run -- --non-interactive --load tools/ci/lint.lisp
 
+      - name: Every leaf system loads on its own
+        # package-inferred-system infers dependencies from defpackage clauses only, so a
+        # file that references a package it does not declare works right up until load
+        # order shifts. Each leaf is loaded in its own fresh image to catch that.
+        run: ros run -- --non-interactive --load tools/ci/check-leaf-systems.lisp
+
       - name: Compile every system without warnings
         run: |
           ros run -- --non-interactive \
