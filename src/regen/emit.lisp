@@ -149,7 +149,11 @@ than skipping any function it cannot map."
       ;; The sort key is total: C macro names are unique within a translation unit, so no
       ;; two entries tie and the result does not depend on `sort' being stable. `stable-sort'
       ;; would not help if they did tie -- it would preserve c2ffi's order, which is the
-      ;; non-determinism this sort exists to remove.
+      ;; non-determinism this sort exists to remove. Uniqueness itself rests on c2ffi
+      ;; emitting one `const' entry per surviving `#define' -- a `#undef'-and-redefine pair
+      ;; would break it, and if that ever happened, the twice-run byte-identity check
+      ;; (`committed-bindings-match-their-committed-spec') would fail loudly, which is
+      ;; the right failure.
       (dolist (entry (sort (nreverse const-entries) #'string<
                             :key (lambda (entry) (gethash "name" entry))))
         (if (emit-constant entry out)
