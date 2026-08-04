@@ -6,7 +6,26 @@
 ;;;; stringified. Backend-specific parameters pass through untouched; differences
 ;;;; between the two training algorithms are not forced into one abstraction.
 
-(in-package #:cl-gbdt)
+(uiop:define-package #:cl-gbdt/src/protocol
+  (:use #:cl)
+  (:import-from #:alexandria #:parse-body)
+  (:import-from #:cl-gbdt/src/backend #:backend)
+  (:export #:make-dataset
+           #:dataset-num-rows
+           #:dataset-num-features
+           #:train
+           #:update-one-iteration
+           #:predict
+           #:save-model
+           #:load-model
+           #:model-to-string
+           #:feature-importance
+           #:free-dataset
+           #:free-booster
+           #:with-dataset
+           #:with-booster))
+
+(in-package #:cl-gbdt/src/protocol)
 
 (defgeneric make-dataset (backend matrix &key label weight group feature-names parameters)
   (:documentation "Build a training dataset for BACKEND from MATRIX.

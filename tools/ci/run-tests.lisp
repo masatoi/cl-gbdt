@@ -12,7 +12,7 @@
 ;;;; rove summary reads the same whether the functional tests ran or all skipped:
 ;;;;
 ;;;;   cl-gbdt/tests             must open NO foreign library
-;;;;   cl-gbdt/functional-tests  must open BOTH backend libraries
+;;;;   cl-gbdt/tests/functional  must open BOTH backend libraries
 ;;;;
 ;;;; Without that second check, a runner with no vendor/ directory would skip every
 ;;;; test and report success -- the exact outcome the functional suite exists to
@@ -49,7 +49,7 @@
                     Something has made the library-free layer depend on a backend.~%"
                    names)
            nil)))
-    ((string= system "cl-gbdt/functional-tests")
+    ((string= system "cl-gbdt/tests/functional")
      (or (and (library-loaded-p "lightgbm" names)
               (library-loaded-p "xgboost" names))
          (progn
@@ -61,7 +61,17 @@
                     Did ./tools/fetch-libs.sh run?~%"
                    names)
            nil)))
-    (t t)))
+    ;; Not a pass. Both branches above match on a literal system name, so renaming a test
+    ;; system silently disables the very check that tells a real run from four skipped
+    ;; tests. That nearly happened when `cl-gbdt/functional-tests' became
+    ;; `cl-gbdt/tests/functional'. An unrecognised name is now a failure, so the next
+    ;; rename cannot pass quietly.
+    (t (format *error-output*
+               "~&FAIL: no foreign-library expectation is defined for ~S.~@
+                Add one to check-foreign-libraries -- a test system with no expectation~@
+                cannot be distinguished from one whose tests all skipped.~%"
+               system)
+       nil)))
 
 (unless (and *system* (plusp (length *system*)))
   (format *error-output* "~&FAIL: set CL_GBDT_TEST_SYSTEM to the system to run.~%")

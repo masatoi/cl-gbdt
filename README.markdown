@@ -28,14 +28,28 @@ docstrings but no methods. Loading `cl-gbdt` does not require either
 | `cl-gbdt` | Core: package, condition hierarchy, matrix marshalling, backend registry and `open-backend` protocol, the unified API's generic functions |
 | `cl-gbdt/lightgbm` | Generated CFFI bindings for the LightGBM C API (`src/lightgbm/c-api.lisp`) |
 | `cl-gbdt/xgboost` | Generated CFFI bindings for the XGBoost C API (`src/xgboost/c-api.lisp`) |
-| `cl-gbdt/regen` | The binding emitter (`src/regen/`). Development-only -- never appears in `cl-gbdt`'s, `cl-gbdt/lightgbm`'s, or `cl-gbdt/xgboost`'s dependency graph, so an ordinary user never needs it or its dependencies (`cffi/c2ffi`, `com.inuoe.jzon`) |
+| `cl-gbdt/regen` | The binding emitter (`src/regen/`). Development-only -- never appears in `cl-gbdt`'s, `cl-gbdt/lightgbm`'s, or `cl-gbdt/xgboost`'s dependency graph, so an ordinary user never needs it or its dependencies (`alexandria`, `com.inuoe.jzon`). `cffi/c2ffi` is *not* one of them -- it is a dependency of `tools/regen.lisp`, which quickloads it directly, not of the `cl-gbdt/regen` system itself |
 | `cl-gbdt/tests` | The Rove test suite |
 
-Each backend system depends only on `cl-gbdt` and `cffi`, and each is loadable
-independently, so the library works on a machine where only one of the two
-shared libraries is present.
+Each backend system currently depends only on `cffi`, by way of its generated
+`c-api.lisp` (`cl-gbdt/lightgbm` depends on `cl-gbdt/src/lightgbm/c-api`, which
+declares nothing but `cl` and `cffi`). Neither backend system depends on `cl-gbdt`
+itself yet, since the unified API has no methods to call into them (see Status
+above). Each backend is loadable independently, so the library works on a machine
+where only one of the two shared libraries is present.
 
 ## Running the tests
+
+**First, once: ASDF 3.3.7 or newer is required.** Roswell ships 3.3.1, whose
+`package-inferred-system` dependency scanner does not know the `:local-nicknames`
+clause; loading any system that reaches `src/regen/emit.lisp` dies with
+`:LOCAL-NICKNAMES fell through ECASE expression` before a single test runs.
+
+```bash
+ros install asdf
+```
+
+Then:
 
 ```lisp
 (ql:quickload :cl-gbdt/tests)
@@ -59,12 +73,12 @@ completed" count.
 To run a single test from the REPL:
 
 ```lisp
-(rove:run-test 'cl-gbdt/tests::some-test-name)
+(rove:run-test 'cl-gbdt/tests/backend::some-test-name)
 ```
 
 ## Running the functional tests
 
-`cl-gbdt/functional-tests` is a separate system that calls the real LightGBM and
+`cl-gbdt/tests/functional` is a separate system that calls the real LightGBM and
 XGBoost shared libraries -- design doc section 12, layer 2. It exercises the raw FFI
 directly: loading each library, reading its version, and running a small train/predict
 round trip against a trivially separable dataset. Each round trip asserts more than
@@ -81,8 +95,8 @@ Run `./tools/fetch-libs.sh` first to vendor the libraries into `vendor/`. Then:
 
 ```bash
 ros run -- --non-interactive \
-  --eval '(ql:quickload :cl-gbdt/functional-tests :silent t)' \
-  --eval '(asdf:test-system :cl-gbdt/functional-tests)'
+  --eval '(ql:quickload :cl-gbdt/tests/functional :silent t)' \
+  --eval '(asdf:test-system :cl-gbdt/tests/functional)'
 ```
 
 A backend whose library is missing skips rather than fails, naming
@@ -108,9 +122,10 @@ The logic lives in scripts rather than in the YAML, so the same checks run local
 ```bash
 CL_GBDT_TEST_SYSTEM=cl-gbdt/tests ros run -- --non-interactive \
   --load tools/ci/run-tests.lisp          # layer 1
-CL_GBDT_TEST_SYSTEM=cl-gbdt/functional-tests ros run -- --non-interactive \
+CL_GBDT_TEST_SYSTEM=cl-gbdt/tests/functional ros run -- --non-interactive \
   --load tools/ci/run-tests.lisp          # layer 2, needs ./tools/fetch-libs.sh first
 ros run -- --non-interactive --load tools/ci/lint.lisp
+ros run -- --non-interactive --load tools/ci/check-leaf-systems.lisp
 ```
 
 Two things those scripts do that the plain commands above do not, and that CI needs:
@@ -128,6 +143,27 @@ line length — a 132-column file passes it without comment. mallet is not in th
 dist; the workflow clones it into `~/.roswell/local-projects/`, pinned, and a current ASDF is
 installed first because Roswell ships 3.3.1, which predates `:local-nicknames` in
 `uiop:define-package`.
+
+**`tools/ci/check-leaf-systems.lisp` loads every leaf system alone, each in its own fresh
+`ros run` subprocess.** This guards the principal risk this library's
+`:package-inferred-system` layout carries: ASDF infers a file's dependencies *only* from its
+`uiop:define-package` clauses — `:use`, `:import-from` (even one naming zero symbols), and
+`:local-nicknames`. A file that calls, say, `cffi:defcfun` without naming `#:cffi` in one of
+those clauses gets no declared dependency on CFFI; it loads correctly whenever something else
+in the same image happened to load CFFI first, and breaks the moment load order shifts. Because
+that failure is order-dependent, loading every leaf into one shared image — the obvious way to
+"prove" they all load — proves nothing: the first file's load satisfies the next file's
+undeclared dependency. Each leaf therefore gets a subprocess with a fresh image, where nothing
+but what it declares is on hand.
+
+The check also doubles as the enforcement mechanism for this project's naming convention: **a
+leaf system's name is `cl-gbdt/` followed by its path from the repository root, extension
+dropped** — `src/lightgbm/c-api.lisp` names `cl-gbdt/src/lightgbm/c-api`, and its
+`uiop:define-package` form must name that same symbol. The checker derives its list of systems
+to check from the filesystem (every `.lisp` file under `src/` and `tests/`, generated files
+included) rather than from a hardcoded list, so a new file is picked up automatically the next
+time CI runs — a contributor adding one only needs to follow the path-is-the-name rule and give
+the package the `defpackage` clauses its file actually needs.
 
 **On macOS the functional tests also need `brew install libomp`.** The macOS wheels link
 against `@rpath/libomp.dylib` and, unlike the manylinux ones, do not vendor an OpenMP
@@ -159,7 +195,7 @@ ros run -- --non-interactive --load tools/regen.lisp
    branch, into the `cl-gbdt-c2ffi:llvm-18` image. `tools/c2ffi.sh` invokes that
    image; `tools/regen.lisp` invokes `tools/c2ffi.sh`.
 3. `tools/regen.lisp` runs c2ffi over the vendored headers for the local
-   architecture, then runs `cl-gbdt.regen:emit-bindings` over its output, and
+   architecture, then runs `cl-gbdt/src/regen/all:emit-bindings` over its output, and
    validates the result (minimum function count, required symbols present, no
    architecture-dependent types) before replacing the committed file. A failed
    validation leaves the previously committed file untouched.

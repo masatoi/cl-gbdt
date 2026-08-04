@@ -3,7 +3,39 @@
 ;;;; The C APIs report failure through int return codes, so every foreign call is
 ;;;; wrapped and converted into a condition immediately. Nothing propagates silently.
 
-(in-package #:cl-gbdt)
+(uiop:define-package #:cl-gbdt/src/conditions
+  (:use #:cl)
+  (:export #:gbdt-error
+           #:backend-error
+           #:backend-error-backend
+           #:backend-library-not-found
+           #:backend-library-not-found-searched
+           #:backend-library-load-failed
+           #:backend-library-load-failed-path
+           #:backend-library-load-failed-cause
+           #:missing-foreign-symbols
+           #:missing-foreign-symbols-names
+           #:backend-not-open
+           #:unknown-backend
+           #:unknown-backend-registered
+           #:foreign-call-error
+           #:foreign-call-error-code
+           #:foreign-call-error-message
+           #:foreign-call-error-function-name
+           #:released-handle-error
+           #:released-handle-error-object
+           #:data-error
+           #:dimension-mismatch
+           #:dimension-mismatch-expected
+           #:dimension-mismatch-given
+           #:unsupported-element-type
+           #:unsupported-element-type-given
+           #:untested-backend-version
+           #:untested-backend-version-backend
+           #:untested-backend-version-version
+           #:untested-backend-version-tested))
+
+(in-package #:cl-gbdt/src/conditions)
 
 (define-condition gbdt-error (error)
   ()

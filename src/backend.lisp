@@ -4,7 +4,27 @@
 ;;;; system is loaded, so cl-gbdt works on machines where only one of the two
 ;;;; libraries is installed.
 
-(in-package #:cl-gbdt)
+(uiop:define-package #:cl-gbdt/src/backend
+  (:use #:cl)
+  (:import-from #:cffi)
+  (:import-from #:cl-gbdt/src/conditions
+                #:unknown-backend)
+  (:export #:backend
+           #:backend-name
+           #:backend-library-path
+           #:backend-capabilities
+           #:backend-version
+           #:backend-open-p
+           #:backend-info
+           #:register-backend
+           #:find-backend-class
+           #:open-backend
+           #:close-backend
+           #:initialize-backend
+           #:shutdown-backend
+           #:probe-foreign-symbols))
+
+(in-package #:cl-gbdt/src/backend)
 
 (defvar *backend-classes* (make-hash-table :test #'eq)
   "Maps a backend name (a keyword) to its class name.")

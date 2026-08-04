@@ -5,7 +5,16 @@
 ;;;; generated bindings are architecture-independent by construction rather than
 ;;;; by comparison against other architectures.
 
-(in-package #:cl-gbdt.regen)
+(uiop:define-package #:cl-gbdt/src/regen/types
+  (:use #:cl)
+  (:export #:+typedef-map+
+           #:+builtin-map+
+           #:unmapped-type
+           #:unmapped-type-tag
+           #:unmapped-type-context
+           #:cffi-type))
+
+(in-package #:cl-gbdt/src/regen/types)
 
 (defparameter +typedef-map+
   '(("int8_t" . :int8) ("uint8_t" . :uint8)

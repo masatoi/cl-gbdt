@@ -1,6 +1,22 @@
 ;;;; lightgbm.lisp --- Round-trip test against the real LightGBM library.
 
-(in-package #:cl-gbdt/functional-tests)
+(uiop:define-package #:cl-gbdt/tests/functional/lightgbm
+  (:use #:cl #:rove)
+  (:import-from #:cffi)
+  (:import-from #:cl-gbdt)
+  ;; The generated FFI packages deliberately export nothing -- their own docstrings say
+  ;; nothing outside the backend systems should call them directly. These tests are the
+  ;; exception: their whole purpose is to exercise that raw layer. They therefore reach in
+  ;; with a double colon, which keeps the trespass visible at every call site rather than
+  ;; hiding it behind an export list the design does not want.
+  (:local-nicknames (#:lgbm #:cl-gbdt/src/lightgbm/c-api))
+  (:import-from #:cl-gbdt/tests/functional/support
+                #:backend-library-path
+                #:with-backend-library
+                #:make-separable-dataset
+                #:predictions-separate-p))
+
+(in-package #:cl-gbdt/tests/functional/lightgbm)
 
 (defun lgbm-last-error ()
   "Return LightGBM's last error message as a Lisp string."

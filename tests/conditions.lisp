@@ -1,6 +1,10 @@
 ;;;; conditions.lisp --- Tests for the condition hierarchy.
 
-(in-package #:cl-gbdt/tests)
+(uiop:define-package #:cl-gbdt/tests/conditions
+  (:use #:cl #:rove)
+  (:import-from #:cl-gbdt))
+
+(in-package #:cl-gbdt/tests/conditions)
 
 (deftest condition-hierarchy
   (testing "every condition inherits from gbdt-error"

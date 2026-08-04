@@ -1,6 +1,16 @@
 ;;;; support.lisp --- Library discovery and shared fixtures for the functional tests.
 
-(in-package #:cl-gbdt/functional-tests)
+(uiop:define-package #:cl-gbdt/tests/functional/support
+  (:use #:cl #:rove)
+  (:import-from #:cffi)
+  (:export #:backend-library-path
+           #:ensure-backend-library
+           #:with-backend-library
+           #:make-separable-dataset
+           #:predictions-separate-p
+           #:array-interface-json))
+
+(in-package #:cl-gbdt/tests/functional/support)
 
 (defparameter *backend-libraries*
   '((:lightgbm "CL_GBDT_LIGHTGBM_LIB" "vendor/lightgbm/lib/" "lib_lightgbm.*")

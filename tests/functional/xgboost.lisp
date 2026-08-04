@@ -1,6 +1,23 @@
 ;;;; xgboost.lisp --- Round-trip test against the real XGBoost library.
 
-(in-package #:cl-gbdt/functional-tests)
+(uiop:define-package #:cl-gbdt/tests/functional/xgboost
+  (:use #:cl #:rove)
+  (:import-from #:cffi)
+  (:import-from #:cl-gbdt)
+  ;; The generated FFI packages deliberately export nothing -- their own docstrings say
+  ;; nothing outside the backend systems should call them directly. These tests are the
+  ;; exception: their whole purpose is to exercise that raw layer. They therefore reach in
+  ;; with a double colon, which keeps the trespass visible at every call site rather than
+  ;; hiding it behind an export list the design does not want.
+  (:local-nicknames (#:xgb #:cl-gbdt/src/xgboost/c-api))
+  (:import-from #:cl-gbdt/tests/functional/support
+                #:backend-library-path
+                #:with-backend-library
+                #:make-separable-dataset
+                #:predictions-separate-p
+                #:array-interface-json))
+
+(in-package #:cl-gbdt/tests/functional/xgboost)
 
 (defun xgb-last-error ()
   "Return XGBoost's last error message as a Lisp string."

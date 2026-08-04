@@ -34,9 +34,54 @@ The style rules in `common-lisp-expert.md` (Google CL Style Guide, 2-space inden
 implementations — **LightGBM** and **XGBoost** — exposing a single shared high-level API
 over both backends.
 
-**Status: skeleton only.** `src/main.lisp` and `tests/main.lisp` are the generated stubs;
-`cl-gbdt.asd` has no dependencies yet. Nothing below describes existing code — design
-decisions (FFI vs. subprocess, backend dispatch, data representation) are still open.
+**Status: foundation only.** The condition hierarchy, the backend registry and
+`open-backend` protocol, the zero-copy matrix marshalling, and a binding generator that
+produces the raw CFFI declarations for both C APIs are in place. It does **not** yet call
+into either shared library: `make-dataset`, `train`, `predict`, and the rest of the
+unified API are declared as generic functions with docstrings but no methods. See
+`README.markdown` for the full system table and the design doc it points at.
+
+The system is `:class :package-inferred-system`: one file, one package, and ASDF derives
+each file's dependencies from its own `uiop:define-package` clauses rather than from a
+hand-written `:components` tree. `cl-gbdt.asd` has real dependencies now (`cffi`,
+`alexandria`, `rove`, `com.inuoe.jzon` among them) — do not add a `:components` clause
+expecting to find one to edit; there isn't one.
+
+### Package-inferred-system rules this project relies on
+
+These are non-obvious enough, and costly enough to get wrong silently, that they are
+worth stating explicitly rather than leaving them to be rediscovered:
+
+- **A file's package name must equal its path from the repository root**,
+  `/`-separated, lower case, extension dropped — `src/lightgbm/c-api.lisp` must declare
+  `#:cl-gbdt/src/lightgbm/c-api`. Nothing enforces this at compile time by itself;
+  `tools/ci/check-leaf-systems.lisp` is the check that does (see below).
+- **Rove discovers a package-inferred-system's tests only through dependencies whose
+  names have the system's own name as a literal string prefix**
+  (`system-component-p` in `rove/core/suite/file.lisp`). This is why the functional
+  test system is named `cl-gbdt/tests/functional` and not, say,
+  `cl-gbdt/functional-tests` — the latter is not a prefix match and rove would report
+  "0 tests completed" without erroring.
+- **`(:import-from #:pkg)` naming zero symbols is the deliberate way to declare a
+  dependency** for a file that only ever calls `pkg`'s functions package-qualified
+  (`pkg:some-function`) and imports no bare symbols. Leaving the clause out instead
+  loads correctly only when something else happens to have loaded `pkg` first, and
+  breaks the moment load order shifts.
+- **`src/*/c-api.lisp` are generated and must never be hand-edited.** They are produced
+  by `tools/regen.lisp` from vendored C headers (see README's "Regenerating the
+  bindings"). This is already enforced by `tests/bindings.lisp`'s
+  `committed-bindings-match-their-committed-spec` test, which re-emits from the
+  committed c2ffi spec and compares the result to the committed file byte-for-byte.
+
+`tools/ci/check-leaf-systems.lisp` loads every leaf system alone, each in its own fresh
+`ros run` subprocess, which is the only way to catch an undeclared dependency that
+happens to be satisfied by load order in a shared image. Run it with:
+
+```bash
+ros run -- --non-interactive --load tools/ci/check-leaf-systems.lisp
+```
+
+It must report every leaf system as `PASS` (`N/N leaf systems load alone`).
 
 ## MCP Setup
 
@@ -56,17 +101,51 @@ be registered for the session. Source lives at `~/cl-mcp`
 `.mcp.json` is machine-local configuration — keep it out of version control
 (see `.gitignore`).
 
+## Requirements
+
+**ASDF 3.3.7 or newer.** Roswell ships 3.3.1, whose package-inferred-system dependency
+scanner does not know the `:local-nicknames` clause and dies with `:LOCAL-NICKNAMES fell
+through ECASE expression` on any system that reaches `src/regen/emit.lisp`. Install a
+current one once:
+
+```bash
+ros install asdf
+```
+
+Both CI workflows do this. The requirement arrived with the package-inferred-system
+conversion -- before it, that clause was never parsed for dependency inference.
+
 ## Testing & Linting
 
-Load and test:
+Load and test (layer 1 — no shared library required):
 
 ```lisp
-(ql:quickload :cl-gbdt)
-(asdf:test-system :cl-gbdt)
+(ql:quickload :cl-gbdt/tests)
+(asdf:test-system :cl-gbdt/tests)
 ```
 
 Via the MCP `run-tests` tool, the system name is `cl-gbdt/tests`. Single test from the
-REPL: `(rove:run-test 'cl-gbdt/tests/main::some-test)`.
+REPL: `(rove:run-test 'cl-gbdt/tests/backend::some-test-name)` — substitute whichever
+`cl-gbdt/tests/*` package the test actually lives in; `cl-gbdt/tests` itself is a
+defsystem name only, no file defines a package by that name.
+
+The functional suite (layer 2, calls the real shared libraries; needs
+`./tools/fetch-libs.sh` first) is `cl-gbdt/tests/functional`, tested the same way.
+
+`asdf:test-system` exits 0 even when tests fail, so it is not what CI runs. The
+authoritative checks, runnable locally, are:
+
+```bash
+CL_GBDT_TEST_SYSTEM=cl-gbdt/tests ros run -- --non-interactive \
+  --load tools/ci/run-tests.lisp                        # layer 1
+CL_GBDT_TEST_SYSTEM=cl-gbdt/tests/functional ros run -- --non-interactive \
+  --load tools/ci/run-tests.lisp                        # layer 2
+ros run -- --non-interactive --load tools/ci/lint.lisp   # mallet + column-width check
+ros run -- --non-interactive --load tools/ci/check-leaf-systems.lisp
+```
+
+`sbcl` is not on `PATH` in this environment; every command above goes through
+`ros run -- --non-interactive ...`, not a bare `sbcl` invocation.
 
 Before committing:
 
@@ -75,8 +154,11 @@ Before committing:
 ```
 
 ```bash
-mallet src/*.lisp
+ros run -- --non-interactive --load tools/ci/lint.lisp
 ```
+
+`mallet` alone does not check line length; `tools/ci/lint.lisp` adds the ≤100-column
+check on top of it. Running mallet by itself is not equivalent.
 
 ## Code Style
 
@@ -90,7 +172,14 @@ mallet src/*.lisp
 ## Repository Structure
 
 ```
-src/       Core implementation
-tests/     Rove test suites (mirrored naming)
-prompts/   System prompts for AI agents (imported from cl-mcp)
+src/          Core implementation and the binding emitter (src/regen/), one package
+              per file; src/*/c-api.lisp are generated -- never hand-edit them
+tests/        Rove test suites, layer 1 (no shared library) plus tests/functional/,
+              layer 2 (calls the real shared libraries)
+tools/ci/     The scripts CI actually runs: run-tests.lisp, lint.lisp,
+              check-leaf-systems.lisp
+tools/        regen.lisp (regenerates src/*/c-api.lisp) and the shell scripts it and
+              CI call
+ffi-spec/     Vendored C headers and the c2ffi specs generated from them
+prompts/      System prompts for AI agents (imported from cl-mcp)
 ```

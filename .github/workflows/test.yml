@@ -54,6 +54,14 @@ jobs:
           mkdir -p ~/.roswell/local-projects
           ln -sfn "$GITHUB_WORKSPACE" ~/.roswell/local-projects/cl-gbdt
 
+      - name: Install a current ASDF
+        # Roswell ships ASDF 3.3.1, whose package-inferred-system dependency scanner
+        # does not know the :local-nicknames clause -- src/regen/emit.lisp uses one, and
+        # loading any system that reaches it dies with ":LOCAL-NICKNAMES fell through
+        # ECASE expression". This is a requirement of the package-inferred-system
+        # conversion: before it, that clause was never parsed for dependency inference.
+        run: ros install asdf
+
       - name: Layer 1 - runs with no external artifact
         env:
           CL_GBDT_TEST_SYSTEM: cl-gbdt/tests
@@ -71,5 +79,5 @@ jobs:
 
       - name: Layer 2 - the real LightGBM and XGBoost
         env:
-          CL_GBDT_TEST_SYSTEM: cl-gbdt/functional-tests
+          CL_GBDT_TEST_SYSTEM: cl-gbdt/tests/functional
         run: ros run -- --non-interactive --load tools/ci/run-tests.lisp
