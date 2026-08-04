@@ -125,3 +125,35 @@ COLUMN is always 0, but the shape still has to be unpacked by hand."
                        (error () nil))
                      "a second free-dataset signaled")))
           (cl-gbdt:close-backend backend))))))
+
+;;; `LGBM_BoosterUpdateOneIter' dereferences the booster's internal `train_data_'
+;;; pointer, which `LGBM_DatasetFree' does not know about and does not clear. Freeing
+;;; the training dataset out from under a live booster and then calling
+;;; `update-one-iteration' is a segfault -- confirmed directly against the vendored
+;;; library -- not a catchable Lisp condition, so the guard in
+;;; `%check-training-set-live' has to run before any foreign call. This proves it does.
+
+(deftest lightgbm-api-update-one-iteration-after-training-set-freed-signals
+  (with-backend-library (:lightgbm)
+    (multiple-value-bind (matrix label-vector) (make-separable-dataset)
+      (let ((backend (cl-gbdt:open-backend :lightgbm))
+            (dataset nil)
+            (booster nil))
+        (unwind-protect
+             (progn
+               (setf dataset (cl-gbdt:make-dataset backend matrix
+                                                    :label label-vector
+                                                    :parameters *dataset-parameters*))
+               (setf booster (cl-gbdt:train backend dataset :num-rounds 1
+                                             :parameters *booster-parameters*))
+               (cl-gbdt:free-dataset dataset)
+               (testing "update-one-iteration on a booster whose training set was freed signals"
+                 ;; handler-case, not rove's `signals' -- `signals' does not reliably
+                 ;; catch conditions raised inside `restart-case', a documented pitfall
+                 ;; in this repo's own prompts/repl-driven-development.md.
+                 (ok (handler-case (progn (cl-gbdt:update-one-iteration booster) nil)
+                       (cl-gbdt:released-handle-error () t))
+                     "update-one-iteration did not signal released-handle-error")))
+          (progn
+            (when booster (cl-gbdt:free-booster booster))
+            (cl-gbdt:close-backend backend)))))))

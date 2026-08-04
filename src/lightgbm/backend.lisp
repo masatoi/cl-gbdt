@@ -59,12 +59,15 @@
                 #:booster
                 #:make-handle
                 #:release-handle
-                #:handle-live-pointer)
+                #:handle-live-pointer
+                #:handle-released-p
+                #:booster-training-set)
   (:import-from #:cl-gbdt/src/conditions
                 #:backend-library-not-found
                 #:backend-library-load-failed
                 #:missing-foreign-symbols
-                #:foreign-call-error)
+                #:foreign-call-error
+                #:released-handle-error)
   (:import-from #:cl-gbdt/src/parameters
                 #:normalize-parameters)
   (:import-from #:cl-gbdt/src/data
@@ -403,10 +406,17 @@ dereference it blindly."
 
 (defun %add-valid-data (booster-pointer valid-sets)
   "Attach each dataset in VALID-SETS to BOOSTER-POINTER via
-`LGBM_BoosterAddValidData'."
+`LGBM_BoosterAddValidData'.
+
+Each VALID-SET's liveness is checked, via `handle-live-pointer', before it is
+passed to C -- the same guard `update-one-iteration' applies to a booster's
+training set: `LGBM_BoosterAddValidData' dereferences the raw pointer directly,
+and one already freed by `free-dataset' is a segfault, not a catchable
+condition."
   (dolist (valid-set valid-sets)
-    (check-lgbm (lgbm-booster-add-valid-data booster-pointer (handle-live-pointer valid-set))
-                "LGBM_BoosterAddValidData")))
+    (let ((pointer (handle-live-pointer valid-set)))
+      (check-lgbm (lgbm-booster-add-valid-data booster-pointer pointer)
+                  "LGBM_BoosterAddValidData"))))
 
 (defun %update-one-iteration (booster-pointer)
   "Advance BOOSTER-POINTER by one boosting iteration via
@@ -439,11 +449,28 @@ the booster's lifetime. Free the result with `free-booster' or wrap it in
     (make-handle 'lightgbm-booster booster-pointer (backend-name backend) :booster
                  :training-set dataset)))
 
+(defun %check-training-set-live (booster)
+  "Signal `released-handle-error' when BOOSTER's training set has already been
+freed.
+
+`LGBM_BoosterUpdateOneIter' dereferences the booster's internal `train_data_'
+pointer, which `LGBM_DatasetFree' neither owns nor knows about -- it does not
+clear the booster's reference when the dataset is freed. Calling it after the
+training dataset has been freed out from under the booster is a segfault, not a
+catchable Lisp condition, so this has to be checked here, before any foreign
+call. BOOSTER-TRAINING-SET is NIL for a `load-model' booster, which has no
+training set and needs no check."
+  (let ((training-set (booster-training-set booster)))
+    (when (and training-set (handle-released-p training-set))
+      (error 'released-handle-error :object training-set))))
+
 (defmethod update-one-iteration ((booster lightgbm-booster))
   "Advance BOOSTER by one boosting iteration via `LGBM_BoosterUpdateOneIter'.
 
 Returns false once an iteration produces no further split, per the generic
-function's contract."
+function's contract. Signals `released-handle-error' when BOOSTER's training
+set has already been freed -- see `%check-training-set-live'."
+  (%check-training-set-live booster)
   (zerop (%update-one-iteration (handle-live-pointer booster))))
 
 (defmethod free-booster ((booster lightgbm-booster))

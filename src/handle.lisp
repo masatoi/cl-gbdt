@@ -43,8 +43,10 @@ Build instances with `make-handle', never directly."))
 
 (defclass booster (handle)
   ((training-set :initarg :training-set
+                 :initform nil
                  :reader booster-training-set
-                 :documentation "The dataset this booster was trained on."))
+                 :documentation "The dataset this booster was trained on, or NIL for a
+`load-model' booster, which has none."))
   (:documentation "A trained, or in-progress, backend model.
 
 Retains its training set strongly, which is what makes `with-booster''s docstring --
