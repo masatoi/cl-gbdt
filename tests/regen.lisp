@@ -2,7 +2,11 @@
 
 (uiop:define-package #:cl-gbdt/tests/regen
   (:use #:cl #:rove)
-  (:import-from #:cl-gbdt/src/regen/all))
+  (:import-from #:cl-gbdt/src/regen/all)
+  ;; cl-gbdt/src/regen/all re-exports emit, so emit::emit-constant below has always
+  ;; resolved -- but only because all happens to load emit first. Declare the
+  ;; dependency this file actually uses directly, rather than relying on that.
+  (:import-from #:cl-gbdt/src/regen/emit))
 
 (in-package #:cl-gbdt/tests/regen)
 
