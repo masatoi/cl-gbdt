@@ -319,8 +319,9 @@ COLUMN is always 0, but the shape still has to be unpacked by hand."
                  ;; tests for why.
                  (ok (handler-case (progn (cl-gbdt:update-one-iteration booster) nil)
                        (cl-gbdt:released-handle-error () t))
-                     "update-one-iteration did not signal released-handle-error after ~
-                      the caller truncated its own valid-sets list")))
+                     (format nil "update-one-iteration did not signal ~
+                                   released-handle-error after the caller truncated its ~
+                                   own valid-sets list"))))
           (progn
             (when booster (cl-gbdt:free-booster booster))
             (when dataset (cl-gbdt:free-dataset dataset))

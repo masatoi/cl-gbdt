@@ -37,8 +37,9 @@ resolution reach a real load."
                   (cl-gbdt:backend-library-load-failed-path condition))))))
 
 (deftest resolve-and-load-library-env-var-is-strict
-  (testing "an :env-var set to a nonexistent path signals backend-library-not-found, ~
-            not a fall-through to :directory or the system search"
+  (testing (format nil "an :env-var set to a nonexistent path signals ~
+                         backend-library-not-found, not a fall-through to :directory or ~
+                         the system search")
     (let ((variable "CL_GBDT_TEST_LIBRARY_ENV_VAR_NONEXISTENT"))
       (unwind-protect
            (progn
@@ -61,8 +62,8 @@ resolution reach a real load."
         (setf (uiop:getenv variable) nil)))))
 
 (deftest resolve-and-load-library-falls-through-an-absent-directory
-  (testing "no :path, an unset :env-var, and a :directory with no match all fall through ~
-            to CFFI's own system search"
+  (testing (format nil "no :path, an unset :env-var, and a :directory with no match all ~
+                         fall through to CFFI's own system search")
     (let ((condition (handler-case
                           (progn (cl-gbdt:resolve-and-load-library
                                   (%test-backend)

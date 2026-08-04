@@ -331,8 +331,9 @@ binary, so COLUMN is always 0, but the shape still has to be unpacked by hand."
                  ;; tests for why.
                  (ok (handler-case (progn (cl-gbdt:update-one-iteration booster) nil)
                        (cl-gbdt:released-handle-error () t))
-                     "update-one-iteration did not signal released-handle-error after ~
-                      the caller truncated its own valid-sets list")))
+                     (format nil "update-one-iteration did not signal ~
+                                   released-handle-error after the caller truncated its ~
+                                   own valid-sets list"))))
           (progn
             (when booster (cl-gbdt:free-booster booster))
             (when dataset (cl-gbdt:free-dataset dataset))
@@ -362,8 +363,8 @@ binary, so COLUMN is always 0, but the shape still has to be unpacked by hand."
                (uiop:with-temporary-file (:pathname path :type "json")
                  (cl-gbdt:save-model booster path)
                  (cl-gbdt:with-booster (loaded (cl-gbdt:load-model backend path))
-                   (testing "update-one-iteration on a load-model booster signals ~
-                             missing-training-set"
+                   (testing (format nil "update-one-iteration on a load-model booster ~
+                                          signals missing-training-set")
                      (ok (handler-case (progn (cl-gbdt:update-one-iteration loaded) nil)
                            (cl-gbdt:missing-training-set () t))
                          "update-one-iteration did not signal missing-training-set")))))

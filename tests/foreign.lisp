@@ -16,8 +16,8 @@
       (ng called "the last-error thunk is not called when CODE is zero"))))
 
 (deftest check-foreign-call-signals-on-failure
-  (testing "a nonzero code signals foreign-call-error carrying the function name, code, ~
-            and whatever the thunk returned"
+  (testing (format nil "a nonzero code signals foreign-call-error carrying the function ~
+                         name, code, and whatever the thunk returned")
     (let ((condition (handler-case
                           (progn (cl-gbdt:check-foreign-call -1 "SomeFunction"
                                                               (lambda () "boom"))
