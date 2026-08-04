@@ -39,7 +39,9 @@
                  :documentation "Path of the shared library actually loaded.")
    (capabilities :initform nil
                  :accessor backend-capabilities
-                 :documentation "Plist of features determined by symbol probing.")
+                 :documentation "Plist of backend-specific features. Reserved for future
+symbol-probing-based detection; no backend populates this yet, so `backend-info' always
+reports it as NIL.")
    (version :initform nil
             :accessor backend-version
             :documentation "Library version; an inferred value or nil when unavailable.")
@@ -66,11 +68,12 @@ Each backend system calls this when it loads."
   (gethash name *backend-classes*))
 
 (defgeneric initialize-backend (backend &key path)
-  (:documentation "Locate and load BACKEND's shared library, then probe its capabilities.
+  (:documentation "Locate and load BACKEND's shared library.
 
 When PATH is supplied it takes precedence over the search. On failure this signals
 `backend-library-not-found', `backend-library-load-failed', or
-`missing-foreign-symbols'. Implemented by each backend."))
+`missing-foreign-symbols'. Does not populate `backend-capabilities' -- no backend
+probes capabilities yet, so it stays NIL. Implemented by each backend."))
 
 (defgeneric shutdown-backend (backend)
   (:documentation "Close BACKEND's shared library and release its resources.

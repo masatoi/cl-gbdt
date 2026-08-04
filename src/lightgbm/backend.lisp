@@ -558,6 +558,22 @@ obtained instead of assumed."
                 "LGBM_BoosterCalcNumPredict")
     (cffi:mem-ref out :int64)))
 
+(defun %predict-ncol (element-count nrow)
+  "Return ELEMENT-COUNT's per-row width for a matrix of NROW rows.
+
+`(/ element-count nrow)' alone signals `division-by-zero' when the matrix has no
+rows, and silently yields a ratio, not an integer, if `LGBM_BoosterCalcNumPredict'
+ever reports a count that is not an exact multiple of NROW. NROW = 0 has an
+obvious answer -- there is no row to give a width to -- so it is handled directly
+rather than routed through the assertion below."
+  (if (zerop nrow)
+      0
+      (multiple-value-bind (quotient remainder) (truncate element-count nrow)
+        (assert (zerop remainder) ()
+                "LGBM_BoosterCalcNumPredict reported ~D elements for ~D rows, not an ~
+                 exact multiple of the row count" element-count nrow)
+        quotient)))
+
 (defmethod predict ((booster lightgbm-booster) matrix &key (kind :normal) num-iteration)
   "Predict on MATRIX with BOOSTER via `LGBM_BoosterPredictForMat'.
 
@@ -567,7 +583,12 @@ override.
 
 The output buffer's element count comes from `LGBM_BoosterCalcNumPredict', not
 from the row count alone: the row count is only correct for a single-class
-objective. The second array dimension is that count divided by the row count."
+objective. The second array dimension is that count divided by the row count,
+guarded by `%predict-ncol'. `LGBM_BoosterPredictForMat' also writes its own
+element count back through OUT-LEN; this is asserted equal to
+`LGBM_BoosterCalcNumPredict''s count rather than trusted silently, since the
+buffer was sized from the latter and a mismatch would mean either an
+under-filled result or a write past the allocated buffer going unnoticed."
   (let ((pointer (handle-live-pointer booster))
         (predict-type (%predict-type kind))
         (iteration-count (%resolve-num-iteration num-iteration)))
@@ -576,7 +597,7 @@ objective. The second array dimension is that count divided by the row count."
                           (double-float +c-api-dtype-float64+)
                           (single-float +c-api-dtype-float32+)))
             (element-count (%calc-num-predict pointer nrow predict-type 0 iteration-count)))
-        (let* ((ncol-result (/ element-count nrow))
+        (let* ((ncol-result (%predict-ncol element-count nrow))
                (result (make-array (list nrow ncol-result) :element-type 'double-float)))
           (cffi:with-foreign-string (parameter-cstring "")
             (cffi:with-foreign-objects ((out-len :int64) (buffer :double element-count))
@@ -584,6 +605,10 @@ objective. The second array dimension is that count divided by the row count."
                            pointer data-pointer data-type nrow ncol 1 predict-type 0
                            iteration-count parameter-cstring out-len buffer)
                           "LGBM_BoosterPredictForMat")
+              (assert (= element-count (cffi:mem-ref out-len :int64)) ()
+                      "LGBM_BoosterPredictForMat wrote ~D elements, expected ~D from ~
+                       LGBM_BoosterCalcNumPredict"
+                      (cffi:mem-ref out-len :int64) element-count)
               (dotimes (row nrow)
                 (dotimes (col ncol-result)
                   (setf (aref result row col)
