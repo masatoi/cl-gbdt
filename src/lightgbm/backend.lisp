@@ -15,6 +15,10 @@
                 #:lgbm-dataset-free
                 #:lgbm-dataset-get-num-data
                 #:lgbm-dataset-get-num-feature
+                #:lgbm-booster-create
+                #:lgbm-booster-add-valid-data
+                #:lgbm-booster-update-one-iter
+                #:lgbm-booster-free
                 #:+c-api-dtype-float32+
                 #:+c-api-dtype-float64+
                 #:+c-api-dtype-int32+)
@@ -31,7 +35,10 @@
                 #:make-dataset
                 #:dataset-num-rows
                 #:dataset-num-features
-                #:free-dataset)
+                #:free-dataset
+                #:train
+                #:update-one-iteration
+                #:free-booster)
   (:import-from #:cl-gbdt/src/handle
                 #:dataset
                 #:booster
@@ -101,9 +108,13 @@ not assume either.")
     "LGBM_DatasetSetFeatureNames"
     "LGBM_DatasetFree"
     "LGBM_DatasetGetNumData"
-    "LGBM_DatasetGetNumFeature")
+    "LGBM_DatasetGetNumFeature"
+    "LGBM_BoosterCreate"
+    "LGBM_BoosterAddValidData"
+    "LGBM_BoosterUpdateOneIter"
+    "LGBM_BoosterFree")
   "C function names this backend calls, checked with `probe-foreign-symbols' right
-after the library loads. Grows in Tasks 3 and 4 as more of the API is wired up.")
+after the library loads. Grows in Task 4 as the rest of the API is wired up.")
 
 (defun %env-library-path ()
   "Return the value of *library-env-var*, or NIL when it is unset or empty."
@@ -343,3 +354,78 @@ this handle would otherwise dereference blindly."
   (release-handle
    dataset
    (lambda (pointer) (check-lgbm (lgbm-dataset-free pointer) "LGBM_DatasetFree"))))
+
+;;; ---------------------------------------------------------------------------
+;;; Training
+
+(defun %create-booster (train-data-pointer parameter-string)
+  "Create a booster on TRAIN-DATA-POINTER via `LGBM_BoosterCreate', returning its
+pointer.
+
+Signals `foreign-call-error' when creation reports success but writes a null
+handle -- the same guard `make-dataset' applies to `LGBM_DatasetCreateFromMat',
+for the same reason: every later call through this handle would otherwise
+dereference it blindly."
+  (let ((booster-pointer
+          (cffi:with-foreign-string (parameter-cstring parameter-string)
+            (cffi:with-foreign-object (out :pointer)
+              (check-lgbm (lgbm-booster-create train-data-pointer parameter-cstring out)
+                          "LGBM_BoosterCreate")
+              (cffi:mem-ref out :pointer)))))
+    (when (cffi:null-pointer-p booster-pointer)
+      (error 'foreign-call-error
+             :function-name "LGBM_BoosterCreate"
+             :code 0
+             :message "reported success but returned a null booster handle"))
+    booster-pointer))
+
+(defun %add-valid-data (booster-pointer valid-sets)
+  "Attach each dataset in VALID-SETS to BOOSTER-POINTER via
+`LGBM_BoosterAddValidData'."
+  (dolist (valid-set valid-sets)
+    (check-lgbm (lgbm-booster-add-valid-data booster-pointer (handle-live-pointer valid-set))
+                "LGBM_BoosterAddValidData")))
+
+(defun %update-one-iteration (booster-pointer)
+  "Advance BOOSTER-POINTER by one boosting iteration via
+`LGBM_BoosterUpdateOneIter'. Returns the raw `produced_empty_tree' out
+parameter: nonzero when this iteration produced no split."
+  (cffi:with-foreign-object (finished :int)
+    (check-lgbm (lgbm-booster-update-one-iter booster-pointer finished)
+                "LGBM_BoosterUpdateOneIter")
+    (cffi:mem-ref finished :int)))
+
+(defmethod train ((backend lightgbm-backend) dataset
+                   &key valid-sets (num-rounds 100) parameters)
+  "Train a LightGBM booster on DATASET for NUM-ROUNDS boosting iterations.
+
+Builds the booster with `LGBM_BoosterCreate' from PARAMETERS, attaches each of
+VALID-SETS with `LGBM_BoosterAddValidData', then drives
+`LGBM_BoosterUpdateOneIter' NUM-ROUNDS times. See the `train' generic
+function's docstring for what each argument means; NUM-ROUNDS defaults to 100
+when not supplied.
+
+The returned booster retains DATASET as its training set, keeping it alive for
+the booster's lifetime. Free the result with `free-booster' or wrap it in
+`with-booster'."
+  (let ((booster-pointer (%create-booster (handle-live-pointer dataset)
+                                           (%parameter-string parameters))))
+    (%add-valid-data booster-pointer valid-sets)
+    (dotimes (round num-rounds)
+      (declare (ignorable round))
+      (%update-one-iteration booster-pointer))
+    (make-handle 'lightgbm-booster booster-pointer (backend-name backend) :booster
+                 :training-set dataset)))
+
+(defmethod update-one-iteration ((booster lightgbm-booster))
+  "Advance BOOSTER by one boosting iteration via `LGBM_BoosterUpdateOneIter'.
+
+Returns false once an iteration produces no further split, per the generic
+function's contract."
+  (zerop (%update-one-iteration (handle-live-pointer booster))))
+
+(defmethod free-booster ((booster lightgbm-booster))
+  "Free BOOSTER via `LGBM_BoosterFree'. Does nothing if it was already freed."
+  (release-handle
+   booster
+   (lambda (pointer) (check-lgbm (lgbm-booster-free pointer) "LGBM_BoosterFree"))))
