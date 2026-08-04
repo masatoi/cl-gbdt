@@ -721,6 +721,13 @@ return a new booster.
 The returned booster has no training set -- see the `booster' class'
 documentation -- since PATH names a model, not a dataset.
 
+The raw booster handle exists in C from the moment `LGBM_BoosterCreateFromModelfile'
+returns, but `make-handle' does not take ownership of it until it also succeeds --
+mirroring `cl-gbdt/src/xgboost/backend''s `load-model', which has the identical
+OWNED/`unwind-protect' pattern for the same reason: nothing here guarantees
+`make-handle' cannot signal, and a raw handle it never took ownership of would
+otherwise be orphaned rather than freed.
+
 Signals `backend-not-open' before the foreign call when BACKEND is not open --
 see `%check-backend-open'."
   (%check-backend-open backend)
@@ -735,7 +742,14 @@ see `%check-backend-open'."
              :function-name "LGBM_BoosterCreateFromModelfile"
              :code 0
              :message "reported success but returned a null booster handle"))
-    (make-handle 'lightgbm-booster booster-pointer backend :booster)))
+    (let ((owned nil))
+      (unwind-protect
+           (prog1
+               (make-handle 'lightgbm-booster booster-pointer backend :booster)
+             (setf owned t))
+        (unless owned
+          (handler-case (lgbm-booster-free booster-pointer)
+            (error () nil)))))))
 
 (defun %save-model-to-string (booster-pointer num-iteration)
   "Return BOOSTER-POINTER's model as a Lisp string via the two-call
