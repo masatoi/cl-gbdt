@@ -58,5 +58,6 @@ guard, and have no portable fallback."
   :license "MIT"
   :class :package-inferred-system
   :depends-on ("cl-gbdt/tests/functional/lightgbm"
+               "cl-gbdt/tests/functional/lightgbm-api"
                "cl-gbdt/tests/functional/xgboost")
   :perform (test-op (op c) (symbol-call :rove :run c)))
