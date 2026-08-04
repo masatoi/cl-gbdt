@@ -245,18 +245,33 @@ conditions each failure mode signals.
 Once a library is loaded, every name in *required-symbols* must resolve via
 `probe-foreign-symbols' or this signals `missing-foreign-symbols' -- the
 version-mismatch check that function exists for. LightGBM's C API has no
-runtime version query, so `backend-version' is left NIL rather than guessed."
+runtime version query, so `backend-version' is left NIL rather than guessed.
+
+`open-backend' only marks a backend open -- and so only calls `close-backend' on
+it -- once this method returns normally. So if the symbol probe (or anything
+else after the library loads) signals, the library is closed right here before
+the condition propagates; otherwise it would stay mapped into the process with
+BACKEND dropped and nothing left able to close it."
   (let* ((candidate (%resolve-library-path backend path))
          (library (if candidate
                        (%load-candidate backend candidate)
-                       (%load-system-search backend))))
-    (setf (%lightgbm-foreign-library backend) library)
-    (setf (backend-library-path backend) (namestring (cffi:foreign-library-pathname library))))
-  (let ((missing (probe-foreign-symbols *required-symbols*)))
-    (when missing
-      (error 'missing-foreign-symbols :backend (backend-name backend) :names missing)))
-  (setf (backend-version backend) nil)
-  backend)
+                       (%load-system-search backend)))
+         (succeeded nil))
+    (unwind-protect
+         (progn
+           (setf (%lightgbm-foreign-library backend) library)
+           (setf (backend-library-path backend)
+                 (namestring (cffi:foreign-library-pathname library)))
+           (let ((missing (probe-foreign-symbols *required-symbols*)))
+             (when missing
+               (error 'missing-foreign-symbols :backend (backend-name backend) :names missing)))
+           (setf (backend-version backend) nil)
+           (setf succeeded t))
+      (unless succeeded
+        (handler-case (cffi:close-foreign-library library)
+          (error () nil))
+        (setf (%lightgbm-foreign-library backend) nil)))
+    backend))
 
 (defmethod shutdown-backend ((backend lightgbm-backend))
   "Close LightGBM's shared library.
