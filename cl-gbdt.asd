@@ -17,7 +17,7 @@
   :description "LightGBM backend for cl-gbdt"
   :license "MIT"
   :class :package-inferred-system
-  :depends-on ("cl-gbdt/src/lightgbm/c-api"))
+  :depends-on ("cl-gbdt/src/lightgbm/backend"))
 
 (defsystem "cl-gbdt/xgboost"
   :description "XGBoost backend for cl-gbdt"
