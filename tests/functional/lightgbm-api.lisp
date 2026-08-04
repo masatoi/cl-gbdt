@@ -158,6 +158,45 @@ COLUMN is always 0, but the shape still has to be unpacked by hand."
             (when booster (cl-gbdt:free-booster booster))
             (cl-gbdt:close-backend backend)))))))
 
+;;; `LGBM_BoosterAddValidData' stores a validation dataset's pointer inside the booster
+;;; exactly as `LGBM_BoosterCreate' does for the training set, but `train' used to pass
+;;; only the training set to `make-handle' -- `%check-booster-datasets-live' (formerly
+;;; `%check-training-set-live') had no way to know a validation set even existed.
+;;; Freeing one and continuing to train was the same segfault as the training-set case
+;;; above, confirmed directly against the vendored library. This proves the guard now
+;;; covers validation sets too.
+
+(deftest lightgbm-api-update-one-iteration-after-validation-set-freed-signals
+  (with-backend-library (:lightgbm)
+    (multiple-value-bind (matrix label-vector) (make-separable-dataset)
+      (let ((backend (cl-gbdt:open-backend :lightgbm))
+            (dataset nil)
+            (valid-set nil)
+            (booster nil))
+        (unwind-protect
+             (progn
+               (setf dataset (cl-gbdt:make-dataset backend matrix
+                                                    :label label-vector
+                                                    :parameters *dataset-parameters*))
+               (setf valid-set (cl-gbdt:make-dataset backend matrix
+                                                      :label label-vector
+                                                      :parameters *dataset-parameters*))
+               (setf booster (cl-gbdt:train backend dataset :num-rounds 1
+                                             :valid-sets (list valid-set)
+                                             :parameters *booster-parameters*))
+               (cl-gbdt:free-dataset valid-set)
+               (testing "update-one-iteration on a booster whose validation set was freed signals"
+                 ;; handler-case, not rove's `signals' -- `signals' does not reliably
+                 ;; catch conditions raised inside `restart-case', a documented pitfall
+                 ;; in this repo's own prompts/repl-driven-development.md.
+                 (ok (handler-case (progn (cl-gbdt:update-one-iteration booster) nil)
+                       (cl-gbdt:released-handle-error () t))
+                     "update-one-iteration did not signal released-handle-error")))
+          (progn
+            (when booster (cl-gbdt:free-booster booster))
+            (when dataset (cl-gbdt:free-dataset dataset))
+            (cl-gbdt:close-backend backend)))))))
+
 ;;; I2: `LGBM_DatasetCreateFromMat' produces a fully-binned raw dataset before
 ;;; `make-dataset' ever attaches label/weight/group/feature-names, and `make-handle'
 ;;; does not take ownership of that raw pointer until every attachment step has
