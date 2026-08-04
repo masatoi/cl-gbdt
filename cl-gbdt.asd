@@ -37,15 +37,19 @@
                "cl-gbdt/tests/backend")
   :perform (test-op (op c) (symbol-call :rove :run c)))
 
-(defsystem "cl-gbdt/functional-tests"
+;;; Named for its path, like every other system here. That is not only for consistency:
+;;; rove discovers a package-inferred-system's tests by walking the dependencies whose
+;;; names have the system's own name as a literal string prefix
+;;; (`rove/core/suite/file.lisp', `system-component-p'). The former name,
+;;; `cl-gbdt/functional-tests', is not a prefix of `cl-gbdt/tests/functional/lightgbm',
+;;; so rove found nothing and reported "0 tests completed" -- a green run of an empty
+;;; suite.
+(defsystem "cl-gbdt/tests/functional"
   :description "Tests that call the real LightGBM and XGBoost shared libraries. SBCL
 only: the round trips pin arrays with sb-sys directly, unlike src/data.lisp's #+sbcl
 guard, and have no portable fallback."
   :license "MIT"
-  :depends-on ("cl-gbdt" "cl-gbdt/lightgbm" "cl-gbdt/xgboost" "rove")
-  :components ((:module "tests/functional"
-                :serial t
-                :components ((:file "support")
-                             (:file "lightgbm")
-                             (:file "xgboost"))))
+  :class :package-inferred-system
+  :depends-on ("cl-gbdt/tests/functional/lightgbm"
+               "cl-gbdt/tests/functional/xgboost")
   :perform (test-op (op c) (symbol-call :rove :run c)))

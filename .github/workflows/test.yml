@@ -71,5 +71,5 @@ jobs:
 
       - name: Layer 2 - the real LightGBM and XGBoost
         env:
-          CL_GBDT_TEST_SYSTEM: cl-gbdt/functional-tests
+          CL_GBDT_TEST_SYSTEM: cl-gbdt/tests/functional
         run: ros run -- --non-interactive --load tools/ci/run-tests.lisp

@@ -64,7 +64,7 @@ To run a single test from the REPL:
 
 ## Running the functional tests
 
-`cl-gbdt/functional-tests` is a separate system that calls the real LightGBM and
+`cl-gbdt/tests/functional` is a separate system that calls the real LightGBM and
 XGBoost shared libraries -- design doc section 12, layer 2. It exercises the raw FFI
 directly: loading each library, reading its version, and running a small train/predict
 round trip against a trivially separable dataset. Each round trip asserts more than
@@ -81,8 +81,8 @@ Run `./tools/fetch-libs.sh` first to vendor the libraries into `vendor/`. Then:
 
 ```bash
 ros run -- --non-interactive \
-  --eval '(ql:quickload :cl-gbdt/functional-tests :silent t)' \
-  --eval '(asdf:test-system :cl-gbdt/functional-tests)'
+  --eval '(ql:quickload :cl-gbdt/tests/functional :silent t)' \
+  --eval '(asdf:test-system :cl-gbdt/tests/functional)'
 ```
 
 A backend whose library is missing skips rather than fails, naming
@@ -108,7 +108,7 @@ The logic lives in scripts rather than in the YAML, so the same checks run local
 ```bash
 CL_GBDT_TEST_SYSTEM=cl-gbdt/tests ros run -- --non-interactive \
   --load tools/ci/run-tests.lisp          # layer 1
-CL_GBDT_TEST_SYSTEM=cl-gbdt/functional-tests ros run -- --non-interactive \
+CL_GBDT_TEST_SYSTEM=cl-gbdt/tests/functional ros run -- --non-interactive \
   --load tools/ci/run-tests.lisp          # layer 2, needs ./tools/fetch-libs.sh first
 ros run -- --non-interactive --load tools/ci/lint.lisp
 ```
