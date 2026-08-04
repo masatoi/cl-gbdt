@@ -24,6 +24,8 @@
            #:foreign-call-error-function-name
            #:released-handle-error
            #:released-handle-error-object
+           #:unfreed-handle-warning
+           #:unfreed-handle-warning-kind
            #:data-error
            #:dimension-mismatch
            #:dimension-mismatch-expected
@@ -135,6 +137,21 @@ MESSAGE holds whatever LGBM_GetLastError or XGBGetLastError reported."))
      (format stream "Attempted to use the already-released handle ~A."
              (released-handle-error-object condition))))
   (:documentation "A handle was used after it had been freed."))
+
+(define-condition unfreed-handle-warning (warning)
+  ((kind :initarg :kind :initform nil :reader unfreed-handle-warning-kind))
+  (:report
+   (lambda (condition stream)
+     (format stream "A ~(~A~) handle was garbage-collected without being freed. ~
+                     Wrap it in `with-dataset' or `with-booster', or call the matching ~
+                     `free-' function."
+             (or (unfreed-handle-warning-kind condition) "gbdt"))))
+  (:documentation "A handle was collected while still holding a live foreign pointer.
+
+Signalled from a finalizer, which reports and does **not** free: running the C free from
+whatever thread the GC chose would give no ordering guarantee between a booster and the
+dataset it holds, and `with-booster' nested inside `with-dataset' exists precisely to
+guarantee that order."))
 
 (define-condition data-error (gbdt-error)
   ()

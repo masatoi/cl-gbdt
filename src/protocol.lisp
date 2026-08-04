@@ -89,7 +89,10 @@ KIND is `:split' (how often a feature was used to split) or `:gain' (total gain)
   "Bind VAR to the dataset FORM returns, evaluate BODY, and always free it.
 
 Explicit resource management is the first-class pattern; finalizers are only a
-safety net.
+safety net, and that net reports and does not free: running the C free from
+whatever thread the garbage collector chose would give no ordering guarantee
+between a booster and the dataset it holds, and `with-booster' nested inside
+this macro exists precisely to guarantee that order.
 
 Declarations at the head of BODY are moved onto a fresh binding of VAR that
 shadows the one FORM's value is stored in, scoped to BODY alone. Splicing them
