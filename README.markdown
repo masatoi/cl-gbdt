@@ -28,12 +28,15 @@ docstrings but no methods. Loading `cl-gbdt` does not require either
 | `cl-gbdt` | Core: package, condition hierarchy, matrix marshalling, backend registry and `open-backend` protocol, the unified API's generic functions |
 | `cl-gbdt/lightgbm` | Generated CFFI bindings for the LightGBM C API (`src/lightgbm/c-api.lisp`) |
 | `cl-gbdt/xgboost` | Generated CFFI bindings for the XGBoost C API (`src/xgboost/c-api.lisp`) |
-| `cl-gbdt/regen` | The binding emitter (`src/regen/`). Development-only -- never appears in `cl-gbdt`'s, `cl-gbdt/lightgbm`'s, or `cl-gbdt/xgboost`'s dependency graph, so an ordinary user never needs it or its dependencies (`cffi/c2ffi`, `com.inuoe.jzon`) |
+| `cl-gbdt/regen` | The binding emitter (`src/regen/`). Development-only -- never appears in `cl-gbdt`'s, `cl-gbdt/lightgbm`'s, or `cl-gbdt/xgboost`'s dependency graph, so an ordinary user never needs it or its dependencies (`alexandria`, `com.inuoe.jzon`). `cffi/c2ffi` is *not* one of them -- it is a dependency of `tools/regen.lisp`, which quickloads it directly, not of the `cl-gbdt/regen` system itself |
 | `cl-gbdt/tests` | The Rove test suite |
 
-Each backend system depends only on `cl-gbdt` and `cffi`, and each is loadable
-independently, so the library works on a machine where only one of the two
-shared libraries is present.
+Each backend system currently depends only on `cffi`, by way of its generated
+`c-api.lisp` (`cl-gbdt/lightgbm` depends on `cl-gbdt/src/lightgbm/c-api`, which
+declares nothing but `cl` and `cffi`). Neither backend system depends on `cl-gbdt`
+itself yet, since the unified API has no methods to call into them (see Status
+above). Each backend is loadable independently, so the library works on a machine
+where only one of the two shared libraries is present.
 
 ## Running the tests
 
@@ -59,7 +62,7 @@ completed" count.
 To run a single test from the REPL:
 
 ```lisp
-(rove:run-test 'cl-gbdt/tests::some-test-name)
+(rove:run-test 'cl-gbdt/tests/backend::some-test-name)
 ```
 
 ## Running the functional tests
@@ -181,7 +184,7 @@ ros run -- --non-interactive --load tools/regen.lisp
    branch, into the `cl-gbdt-c2ffi:llvm-18` image. `tools/c2ffi.sh` invokes that
    image; `tools/regen.lisp` invokes `tools/c2ffi.sh`.
 3. `tools/regen.lisp` runs c2ffi over the vendored headers for the local
-   architecture, then runs `cl-gbdt.regen:emit-bindings` over its output, and
+   architecture, then runs `cl-gbdt/src/regen/all:emit-bindings` over its output, and
    validates the result (minimum function count, required symbols present, no
    architecture-dependent types) before replacing the committed file. A failed
    validation leaves the previously committed file untouched.
