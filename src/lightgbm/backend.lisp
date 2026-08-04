@@ -66,8 +66,6 @@
                 #:booster-training-set
                 #:booster-validation-sets)
   (:import-from #:cl-gbdt/src/conditions
-                #:backend-library-not-found
-                #:backend-library-load-failed
                 #:missing-foreign-symbols
                 #:backend-not-open
                 #:foreign-call-error
@@ -76,7 +74,12 @@
   (:import-from #:cl-gbdt/src/parameters
                 #:normalize-parameters)
   (:import-from #:cl-gbdt/src/data
-                #:with-foreign-matrix)
+                #:with-foreign-matrix
+                #:write-foreign-sequence)
+  (:import-from #:cl-gbdt/src/library
+                #:resolve-and-load-library)
+  (:import-from #:cl-gbdt/src/foreign
+                #:check-foreign-call)
   (:export #:lightgbm-backend))
 
 (in-package #:cl-gbdt/src/lightgbm/backend)
@@ -100,13 +103,15 @@ identifies which C function reported CODE, for the condition's report. Every
 foreign call this backend makes goes through this: the functional tests found
 five `LGBM_BoosterUpdateOneIter' calls all returning 0 while the model did not
 train, so a status code alone is necessary but not sufficient -- this is the
-part that is sufficient to check here."
-  (if (zerop code)
-      code
-      (error 'foreign-call-error
-             :function-name function-name
-             :code code
-             :message (%last-error-message))))
+part that is sufficient to check here.
+
+Thin wrapper around `check-foreign-call' supplying `%last-error-message' as
+LightGBM's last-error thunk -- see that function's docstring for the shared
+0-on-success idiom both backends follow. Kept as a named wrapper, rather than
+calling `check-foreign-call' directly at each of this file's call sites, so
+none of them needed editing when the check itself moved to
+`cl-gbdt/src/foreign'."
+  (check-foreign-call code function-name #'%last-error-message))
 
 (defun %check-backend-open (backend)
   "Signal `backend-not-open' when BACKEND is not open.
@@ -176,6 +181,12 @@ The extension stays wild because `tools/fetch-libs.sh' preserves whatever the
 platform's wheel ships -- `.so' on Linux, `.dylib' on macOS -- and discovery must
 not assume either.")
 
+(defparameter *default-library-name* "_lightgbm"
+  "Name passed to CFFI's own system library search when no other candidate is found.
+LightGBM's compiled basename is `_lightgbm' -- the file is `lib_lightgbm.so', and the
+leading `lib' is the platform prefix `:default' adds, not part of the name given to
+it.")
+
 (defparameter *required-symbols*
   '("LGBM_GetLastError"
     "LGBM_DatasetCreateFromMat"
@@ -197,73 +208,6 @@ not assume either.")
     "LGBM_BoosterGetNumFeature")
   "C function names this backend calls, checked with `probe-foreign-symbols' right
 after the library loads.")
-
-(defun %env-library-path ()
-  "Return the value of *library-env-var*, or NIL when it is unset or empty."
-  (let ((value (uiop:getenv *library-env-var*)))
-    (when (and value (plusp (length value)))
-      value)))
-
-(defun %vendor-search-path ()
-  "Return the merged pathname `directory' is searched with for the vendored
-LightGBM library."
-  (merge-pathnames *vendor-library-pattern*
-                    (asdf:system-relative-pathname "cl-gbdt" *vendor-library-directory*)))
-
-(defun %vendor-library-path ()
-  "Return the vendored LightGBM library's path, or NIL when none is present.
-
-Searches *vendor-library-directory* for *vendor-library-pattern*, exactly as
-`tests/functional/support.lisp' does for the test suite. `tools/fetch-libs.sh'
-vendors at most one file, so the first match is returned without further checking."
-  (first (directory (%vendor-search-path))))
-
-(defun %resolve-library-path (backend path)
-  "Return the library path `initialize-backend' should load, honoring PATH, then
-*library-env-var*, then the vendored directory, in that order. Returns NIL when
-none of the three names a candidate; the caller then falls back to CFFI's own
-system search.
-
-Signals `backend-library-not-found' when *library-env-var* is set but names a
-path that does not exist -- the same strict rule `tests/functional/support.lisp'
-follows: a bad override is an error, not a silent fall-through to the next
-source."
-  (let ((override (%env-library-path)))
-    (cond
-      (path path)
-      (override
-       (if (probe-file override)
-           override
-           (error 'backend-library-not-found
-                  :backend (backend-name backend) :searched (list override))))
-      (t (%vendor-library-path)))))
-
-(defun %load-candidate (backend path)
-  "Load PATH as BACKEND's shared library. Returns the `cffi:foreign-library' CFFI
-reports having loaded.
-
-Signals `backend-library-load-failed' when `cffi:load-foreign-library' rejects
-PATH, wrapping whatever condition it signaled as :cause."
-  (handler-case (cffi:load-foreign-library path)
-    (error (condition)
-      (error 'backend-library-load-failed
-             :backend (backend-name backend) :path path :cause condition))))
-
-(defun %load-system-search (backend)
-  "Let CFFI search the system library paths for LightGBM's shared library, whose
-compiled basename is `_lightgbm' -- the file is `lib_lightgbm.so', and the
-leading `lib' is the platform prefix `:default' adds, not part of the name given
-to it. Returns the `cffi:foreign-library' CFFI reports having loaded.
-
-Signals `backend-library-not-found' when nothing turns up anywhere -- PATH,
-*library-env-var* and the vendored directory were all already ruled out by the
-time this runs."
-  (handler-case (cffi:load-foreign-library '(:default "_lightgbm"))
-    (error ()
-      (error 'backend-library-not-found
-             :backend (backend-name backend)
-             :searched (list (namestring (%vendor-search-path))
-                              "system library search path")))))
 
 ;;; ---------------------------------------------------------------------------
 ;;; The backend class
@@ -295,9 +239,9 @@ cl-gbdt's unified backend protocol."))
   "Load LightGBM's shared library and record its capabilities on BACKEND.
 
 Discovery order: PATH, then *library-env-var*, then the vendored directory under
-*vendor-library-directory*, then CFFI's system library search -- see
-`%resolve-library-path' and `%load-system-search' for the exact rules and the
-conditions each failure mode signals.
+*vendor-library-directory*, then CFFI's system library search for
+*default-library-name* -- see `resolve-and-load-library' for the exact rules and
+the conditions each failure mode signals.
 
 Once a library is loaded, every name in *required-symbols* must resolve via
 `probe-foreign-symbols', passed the `cffi:foreign-library' just loaded as
@@ -312,26 +256,27 @@ it -- once this method returns normally. So if the symbol probe (or anything
 else after the library loads) signals, the library is closed right here before
 the condition propagates; otherwise it would stay mapped into the process with
 BACKEND dropped and nothing left able to close it."
-  (let* ((candidate (%resolve-library-path backend path))
-         (library (if candidate
-                       (%load-candidate backend candidate)
-                       (%load-system-search backend)))
-         (succeeded nil))
-    (unwind-protect
-         (progn
-           (setf (%lightgbm-foreign-library backend) library)
-           (setf (backend-library-path backend)
-                 (namestring (cffi:foreign-library-pathname library)))
-           (let ((missing (probe-foreign-symbols *required-symbols* :library library)))
-             (when missing
-               (error 'missing-foreign-symbols :backend (backend-name backend) :names missing)))
-           (setf (backend-version backend) nil)
-           (setf succeeded t))
-      (unless succeeded
-        (handler-case (cffi:close-foreign-library library)
-          (error () nil))
-        (setf (%lightgbm-foreign-library backend) nil)))
-    backend))
+  (multiple-value-bind (library library-path)
+      (resolve-and-load-library backend :path path
+                                         :env-var *library-env-var*
+                                         :directory *vendor-library-directory*
+                                         :pattern *vendor-library-pattern*
+                                         :default-name *default-library-name*)
+    (let ((succeeded nil))
+      (unwind-protect
+           (progn
+             (setf (%lightgbm-foreign-library backend) library)
+             (setf (backend-library-path backend) library-path)
+             (let ((missing (probe-foreign-symbols *required-symbols* :library library)))
+               (when missing
+                 (error 'missing-foreign-symbols :backend (backend-name backend) :names missing)))
+             (setf (backend-version backend) nil)
+             (setf succeeded t))
+        (unless succeeded
+          (handler-case (cffi:close-foreign-library library)
+            (error () nil))
+          (setf (%lightgbm-foreign-library backend) nil)))
+      backend)))
 
 (defmethod shutdown-backend ((backend lightgbm-backend))
   "Close LightGBM's shared library.
@@ -357,20 +302,13 @@ LightGBM's C API expects. NIL yields the empty string."
           (mapcar (lambda (pair) (format nil "~A=~A" (car pair) (cdr pair)))
                    (normalize-parameters parameters))))
 
-(defun %write-foreign-sequence (pointer cffi-type sequence coercer)
-  "Copy SEQUENCE into the foreign array at POINTER, each element passed through
-COERCER before being stored as CFFI-TYPE."
-  (let ((vector (coerce sequence 'vector)))
-    (dotimes (index (length vector))
-      (setf (cffi:mem-aref pointer cffi-type index) (funcall coercer (aref vector index))))))
-
 (defun %set-dataset-field (dataset-pointer field-name values cffi-type dtype coercer)
   "Attach the sequence VALUES to DATASET-POINTER's FIELD-NAME via
 `LGBM_DatasetSetField'. Each element is coerced through COERCER and stored as
 CFFI-TYPE; DTYPE is the matching C_API_DTYPE constant."
   (let ((count (length values)))
     (cffi:with-foreign-object (buffer cffi-type count)
-      (%write-foreign-sequence buffer cffi-type values coercer)
+      (write-foreign-sequence buffer cffi-type values coercer)
       (cffi:with-foreign-string (name field-name)
         (check-lgbm (lgbm-dataset-set-field dataset-pointer name buffer count dtype)
                     "LGBM_DatasetSetField")))))
