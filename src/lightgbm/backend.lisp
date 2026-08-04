@@ -69,6 +69,7 @@
                 #:backend-library-not-found
                 #:backend-library-load-failed
                 #:missing-foreign-symbols
+                #:backend-not-open
                 #:foreign-call-error
                 #:released-handle-error)
   (:import-from #:cl-gbdt/src/parameters
@@ -105,6 +106,19 @@ part that is sufficient to check here."
              :function-name function-name
              :code code
              :message (%last-error-message))))
+
+(defun %check-backend-open (backend)
+  "Signal `backend-not-open' when BACKEND is not open.
+
+`make-dataset', `train' and `load-model' each create a brand-new handle
+directly from BACKEND -- there is no existing handle for the check to route
+through the way `handle-live-pointer' does for every other operation in this
+file, since none exists yet. Each of them calls this first, before touching
+any foreign function, so a backend a caller has closed (or never opened) is
+never reached by `LGBM_DatasetCreateFromMat', `LGBM_BoosterCreate' or
+`LGBM_BoosterCreateFromModelfile' with a library that may no longer be mapped."
+  (unless (backend-open-p backend)
+    (error 'backend-not-open :backend (backend-name backend))))
 
 ;;; ---------------------------------------------------------------------------
 ;;; Library discovery
@@ -356,7 +370,11 @@ The raw dataset handle exists in C from the moment `LGBM_DatasetCreateFromMat'
 returns, but `make-handle' does not take ownership of it until the very end --
 attaching LABEL, WEIGHT, GROUP or FEATURE-NAMES can each signal first (a
 wrong-length `:label' is the commonest way). OWNED tracks whether `make-handle'
-ran; when it did not, the raw dataset is freed here instead of orphaned."
+ran; when it did not, the raw dataset is freed here instead of orphaned.
+
+Signals `backend-not-open' before any of that when BACKEND is not open -- see
+`%check-backend-open'."
+  (%check-backend-open backend)
   (let* ((parameter-string (%parameter-string parameters))
          (dataset-pointer
            (with-foreign-matrix (data-pointer nrow ncol element-type) matrix
@@ -507,7 +525,11 @@ The raw booster handle exists in C from the moment `LGBM_BoosterCreate' returns,
 but `make-handle' does not take ownership of it until the very end -- a stale
 VALID-SETS entry or a mid-loop failure can each signal first. OWNED tracks
 whether `make-handle' ran; when it did not, the raw booster is freed here
-instead of orphaned."
+instead of orphaned.
+
+Signals `backend-not-open' before any of that when BACKEND is not open -- see
+`%check-backend-open'."
+  (%check-backend-open backend)
   (let ((valid-sets (copy-list valid-sets)))
     (let ((booster-pointer (%create-booster (handle-live-pointer dataset)
                                              (%parameter-string parameters))))
@@ -683,7 +705,11 @@ LightGBM spells as 0. Returns PATH."
 return a new booster.
 
 The returned booster has no training set -- see the `booster' class'
-documentation -- since PATH names a model, not a dataset."
+documentation -- since PATH names a model, not a dataset.
+
+Signals `backend-not-open' before the foreign call when BACKEND is not open --
+see `%check-backend-open'."
+  (%check-backend-open backend)
   (let ((booster-pointer
           (cffi:with-foreign-string (filename (namestring path))
             (cffi:with-foreign-objects ((out-num-iterations :int) (out :pointer))

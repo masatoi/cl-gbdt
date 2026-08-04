@@ -324,3 +324,85 @@ COLUMN is always 0, but the shape still has to be unpacked by hand."
           (ok (handler-case (progn (cl-gbdt:free-dataset dataset) t)
                 (error () nil))
               "free-dataset signaled after its backend was closed"))))))
+
+;;; F2: `make-dataset', `train' and `load-model' each create a brand-new handle
+;;; directly from a backend, unlike every other operation in this file, which reads
+;;; an existing handle and so is already covered by `handle-live-pointer''s
+;;; `backend-open-p' check. Before this fix, none of the three checked
+;;; `backend-open-p' itself: closing a backend and then calling one of them reached
+;;; its first foreign call -- `LGBM_DatasetCreateFromMat', `LGBM_BoosterCreate' or
+;;; `LGBM_BoosterCreateFromModelfile' -- against a library that might no longer be
+;;; mapped. This proves each of the three now signals `backend-not-open' instead,
+;;; one entry point per test.
+
+(deftest lightgbm-api-make-dataset-after-close-backend-signals-backend-not-open
+  (with-backend-library (:lightgbm)
+    (multiple-value-bind (matrix label-vector) (make-separable-dataset)
+      (let ((backend (cl-gbdt:open-backend :lightgbm)))
+        (cl-gbdt:close-backend backend)
+        (testing "make-dataset after close-backend signals backend-not-open"
+          ;; handler-case, not rove's `signals' -- see this file's other guard tests
+          ;; for why.
+          (ok (handler-case
+                  (progn (cl-gbdt:make-dataset backend matrix :label label-vector
+                                                :parameters *dataset-parameters*)
+                         nil)
+                (cl-gbdt:backend-not-open () t))
+              "make-dataset did not signal backend-not-open"))))))
+
+(deftest lightgbm-api-train-after-close-backend-signals-backend-not-open
+  (with-backend-library (:lightgbm)
+    (multiple-value-bind (matrix label-vector) (make-separable-dataset)
+      ;; Two separate :lightgbm backend instances, not one: DATASET's own backend
+      ;; (OPEN-BACKEND) stays open for the whole test, so handle-live-pointer's own
+      ;; backend-open-p check -- already guarding every read of an existing handle
+      ;; since the previous round -- cannot be what makes this test pass. Only
+      ;; train's own check on its BACKEND argument, CLOSED-BACKEND, can. One
+      ;; instance closed while the other's shared library is still loaded is safe:
+      ;; both wrap the same underlying dlopen'd library, and close-backend's effect
+      ;; being tested here is the Lisp-level open flag, not the mapping itself.
+      (let ((closed-backend (cl-gbdt:open-backend :lightgbm))
+            (open-backend (cl-gbdt:open-backend :lightgbm))
+            (dataset nil))
+        (unwind-protect
+             (progn
+               (setf dataset (cl-gbdt:make-dataset open-backend matrix
+                                                    :label label-vector
+                                                    :parameters *dataset-parameters*))
+               (cl-gbdt:close-backend closed-backend)
+               (testing "train after close-backend signals backend-not-open"
+                 (ok (handler-case
+                         (progn (cl-gbdt:train closed-backend dataset :num-rounds 1
+                                                :parameters *booster-parameters*)
+                                nil)
+                       (cl-gbdt:backend-not-open () t))
+                     "train did not signal backend-not-open")))
+          (progn
+            (when dataset (cl-gbdt:free-dataset dataset))
+            (cl-gbdt:close-backend open-backend)))))))
+
+(deftest lightgbm-api-load-model-after-close-backend-signals-backend-not-open
+  (with-backend-library (:lightgbm)
+    (multiple-value-bind (matrix label-vector) (make-separable-dataset)
+      (let ((backend (cl-gbdt:open-backend :lightgbm))
+            (dataset nil)
+            (booster nil))
+        (unwind-protect
+             (progn
+               (setf dataset (cl-gbdt:make-dataset backend matrix
+                                                    :label label-vector
+                                                    :parameters *dataset-parameters*))
+               (setf booster (cl-gbdt:train backend dataset :num-rounds 1
+                                             :parameters *booster-parameters*))
+               (uiop:with-temporary-file (:pathname path :type "txt")
+                 (cl-gbdt:save-model booster path)
+                 (cl-gbdt:close-backend backend)
+                 (testing "load-model after close-backend signals backend-not-open"
+                   (ok (handler-case (progn (cl-gbdt:load-model backend path) nil)
+                         (cl-gbdt:backend-not-open () t))
+                       "load-model did not signal backend-not-open"))))
+          ;; backend is already closed by the time this runs: both frees take the
+          ;; closed-backend path and only warn, never signal.
+          (progn
+            (when booster (cl-gbdt:free-booster booster))
+            (when dataset (cl-gbdt:free-dataset dataset))))))))
