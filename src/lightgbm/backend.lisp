@@ -490,33 +490,41 @@ VALID-SETS with `LGBM_BoosterAddValidData', then drives
 function's docstring for what each argument means; NUM-ROUNDS defaults to 100
 when not supplied.
 
-The returned booster retains DATASET as its training set and VALID-SETS as its
-validation sets, keeping all of them alive for the booster's lifetime and letting
-`update-one-iteration' notice if any is freed out from under it -- see
-`%check-booster-datasets-live'. Free the result with `free-booster' or wrap it in
-`with-booster'.
+The returned booster retains DATASET as its training set and a fresh copy of
+VALID-SETS as its validation sets, keeping all of them alive for the booster's
+lifetime and letting `update-one-iteration' notice if any is freed out from
+under it -- see `%check-booster-datasets-live'. The copy matters: VALID-SETS is
+the caller's own list, and `make-handle' would otherwise store that exact list
+object rather than a snapshot of it. A caller who destructively removes an
+entry from VALID-SETS after `train' returns -- `delete', `(setf (cdr ...))',
+reusing the list elsewhere with `nconc' -- would silently remove it from the
+booster's view too, since both would be the same cons cells; the dataset
+`LGBM_BoosterAddValidData' already attached would then go unchecked by
+`%check-booster-datasets-live' even though LightGBM still holds its pointer.
+Free the result with `free-booster' or wrap it in `with-booster'.
 
 The raw booster handle exists in C from the moment `LGBM_BoosterCreate' returns,
 but `make-handle' does not take ownership of it until the very end -- a stale
 VALID-SETS entry or a mid-loop failure can each signal first. OWNED tracks
 whether `make-handle' ran; when it did not, the raw booster is freed here
 instead of orphaned."
-  (let ((booster-pointer (%create-booster (handle-live-pointer dataset)
-                                           (%parameter-string parameters))))
-    (let ((owned nil))
-      (unwind-protect
-           (progn
-             (%add-valid-data booster-pointer valid-sets)
-             (dotimes (round num-rounds)
-               (declare (ignorable round))
-               (%update-one-iteration booster-pointer))
-             (prog1
-                 (make-handle 'lightgbm-booster booster-pointer backend :booster
-                              :training-set dataset :validation-sets valid-sets)
-               (setf owned t)))
-        (unless owned
-          (handler-case (lgbm-booster-free booster-pointer)
-            (error () nil)))))))
+  (let ((valid-sets (copy-list valid-sets)))
+    (let ((booster-pointer (%create-booster (handle-live-pointer dataset)
+                                             (%parameter-string parameters))))
+      (let ((owned nil))
+        (unwind-protect
+             (progn
+               (%add-valid-data booster-pointer valid-sets)
+               (dotimes (round num-rounds)
+                 (declare (ignorable round))
+                 (%update-one-iteration booster-pointer))
+               (prog1
+                   (make-handle 'lightgbm-booster booster-pointer backend :booster
+                                :training-set dataset :validation-sets valid-sets)
+                 (setf owned t)))
+          (unless owned
+            (handler-case (lgbm-booster-free booster-pointer)
+              (error () nil))))))))
 
 (defun %check-booster-datasets-live (booster)
   "Signal `released-handle-error' when any dataset BOOSTER depends on -- its training

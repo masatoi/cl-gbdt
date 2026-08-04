@@ -197,6 +197,59 @@ COLUMN is always 0, but the shape still has to be unpacked by hand."
             (when dataset (cl-gbdt:free-dataset dataset))
             (cl-gbdt:close-backend backend)))))))
 
+;;; F1: `train' used to pass VALID-SETS -- the caller's own list -- straight to
+;;; `make-handle', so the booster's `validation-sets' slot held that exact list
+;;; object, not a snapshot of it. A caller who destructively edits VALID-SETS after
+;;; `train' returns -- here, truncating it with `(setf (cdr ...))' the way `delete'
+;;; would for a real removal -- edited the booster's view of its own dependencies
+;;; too, since both were the same cons cells. Freeing the dataset that fell off the
+;;; end and continuing to train would then reach `LGBM_BoosterUpdateOneIter'
+;;; unchecked. This proves the guard still fires once the caller's own list has
+;;; been mutated that way -- it only holds with the fix in place, since a snapshot
+;;; taken at `train' time cannot be reached through the caller's list at all.
+
+(deftest lightgbm-api-update-one-iteration-survives-caller-mutating-valid-sets-list
+  (with-backend-library (:lightgbm)
+    (multiple-value-bind (matrix label-vector) (make-separable-dataset)
+      (let ((backend (cl-gbdt:open-backend :lightgbm))
+            (dataset nil)
+            (valid-set-1 nil)
+            (valid-set-2 nil)
+            (callers-valid-sets nil)
+            (booster nil))
+        (unwind-protect
+             (progn
+               (setf dataset (cl-gbdt:make-dataset backend matrix
+                                                    :label label-vector
+                                                    :parameters *dataset-parameters*))
+               (setf valid-set-1 (cl-gbdt:make-dataset backend matrix
+                                                        :label label-vector
+                                                        :parameters *dataset-parameters*))
+               (setf valid-set-2 (cl-gbdt:make-dataset backend matrix
+                                                        :label label-vector
+                                                        :parameters *dataset-parameters*))
+               (setf callers-valid-sets (list valid-set-1 valid-set-2))
+               (setf booster (cl-gbdt:train backend dataset :num-rounds 1
+                                             :valid-sets callers-valid-sets
+                                             :parameters *booster-parameters*))
+               ;; Destructively truncate the caller's own list after train returns --
+               ;; the same cons cell `train' saw, if it kept that list rather than a
+               ;; copy of it.
+               (setf (cdr callers-valid-sets) nil)
+               (cl-gbdt:free-dataset valid-set-2)
+               (testing "update-one-iteration still notices the freed validation set"
+                 ;; handler-case, not rove's `signals' -- see this file's other guard
+                 ;; tests for why.
+                 (ok (handler-case (progn (cl-gbdt:update-one-iteration booster) nil)
+                       (cl-gbdt:released-handle-error () t))
+                     "update-one-iteration did not signal released-handle-error after ~
+                      the caller truncated its own valid-sets list")))
+          (progn
+            (when booster (cl-gbdt:free-booster booster))
+            (when dataset (cl-gbdt:free-dataset dataset))
+            (when valid-set-1 (cl-gbdt:free-dataset valid-set-1))
+            (cl-gbdt:close-backend backend)))))))
+
 ;;; I2: `LGBM_DatasetCreateFromMat' produces a fully-binned raw dataset before
 ;;; `make-dataset' ever attaches label/weight/group/feature-names, and `make-handle'
 ;;; does not take ownership of that raw pointer until every attachment step has
