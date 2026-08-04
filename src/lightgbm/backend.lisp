@@ -1,8 +1,5 @@
-;;;; backend.lisp --- LightGBM backend: library discovery and the dataset half of
+;;;; backend.lisp --- LightGBM backend: library discovery and all 12 methods of
 ;;;; the unified API's protocol.
-;;;;
-;;;; Training, inference and persistence are Tasks 3 and 4; this file only brings
-;;;; a dataset into being and reads it back.
 
 (uiop:define-package #:cl-gbdt/src/lightgbm/backend
   (:use #:cl)
@@ -19,9 +16,22 @@
                 #:lgbm-booster-add-valid-data
                 #:lgbm-booster-update-one-iter
                 #:lgbm-booster-free
+                #:lgbm-booster-calc-num-predict
+                #:lgbm-booster-predict-for-mat
+                #:lgbm-booster-save-model
+                #:lgbm-booster-save-model-to-string
+                #:lgbm-booster-create-from-modelfile
+                #:lgbm-booster-feature-importance
+                #:lgbm-booster-get-num-feature
                 #:+c-api-dtype-float32+
                 #:+c-api-dtype-float64+
-                #:+c-api-dtype-int32+)
+                #:+c-api-dtype-int32+
+                #:+c-api-predict-normal+
+                #:+c-api-predict-raw-score+
+                #:+c-api-predict-leaf-index+
+                #:+c-api-predict-contrib+
+                #:+c-api-feature-importance-split+
+                #:+c-api-feature-importance-gain+)
   (:import-from #:cl-gbdt/src/backend
                 #:backend
                 #:backend-name
@@ -38,6 +48,11 @@
                 #:free-dataset
                 #:train
                 #:update-one-iteration
+                #:predict
+                #:save-model
+                #:load-model
+                #:model-to-string
+                #:feature-importance
                 #:free-booster)
   (:import-from #:cl-gbdt/src/handle
                 #:dataset
@@ -112,9 +127,16 @@ not assume either.")
     "LGBM_BoosterCreate"
     "LGBM_BoosterAddValidData"
     "LGBM_BoosterUpdateOneIter"
-    "LGBM_BoosterFree")
+    "LGBM_BoosterFree"
+    "LGBM_BoosterCalcNumPredict"
+    "LGBM_BoosterPredictForMat"
+    "LGBM_BoosterSaveModel"
+    "LGBM_BoosterSaveModelToString"
+    "LGBM_BoosterCreateFromModelfile"
+    "LGBM_BoosterFeatureImportance"
+    "LGBM_BoosterGetNumFeature")
   "C function names this backend calls, checked with `probe-foreign-symbols' right
-after the library loads. Grows in Task 4 as the rest of the API is wired up.")
+after the library loads.")
 
 (defun %env-library-path ()
   "Return the value of *library-env-var*, or NIL when it is unset or empty."
@@ -429,3 +451,165 @@ function's contract."
   (release-handle
    booster
    (lambda (pointer) (check-lgbm (lgbm-booster-free pointer) "LGBM_BoosterFree"))))
+
+;;; ---------------------------------------------------------------------------
+;;; Inference
+
+(defun %predict-type (kind)
+  "Map the protocol's KIND keyword onto LightGBM's `C_API_PREDICT_*' constant.
+
+`ecase', not `case': an unrecognized KIND must error rather than silently
+predicting something else."
+  (ecase kind
+    (:normal +c-api-predict-normal+)
+    (:raw +c-api-predict-raw-score+)
+    (:leaf-index +c-api-predict-leaf-index+)
+    (:contrib +c-api-predict-contrib+)))
+
+(defun %resolve-num-iteration (num-iteration)
+  "Return NUM-ITERATION as LightGBM spells it on the wire: 0 means all
+iterations, which is what NIL means in the protocol."
+  (or num-iteration 0))
+
+(defun %calc-num-predict (booster-pointer nrow predict-type start-iteration num-iteration)
+  "Return the true element count `LGBM_BoosterPredictForMat' will write, via
+`LGBM_BoosterCalcNumPredict'.
+
+The row count alone is only the right buffer size for a single-class
+objective -- this is how the true count, including any additional classes, is
+obtained instead of assumed."
+  (cffi:with-foreign-object (out :int64)
+    (check-lgbm (lgbm-booster-calc-num-predict
+                 booster-pointer nrow predict-type start-iteration num-iteration out)
+                "LGBM_BoosterCalcNumPredict")
+    (cffi:mem-ref out :int64)))
+
+(defmethod predict ((booster lightgbm-booster) matrix &key (kind :normal) num-iteration)
+  "Predict on MATRIX with BOOSTER via `LGBM_BoosterPredictForMat'.
+
+KIND and NUM-ITERATION are as the `predict' generic function documents.
+Predictions start from iteration 0 -- the protocol exposes no start-iteration
+override.
+
+The output buffer's element count comes from `LGBM_BoosterCalcNumPredict', not
+from the row count alone: the row count is only correct for a single-class
+objective. The second array dimension is that count divided by the row count."
+  (let ((pointer (handle-live-pointer booster))
+        (predict-type (%predict-type kind))
+        (iteration-count (%resolve-num-iteration num-iteration)))
+    (with-foreign-matrix (data-pointer nrow ncol element-type) matrix
+      (let ((data-type (ecase element-type
+                          (double-float +c-api-dtype-float64+)
+                          (single-float +c-api-dtype-float32+)))
+            (element-count (%calc-num-predict pointer nrow predict-type 0 iteration-count)))
+        (let* ((ncol-result (/ element-count nrow))
+               (result (make-array (list nrow ncol-result) :element-type 'double-float)))
+          (cffi:with-foreign-string (parameter-cstring "")
+            (cffi:with-foreign-objects ((out-len :int64) (buffer :double element-count))
+              (check-lgbm (lgbm-booster-predict-for-mat
+                           pointer data-pointer data-type nrow ncol 1 predict-type 0
+                           iteration-count parameter-cstring out-len buffer)
+                          "LGBM_BoosterPredictForMat")
+              (dotimes (row nrow)
+                (dotimes (col ncol-result)
+                  (setf (aref result row col)
+                        (cffi:mem-aref buffer :double (+ (* row ncol-result) col)))))))
+          result)))))
+
+;;; ---------------------------------------------------------------------------
+;;; Persistence
+
+(defmethod save-model ((booster lightgbm-booster) path &key num-iteration)
+  "Save BOOSTER's model to PATH via `LGBM_BoosterSaveModel'.
+
+NUM-ITERATION limits how many trees are saved; nil saves all of them, which
+LightGBM spells as 0. Returns PATH."
+  (let ((pointer (handle-live-pointer booster)))
+    (cffi:with-foreign-string (filename (namestring path))
+      (check-lgbm (lgbm-booster-save-model
+                   pointer 0 (%resolve-num-iteration num-iteration)
+                   +c-api-feature-importance-split+ filename)
+                  "LGBM_BoosterSaveModel")))
+  path)
+
+(defmethod load-model ((backend lightgbm-backend) path)
+  "Load a LightGBM model from PATH via `LGBM_BoosterCreateFromModelfile' and
+return a new booster.
+
+The returned booster has no training set -- see the `booster' class'
+documentation -- since PATH names a model, not a dataset."
+  (let ((booster-pointer
+          (cffi:with-foreign-string (filename (namestring path))
+            (cffi:with-foreign-objects ((out-num-iterations :int) (out :pointer))
+              (check-lgbm (lgbm-booster-create-from-modelfile filename out-num-iterations out)
+                          "LGBM_BoosterCreateFromModelfile")
+              (cffi:mem-ref out :pointer)))))
+    (when (cffi:null-pointer-p booster-pointer)
+      (error 'foreign-call-error
+             :function-name "LGBM_BoosterCreateFromModelfile"
+             :code 0
+             :message "reported success but returned a null booster handle"))
+    (make-handle 'lightgbm-booster booster-pointer (backend-name backend) :booster)))
+
+(defun %save-model-to-string (booster-pointer num-iteration)
+  "Return BOOSTER-POINTER's model as a Lisp string via the two-call
+`LGBM_BoosterSaveModelToString' idiom: a first call with a modest buffer
+learns the required length from its OUT-LEN parameter, and -- only when that
+length exceeds what was already tried -- a second call with a buffer of
+exactly that length fetches the whole string. The model's serialized length is
+not knowable ahead of time, so one fixed-size buffer cannot be assumed to fit."
+  (let ((probe-length 1024))
+    (cffi:with-foreign-object (out-len :int64)
+      (cffi:with-foreign-object (probe :char probe-length)
+        (check-lgbm (lgbm-booster-save-model-to-string
+                     booster-pointer 0 num-iteration +c-api-feature-importance-split+
+                     probe-length out-len probe)
+                    "LGBM_BoosterSaveModelToString")
+        (let ((length (cffi:mem-ref out-len :int64)))
+          (if (<= length probe-length)
+              (cffi:foreign-string-to-lisp probe)
+              (cffi:with-foreign-object (buffer :char length)
+                (check-lgbm (lgbm-booster-save-model-to-string
+                             booster-pointer 0 num-iteration +c-api-feature-importance-split+
+                             length out-len buffer)
+                            "LGBM_BoosterSaveModelToString")
+                (cffi:foreign-string-to-lisp buffer))))))))
+
+(defmethod model-to-string ((booster lightgbm-booster) &key num-iteration)
+  "Return BOOSTER's model as a string via `LGBM_BoosterSaveModelToString'."
+  (%save-model-to-string (handle-live-pointer booster) (%resolve-num-iteration num-iteration)))
+
+;;; ---------------------------------------------------------------------------
+;;; Feature importance
+
+(defun %feature-importance-type (kind)
+  "Map the protocol's KIND keyword onto LightGBM's
+`C_API_FEATURE_IMPORTANCE_*' constant.
+
+`ecase', not `case': an unrecognized KIND must error rather than silently
+returning a different importance measure."
+  (ecase kind
+    (:split +c-api-feature-importance-split+)
+    (:gain +c-api-feature-importance-gain+)))
+
+(defmethod feature-importance ((booster lightgbm-booster) &key (kind :split) num-iteration)
+  "Return BOOSTER's per-feature importances via `LGBM_BoosterFeatureImportance'.
+
+The result has one entry per feature. The width comes from
+`LGBM_BoosterGetNumFeature', which works whether BOOSTER came from `train' or
+`load-model' -- unlike a booster's training set, which `load-model' leaves
+unbound."
+  (let* ((pointer (handle-live-pointer booster))
+         (importance-type (%feature-importance-type kind))
+         (count (cffi:with-foreign-object (out :int)
+                  (check-lgbm (lgbm-booster-get-num-feature pointer out)
+                              "LGBM_BoosterGetNumFeature")
+                  (cffi:mem-ref out :int)))
+         (result (make-array count :element-type 'double-float)))
+    (cffi:with-foreign-object (buffer :double count)
+      (check-lgbm (lgbm-booster-feature-importance
+                   pointer (%resolve-num-iteration num-iteration) importance-type buffer)
+                  "LGBM_BoosterFeatureImportance")
+      (dotimes (index count)
+        (setf (aref result index) (cffi:mem-aref buffer :double index))))
+    result))
