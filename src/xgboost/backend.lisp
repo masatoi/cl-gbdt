@@ -876,11 +876,21 @@ place."
 (defun %feature-importance-type (kind)
   "Map the protocol's KIND keyword onto XGBoost's `\"importance_type\"' config string.
 
+`:gain' maps to XGBoost's `\"total_gain\"', not its `\"gain\"' -- the vendored header
+(`ffi-spec/xgboost/include/xgboost/c_api.h') documents `\"gain\"' as the *average* gain
+across the splits a feature is used in and `\"total_gain\"' as the sum, while LightGBM's
+`C_API_FEATURE_IMPORTANCE_GAIN' -- what `cl-gbdt/src/lightgbm/backend' maps `:gain' onto
+-- and `feature-importance''s own generic-function docstring both mean the total. Mapping
+to `\"gain\"' here would have this backend silently return a different quantity than
+LightGBM under the identical keyword, the exact failure mode this project treats as most
+serious: a working call moved between backends and returning different numbers without
+either raising an error or the caller noticing.
+
 `ecase', not `case': an unrecognized KIND must error rather than silently returning a
 different importance measure."
   (ecase kind
     (:split "weight")
-    (:gain "gain")))
+    (:gain "total_gain")))
 
 (defmethod feature-importance ((booster xgboost-booster) &key (kind :split) num-iteration)
   "Return BOOSTER's per-feature importances via `XGBoosterFeatureScore'.
