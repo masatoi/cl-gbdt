@@ -50,20 +50,57 @@ excluding it here would blind the one check built to catch that."
                    +leaf-roots+)
           #'string<)))
 
+(defun undefined-reference-p (output)
+  "True when OUTPUT reports a name the compiler could not resolve.
+
+An undeclared dependency surfaces in two different ways, and a non-zero exit status
+only reveals one of them:
+
+  cffi:defcfun with no #:cffi clause     READ error -- the load fails outright
+  parse-body with no #:alexandria clause undefined function -- a STYLE-WARNING,
+                                         and the load SUCCEEDS
+
+Only the first is visible in the exit status, so a checker reading that alone passes
+a file whose imports are missing. Promoting warnings to errors does not work either:
+SBCL defers undefined-name warnings to the end of the compilation unit, where
+`compile-file' has already returned its WARNINGS-P, and doing so would also fail on
+unrelated pre-existing style warnings such as the ignored-variable ones in
+tests/functional/lightgbm.lisp.
+
+The trade-off: a dependency library emitting such a warning during its own first
+compile would fail this check too. That is the right direction to err -- a loud,
+diagnosable failure rather than a silent pass -- and this project's dependencies
+(cffi, alexandria, rove, jzon, trivial-garbage) compile clean."
+  (or (search "undefined function" output)
+      (search "undefined variable" output)))
+
 (defun load-in-fresh-image (system)
   "Load SYSTEM alone in a subprocess with a fresh Lisp image.
 
 Returns (values SUCCESS-P COMBINED-OUTPUT). A fresh `ros run' subprocess, rather
 than an in-image `asdf:load-system' or a shared worker, is the entire point: it
 starts with nothing loaded but Quicklisp's client, so SYSTEM's own
-`uiop:define-package' clauses are the only thing that can pull in a dependency."
+`uiop:define-package' clauses are the only thing that can pull in a dependency.
+
+The exit status alone catches only half the failure mode, which is why the output
+is scanned too. See `undefined-reference-p'."
   (multiple-value-bind (output error-output status)
       (uiop:run-program (list "ros" "run" "--" "--non-interactive"
-                               "--eval" (format nil "(ql:quickload ~S :silent t)" system))
+                               ;; quickload proves the leaf resolves with only its declared
+                               ;; dependencies present, but it swallows compiler output --
+                               ;; verified, with or without :silent. So the leaf is then
+                               ;; recompiled with `asdf:load-system :force t', which does
+                               ;; print, giving `undefined-reference-p' something to read.
+                               ;; :force t forces this system only, not its dependencies.
+                               "--eval" (format nil "(progn (ql:quickload ~S :silent t)~
+                                                     (asdf:load-system ~S :force t))"
+                                                system system))
                          :output :string
                          :error-output :string
                          :ignore-error-status t)
-    (values (zerop status) (concatenate 'string output error-output))))
+    (let ((combined (concatenate 'string output error-output)))
+      (values (and (zerop status) (not (undefined-reference-p combined)))
+              combined))))
 
 (let ((systems (leaf-systems))
       (failures '()))
