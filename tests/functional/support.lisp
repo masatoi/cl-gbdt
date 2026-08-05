@@ -8,6 +8,7 @@
   (:export #:backend-library-path
            #:ensure-backend-library
            #:with-backend-library
+           #:resolve-via-cffi-default
            #:make-separable-dataset
            #:predictions-separate-p
            #:make-multiclass-dataset
@@ -88,6 +89,31 @@ macro in the same `deftest' would still run with no library loaded."
        (if (null ,path)
            (skip (missing-library-message ,backend))
            (progn ,@body)))))
+
+(defun resolve-via-cffi-default (backend default-name)
+  "Return the pathname CFFI's `:default' designator resolves DEFAULT-NAME to, with
+BACKEND's own vendored directory pushed onto `cffi:*foreign-library-directories*', or
+NIL when it fails to resolve there. Callers must already know BACKEND's vendored
+library exists -- e.g. by running inside `with-backend-library' -- this does not check.
+
+This exercises exactly the CFFI call `resolve-and-load-library' falls back to when no
+explicit :path, env-var override, or vendored-directory match is found -- a branch
+`with-backend-library''s own round trip never reaches, since the vendored directory is
+always found first there. That fallback is a system-search, not a directory lookup, so
+BACKEND's vendored directory has to be pushed onto CFFI's own
+`*foreign-library-directories*' for `:default' to have anything to find.
+
+The library CFFI opens here is deliberately never closed: this project's functional
+suite already leaves every library it loads open for the rest of the process --
+`ensure-backend-library' above never closes either -- rather than risk a premature
+`cffi:close-foreign-library' unmapping symbols something else in the same run still
+depends on."
+  (let* ((directory (uiop:pathname-directory-pathname (backend-library-path backend)))
+         (cffi:*foreign-library-directories*
+           (cons directory cffi:*foreign-library-directories*)))
+    (handler-case
+        (cffi:foreign-library-pathname (cffi:load-foreign-library (list :default default-name)))
+      (error () nil))))
 
 (defun make-separable-dataset (&key (rows 8) (cols 3))
   "Return two values: a feature matrix and its labels, for a trivially separable problem.

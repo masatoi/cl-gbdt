@@ -196,11 +196,15 @@ The extension stays wild because `tools/fetch-libs.sh' preserves whatever the
 platform's wheel ships -- `.so' on Linux, `.dylib' on macOS -- and discovery must
 not assume either.")
 
-(defparameter *default-library-name* "_lightgbm"
+(defparameter *default-library-name* "lib_lightgbm"
   "Name passed to CFFI's own system library search when no other candidate is found.
-LightGBM's compiled basename is `_lightgbm' -- the file is `lib_lightgbm.so', and the
-leading `lib' is the platform prefix `:default' adds, not part of the name given to
-it.")
+
+CFFI's `:default' designator only appends the platform's shared-library suffix (`.so' on
+Linux) to this string -- it never adds a `lib' prefix, the same as
+`cl-gbdt/src/xgboost/backend''s identical constant, whose docstring carries the full
+measurement. LightGBM's compiled basename is `_lightgbm', but the file on disk is
+`lib_lightgbm.so', so this constant has to spell out `lib_lightgbm' in full or CFFI's
+system search never finds it.")
 
 (defparameter *required-symbols*
   '("LGBM_GetLastError"

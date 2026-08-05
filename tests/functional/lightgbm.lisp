@@ -9,10 +9,15 @@
   ;; exception: their whole purpose is to exercise that raw layer. They therefore reach in
   ;; with a double colon, which keeps the trespass visible at every call site rather than
   ;; hiding it behind an export list the design does not want.
-  (:local-nicknames (#:lgbm #:cl-gbdt/src/lightgbm/c-api))
+  (:local-nicknames (#:lgbm #:cl-gbdt/src/lightgbm/c-api)
+                     ;; F1 needs the backend's own *default-library-name*, an internal
+                     ;; (unexported) special -- reached the same double-colon way as lgbm::
+                     ;; above.
+                     (#:lightgbm-backend #:cl-gbdt/src/lightgbm/backend))
   (:import-from #:cl-gbdt/tests/functional/support
                 #:backend-library-path
                 #:with-backend-library
+                #:resolve-via-cffi-default
                 #:make-separable-dataset
                 #:predictions-separate-p))
 
@@ -47,6 +52,26 @@ Returns what `ok' returns, so a caller can gate the rest of a sequence on it."
       (let ((message (lgbm-last-error)))
         (ok (stringp message))
         (ok (plusp (length message)) (format nil "message was ~S" message))))))
+
+;;; F1: *default-library-name* used to be "_lightgbm". Same measurement as
+;;; tests/functional/xgboost.lisp's identical test: CFFI's `:default' designator only
+;;; appends the platform's shared-library suffix -- it never adds a `lib' prefix -- so the
+;;; compiled basename alone ("_lightgbm") never resolves and the full on-disk basename
+;;; ("lib_lightgbm") must.
+
+(deftest lightgbm-default-library-name-resolves-through-cffi-default
+  (with-backend-library (:lightgbm)
+    (testing "the :default designator resolves *default-library-name* to the vendored file"
+      (let ((resolved (resolve-via-cffi-default
+                        :lightgbm lightgbm-backend::*default-library-name*)))
+        (ok resolved
+            (format nil "(:default ~S) did not resolve to any file"
+                    lightgbm-backend::*default-library-name*))
+        (when resolved
+          (ok (equal (file-namestring resolved)
+                      (file-namestring (backend-library-path :lightgbm)))
+              (format nil "resolved to ~A, expected the vendored ~A"
+                      resolved (backend-library-path :lightgbm))))))))
 
 (defparameter *dataset-parameters*
   "min_data_in_leaf=1 min_data_in_bin=1 verbose=-1"

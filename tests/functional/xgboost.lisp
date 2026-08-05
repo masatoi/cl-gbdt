@@ -9,10 +9,15 @@
   ;; exception: their whole purpose is to exercise that raw layer. They therefore reach in
   ;; with a double colon, which keeps the trespass visible at every call site rather than
   ;; hiding it behind an export list the design does not want.
-  (:local-nicknames (#:xgb #:cl-gbdt/src/xgboost/c-api))
+  (:local-nicknames (#:xgb #:cl-gbdt/src/xgboost/c-api)
+                     ;; F1 needs the backend's own *default-library-name*, an internal
+                     ;; (unexported) special -- reached the same double-colon way as xgb::
+                     ;; above.
+                     (#:xgboost-backend #:cl-gbdt/src/xgboost/backend))
   (:import-from #:cl-gbdt/tests/functional/support
                 #:backend-library-path
                 #:with-backend-library
+                #:resolve-via-cffi-default
                 #:make-separable-dataset
                 #:predictions-separate-p
                 #:array-interface-json))
@@ -63,6 +68,30 @@ the test wired up, while every later call kept returning success regardless."
                    (>= (first version) 1))
               (format nil "version is a plausible triple: ~S" version))
           (ok (plusp (first version)) "the major version is positive"))))))
+
+;;; F1: *default-library-name* used to be "xgboost". CFFI's `:default' designator only
+;;; appends the platform's shared-library suffix (`.so' on Linux) to the string given -- it
+;;; never adds a `lib' prefix, confirmed against CFFI's own source and empirically on this
+;;; host: with the vendored directory on `cffi:*foreign-library-directories*',
+;;; `(:default "xgboost")' fails to resolve `libxgboost.so' while `(:default "libxgboost")'
+;;; succeeds. `xgboost-library-loads' above never reaches this branch of
+;;; `resolve-and-load-library' -- the vendored directory is always found first there -- so
+;;; this exercises the system-search fallback directly, the way a normal system install
+;;; with no vendored copy and no env-var override would.
+
+(deftest xgboost-default-library-name-resolves-through-cffi-default
+  (with-backend-library (:xgboost)
+    (testing "the :default designator resolves *default-library-name* to the vendored file"
+      (let ((resolved (resolve-via-cffi-default
+                        :xgboost xgboost-backend::*default-library-name*)))
+        (ok resolved
+            (format nil "(:default ~S) did not resolve to any file"
+                    xgboost-backend::*default-library-name*))
+        (when resolved
+          (ok (equal (file-namestring resolved)
+                      (file-namestring (backend-library-path :xgboost)))
+              (format nil "resolved to ~A, expected the vendored ~A"
+                      resolved (backend-library-path :xgboost))))))))
 
 (deftest xgboost-trains-and-predicts
   (with-backend-library (:xgboost)
