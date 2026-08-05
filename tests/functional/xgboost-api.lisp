@@ -596,3 +596,49 @@ binary, so COLUMN is always 0, but the shape still has to be unpacked by hand."
             (when booster (cl-gbdt:free-booster booster))
             (when dataset (cl-gbdt:free-dataset dataset))
             (cl-gbdt:close-backend backend)))))))
+
+;;; F2: `XGBoosterFeatureScore' reports a per-class matrix, not one score per feature, for
+;;; a linear (`gblinear') booster's `:split' importance on a multi-class model -- see
+;;; `cl-gbdt/src/xgboost/backend''s `%check-feature-score-dim' for the full measurement
+;;; against the vendored library. Before the fix, `feature-importance' read only the
+;;; first `n-features' raw scores out of that matrix -- exactly one feature's whole
+;;; per-class row -- and scattered them across every column as if each belonged to a
+;;; different feature: no error, a plausible-looking three-number result that was
+;;; actually feature 0's three class scores, with feature 1's own score never read at
+;;; all. Confirmed red against the code this fixes: the call returned
+;;; `(-0.077..d0 0.0038..d0 0.0304..d0)' with no error, three numbers that were really
+;;; feature 0's row of a 3x3 matrix -- verified directly against
+;;; `XGBoosterFeatureScore''s own `out_dim'/`out_shape', which report `2' and `(3 3)' for
+;;; this exact fixture. This proves the fix rejects the combination instead of returning
+;;; it.
+
+(defparameter *gblinear-multiclass-booster-parameters*
+  '(:booster "gblinear" :objective "multi:softprob" :num-class 3 :verbosity 0)
+  "XGBoost booster parameters producing the shape `feature-importance' cannot reduce to
+one number per feature: a linear booster's `weight' importance on a multi-class model is
+a row-major [n_features, n_classes] matrix, confirmed directly against the vendored
+library -- see `cl-gbdt/src/xgboost/backend''s `%check-feature-score-dim'.")
+
+(deftest xgboost-api-feature-importance-on-gblinear-multiclass-signals-unsupported-argument
+  (with-backend-library (:xgboost)
+    (multiple-value-bind (matrix label-vector) (make-multiclass-dataset)
+      (let ((backend (cl-gbdt:open-backend :xgboost))
+            (dataset nil)
+            (booster nil))
+        (unwind-protect
+             (progn
+               (setf dataset (cl-gbdt:make-dataset backend matrix :label label-vector))
+               (setf booster (cl-gbdt:train backend dataset :num-rounds 5
+                                             :parameters
+                                             *gblinear-multiclass-booster-parameters*))
+               (testing "feature-importance on a gblinear multi-class booster signals ~
+                         unsupported-argument instead of returning a wrong result"
+                 ;; handler-case, not rove's `signals' -- see this file's other guard
+                 ;; tests for why.
+                 (ok (handler-case (progn (cl-gbdt:feature-importance booster) nil)
+                       (cl-gbdt:unsupported-argument () t))
+                     "feature-importance did not signal unsupported-argument")))
+          (progn
+            (when booster (cl-gbdt:free-booster booster))
+            (when dataset (cl-gbdt:free-dataset dataset))
+            (cl-gbdt:close-backend backend)))))))

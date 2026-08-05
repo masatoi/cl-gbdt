@@ -987,6 +987,47 @@ score into the wrong column silently."
                                     XGBoost's default \"f<index>\" form"
                                name))))
 
+(defun %check-feature-score-dim (backend out-dim out-shape)
+  "Signal `unsupported-argument' when `XGBoosterFeatureScore' just wrote more than one
+score per feature into OUT-DIM/OUT-SHAPE.
+
+The vendored header (`ffi-spec/xgboost/include/xgboost/c_api.h') documents exactly one
+combination producing that: a linear (`gblinear') booster's `weight' importance type on
+a multi-class model, whose scores come back as a row-major [n_features, n_classes]
+matrix rather than one number per feature. \"For tree model, out_n_feature is always
+equal to out_n_scores\" per that same header -- confirmed empirically here too, across
+every tree-booster case measured, multi-class included, which all report OUT-DIM 1.
+
+`feature-importance' promises one entry per feature, matching
+`cl-gbdt/src/lightgbm/backend''s own `feature-importance': `LGBM_BoosterFeatureImportance'
+has no shape output at all, and, confirmed empirically, already sums a multi-class
+model's per-class contributions into one number per feature inside the library before
+this ever sees it. XGBoost's per-class matrix has no such library-computed summary for
+this backend to read back instead, and inventing a reduction here would risk being
+actively misleading: `weight' on a linear booster is a signed coefficient, so summing
+across classes could cancel a feature that matters a great deal for telling two classes
+apart down to a value near zero. Rather than silently return a slice of the matrix --
+the bug this guards against, `%feature-score-index' scattering only the first
+`n_features' raw scores, which are really one feature's whole row -- or a reduction this
+backend cannot vouch for, this refuses the combination outright, before any of
+OUT-SCORES is read."
+  (let ((dim (cffi:mem-ref out-dim :uint64)))
+    (when (> dim 1)
+      (let* ((shape-pointer (cffi:mem-ref out-shape :pointer))
+             (shape (loop :for index :below dim
+                          :collect (cffi:mem-aref shape-pointer :uint64 index))))
+        (error 'unsupported-argument
+               :backend (backend-name backend)
+               :argument "feature-importance's booster"
+               :reason (format nil "XGBoosterFeatureScore reported a ~D-dimensional shape ~
+                                     ~A instead of one score per feature -- most likely a ~
+                                     linear (gblinear) booster's :split importance on a ~
+                                     multi-class model, whose scores are a per-class ~
+                                     matrix; no single value per feature can be derived ~
+                                     without inventing a reduction this backend does not ~
+                                     vouch for"
+                               dim shape))))))
+
 (defmethod feature-importance ((booster xgboost-booster) &key (kind :split) num-iteration)
   "Return BOOSTER's per-feature importances via `XGBoosterFeatureScore'.
 
@@ -1006,7 +1047,14 @@ returns it, the result's length would be the number of *used* features, not the
 dataset's column count, and its indices would not correspond to column positions --
 sparse where LightGBM's equivalent is always dense. This builds a dense vector of
 `%booster-num-features' entries instead, initialized to zero, and scatters each
-reported score into the column `%feature-score-index' recovers from its feature name."
+reported score into the column `%feature-score-index' recovers from its feature name.
+
+Signals `unsupported-argument' instead of returning a result at all when
+`XGBoosterFeatureScore' reports more than one score per feature -- see
+`%check-feature-score-dim'. In practice this is a linear (`gblinear') booster's `:split'
+importance on a multi-class model: its scores are a per-class matrix, not one number per
+feature, and there is no single value this backend can derive from that matrix without
+inventing a reduction XGBoost itself does not define."
   (with-foreign-float-traps-masked
     (%check-unsupported (handle-backend booster) "feature-importance's :num-iteration"
                          num-iteration "XGBoosterFeatureScore has no iteration limit")
@@ -1020,6 +1068,7 @@ reported score into the column `%feature-score-index' recovers from its feature 
           (check-xgb (xg-booster-feature-score
                       pointer config out-n-features out-features out-dim out-shape out-scores)
                      "XGBoosterFeatureScore")
+          (%check-feature-score-dim (handle-backend booster) out-dim out-shape)
           (let ((used-count (cffi:mem-ref out-n-features :uint64))
                 (features-pointer (cffi:mem-ref out-features :pointer))
                 (scores-pointer (cffi:mem-ref out-scores :pointer))

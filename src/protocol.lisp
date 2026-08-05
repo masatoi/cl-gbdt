@@ -105,7 +105,16 @@ dense, per-column result from that.
 
 NUM-ITERATION behaves as it does for `save-model': LightGBM limits the importance
 calculation to that many rounds, nil meaning all of them; XGBoost has no such limit and
-signals `unsupported-argument' when NUM-ITERATION is supplied."))
+signals `unsupported-argument' when NUM-ITERATION is supplied.
+
+Every result is one-dimensional -- one number per feature, full stop. XGBoost's
+`gblinear' booster reports a per-class matrix instead of a single score per feature for
+a multi-class model, which has no defined single-value reduction (summing signed linear
+coefficients across classes can cancel a feature that matters to none near zero); rather
+than invent one, that backend signals `unsupported-argument' instead of returning
+anything for that combination. LightGBM's own call never reports that shape: it already
+aggregates a multi-class model's per-class contributions into one number per feature
+inside the library."))
 
 (defgeneric free-dataset (dataset)
   (:documentation "Free DATASET. Does nothing if it was already freed."))
