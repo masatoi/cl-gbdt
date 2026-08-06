@@ -777,21 +777,128 @@ pair could not pass by accident if `booster-eval' silently dropped every field a
 first -- the same reasoning `cl-gbdt/tests/functional/lightgbm-api''s own
 *eval-booster-parameters* gives for its two LightGBM metrics.")
 
+(defparameter *%raw-field-value-reader-package*
+  (or (find-package '#:cl-gbdt/tests/functional/xgboost-api/raw-field-scratch)
+      (make-package '#:cl-gbdt/tests/functional/xgboost-api/raw-field-scratch :use nil))
+  "Throwaway package used only as `*package*' while `%raw-field-value' reads a numeric
+token, for the identical reason `cl-gbdt/src/xgboost/native''s own
+`*%eval-value-reader-package*' exists -- a token that is not valid `double-float' syntax
+(XGBoost's `\"inf\"'/`\"nan\"' spellings included) still reads as a plain symbol, which
+would otherwise be interned into this test file's own `*package*' as a side effect of the
+read. Deliberately a *different* package object from `native''s own scratch package:
+`%raw-field-value' exists specifically to be an independent re-derivation of a (label,
+value) pair from RAW, not a second call path that happens to share the parser under
+test's own plumbing -- see that function's docstring.")
+
 (defun %raw-field-value (raw label)
   "Return the double-float value following \"LABEL:\" in RAW, up to the next tab or the
-end of RAW, or NIL when LABEL does not appear in RAW at all.
+end of RAW; NIL when LABEL does not appear in RAW at all, or when the text after its
+colon is not valid `double-float' syntax -- XGBoost's own `\"inf\"'/`\"-inf\"'/`\"nan\"'/
+`\"-nan\"' spellings for a non-finite value included.
 
 Independent of `cl-gbdt/src/xgboost/native''s own `%parse-eval-result': this is the
 functional suite's own re-derivation of a (label, value) pair straight out of the raw
 string, used only to check that `booster-eval''s PARSED return value agrees with its RAW
-one -- reusing the function under test to check itself would prove nothing."
+one -- reusing the function under test to check itself would prove nothing. `*package*'
+is bound to *%raw-field-value-reader-package* for the read, never this file's own -- see
+that parameter's docstring. `handler-case' catches `error' broadly rather than one named
+condition, matching `cl-gbdt/src/xgboost/native''s own `%read-eval-value', which this
+function deliberately does not call -- see that function's docstring for why a broad
+catch is the right scope here, not a narrower one."
   (let ((start (search (concatenate 'string label ":") raw)))
     (when start
       (let* ((value-start (+ start (length label) 1))
              (tab (position #\Tab raw :start value-start))
-             (value-end (or tab (length raw))))
-        (let ((*read-eval* nil) (*read-default-float-format* 'double-float))
-          (coerce (read-from-string (subseq raw value-start value-end)) 'double-float))))))
+             (value-end (or tab (length raw)))
+             (*read-eval* nil)
+             (*read-default-float-format* 'double-float)
+             (*package* *%raw-field-value-reader-package*)
+             (value (handler-case (read-from-string (subseq raw value-start value-end))
+                      (error () nil))))
+        (when (realp value)
+          (coerce value 'double-float))))))
+
+;;; Task 3 review, Important 1: XGBoost formats a metric value through `std::ostream',
+;;; which spells a non-finite double as "inf", "-inf", "nan" or "-nan" -- reachable from
+;;; real objectives, e.g. `mape' on a zero label or `rmsle' on a negative prediction, or
+;;; from an empty field (a trailing tab with nothing after it). `%parse-eval-result' used
+;;; to call a bare `read-from-string'/`coerce' on that text with no guard, so any of those
+;;; shapes signalled TYPE-ERROR (a symbol read from "inf"/"nan" is not REAL) or
+;;; END-OF-FILE (nothing to read from "") and aborted `booster-eval' entirely -- destroying
+;;; RAW along with it, exactly what policy section 5 forbids and that function's own
+;;; docstring calls "the only value this function can promise is faithful". This proves the
+;;; parser survives every shape the review probed, calling it directly -- `::' because
+;;; `%parse-eval-result' is a deliberately unexported internal of
+;;; `cl-gbdt/src/xgboost/native', reached here to test its defensiveness in isolation from
+;;; any foreign call, which no shared library is needed for; this test does not wrap itself
+;;; in `with-backend-library' for exactly that reason -- it exercises no FFI call at all,
+;;; and skipping it on a machine with no vendored library would be wrong.
+
+(deftest xgboost-api-parse-eval-result-survives-non-finite-and-malformed-fields
+  (testing "a plain finite value still parses to a double-float"
+    (ok (equal '(("train-logloss" . 0.1d0))
+               (cl-gbdt/src/xgboost/native::%parse-eval-result
+                (format nil "[5]~Ctrain-logloss:0.1" #\Tab)))
+        (format nil "got ~S"
+                (cl-gbdt/src/xgboost/native::%parse-eval-result
+                 (format nil "[5]~Ctrain-logloss:0.1" #\Tab)))))
+  (testing "\"inf\" does not signal; the field survives, keyed by LABEL, with a NIL value"
+    (ok (equal '(("train-mape" . nil))
+               (cl-gbdt/src/xgboost/native::%parse-eval-result
+                (format nil "[5]~Ctrain-mape:inf" #\Tab)))
+        (format nil "got ~S"
+                (cl-gbdt/src/xgboost/native::%parse-eval-result
+                 (format nil "[5]~Ctrain-mape:inf" #\Tab)))))
+  (testing "\"-inf\" does not signal either"
+    (ok (equal '(("train-mape" . nil))
+               (cl-gbdt/src/xgboost/native::%parse-eval-result
+                (format nil "[5]~Ctrain-mape:-inf" #\Tab)))
+        (format nil "got ~S"
+                (cl-gbdt/src/xgboost/native::%parse-eval-result
+                 (format nil "[5]~Ctrain-mape:-inf" #\Tab)))))
+  (testing "\"nan\" does not signal; the field survives with a NIL value"
+    (ok (equal '(("train-auc" . nil))
+               (cl-gbdt/src/xgboost/native::%parse-eval-result
+                (format nil "[5]~Ctrain-auc:nan" #\Tab)))
+        (format nil "got ~S"
+                (cl-gbdt/src/xgboost/native::%parse-eval-result
+                 (format nil "[5]~Ctrain-auc:nan" #\Tab)))))
+  (testing "\"-nan\" does not signal either"
+    (ok (equal '(("train-auc" . nil))
+               (cl-gbdt/src/xgboost/native::%parse-eval-result
+                (format nil "[5]~Ctrain-auc:-nan" #\Tab)))
+        (format nil "got ~S"
+                (cl-gbdt/src/xgboost/native::%parse-eval-result
+                 (format nil "[5]~Ctrain-auc:-nan" #\Tab)))))
+  (testing "an empty value after the colon does not signal end-of-file"
+    (ok (equal '(("train-x" . nil))
+               (cl-gbdt/src/xgboost/native::%parse-eval-result
+                (format nil "[5]~Ctrain-x:" #\Tab)))
+        (format nil "got ~S"
+                (cl-gbdt/src/xgboost/native::%parse-eval-result
+                 (format nil "[5]~Ctrain-x:" #\Tab)))))
+  (testing "a mix of finite and non-finite fields keeps every label, only the ~
+            non-finite ones lose their value"
+    (let ((raw (format nil "[5]~Ctrain-logloss:0.1~Ctrain-mape:inf" #\Tab #\Tab)))
+      (ok (equal '(("train-logloss" . 0.1d0) ("train-mape" . nil))
+                 (cl-gbdt/src/xgboost/native::%parse-eval-result raw))
+          (format nil "got ~S" (cl-gbdt/src/xgboost/native::%parse-eval-result raw))))))
+
+;;; Task 3 review, Minor 2, same finding: reading "inf"/"nan" interns a real symbol
+;;; somewhere, and without `%read-eval-value''s throwaway `*package*' binding it would
+;;; land in whatever package was current when `booster-eval' was called -- a runtime
+;;; `intern' as a side effect of parsing a result string. This proves reading a
+;;; non-finite field does not touch this test's own `*package*'.
+
+(deftest xgboost-api-parse-eval-result-does-not-intern-into-the-callers-package
+  (let ((accessible-before (nth-value 1 (find-symbol "INF" *package*))))
+    (cl-gbdt/src/xgboost/native::%parse-eval-result (format nil "[5]~Ctrain-mape:inf" #\Tab))
+    (testing "INF was not accessible in this file's own package before the call"
+      (ok (null accessible-before)
+          (format nil "INF was already accessible in ~A: ~A" *package* accessible-before)))
+    (testing "INF is still not accessible in this file's own package after the call"
+      (ok (null (nth-value 1 (find-symbol "INF" *package*)))
+          (format nil "INF became accessible in ~A" *package*)))))
 
 ;;; Step 3 of this task's brief: the raw string is returned intact, and the parse agrees
 ;;; with it. Two datasets and two metrics, so this also proves `booster-eval' does not

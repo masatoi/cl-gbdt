@@ -885,6 +885,59 @@ caller never holds a pointer into XGBoost's own buffer."
                   (dotimes (index allocated)
                     (cffi:foreign-string-free (cffi:mem-aref evnames :pointer index)))))))))))
 
+(defparameter *%eval-value-reader-package*
+  (or (find-package '#:cl-gbdt/src/xgboost/native/eval-value-scratch)
+      (make-package '#:cl-gbdt/src/xgboost/native/eval-value-scratch :use nil))
+  "Throwaway package used only as `*package*' while `%read-eval-value' reads a numeric
+token out of `XGBoosterEvalOneIter''s raw result string.
+
+A token that is not valid `double-float' syntax -- XGBoost's own `\"inf\"', `\"-inf\"',
+`\"nan\"' or `\"-nan\"' spellings for a non-finite value included -- still reads as a
+plain symbol rather than signalling on the read itself, and that symbol has to be
+interned *somewhere*. Left unbound, `*package*' would be whatever was current when
+`booster-eval' was called -- the caller's own package -- so `read-from-string' would
+silently leave `INF' or `NAN' newly accessible there, a runtime `intern' as a side effect
+of parsing a result string, which this project's own style guide forbids. Binding it to
+this throwaway package instead confines every such symbol here, never touching the
+caller's. Mirrors `tools/ci/check-float-traps.lisp''s identical scratch-package idiom,
+for the identical reason.")
+
+(defun %read-eval-value (text)
+  "Return TEXT -- one `%parse-eval-result' field's value substring -- read as a
+`double-float', or NIL when TEXT is not valid `double-float' syntax.
+
+XGBoost formats a metric value through `std::ostream', which spells a non-finite double
+as `\"inf\"', `\"-inf\"', `\"nan\"' or `\"-nan\"' -- confirmed reachable from real
+objectives, e.g. `mape' on a zero label or `rmsle' on a negative prediction. None of those
+four are `double-float' syntax: each reads as a plain symbol instead of signalling on the
+read itself, so `realp' is what actually rejects them here, after a successful read, not
+the `handler-case' below. TEXT = \"\" -- an empty field, e.g. a trailing tab with nothing
+after it -- does signal instead, `end-of-file' from `read-from-string' with nothing left
+to read; `handler-case' below catches `error' generally, not only that one specific
+condition, matching this project's own established idiom for a best-effort operation
+whose exact failure mode is not the point -- see e.g. `cl-gbdt/src/xgboost/protocol''s
+`make-dataset' and `free-dataset', which catch `error' the same way around
+`%free-dmatrix-unchecked'/`%free-dmatrix'. TEXT is arbitrary text from a raw result
+string this function does not otherwise control the shape of, so a reader condition this
+docstring has not enumerated is exactly the case this stays broad for. Either way this
+returns NIL rather than signalling out of `%parse-eval-result' and, through it,
+`booster-eval' -- see that function's own docstring for why losing RAW over a value this
+function cannot make sense of is not acceptable.
+
+`*read-eval*' is bound to NIL so a stray `#.' in an unexpected metric string cannot run
+code, and `*package*' to *%eval-value-reader-package*, never the caller's own -- see that
+parameter's docstring for why. A `let', not a `let*': none of these three bindings'
+init-forms refers to another of them -- their dependency is dynamic, not lexical, which is
+exactly what `let' already provides here: every one of the three is in effect for the
+whole BODY below, including the nested `let' that reads TEXT, which is all this needs."
+  (let ((*read-eval* nil)
+        (*read-default-float-format* 'double-float)
+        (*package* *%eval-value-reader-package*))
+    (let ((value (handler-case (read-from-string text)
+                   (error () nil))))
+      (when (realp value)
+        (coerce value 'double-float)))))
+
 (defun %parse-eval-result (raw)
   "Parse RAW -- `XGBoosterEvalOneIter''s own result string, as `%eval-one-iter' returns
 it unmodified -- into a fresh list of (LABEL . VALUE) conses, `booster-eval''s own
@@ -903,8 +956,12 @@ caller-supplied name (`booster-eval''s own NAMES argument) and XGBoost's own met
 joined with a hyphen. This does not attempt to split LABEL further into the two: a hyphen
 is also legal inside a caller-supplied name, so nothing in RAW alone can tell the two
 apart -- only `booster-eval''s own caller, which already knows every entry of NAMES
-verbatim, can. VALUE is read as a `double-float' via the Lisp reader, with `*read-eval*'
-bound to NIL so a stray `#.' in an unexpected metric string cannot run code.
+verbatim, can. VALUE is `%read-eval-value''s result: a `double-float' for ordinary numeric
+text, or NIL when that text is not valid `double-float' syntax -- XGBoost's own
+`\"inf\"'/`\"-inf\"'/`\"nan\"'/`\"-nan\"' spellings for a non-finite metric value are the
+known case, confirmed reachable from real objectives (see `%read-eval-value'). A NIL VALUE
+still keeps its LABEL and its place in the result list -- this never drops a field outright
+just because its own value did not parse; RAW is what to consult for its literal text.
 
 Returns NIL when RAW has no fields after the marker -- an empty DMATRIX-POINTERS reaching
 `%eval-one-iter', so XGBoost had nothing to evaluate -- or when RAW itself is empty."
@@ -913,10 +970,7 @@ Returns NIL when RAW has no fields after the marker -- an empty DMATRIX-POINTERS
           :for colon := (position #\: field :from-end t)
           :when colon
             :collect (cons (subseq field 0 colon)
-                            (let ((*read-eval* nil)
-                                  (*read-default-float-format* 'double-float))
-                              (coerce (read-from-string (subseq field (1+ colon)))
-                                      'double-float))))))
+                            (%read-eval-value (subseq field (1+ colon)))))))
 
 (defun booster-eval (booster datasets names)
   "Evaluate BOOSTER against DATASETS via `XGBoosterEvalOneIter', labeling each entry of
@@ -943,9 +997,14 @@ Returns two values:
 
   PARSED A fresh list of (LABEL . VALUE) conses, this function's own interpretation of
          RAW -- see `%parse-eval-result' for exactly how, and why it does not attempt to
-         split LABEL back into a dataset name and a metric name. Empty when DATASETS is
-         empty. If RAW and PARSED ever disagree, RAW is what XGBoost said and PARSED is a
-         bug in this function, not the other way around.
+         split LABEL back into a dataset name and a metric name. VALUE is a `double-float'
+         for ordinary numeric text, or NIL when XGBoost wrote something `%read-eval-value'
+         cannot read as one -- its own `\"inf\"'/`\"nan\"' spellings for a non-finite
+         metric are the known case; the LABEL stays regardless, only VALUE goes missing.
+         PARSED is empty when DATASETS is empty. A field PARSED cannot make sense of never
+         costs RAW: this always returns RAW once the foreign call itself has succeeded, no
+         matter what PARSED does with it afterward. If RAW and PARSED ever disagree, RAW is
+         what XGBoost said and PARSED is a bug in this function, not the other way around.
 
 DATASETS and NAMES must be the same length, checked in `%eval-one-iter' before either
 foreign array is built; see that function's docstring for the hazard an unchecked
