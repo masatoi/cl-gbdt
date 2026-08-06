@@ -133,7 +133,7 @@
      :macro "XGB_DLL"
      :c-api-path "src/xgboost/c-api.lisp"
      :c-api-package "CL-GBDT/SRC/XGBOOST/C-API"
-     :backend-path "src/xgboost/backend.lisp"
+     :backend-path "src/xgboost/native.lisp"
      :vendored-header "ffi-spec/xgboost/include/xgboost/c_api.h"
      :url "https://raw.githubusercontent.com/dmlc/xgboost/~A/include/xgboost/c_api.h"
      :tag-env-var "CHECK_UPSTREAM_XGBOOST_TAG"))

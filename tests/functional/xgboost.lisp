@@ -10,10 +10,11 @@
   ;; with a double colon, which keeps the trespass visible at every call site rather than
   ;; hiding it behind an export list the design does not want.
   (:local-nicknames (#:xgb #:cl-gbdt/src/xgboost/c-api)
-                     ;; F1 needs the backend's own *default-library-name*, an internal
-                     ;; (unexported) special -- reached the same double-colon way as xgb::
-                     ;; above.
-                     (#:xgboost-backend #:cl-gbdt/src/xgboost/backend))
+                     ;; F1 needs *default-library-name*, an internal (unexported) special
+                     ;; -- reached the same double-colon way as xgb:: above. It lives in
+                     ;; native.lisp (Layer 1), not protocol.lisp, since this branch's
+                     ;; Task 2 split the old backend.lisp in two.
+                     (#:xgboost-native #:cl-gbdt/src/xgboost/native))
   (:import-from #:cl-gbdt/tests/functional/support
                 #:backend-library-path
                 #:with-backend-library
@@ -83,10 +84,10 @@ the test wired up, while every later call kept returning success regardless."
   (with-backend-library (:xgboost)
     (testing "the :default designator resolves *default-library-name* to the vendored file"
       (let ((resolved (resolve-via-cffi-default
-                        :xgboost xgboost-backend::*default-library-name*)))
+                        :xgboost xgboost-native::*default-library-name*)))
         (ok resolved
             (format nil "(:default ~S) did not resolve to any file"
-                    xgboost-backend::*default-library-name*))
+                    xgboost-native::*default-library-name*))
         (when resolved
           (ok (equal (file-namestring resolved)
                       (file-namestring (backend-library-path :xgboost)))

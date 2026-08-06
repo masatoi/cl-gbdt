@@ -45,10 +45,10 @@
 ;;;;     form would not be masked even though the method's *first* body form is. Every
 ;;;;     current method's body is the single macro call itself, so this has not
 ;;;;     happened, but this check only inspects the first body form, not every one.
-;;;;   - A backend file that does not match +BACKEND-FILE-PATTERN+ -- a future backend
-;;;;     added under a different path convention would need that pattern extended, the
-;;;;     same limitation `tools/ci/check-leaf-systems.lisp''s +LEAF-ROOTS+ documents for
-;;;;     itself.
+;;;;   - A backend file that does not match any of +BACKEND-FILE-PATTERNS+ -- a future
+;;;;     backend added under a different path convention would need that list extended,
+;;;;     the same limitation `tools/ci/check-leaf-systems.lisp''s +LEAF-ROOTS+ documents
+;;;;     for itself.
 ;;;;   - Whether masking those three specific traps is the right set for whatever a
 ;;;;     newly added call does -- this only checks that the macro is present as the
 ;;;;     wrapping form, not that its argument list still matches what the call needs.
@@ -73,19 +73,30 @@
 ;;; but `cffi:defcfun' would signal "package CFFI does not exist" without this.
 (ql:quickload "cffi" :silent t)
 
-(defparameter +backend-file-pattern+ "src/*/backend.lisp"
-  "Glob, relative to the repository root, for files this check scans.
+(defparameter +backend-file-patterns+
+  '("src/*/backend.lisp" "src/*/native.lisp" "src/*/protocol.lisp")
+  "Globs, relative to the repository root, for files this check scans.
 
-Non-recursive and specific to the `backend.lisp' convention both existing backends
-follow: one file per backend holding every protocol method. A future backend that
-splits its methods across more than one file, or names its file something other than
-`backend.lisp', would silently not be scanned -- extend this pattern rather than
-assume it stays accurate on its own, the same caveat
-`tools/ci/check-leaf-systems.lisp''s +LEAF-ROOTS+ carries for the same reason.")
+LightGBM still keeps every protocol method in one `backend.lisp'. XGBoost's Task 2 split
+that file into `native.lisp' (Layer 1: no `defmethod' at all, only the %-functions and
+the error wrapper) and `protocol.lisp' (Layer 2: the classes and all fourteen methods) --
+so the file that actually holds XGBoost's `defmethod' forms is `protocol.lisp', not
+`native.lisp'. Both are still listed: `native.lisp' currently contributes zero
+`defmethod' forms to scan, but a future edit that moved one there by mistake -- or a
+LightGBM split that names its own halves differently -- should still be caught by this
+scan rather than silently exempted from it, the same reasoning
+`tools/ci/check-abi-blacklist.lisp' gives for reading `native.lisp' specifically for the
+c-api `:import-from' clause. A backend split under some other naming convention entirely
+would still silently not be scanned -- extend this list rather than assume it stays
+accurate on its own, the same caveat `tools/ci/check-leaf-systems.lisp''s +LEAF-ROOTS+
+carries for the same reason.")
 
 (defun backend-files ()
-  "Return the sorted list of pathnames matching +BACKEND-FILE-PATTERN+."
-  (sort (directory (merge-pathnames +backend-file-pattern+ (uiop:getcwd)))
+  "Return the sorted list of pathnames matching any of +BACKEND-FILE-PATTERNS+."
+  (sort (remove-duplicates
+         (mapcan (lambda (pattern) (directory (merge-pathnames pattern (uiop:getcwd))))
+                 +backend-file-patterns+)
+         :test #'equal)
         #'string< :key #'namestring))
 
 (defun read-top-level-forms (path)

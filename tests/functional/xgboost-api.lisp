@@ -13,10 +13,12 @@
   (:import-from #:cl-gbdt)
   ;; Zero symbols: nothing below refers to this package by name. Its only job is to
   ;; run at load time and register :xgboost with `open-backend' -- see
-  ;; `register-backend' at the bottom of src/xgboost/backend.lisp. Without this
+  ;; `register-backend' near the top of src/xgboost/protocol.lisp. Without this
   ;; clause, package-inferred-system has no edge to that file at all, and
-  ;; `(cl-gbdt:open-backend :xgboost)' below would signal `unknown-backend'.
-  (:import-from #:cl-gbdt/src/xgboost/backend)
+  ;; `(cl-gbdt:open-backend :xgboost)' below would signal `unknown-backend'. Depends on
+  ;; `all', the leaf `cl-gbdt/xgboost' itself depends on, rather than `protocol'
+  ;; directly, so this exercises the same load path a real caller would.
+  (:import-from #:cl-gbdt/src/xgboost/all)
   (:import-from #:cl-gbdt/tests/functional/support
                 #:with-backend-library
                 #:make-separable-dataset
@@ -151,7 +153,7 @@ binary, so COLUMN is always 0, but the shape still has to be unpacked by hand."
           (ng (cl-gbdt:backend-open-p backend)))))))
 
 ;;; Task 3 wired `check-backend-version' into this backend's `initialize-backend' --
-;;; see `cl-gbdt/src/xgboost/backend''s `initialize-backend' and
+;;; see `cl-gbdt/src/xgboost/protocol''s `initialize-backend' and
 ;;; `cl-gbdt/src/version''s `*xgboost-version-range*'. The vendored library here is
 ;;; 3.3.0, XGBoost's own recorded VERIFIED point and *XGBOOST-VERSION-RANGE*'s
 ;;; INFERRED-HIGH -- inside the range by construction. A warning here would mean the
@@ -226,7 +228,7 @@ two groups.")
   "Two query groups of four rows each, matching *RANKING-MATRIX* and *RANKING-LABELS*.")
 
 ;;; Task 2 wired GROUP up on this backend via `XGDMatrixSetUIntInfo' -- see
-;;; `cl-gbdt/src/xgboost/backend''s `%set-group-field'. Setting the field is not evidence
+;;; `cl-gbdt/src/xgboost/native''s `%set-group-field'. Setting the field is not evidence
 ;;; ranking actually works, so this trains a small `rank:pairwise' model and checks the
 ;;; property that objective exists for: predictions increase in step with true relevance
 ;;; *within* each query group, not raw score values -- `within-group-strictly-increasing-p'
@@ -481,7 +483,7 @@ two groups.")
           (cl-gbdt:free-dataset dataset))))))
 
 ;;; `free-dataset' is deliberately the exception to the guard above -- see
-;;; `cl-gbdt/src/xgboost/backend''s `free-dataset' docstring for why it must not
+;;; `cl-gbdt/src/xgboost/protocol''s `free-dataset' docstring for why it must not
 ;;; signal `backend-not-open' from `with-dataset''s cleanup form. This proves freeing
 ;;; after `close-backend' neither signals nor brings the process down.
 
@@ -692,7 +694,7 @@ two groups.")
 
 ;;; F2: `XGBoosterFeatureScore' reports a per-class matrix, not one score per feature, for
 ;;; a linear (`gblinear') booster's `:split' importance on a multi-class model -- see
-;;; `cl-gbdt/src/xgboost/backend''s `%check-feature-score-dim' for the full measurement
+;;; `cl-gbdt/src/xgboost/native''s `%check-feature-score-dim' for the full measurement
 ;;; against the vendored library. Before the fix, `feature-importance' read only the
 ;;; first `n-features' raw scores out of that matrix -- exactly one feature's whole
 ;;; per-class row -- and scattered them across every column as if each belonged to a
@@ -710,7 +712,7 @@ two groups.")
   "XGBoost booster parameters producing the shape `feature-importance' cannot reduce to
 one number per feature: a linear booster's `weight' importance on a multi-class model is
 a row-major [n_features, n_classes] matrix, confirmed directly against the vendored
-library -- see `cl-gbdt/src/xgboost/backend''s `%check-feature-score-dim'.")
+library -- see `cl-gbdt/src/xgboost/native''s `%check-feature-score-dim'.")
 
 (deftest xgboost-api-feature-importance-on-gblinear-multiclass-signals-unsupported-argument
   (with-backend-library (:xgboost)
