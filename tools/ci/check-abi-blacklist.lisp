@@ -1,15 +1,28 @@
-;;;; check-abi-blacklist.lisp --- No backend imports a blacklisted C function.
+;;;; check-abi-blacklist.lisp --- No backend imports a blacklisted C function, and every
+;;;; backend import is declared in that backend's *required-symbols*.
 ;;;;
 ;;;; Usage:
 ;;;;   ros run -- --non-interactive --load tools/ci/check-abi-blacklist.lisp
+;;;;
+;;;; Two independent checks live here, CHECK A and CHECK B below, because both start from
+;;;; the identical piece of work: for each backend, reading `src/*/c-api.lisp' for every
+;;;; `cffi:defcfun' form to build a Lisp-name -> C-name map, then reading the backend's
+;;;; `backend.lisp' for the `:import-from' clause that names its c-api package and mapping
+;;;; every imported symbol back to a C name through that table (see `check-backend').
+;;;; Splitting them into two scripts would mean deriving that map twice from the same
+;;;; source, in two places that could drift out of sync with each other -- precisely the
+;;;; duplication this project's design doc (section 2) lists as a hazard: two
+;;;; implementations of the same C-facing logic whose fixes need to land in both.
+;;;;
+;;;; CHECK A: no backend imports a blacklisted function
 ;;;;
 ;;;; ffi-spec/ABI-BLACKLIST.md records upstream C functions that changed meaning between
 ;;;; the reference implementations' vendored headers and the versions cl-gbdt targets,
 ;;;; while keeping the same symbol name and, sometimes, the same argument count. A call
 ;;;; through the generated CFFI bindings to one of these succeeds -- no undefined-symbol
 ;;;; error, no link error, no wrong-arity error -- and does the wrong thing. That file's
-;;;; own opening line is "The only defence is to never call them." This script is that
-;;;; defence made mechanical: it fails the build if either backend ever imports one.
+;;;; own opening line is "The only defence is to never call them." This is that defence
+;;;; made mechanical: it fails the build if either backend ever imports one.
 ;;;;
 ;;;; Measurement recorded in docs/superpowers/specs/2026-08-06-abi-tracking-design.md
 ;;;; found that of the functions that changed or vanished across many upstream releases,
@@ -17,6 +30,28 @@
 ;;;; near-exact exception set is this blacklist. The blacklist is not a list of hazards
 ;;;; to note for later; it is the thing that keeps the imported set stable, and this
 ;;;; check is what keeps that true instead of relying on human memory.
+;;;;
+;;;; CHECK B: no backend import escapes *required-symbols*
+;;;;
+;;;; Each backend declares a `*required-symbols*' list of C function names, checked with
+;;;; `probe-foreign-symbols' immediately after the shared library loads (see
+;;;; `initialize-backend' in each `backend.lisp'). A function the backend actually calls
+;;;; but omits from that list is not probed: a library missing it, or exposing it with an
+;;;; incompatible signature, opens successfully and only fails later, at the call site,
+;;;; instead of loudly at `open-backend' via `missing-foreign-symbols'. Design doc section
+;;;; 8 recorded exactly this gap for XGBoost -- `XGDMatrixSetUIntInfo' and
+;;;; `XGBoosterGetNumFeature' were both called but neither was declared -- found once, by
+;;;; inspection, which is the argument for checking it mechanically instead.
+;;;;
+;;;; This assumes every imported function is required -- true of both backends today, so
+;;;; there is nothing to exempt. Design doc section 8 also describes an *optional* symbol
+;;;; tier: a function whose absence should degrade one capability rather than fail
+;;;; `open-backend' outright. Neither backend declares one, and this check does not invent
+;;;; that tier -- doing so with no real optional symbol to test it against would mean
+;;;; shipping the distinction unverified, the same failure shape as a check that has never
+;;;; been seen to fail (see the empty-parse guard below). Section 7's capability work is
+;;;; where that tier belongs; until then, "imported but not required" is unconditionally a
+;;;; failure here.
 ;;;;
 ;;;; WHAT THIS CHECKS
 ;;;;
@@ -29,11 +64,12 @@
 ;;;;    no check: this project shipped that exact shape once, when a whole branch treated
 ;;;;    a clean `mallet' run as covering the 100-column rule, which `mallet' has never
 ;;;;    checked (see tools/ci/lint.lisp's own header).
-;;;; 3. For each backend, reads its `src/*/c-api.lisp' for every `cffi:defcfun' form and
-;;;;    builds a Lisp-name -> C-name map, then reads the backend's `backend.lisp' for the
-;;;;    `:import-from' clause that names its c-api package and maps every imported symbol
-;;;;    back to a C name through that table. Any import whose C name is on the blacklist
-;;;;    is reported as a violation.
+;;;; 3. For each backend, builds the Lisp-name -> C-name map and the imported-name list
+;;;;    described above (`check-backend'). CHECK A reports any import whose C name is on
+;;;;    the blacklist. CHECK B separately reads the backend's `*required-symbols*'
+;;;;    `defparameter' (`required-c-names') and reports any import whose C name is absent
+;;;;    from it. The two reports are independent: an import can fail either, both, or
+;;;;    neither.
 ;;;;
 ;;;; Like tools/ci/check-float-traps.lisp, every file here is read as data via `read',
 ;;;; never loaded or evaluated -- nothing in src/*/c-api.lisp or src/*/backend.lisp runs,
@@ -42,19 +78,28 @@
 ;;;;
 ;;;; WHAT THIS CANNOT CATCH
 ;;;;
-;;;;   - A blacklisted call made without going through an `:import-from' clause -- e.g. a
-;;;;     fully package-qualified call `cl-gbdt/src/lightgbm/c-api:lgbm-dataset-create-from-mats'
-;;;;     written directly in a backend file. Every call in both backends today goes
-;;;;     through `:import-from', by convention, but this script trusts that convention
-;;;;     rather than scanning call sites for qualified symbols.
-;;;;   - A backend file that does not follow the `src/<backend>/backend.lisp' and
-;;;;     `src/<backend>/c-api.lisp' layout named in +BACKENDS+ below -- a future backend
-;;;;     added under a different convention needs that list extended, the same caveat
-;;;;     +BACKEND-FILE-PATTERN+ carries in check-float-traps.lisp and +LEAF-ROOTS+ carries
-;;;;     in check-leaf-systems.lisp.
-;;;;   - A new hazard upstream introduces that nobody has added to ABI-BLACKLIST.md yet.
-;;;;     This script enforces the list; it does not maintain it. Design doc section 11 and
-;;;;     this branch's Task 2 describe the drift-detection tool that maintenance needs.
+;;;;   - A blacklisted or undeclared call made without going through an `:import-from'
+;;;;     clause -- e.g. a fully package-qualified call
+;;;;     `cl-gbdt/src/lightgbm/c-api:lgbm-dataset-create-from-mats' written directly in a
+;;;;     backend file. Every call in both backends today goes through `:import-from', by
+;;;;     convention, but this script trusts that convention rather than scanning call
+;;;;     sites for qualified symbols.
+;;;;   - A backend file that does not follow the `src/<backend>/native.lisp' (both
+;;;;     backends, since this branch's Task 2 and Task 3 splits) and `src/<backend>/c-api.lisp'
+;;;;     layout named in +BACKENDS+ below -- a future backend added under a different
+;;;;     convention needs that list extended, the same caveat +BACKEND-FILE-PATTERN+
+;;;;     carries in check-float-traps.lisp and +LEAF-ROOTS+ carries in
+;;;;     check-leaf-systems.lisp.
+;;;;   - A new hazard upstream introduces that nobody has added to ABI-BLACKLIST.md yet
+;;;;     (CHECK A). This script enforces the list; it does not maintain it. Design doc
+;;;;     section 11 and this branch's Task 2 describe the drift-detection tool that
+;;;;     maintenance needs.
+;;;;   - Whether a name declared in `*required-symbols*' but no longer imported anywhere
+;;;;     (CHECK B checks only the import -> required direction, not the reverse) is stale.
+;;;;     A stale entry is over-cautious, not unsafe, so this does not flag it.
+;;;;   - Whether the *right* symbols are optional versus required at all -- CHECK B only
+;;;;     enforces the required-only assumption stated above; it cannot tell a genuinely
+;;;;     optional capability from one nobody has split out yet.
 
 (require :asdf)
 
@@ -71,12 +116,19 @@
 
 (defparameter +backends+
   '((:lightgbm "src/lightgbm/c-api.lisp" "CL-GBDT/SRC/LIGHTGBM/C-API"
-               "src/lightgbm/backend.lisp")
+               "src/lightgbm/native.lisp")
     (:xgboost "src/xgboost/c-api.lisp" "CL-GBDT/SRC/XGBOOST/C-API"
-              "src/xgboost/backend.lisp"))
+              "src/xgboost/native.lisp"))
   "(backend-id c-api-path c-api-package-name backend-path) for each backend, all paths
 relative to the repository root. See WHAT THIS CANNOT CATCH above for what adding a
-backend that does not follow this layout would require.")
+backend that does not follow this layout would require.
+
+Both fourth elements point at a `native.lisp', not a `backend.lisp' -- the Phase 1 split
+(XGBoost in this branch's Task 2, LightGBM in Task 3) moved both `*required-symbols*'
+and the `:import-from' clause naming the c-api package there, out of the single file
+this list originally named for each backend in turn. `protocol.lisp', the other half of
+each split, imports the c-api package from nowhere at all -- it calls no C function
+directly, only `native.lisp''s wrappers -- so it has nothing for this check to read.")
 
 ;;; ---- Reading Lisp source as data, never as code ----
 ;;;
@@ -207,44 +259,102 @@ they would look exactly like an unresolved function name to `check-backend'."
       (error "no uiop:define-package form found in ~A" backend-path))
     (import-from-names form c-api-package-name)))
 
+;;; ---- Step 4: the backend's *required-symbols* declaration (CHECK B) ----
+
+(defun defparameter-form-p (form)
+  "True when FORM is a top-level `(defparameter ...)' form."
+  (and (consp form) (symbol-name-string= (car form) "DEFPARAMETER")))
+
+(defun required-symbols-form (forms)
+  "Return the `(defparameter *required-symbols* ...)' form in FORMS, or NIL if none is
+present."
+  (find-if (lambda (form)
+             (and (defparameter-form-p form)
+                  (symbol-name-string= (second form) "*REQUIRED-SYMBOLS*")))
+           forms))
+
+(defun required-c-names (backend-path)
+  "Return the list of C function name strings BACKEND-PATH's `*required-symbols*'
+declares -- what `probe-foreign-symbols' checks at `open-backend', per that parameter's
+own docstring in each backend file.
+
+Signals an error, rather than silently treating a name as uncovered, when the form is
+missing or is not a quoted literal list of strings -- the same reasoning
+`backend-imports' applies to a missing `uiop:define-package' form: a checker that cannot
+find what it is supposed to check against must say so loudly, not report a coverage
+result that happens to look like a real one (here, every import would look like a gap
+against a required-set this function silently treated as empty)."
+  (let* ((forms (read-top-level-forms backend-path))
+         (form (required-symbols-form forms)))
+    (unless form
+      (error "no *required-symbols* defparameter found in ~A" backend-path))
+    (let ((value-form (third form)))
+      (unless (and (consp value-form) (symbol-name-string= (car value-form) "QUOTE"))
+        (error "*required-symbols* in ~A is not a quoted literal list" backend-path))
+      (mapcar (lambda (name)
+                (unless (stringp name)
+                  (error "non-string entry ~S in *required-symbols* in ~A" name backend-path))
+                name)
+              (second value-form)))))
+
 ;;; ---- Main check ----
 
 (defun check-backend (id c-api-path c-api-package-name backend-path blacklist)
-  "Return the list of (ID LISP-NAME C-NAME) violations for one backend spec from
-+BACKENDS+, printing progress as it goes."
+  "Return (VALUES BLACKLIST-VIOLATIONS COVERAGE-VIOLATIONS) for one backend spec from
++BACKENDS+, printing progress as it goes. Each is a list of (ID LISP-NAME C-NAME).
+
+BLACKLIST-VIOLATIONS holds every import whose C name is on BLACKLIST -- CHECK A in this
+file's header. COVERAGE-VIOLATIONS holds every import whose C name is absent from
+BACKEND-PATH's `*required-symbols*' -- CHECK B. Both read from the same NAME-MAP,
+CONSTANTS and IMPORTS computed once below, per this file's header note on why the two
+checks share one parser rather than each deriving its own. They are otherwise
+independent: a single import can fail either, both, or neither."
   (let ((name-map (c-name-map c-api-path))
         (constants (constant-names c-api-path))
         (imports (backend-imports backend-path c-api-package-name))
-        (violations '()))
-    (format t "~&~A: ~D imported name~:P from ~A~%"
+        (required (required-c-names backend-path))
+        (blacklist-violations '())
+        (coverage-violations '()))
+    (format t "~&~A: ~D imported name~:P from ~A, ~D required symbol~:P declared~%"
             (enough-namestring backend-path (uiop:getcwd)) (length imports)
-            (enough-namestring c-api-path (uiop:getcwd)))
-    (dolist (lisp-name imports violations)
+            (enough-namestring c-api-path (uiop:getcwd)) (length required))
+    (dolist (lisp-name imports)
       (let ((c-name (gethash lisp-name name-map)))
         (cond
           ;; An imported name with no `defcfun' behind it is reported, not skipped. Nothing
           ;; else notices one: `:import-from' on a symbol the source package does not export
           ;; interns it silently rather than erroring, so the build stays green -- verified.
-          ;; Skipping it would also blind this check to the blacklist's "removed upstream,
-          ;; never emitted" table, whose entries have no `defcfun' by definition and would
-          ;; therefore never map. Treating "I could not resolve this" as "this is fine" is
-          ;; the same failure this file's empty-parse guard exists to prevent.
+          ;; Skipping it would also blind CHECK A to the blacklist's "removed upstream, never
+          ;; emitted" table, whose entries have no `defcfun' by definition and would therefore
+          ;; never map. Treating "I could not resolve this" as "this is fine" is the same
+          ;; failure this file's empty-parse guard exists to prevent. Not run through CHECK B
+          ;; either -- there is no resolved C name to look up in *required-symbols*.
           ((member lisp-name constants :test #'string=))   ; a constant, not a function
           ((null c-name)
-           (push (list id lisp-name "<unresolved>") violations)
+           (push (list id lisp-name "<unresolved>") blacklist-violations)
            (format *error-output*
                    "~&FAIL ~A imports ~A, which has no `cffi:defcfun' in ~A. Either it is ~
                     misspelled, or it names something removed upstream -- see the second ~
                     table in ~A.~%"
                    (enough-namestring backend-path (uiop:getcwd)) lisp-name
                    (enough-namestring c-api-path (uiop:getcwd)) +blacklist-path+))
-          ((member c-name blacklist :test #'string=)
-           (push (list id lisp-name c-name) violations)
-           (format *error-output*
-                   "~&FAIL ~A imports ~A, which is ~A, a blacklisted C function ~
-                    (see ~A)~%"
-                   (enough-namestring backend-path (uiop:getcwd)) lisp-name c-name
-                   +blacklist-path+)))))))
+          (t
+           (when (member c-name blacklist :test #'string=)
+             (push (list id lisp-name c-name) blacklist-violations)
+             (format *error-output*
+                     "~&FAIL ~A imports ~A, which is ~A, a blacklisted C function ~
+                      (see ~A)~%"
+                     (enough-namestring backend-path (uiop:getcwd)) lisp-name c-name
+                     +blacklist-path+))
+           (unless (member c-name required :test #'string=)
+             (push (list id lisp-name c-name) coverage-violations)
+             (format *error-output*
+                     "~&FAIL ~A imports ~A, which is ~A, but its *required-symbols* does ~
+                      not declare that name. probe-foreign-symbols would not check it at ~
+                      open-backend, so an incompatible library could open successfully and ~
+                      fail only later, at this call.~%"
+                     (enough-namestring backend-path (uiop:getcwd)) lisp-name c-name))))))
+    (values blacklist-violations coverage-violations)))
 
 (let* ((root (uiop:getcwd))
        (blacklist-file (merge-pathnames +blacklist-path+ root))
@@ -265,15 +375,21 @@ they would look exactly like an unresolved function name to `check-backend'."
              markdown table row's first column).~%"
             +blacklist-path+)
     (uiop:quit 1))
-  (let ((violations
-          (mapcan (lambda (spec)
-                    (destructuring-bind (id c-api-path c-api-package-name backend-path) spec
-                      (check-backend id
-                                     (merge-pathnames c-api-path root)
-                                     c-api-package-name
-                                     (merge-pathnames backend-path root)
-                                     blacklist)))
-                  +backends+)))
+  (let ((blacklist-violations '())
+        (coverage-violations '()))
+    (dolist (spec +backends+)
+      (destructuring-bind (id c-api-path c-api-package-name backend-path) spec
+        (multiple-value-bind (backend-blacklist-violations backend-coverage-violations)
+            (check-backend id
+                           (merge-pathnames c-api-path root)
+                           c-api-package-name
+                           (merge-pathnames backend-path root)
+                           blacklist)
+          (setf blacklist-violations (append blacklist-violations backend-blacklist-violations))
+          (setf coverage-violations
+                (append coverage-violations backend-coverage-violations)))))
     (format t "~&~D blacklisted import~:P found across ~D backend~:P~%"
-            (length violations) (length +backends+))
-    (uiop:quit (if violations 1 0))))
+            (length blacklist-violations) (length +backends+))
+    (format t "~&~D required-symbols coverage gap~:P found across ~D backend~:P~%"
+            (length coverage-violations) (length +backends+))
+    (uiop:quit (if (or blacklist-violations coverage-violations) 1 0))))

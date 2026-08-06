@@ -75,11 +75,15 @@ jobs:
         # not depend on that: it is a text scan either way).
         run: ros run -- --non-interactive --load tools/ci/check-float-traps.lisp
 
-      - name: No backend imports an ABI-blacklisted function
+      - name: No backend imports an ABI-blacklisted or undeclared function
+        # Two checks in one script, sharing one backend-import parser rather than each
+        # deriving it separately -- see tools/ci/check-abi-blacklist.lisp's header for why.
         # ffi-spec/ABI-BLACKLIST.md's own opening line is "the only defence is to never
-        # call them" -- see tools/ci/check-abi-blacklist.lisp's header for how this
-        # enforces that mechanically instead of relying on human memory, and for the
-        # empty-parse guard that keeps a passing run meaning "checked and clean."
+        # call them" (CHECK A); every backend import must also be declared in that
+        # backend's *required-symbols*, so probe-foreign-symbols actually checks it at
+        # open-backend instead of a caller finding out at the call site (CHECK B). See the
+        # script's header for the empty-parse guard that keeps a passing run meaning
+        # "checked and clean," and for both checks' "WHAT THIS CANNOT CATCH."
         run: ros run -- --non-interactive --load tools/ci/check-abi-blacklist.lisp
 
       - name: Compile every system without warnings
