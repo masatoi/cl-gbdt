@@ -9,6 +9,7 @@
                 #:xg-boost-version
                 #:xgd-matrix-create-from-dense
                 #:xgd-matrix-set-info-from-interface
+                #:xgd-matrix-set-u-int-info
                 #:xgd-matrix-set-str-feature-info
                 #:xgd-matrix-free
                 #:xgd-matrix-num-row
@@ -378,6 +379,28 @@ array directly, so this accepts any sequence, not only an SBCL simple-array."
           (check-xgb (xgd-matrix-set-info-from-interface dataset-pointer field descriptor)
                      "XGDMatrixSetInfoFromInterface"))))))
 
+(defun %set-group-field (dataset-pointer group)
+  "Attach the sequence GROUP -- ranking query-group sizes -- to DATASET-POINTER via
+`XGDMatrixSetUIntInfo' under XGBoost's \"group\" field.
+
+XGBoost's group array is `unsigned' (`:uint' in CFFI terms), unlike LightGBM's `int32' --
+see `cl-gbdt/src/lightgbm/backend''s `make-dataset', which writes the same query-group
+sizes through `LGBM_DatasetSetField' as `int32' instead. Both hold the same nonnegative
+row counts; only the C prototypes differ. `XGDMatrixSetUIntInfo' is deprecated upstream
+in favor of `XGDMatrixSetInfoFromInterface', but is still the entry point this backend
+uses for GROUP -- it takes a plain array rather than requiring a JSON array-interface
+descriptor, and remains part of the vendored library's ABI.
+
+GROUP is copied into a freshly allocated foreign buffer -- via `write-foreign-sequence',
+rounding each element to an integer -- rather than pinning a caller-supplied Lisp array
+directly, matching `%set-info-field''s reasoning for LABEL and WEIGHT above."
+  (let ((count (length group)))
+    (cffi:with-foreign-object (buffer :uint count)
+      (write-foreign-sequence buffer :uint group #'round)
+      (cffi:with-foreign-string (field "group")
+        (check-xgb (xgd-matrix-set-u-int-info dataset-pointer field buffer count)
+                   "XGDMatrixSetUIntInfo")))))
+
 (defun %set-feature-names (dataset-pointer feature-names)
   "Attach FEATURE-NAMES, a list of strings, to DATASET-POINTER via
 `XGDMatrixSetStrFeatureInfo' under XGBoost's \"feature_name\" field.
@@ -406,46 +429,51 @@ apart from the field name and the C function it calls."
 (defmethod make-dataset ((backend xgboost-backend) matrix
                           &key label weight group feature-names parameters reference)
   "Build an XGBoost dataset (a DMatrix) from MATRIX via `XGDMatrixCreateFromDense',
-attaching LABEL and WEIGHT with `XGDMatrixSetInfoFromInterface' and FEATURE-NAMES with
-`XGDMatrixSetStrFeatureInfo' when supplied. See the `make-dataset' generic function's
-docstring for what each argument means.
+attaching LABEL and WEIGHT with `XGDMatrixSetInfoFromInterface', GROUP with
+`XGDMatrixSetUIntInfo', and FEATURE-NAMES with `XGDMatrixSetStrFeatureInfo' when
+supplied. See the `make-dataset' generic function's docstring for what each argument
+means.
 
-PARAMETERS is accepted, for lambda-list compatibility with the protocol's other backend,
-but currently unused: LightGBM's dataset-level PARAMETERS configures its binning (`max_bin'
-and friends), which has no XGBoost analogue -- XGBoost's own hyperparameters are booster-
-level, set one at a time with `XGBoosterSetParam' once training exists. Unlike REFERENCE
-and GROUP below, an empty PARAMETERS is also the overwhelmingly common case, so this stays
-silent rather than signalling on every ordinary call; nothing changes silently underneath a
-caller who does not pass any.
-
-REFERENCE and GROUP both signal `unsupported-argument' rather than being silently dropped:
-REFERENCE is a LightGBM-only concept -- aligning a new dataset's bin mapper to an existing
-one's, which XGBoost has nothing resembling -- and GROUP (ranking group sizes) is simply not
-yet wired up on this backend. Either one accepted and discarded here would let a caller move
-a working `make-dataset' call from LightGBM to XGBoost and get a dataset that looks fine but
-was not built the way the caller asked, which is exactly the failure mode this project keeps
-finding.
+REFERENCE and PARAMETERS both signal `unsupported-argument' rather than being silently
+dropped: REFERENCE is a LightGBM-only concept -- aligning a new dataset's bin mapper to an
+existing one's, which XGBoost has nothing resembling. PARAMETERS is more subtle: the
+vendored header (`ffi-spec/xgboost/include/xgboost/c_api.h') documents exactly three keys
+for `XGDMatrixCreateFromDense''s config JSON -- `\"missing\"' (fixed by this backend at
+*dense-matrix-config-json*, not caller-configurable), `\"nthread\"' and
+`\"data_split_mode\"' -- none of which correspond to what a caller moving a working call
+from LightGBM actually means by dataset-level PARAMETERS there: binning knobs such as
+`max_bin' and `min_data_in_bin'. Forwarding `normalize-parameters''s output into that
+config JSON regardless would not raise anything either: confirmed empirically against the
+vendored library, `XGDMatrixCreateFromDense' returns success and silently ignores an
+unrecognized config key rather than rejecting it, which would just move today's silent
+drop one layer deeper, into C, instead of fixing it. Either PARAMETERS or REFERENCE
+accepted and discarded here would let a caller move a working `make-dataset' call from
+LightGBM to XGBoost and get a dataset that looks fine but was not built the way the caller
+asked, which is exactly the failure mode this project keeps finding.
 
 Signals `foreign-call-error' when dataset creation reports success but writes a null
 handle -- a library-contract violation, but one every later call through this handle would
 otherwise dereference blindly.
 
 The raw DMatrix handle exists in C from the moment `XGDMatrixCreateFromDense' returns, but
-`make-handle' does not take ownership of it until the very end -- attaching LABEL, WEIGHT
-or FEATURE-NAMES can each signal first (a wrong-length `:label' is the commonest way).
-OWNED tracks whether `make-handle' ran; when it did not, the raw DMatrix is freed here
-instead of orphaned.
+`make-handle' does not take ownership of it until the very end -- attaching LABEL, WEIGHT,
+GROUP or FEATURE-NAMES can each signal first (a wrong-length `:label' is the commonest
+way). OWNED tracks whether `make-handle' ran; when it did not, the raw DMatrix is freed
+here instead of orphaned.
 
 Signals `backend-not-open' before any of that when BACKEND is not open -- see
 `%check-backend-open'."
-  (declare (ignore parameters))
   (with-foreign-float-traps-masked
     (%check-backend-open backend)
     (%check-unsupported
      backend "make-dataset's :reference" reference
      "XGBoost has no bin-mapper alignment; :reference is a LightGBM-only concept")
-    (%check-unsupported backend "make-dataset's :group" group
-                         "ranking group sizes are not yet attached by this backend")
+    (%check-unsupported
+     backend "make-dataset's :parameters" parameters
+     (format nil "XGDMatrixCreateFromDense's config JSON only recognizes missing/nthread/~
+                   data_split_mode, none of which are LightGBM's dataset-level binning ~
+                   parameters, and the library silently ignores any other key rather than ~
+                   rejecting it"))
     (let ((dataset-pointer (%create-dmatrix matrix)))
       (when (cffi:null-pointer-p dataset-pointer)
         (error 'foreign-call-error
@@ -459,6 +487,8 @@ Signals `backend-not-open' before any of that when BACKEND is not open -- see
                  (%set-info-field dataset-pointer "label" label))
                (when weight
                  (%set-info-field dataset-pointer "weight" weight))
+               (when group
+                 (%set-group-field dataset-pointer group))
                (when feature-names
                  (%set-feature-names dataset-pointer feature-names))
                (prog1

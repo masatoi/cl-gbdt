@@ -22,7 +22,8 @@
                 #:make-separable-dataset
                 #:predictions-separate-p
                 #:make-multiclass-dataset
-                #:predictions-match-labels-p))
+                #:predictions-match-labels-p
+                #:within-group-strictly-increasing-p))
 
 (in-package #:cl-gbdt/tests/functional/lightgbm-api)
 
@@ -177,6 +178,68 @@ COLUMN is always 0, but the shape still has to be unpacked by hand."
                      (ok (predictions-match-labels-p predictions label-vector)
                          (format nil "predictions: ~S" predictions))))))
           (cl-gbdt:close-backend backend))))))
+
+(defparameter *ranking-matrix*
+  (make-array '(8 2) :element-type 'double-float
+              :initial-contents '((0.0d0 0.0d0) (0.0d0 1.0d0) (0.0d0 2.0d0) (0.0d0 3.0d0)
+                                   (100.0d0 0.0d0) (100.0d0 1.0d0) (100.0d0 2.0d0)
+                                   (100.0d0 3.0d0)))
+  "Two four-row query groups. Column 1 carries the real within-group rank signal, 0..3 in
+both groups; column 0 is a constant per-group \"regime\" indicator, 0 in the first group
+and 100 in the second. Shared with tests/functional/xgboost-api.lisp's identical fixture of
+the same name, though this file's own mutation-testing result is different -- see the
+commentary above `lightgbm-api-ranking-round-trip-respects-group-boundaries'.")
+
+(defparameter *ranking-labels*
+  (make-array 8 :element-type 'single-float :initial-contents '(0.0 1.0 2.0 3.0 4.0 5.0 6.0 7.0))
+  "Relevance grades matching *RANKING-MATRIX*, increasing with column 1 within each of its
+two groups.")
+
+(defparameter *ranking-group* '(4 4)
+  "Two query groups of four rows each, matching *RANKING-MATRIX* and *RANKING-LABELS*.")
+
+;;; `make-dataset''s GROUP has had a round trip on this backend since before Task 2 --
+;;; `%set-dataset-field' attaches it via `LGBM_DatasetSetField' -- but Task 2 found it had
+;;; never actually been exercised end to end: setting the field is not evidence ranking
+;;; works. This trains a small `lambdarank' model and checks the property that objective
+;;; exists for: predictions increase in step with true relevance *within* each query group,
+;;; not raw score values -- `within-group-strictly-increasing-p' is this file's ranking
+;;; analogue of `predictions-match-labels-p' above.
+;;;
+;;; Unlike this same fixture's mutation-testing result on the XGBoost branch -- where
+;;; dropping GROUP leaves `rank:pairwise' free to substitute *RANKING-MATRIX*'s column 0 for
+;;; the real per-group signal in column 1, producing a plausible-looking but wrong ordering
+;;; -- LightGBM's `lambdarank' objective refuses to train at all without one: confirmed
+;;; directly against the vendored library, dropping :GROUP from this exact call (everything
+;;; else unchanged) signals `foreign-call-error', "LGBM_BoosterCreate returned -1: Ranking
+;;; tasks require query information", rather than training a bad model silently. Both are
+;;; the real signal the brief for this task asks for -- a wrong answer on one backend, an
+;;; outright refusal on the other -- so this test only needs to prove the GROUP-respecting
+;;; path produces correct order; GROUP's necessity here is already proven by the library's
+;;; own refusal to omit it, not by a second, redundant assertion in this file.
+
+(deftest lightgbm-api-ranking-round-trip-respects-group-boundaries
+  (with-backend-library (:lightgbm)
+    (let ((backend (cl-gbdt:open-backend :lightgbm)))
+      (unwind-protect
+           (cl-gbdt:with-dataset (dataset (cl-gbdt:make-dataset
+                                            backend *ranking-matrix* :label *ranking-labels*
+                                            :group *ranking-group*
+                                            :parameters '(:min-data-in-leaf 1
+                                                          :min-data-in-bin 1 :verbose -1)))
+             (cl-gbdt:with-booster (booster (cl-gbdt:train
+                                              backend dataset :num-rounds 20
+                                              :parameters '(:objective "lambdarank"
+                                                            :num-leaves 4 :min-data-in-leaf 1
+                                                            :min-data-in-bin 1 :verbose -1
+                                                            :label-gain "0,1,2,3,4,5,6,7,8")))
+               (let ((predictions (cl-gbdt:predict booster *ranking-matrix*)))
+                 (testing "predictions increase strictly within each query group"
+                   (ok (within-group-strictly-increasing-p
+                        (loop :for row :below 8 :collect (aref predictions row 0))
+                        *ranking-group*)
+                       (format nil "predictions: ~S" predictions))))))
+        (cl-gbdt:close-backend backend)))))
 
 ;;; Mutation testing on the round trip above found that `free-dataset' could be replaced
 ;;; with a no-op and every assertion stayed green: nothing there frees explicitly, nothing

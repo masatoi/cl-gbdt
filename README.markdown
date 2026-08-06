@@ -17,7 +17,7 @@ file if you have it locally).
 `make-dataset`, `dataset-num-rows`, `dataset-num-features`, `train`,
 `update-one-iteration`, `predict`, `save-model`, `load-model`, `model-to-string`,
 `feature-importance`, `free-dataset` and `free-booster` -- against the real LightGBM and
-XGBoost shared libraries, exercised by 103 functional assertions (design doc section 12,
+XGBoost shared libraries, exercised by 105 functional assertions (design doc section 12,
 layer 2), in addition to 204 assertions that need no shared library at all (layer 1).
 See [Usage](#usage) below for a worked example.
 
@@ -175,8 +175,7 @@ out first:
 | | LightGBM | XGBoost |
 |---|---|---|
 | `make-dataset`'s `:reference` | Aligns the new dataset's bin mapper to an existing one's (required for a `train` `:valid-sets` entry) | Signals `unsupported-argument` -- no bin-mapper concept |
-| `make-dataset`'s `:group` | Attaches ranking group sizes | Signals `unsupported-argument` -- not yet wired up on this backend |
-| `make-dataset`'s `:parameters` | Configures the dataset's own binning (`max_bin` and friends) | **Silently accepted and ignored.** Unlike `:reference`/`:group` above, this does not signal: XGBoost's hyperparameters are all booster-level, and an empty `:parameters` is the overwhelmingly common call, so nothing changes silently underneath a caller who never passes one |
+| `make-dataset`'s `:parameters` | Configures the dataset's own binning (`max_bin` and friends) | Signals `unsupported-argument`: the vendored header (`ffi-spec/xgboost/include/xgboost/c_api.h`) documents only `missing`/`nthread`/`data_split_mode` for `XGDMatrixCreateFromDense`'s config JSON, none of which are LightGBM's dataset-level binning keys, and confirmed empirically, the library silently ignores any other key rather than rejecting it -- forwarding `:parameters` there regardless would just move today's silent drop one layer deeper instead of fixing it |
 | `update-one-iteration`'s return value | `nil` once an iteration produces no further split -- a real signal | Always `t` after a successful call; XGBoost's booster protocol has no equivalent signal |
 | `save-model`'s `:num-iteration` | Limits how many trees are saved | Signals `unsupported-argument` -- `XGBoosterSaveModel` always saves every round |
 | `model-to-string`'s `:num-iteration` | Limits the rounds serialized | Signals `unsupported-argument` -- no iteration-limited variant exists |
@@ -214,12 +213,12 @@ Run together against both backends:
   (cl-gbdt:with-dataset (xgb-ds1 (cl-gbdt:make-dataset xgb *matrix* :label *label*))
     (handler-case (cl-gbdt:make-dataset xgb *matrix* :label *label* :reference xgb-ds1)
       (error (c) (format t "XGBoost  :reference SIGNALED ~A: ~A~%" (type-of c) c)))
-    (handler-case (cl-gbdt:make-dataset xgb *matrix* :label *label* :group '(2 2))
-      (error (c) (format t "XGBoost  :group SIGNALED ~A: ~A~%" (type-of c) c)))
-    (cl-gbdt:with-dataset (xgb-ds-ignored (cl-gbdt:make-dataset xgb *matrix* :label *label*
-                                             :parameters '(:max-bin 3)))
-      (format t "XGBoost  :parameters silently accepted, ~D rows~%"
-              (cl-gbdt:dataset-num-rows xgb-ds-ignored)))
+    (cl-gbdt:with-dataset (xgb-ds-grouped (cl-gbdt:make-dataset xgb *matrix* :label *label*
+                                             :group '(2 2)))
+      (format t "XGBoost  :group accepted; grouped dataset has ~D rows~%"
+              (cl-gbdt:dataset-num-rows xgb-ds-grouped)))
+    (handler-case (cl-gbdt:make-dataset xgb *matrix* :label *label* :parameters '(:max-bin 3))
+      (error (c) (format t "XGBoost  :parameters SIGNALED ~A: ~A~%" (type-of c) c)))
 
     (cl-gbdt:with-booster (xgb-booster (cl-gbdt:train xgb xgb-ds1 :num-rounds 1
                                           :parameters '(:objective "binary:logistic"
@@ -254,8 +253,8 @@ LightGBM backend-version: NIL
 XGBoost  backend-version: "3.3.0"
 LightGBM :reference accepted; aligned dataset has 4 rows
 XGBoost  :reference SIGNALED UNSUPPORTED-ARGUMENT: make-dataset's :reference is not supported by XGBOOST: XGBoost has no bin-mapper alignment; :reference is a LightGBM-only concept.
-XGBoost  :group SIGNALED UNSUPPORTED-ARGUMENT: make-dataset's :group is not supported by XGBOOST: ranking group sizes are not yet attached by this backend.
-XGBoost  :parameters silently accepted, 4 rows
+XGBoost  :group accepted; grouped dataset has 4 rows
+XGBoost  :parameters SIGNALED UNSUPPORTED-ARGUMENT: make-dataset's :parameters is not supported by XGBOOST: XGDMatrixCreateFromDense's config JSON only recognizes missing/nthread/data_split_mode, none of which are LightGBM's dataset-level binning parameters, and the library silently ignores any other key rather than rejecting it.
 XGBoost  update-one-iteration => T
 SIGNALED UNSUPPORTED-ARGUMENT: save-model's :num-iteration is not supported by XGBOOST: XGBoosterSaveModel has no iteration limit; every boosted round is saved.
 SIGNALED UNSUPPORTED-ARGUMENT: model-to-string's :num-iteration is not supported by XGBOOST: XGBoosterSaveModelToBuffer has no iteration limit.

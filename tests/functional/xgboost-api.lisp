@@ -22,7 +22,8 @@
                 #:make-separable-dataset
                 #:predictions-separate-p
                 #:make-multiclass-dataset
-                #:predictions-match-labels-p))
+                #:predictions-match-labels-p
+                #:within-group-strictly-increasing-p))
 
 (in-package #:cl-gbdt/tests/functional/xgboost-api)
 
@@ -181,6 +182,68 @@ binary, so COLUMN is always 0, but the shape still has to be unpacked by hand."
                      (ok (predictions-match-labels-p predictions label-vector)
                          (format nil "predictions: ~S" predictions))))))
           (cl-gbdt:close-backend backend))))))
+
+(defparameter *ranking-matrix*
+  (make-array '(8 2) :element-type 'double-float
+              :initial-contents '((0.0d0 0.0d0) (0.0d0 1.0d0) (0.0d0 2.0d0) (0.0d0 3.0d0)
+                                   (100.0d0 0.0d0) (100.0d0 1.0d0) (100.0d0 2.0d0)
+                                   (100.0d0 3.0d0)))
+  "Two four-row query groups. Column 1 carries the real within-group rank signal, 0..3 in
+both groups; column 0 is a constant per-group \"regime\" indicator, 0 in the first group
+and 100 in the second, deliberately identical in shape but not value between the two --
+see `xgboost-api-ranking-round-trip-respects-group-boundaries' for why that makes GROUP
+load-bearing rather than decorative.")
+
+(defparameter *ranking-labels*
+  (make-array 8 :element-type 'single-float :initial-contents '(0.0 1.0 2.0 3.0 4.0 5.0 6.0 7.0))
+  "Relevance grades matching *RANKING-MATRIX*, increasing with column 1 within each of its
+two groups.")
+
+(defparameter *ranking-group* '(4 4)
+  "Two query groups of four rows each, matching *RANKING-MATRIX* and *RANKING-LABELS*.")
+
+;;; Task 2 wired GROUP up on this backend via `XGDMatrixSetUIntInfo' -- see
+;;; `cl-gbdt/src/xgboost/backend''s `%set-group-field'. Setting the field is not evidence
+;;; ranking actually works, so this trains a small `rank:pairwise' model and checks the
+;;; property that objective exists for: predictions increase in step with true relevance
+;;; *within* each query group, not raw score values -- `within-group-strictly-increasing-p'
+;;; is this file's ranking analogue of `predictions-separate-p' and
+;;; `predictions-match-labels-p' above.
+;;;
+;;; *RANKING-MATRIX*'s column 0 is what makes the assertion below load bearing rather than
+;;; decorative: once GROUP is dropped and the whole matrix is treated as a single query,
+;;; column 0 alone -- constant per group, but different between the two -- trivially
+;;; resolves nearly every pair the objective compares (any row of the first group against
+;;; any row of the second), so a deliberately low-capacity model (NUM-ROUNDS 3, :MAX-DEPTH
+;;; 1: one split per round) spends its whole budget on that shortcut and never resolves
+;;; column 1's real within-group order. Confirmed directly against the vendored library,
+;;; with GROUP dropped from this exact call and everything else unchanged: predictions come
+;;; back tied within each group -- (-0.76d0 -0.35d0 0.19d0 0.19d0 -0.36d0 0.05d0 0.59d0
+;;; 0.59d0) -- instead of the four strictly increasing values this test requires, so this
+;;; assertion goes red rather than passing vacuously. With GROUP respected, column 0 is
+;;; constant within every pair `rank:pairwise' ever compares and carries no gradient there,
+;;; forcing the model onto column 1 instead -- confirmed deterministic across repeated runs
+;;; at this NUM-ROUNDS/:MAX-DEPTH.
+
+(deftest xgboost-api-ranking-round-trip-respects-group-boundaries
+  (with-backend-library (:xgboost)
+    (let ((backend (cl-gbdt:open-backend :xgboost)))
+      (unwind-protect
+           (cl-gbdt:with-dataset (dataset (cl-gbdt:make-dataset
+                                            backend *ranking-matrix* :label *ranking-labels*
+                                            :group *ranking-group*))
+             (cl-gbdt:with-booster (booster (cl-gbdt:train
+                                              backend dataset :num-rounds 3
+                                              :parameters '(:objective "rank:pairwise"
+                                                            :max-depth 1 :eta 0.5
+                                                            :verbosity 0 :min-child-weight 0)))
+               (let ((predictions (cl-gbdt:predict booster *ranking-matrix*)))
+                 (testing "predictions increase strictly within each query group"
+                   (ok (within-group-strictly-increasing-p
+                        (loop :for row :below 8 :collect (aref predictions row 0))
+                        *ranking-group*)
+                       (format nil "predictions: ~S" predictions))))))
+        (cl-gbdt:close-backend backend)))))
 
 ;;; Mutation testing on the LightGBM branch's analogous round trip found that
 ;;; `free-dataset' could be replaced with a no-op and every assertion stayed green --
@@ -527,12 +590,19 @@ binary, so COLUMN is always 0, but the shape still has to be unpacked by hand."
                        "train accepted a booster inside :valid-sets"))))
           (cl-gbdt:close-backend backend))))))
 
-;;; `make-dataset' signals `unsupported-argument' for :REFERENCE and :GROUP rather than
-;;; silently ignoring them -- see `%check-unsupported''s docstring. Neither had a test at
-;;; all before this: LightGBM's own :REFERENCE and :GROUP are real features, exercised by
-;;; four of its own tests in tests/functional/lightgbm-api.lisp, and this backend's refusal
-;;; is the deliberate substitute for that behaviour, not dead code with nothing depending
-;;; on it. This proves both signal.
+;;; `make-dataset' signals `unsupported-argument' for :REFERENCE and :PARAMETERS rather
+;;; than silently ignoring them -- see `%check-unsupported''s docstring and, for
+;;; PARAMETERS, `make-dataset''s own docstring on this backend for why the vendored header
+;;; rules out forwarding it into `XGDMatrixCreateFromDense''s config JSON instead. :GROUP
+;;; used to be a third signalling argument here -- Task 2 wired it up via
+;;; `XGDMatrixSetUIntInfo' instead of refusing it, so it now has its own round trip above,
+;;; `xgboost-api-ranking-round-trip-respects-group-boundaries', rather than a refusal test.
+;;; Neither :REFERENCE nor :PARAMETERS had a test at all before this: LightGBM's own
+;;; :REFERENCE is a real feature, exercised by four of its own tests in
+;;; tests/functional/lightgbm-api.lisp, and PARAMETERS is a real feature on both backends
+;;; -- see *dataset-parameters* there -- so this backend's refusal of each is a deliberate
+;;; substitute for that behaviour, not dead code with nothing depending on it. This proves
+;;; both signal.
 
 (deftest xgboost-api-make-dataset-with-reference-signals-unsupported-argument
   (with-backend-library (:xgboost)
@@ -552,20 +622,20 @@ binary, so COLUMN is always 0, but the shape still has to be unpacked by hand."
                      "make-dataset with :reference did not signal unsupported-argument")))
           (cl-gbdt:close-backend backend))))))
 
-(deftest xgboost-api-make-dataset-with-group-signals-unsupported-argument
+(deftest xgboost-api-make-dataset-with-parameters-signals-unsupported-argument
   (with-backend-library (:xgboost)
     (multiple-value-bind (matrix label-vector) (make-separable-dataset)
       (let ((backend (cl-gbdt:open-backend :xgboost)))
         (unwind-protect
-             (testing "make-dataset with :group signals unsupported-argument"
+             (testing "make-dataset with :parameters signals unsupported-argument"
                ;; handler-case, not rove's `signals' -- see this file's other guard
                ;; tests for why.
                (ok (handler-case
                        (progn (cl-gbdt:make-dataset backend matrix :label label-vector
-                                                     :group '(4 4))
+                                                     :parameters '(:max-bin 3))
                               nil)
                      (cl-gbdt:unsupported-argument () t))
-                   "make-dataset with :group did not signal unsupported-argument"))
+                   "make-dataset with :parameters did not signal unsupported-argument"))
           (cl-gbdt:close-backend backend))))))
 
 ;;; `save-model' signals `unsupported-argument' when NUM-ITERATION is supplied --
