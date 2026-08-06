@@ -18,7 +18,7 @@ file if you have it locally).
 `update-one-iteration`, `predict`, `save-model`, `load-model`, `model-to-string`,
 `feature-importance`, `evaluation`, `free-dataset` and `free-booster` -- against the real
 LightGBM and XGBoost shared libraries, exercised by 178 functional assertions (design doc
-section 12, layer 2), in addition to 243 assertions that need no shared library at all
+section 12, layer 2), in addition to 244 assertions that need no shared library at all
 (layer 1). See [Usage](#usage) below for a worked example.
 
 Loading `cl-gbdt` itself still does not require either `liblightgbm.so` or
@@ -458,13 +458,13 @@ demands one per DMatrix -- and are the indices themselves for exactly that reaso
 | System | Purpose |
 |---|---|
 | `cl-gbdt` | Core: package, condition hierarchy, matrix marshalling, backend registry and `open-backend` protocol, the unified API's generic functions -- no methods, and no shared library required to load it |
-| `cl-gbdt/lightgbm` | The LightGBM backend: all 12 unified-API methods (`src/lightgbm/backend.lisp`), built on the generated CFFI bindings for the LightGBM C API (`src/lightgbm/c-api.lisp`) |
-| `cl-gbdt/xgboost` | The XGBoost backend: all 12 unified-API methods (`src/xgboost/backend.lisp`), built on the generated CFFI bindings for the XGBoost C API (`src/xgboost/c-api.lisp`) |
+| `cl-gbdt/lightgbm` | The LightGBM backend: all 13 unified-API methods (`src/lightgbm/protocol.lisp`), built on the Layer 1 wrappers in `src/lightgbm/native.lisp` over the generated CFFI bindings for the LightGBM C API (`src/lightgbm/c-api.lisp`), and published together by `src/lightgbm/all.lisp` |
+| `cl-gbdt/xgboost` | The XGBoost backend: all 13 unified-API methods (`src/xgboost/protocol.lisp`), built on the Layer 1 wrappers in `src/xgboost/native.lisp` over the generated CFFI bindings for the XGBoost C API (`src/xgboost/c-api.lisp`), and published together by `src/xgboost/all.lisp` |
 | `cl-gbdt/regen` | The binding emitter (`src/regen/`). Development-only -- never appears in `cl-gbdt`'s, `cl-gbdt/lightgbm`'s, or `cl-gbdt/xgboost`'s dependency graph, so an ordinary user never needs it or its dependencies (`alexandria`, `com.inuoe.jzon`). `cffi/c2ffi` is *not* one of them -- it is a dependency of `tools/regen.lisp`, which quickloads it directly, not of the `cl-gbdt/regen` system itself |
 | `cl-gbdt/tests` | The Rove test suite |
 
-Each backend system (`cl-gbdt/lightgbm` depends on `cl-gbdt/src/lightgbm/backend`,
-`cl-gbdt/xgboost` on `cl-gbdt/src/xgboost/backend`) implements all 12 methods of the
+Each backend system (`cl-gbdt/lightgbm` depends on `cl-gbdt/src/lightgbm/all`,
+`cl-gbdt/xgboost` on `cl-gbdt/src/xgboost/all`) implements all 13 methods of the
 unified API for its library. It depends on `cffi`, its own generated `c-api.lisp`, and
 the individual `cl-gbdt/src/*` leaf systems its methods need -- `protocol`, `handle`,
 `backend`, `conditions`, `parameters`, `data`, `library`, `foreign` -- but not on the

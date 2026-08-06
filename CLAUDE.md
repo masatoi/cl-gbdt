@@ -35,9 +35,9 @@ implementations — **LightGBM** and **XGBoost** — exposing a single shared hi
 over both backends.
 
 **Status: functional.** Both backends (`cl-gbdt/lightgbm`, `cl-gbdt/xgboost`) implement
-all 12 generic functions of the unified API -- `make-dataset`, `train`, `predict`, and
-the rest -- against the real shared libraries, exercised by 103 functional assertions in
-`cl-gbdt/tests/functional` (layer 2) on top of 204 assertions that need no shared
+all 13 generic functions of the unified API -- `make-dataset`, `train`, `predict`, and
+the rest -- against the real shared libraries, exercised by 178 functional assertions in
+`cl-gbdt/tests/functional` (layer 2) on top of 244 assertions that need no shared
 library at all (layer 1). Core `cl-gbdt` still loads, and is still tested, without
 either `liblightgbm.so` or `libxgboost.so` present: a shared library is opened only by
 an explicit `open-backend` call, from whichever backend system you load on top of the
