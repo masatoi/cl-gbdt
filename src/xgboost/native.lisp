@@ -28,6 +28,7 @@
                 #:xg-booster-get-num-feature
                 #:xg-booster-boosted-rounds
                 #:xg-booster-update-one-iter
+                #:xg-booster-eval-one-iter
                 #:xg-booster-predict-from-d-matrix
                 #:xg-booster-save-model
                 #:xg-booster-load-model
@@ -41,6 +42,9 @@
   (:import-from #:cl-gbdt/src/handle
                 #:handle-live-pointer
                 #:handle-released-p
+                #:handle-backend
+                #:dataset
+                #:booster
                 #:booster-training-set
                 #:booster-validation-sets)
   (:import-from #:cl-gbdt/src/conditions
@@ -48,14 +52,16 @@
                 #:foreign-call-error
                 #:released-handle-error
                 #:wrong-backend-reference
-                #:unsupported-argument)
+                #:unsupported-argument
+                #:dimension-mismatch)
   (:import-from #:cl-gbdt/src/parameters
                 #:normalize-parameters)
   (:import-from #:cl-gbdt/src/data
                 #:with-foreign-matrix
                 #:write-foreign-sequence)
   (:import-from #:cl-gbdt/src/foreign
-                #:check-foreign-call)
+                #:check-foreign-call
+                #:with-foreign-float-traps-masked)
   (:export #:check-xgb
            #:*library-env-var*
            #:*vendor-library-directory*
@@ -94,22 +100,34 @@
            #:%booster-num-features
            #:%feature-score-index
            #:%check-feature-score-dim
-           #:%feature-score))
+           #:%feature-score
+           #:booster-eval))
 
 (in-package #:cl-gbdt/src/xgboost/native)
 
 ;;; ---------------------------------------------------------------------------
 ;;; Floating-point trap safety
 ;;;
-;;; Nothing here wraps itself in `with-foreign-float-traps-masked' -- every function in
-;;; this file is only ever called from inside a `cl-gbdt/src/xgboost/protocol' `defmethod'
-;;; body that already established the mask, at method-body granularity, before making any
-;;; of the calls below. See that file's identical commentary, and
+;;; Almost nothing here wraps itself in `with-foreign-float-traps-masked' -- almost every
+;;; function in this file is only ever called from inside a `cl-gbdt/src/xgboost/protocol'
+;;; `defmethod' body that already established the mask, at method-body granularity, before
+;;; making any of the calls below. See that file's identical commentary, and
 ;;; `with-foreign-float-traps-masked''s own docstring in `cl-gbdt/src/foreign', for why:
 ;;; SBCL enables floating-point traps by default on x86-64 and not on aarch64, and
 ;;; XGBoost's own numeric code -- confirmed for the softmax normalization behind a
 ;;; `multi:softprob' prediction -- was written and tested against the C convention of
 ;;; those traps staying masked.
+;;;
+;;; `booster-eval', in the Evaluation section near the end of this file, is the exception:
+;;; Task 3 (policy section 3's Layer 1) exports it directly from `cl-gbdt/xgboost' -- see
+;;; `src/xgboost/all.lisp' -- so it is never reached through a `cl-gbdt/src/xgboost/protocol'
+;;; `defmethod'. There is no outer call site left to establish the mask for it, so it wraps
+;;; its own whole body instead, the same method-body granularity `protocol.lisp' uses, just
+;;; with the wrapping function living here rather than there -- mirrors
+;;; `cl-gbdt/src/lightgbm/native''s identical `booster-eval'/`booster-eval-names' exception.
+;;; `tools/ci/check-float-traps.lisp' checks this directly: it reads the sibling `all.lisp''s
+;;; public `:export' clause and requires every `defun' named there to open with this macro,
+;;; the same rule it already applied to every `defmethod' in `protocol.lisp'.
 
 ;;; ---------------------------------------------------------------------------
 ;;; Error checking
@@ -242,6 +260,7 @@ included -- unlike LightGBM's, whose compiled basename genuinely omits it; see
     "XGBoosterGetNumFeature"
     "XGBoosterBoostedRounds"
     "XGBoosterUpdateOneIter"
+    "XGBoosterEvalOneIter"
     "XGBoosterPredictFromDMatrix"
     "XGBoosterSaveModel"
     "XGBoosterLoadModel"
@@ -730,3 +749,222 @@ itself to this file instead of naming `xg-booster-feature-score' directly.
   (check-xgb (xg-booster-feature-score
               pointer config out-n-features out-features out-dim out-shape out-scores)
              "XGBoosterFeatureScore"))
+
+;;; ---------------------------------------------------------------------------
+;;; Evaluation
+;;;
+;;; `booster-eval' below is this file's first export that is not a `%'-prefixed internal
+;;; helper: Task 3 (policy section 3's Layer 1) exports it directly from `cl-gbdt/xgboost'
+;;; -- see `src/xgboost/all.lisp' -- rather than through a `cl-gbdt/src/xgboost/protocol'
+;;; `defmethod' the way every other public operation on a booster is reached. See this
+;;; file's own "Floating-point trap safety" header comment for what that changes about the
+;;; mask, and `cl-gbdt/src/lightgbm/native''s identical "Evaluation" section for LightGBM's
+;;; own version of this same Layer 1 addition -- the two differ here exactly as much as
+;;; `LGBM_BoosterGetEval' and `XGBoosterEvalOneIter' themselves do; see
+;;; docs/superpowers/specs/2026-08-06-evaluation-api-design.md section 2 for the asymmetry
+;;; both were built against.
+
+(defun %check-xgboost-booster (booster argument-description)
+  "Return BOOSTER's live foreign pointer, after confirming BOOSTER is a booster built by
+the `:xgboost' backend.
+
+BOOSTER's own concrete class -- `cl-gbdt/src/xgboost/protocol''s `xgboost-booster' --
+cannot be named directly here: this file must not depend on
+`cl-gbdt/src/xgboost/protocol', for the reason this file's own header gives, and unlike
+`%check-xgboost-dataset' there is no `protocol.lisp' caller to hand this one the class as
+a parameter -- `booster-eval' below is called directly by end users, never by a
+`defmethod'. `(typep booster 'booster)' -- the backend-agnostic base class from
+`cl-gbdt/src/handle' -- combined with BOOSTER's own `handle-backend' reporting `:xgboost'
+as its `backend-name' identifies exactly the set of objects `(typep booster
+'xgboost-booster)' would: only an `xgboost-backend''s `train' ever builds an
+`xgboost-booster', and every one of those stores that same `xgboost-backend' -- whose
+`backend-name' is always `:xgboost', set once at `open-backend' -- as the handle's
+`handle-backend'. Mirrors `cl-gbdt/src/lightgbm/native''s `%check-lightgbm-booster', which
+hit the identical constraint for the identical reason.
+
+ARGUMENT-DESCRIPTION names which caller-supplied argument BOOSTER came from, for
+`wrong-backend-reference''s report.
+
+Signals `wrong-backend-reference' when BOOSTER is not a `booster' at all -- a dataset, or
+any other non-handle value -- or is one built by a different backend, and whatever
+`handle-live-pointer' signals otherwise: `released-handle-error' for an already-freed
+BOOSTER, `backend-not-open' when its own backend has since been closed."
+  (unless (and (typep booster 'booster)
+               (eq (backend-name (handle-backend booster)) :xgboost))
+    (error 'wrong-backend-reference
+           :backend :xgboost
+           :given (class-name (class-of booster))
+           :argument argument-description
+           :expected "booster"))
+  (handle-live-pointer booster))
+
+(defun %check-xgboost-eval-dataset (dataset argument-description)
+  "Return DATASET's live foreign pointer, after confirming DATASET is a dataset built by
+the `:xgboost' backend.
+
+Mirrors `%check-xgboost-booster' immediately above, but for `dataset' -- needed for the
+same reason: `booster-eval''s DATASETS argument is a list of caller-supplied handles this
+file must check before ever handing their pointers to `XGBoosterEvalOneIter', and the
+existing `%check-xgboost-dataset' cannot be reused as-is, since its only caller,
+`cl-gbdt/src/xgboost/protocol''s `train', already has the concrete `xgboost-dataset' class
+symbol to hand it as a parameter -- `booster-eval' has no such caller to get it from, the
+identical gap `%check-xgboost-booster' fills for booster arguments.
+
+ARGUMENT-DESCRIPTION names which caller-supplied argument DATASET came from, for
+`wrong-backend-reference''s report.
+
+Signals `wrong-backend-reference' when DATASET is not a `dataset' at all, or is one built
+by a different backend, and whatever `handle-live-pointer' signals otherwise:
+`released-handle-error' for an already-freed DATASET, `backend-not-open' when its own
+backend has since been closed."
+  (unless (and (typep dataset 'dataset)
+               (eq (backend-name (handle-backend dataset)) :xgboost))
+    (error 'wrong-backend-reference
+           :backend :xgboost
+           :given (class-name (class-of dataset))
+           :argument argument-description))
+  (handle-live-pointer dataset))
+
+(defun %eval-one-iter (booster-pointer iteration dmatrix-pointers names)
+  "Run `XGBoosterEvalOneIter' over the booster at BOOSTER-POINTER, at ITERATION, against
+DMATRIX-POINTERS, each labeled by the corresponding entry of NAMES, and return the exact
+string it wrote to `out_result' -- e.g. \"[5]\\ttrain-logloss:0.1\\tvalid-logloss:0.2\".
+
+DMATRIX-POINTERS and NAMES must be the same length -- `XGBoosterEvalOneIter''s own
+`dmats' and `evnames' arrays, one caller-chosen name per DMatrix to evaluate. Checked
+here, before either foreign array is built: NAMES shorter than DMATRIX-POINTERS would
+otherwise leave trailing slots of the `evnames' array pointing at whatever garbage
+`cffi:with-foreign-object' happened to allocate, which `XGBoosterEvalOneIter' would then
+dereference as a C string -- a segfault or worse, not a catchable condition, exactly the
+hazard this file's every other caller-supplied-array construction (`%set-feature-names',
+`%create-booster') already checks its own inputs against before allocating. Signals
+`dimension-mismatch' instead.
+
+An empty DMATRIX-POINTERS -- `booster-eval' called with no datasets to evaluate -- passes
+a null pointer and length 0 to `XGBoosterEvalOneIter' rather than a zero-length foreign
+array, mirroring `%create-booster''s identical choice for the same reason: to avoid
+depending on whether a zero-count `cffi:with-foreign-object' allocation is meaningful.
+
+Every string successfully allocated for NAMES is freed on any exit, including one
+signaled partway through the allocation loop itself, matching `%set-feature-names''s
+identical cleanup discipline.
+
+`out_result' points into memory XGBoost itself owns, valid only until the next call into
+this booster; this copies its contents into a fresh Lisp string before returning, so the
+caller never holds a pointer into XGBoost's own buffer."
+  (let ((count (length dmatrix-pointers)))
+    (unless (= count (length names))
+      (error 'dimension-mismatch
+             :expected (format nil "~D name~:P, one per dataset" count)
+             :given (format nil "~D name~:P" (length names))))
+    (flet ((call (dmats evnames)
+             (cffi:with-foreign-object (out-result :pointer)
+               (check-xgb (xg-booster-eval-one-iter
+                           booster-pointer iteration dmats evnames count out-result)
+                          "XGBoosterEvalOneIter")
+               (let ((result-pointer (cffi:mem-ref out-result :pointer)))
+                 (if (cffi:null-pointer-p result-pointer)
+                     ""
+                     (cffi:foreign-string-to-lisp result-pointer))))))
+      (if (zerop count)
+          (call (cffi:null-pointer) (cffi:null-pointer))
+          (cffi:with-foreign-object (dmats :pointer count)
+            (loop :for pointer :in dmatrix-pointers
+                  :for index :from 0
+                  :do (setf (cffi:mem-aref dmats :pointer index) pointer))
+            (let ((allocated 0))
+              (cffi:with-foreign-object (evnames :pointer count)
+                (unwind-protect
+                     (progn
+                       (loop :for name :in names
+                             :for index :from 0
+                             :do (setf (cffi:mem-aref evnames :pointer index)
+                                       (cffi:foreign-string-alloc name))
+                                 (setf allocated (1+ index)))
+                       (call dmats evnames))
+                  (dotimes (index allocated)
+                    (cffi:foreign-string-free (cffi:mem-aref evnames :pointer index)))))))))))
+
+(defun %parse-eval-result (raw)
+  "Parse RAW -- `XGBoosterEvalOneIter''s own result string, as `%eval-one-iter' returns
+it unmodified -- into a fresh list of (LABEL . VALUE) conses, `booster-eval''s own
+derived interpretation of an undocumented text format, never a substitute for RAW itself.
+
+Confirmed directly against the vendored library: RAW looks like
+\"[5]\\ttrain-logloss:0.1\\tvalid-logloss:0.2\", a leading \"[iteration]\" marker, then
+one tab-separated field per (dataset, metric) pair, each field a LABEL and a VALUE joined
+by a colon. This splits on tab, drops the leading marker, and for each remaining field
+splits on that field's *last* colon -- VALUE is always numeric text with no colon of its
+own, so the last colon in the field is always the LABEL/VALUE boundary regardless of what
+LABEL itself contains.
+
+LABEL is returned exactly as XGBoost wrote it, e.g. \"train-logloss\" -- the
+caller-supplied name (`booster-eval''s own NAMES argument) and XGBoost's own metric name,
+joined with a hyphen. This does not attempt to split LABEL further into the two: a hyphen
+is also legal inside a caller-supplied name, so nothing in RAW alone can tell the two
+apart -- only `booster-eval''s own caller, which already knows every entry of NAMES
+verbatim, can. VALUE is read as a `double-float' via the Lisp reader, with `*read-eval*'
+bound to NIL so a stray `#.' in an unexpected metric string cannot run code.
+
+Returns NIL when RAW has no fields after the marker -- an empty DMATRIX-POINTERS reaching
+`%eval-one-iter', so XGBoost had nothing to evaluate -- or when RAW itself is empty."
+  (let ((fields (uiop:split-string raw :separator '(#\Tab))))
+    (loop :for field :in (rest fields)
+          :for colon := (position #\: field :from-end t)
+          :when colon
+            :collect (cons (subseq field 0 colon)
+                            (let ((*read-eval* nil)
+                                  (*read-default-float-format* 'double-float))
+                              (coerce (read-from-string (subseq field (1+ colon)))
+                                      'double-float))))))
+
+(defun booster-eval (booster datasets names)
+  "Evaluate BOOSTER against DATASETS via `XGBoosterEvalOneIter', labeling each entry of
+DATASETS with the corresponding entry of NAMES, at BOOSTER's own current boosted-round
+count (read fresh via `XGBoosterBoostedRounds', the same source `update-one-iteration'
+reads its own `iter' argument from).
+
+Unlike LightGBM's `booster-eval', which reads the validation sets `train' already
+attached to BOOSTER by index, XGBoost's `XGBoosterEvalOneIter' evaluates whatever
+DMatrices the caller passes here and does not consult BOOSTER's own `:valid-sets' at all
+-- this is the asymmetry that
+docs/superpowers/specs/2026-08-06-evaluation-api-design.md section 2 documents between
+the two libraries' C APIs; a portable Layer 2 method built on top of this still has to
+decide what to pass as DATASETS, which is exactly what that design leaves for the layer
+above this one to settle, not this function.
+
+Returns two values:
+
+  RAW    The exact string `XGBoosterEvalOneIter' wrote to `out_result', e.g.
+         \"[5]\\ttrain-logloss:0.1\\tvalid-logloss:0.2\". This is the only value this
+         function can promise is faithful to what XGBoost actually produced -- its
+         format is not documented as stable. RAW is authoritative; PARSED below is
+         derived from it and must never be substituted for it.
+
+  PARSED A fresh list of (LABEL . VALUE) conses, this function's own interpretation of
+         RAW -- see `%parse-eval-result' for exactly how, and why it does not attempt to
+         split LABEL back into a dataset name and a metric name. Empty when DATASETS is
+         empty. If RAW and PARSED ever disagree, RAW is what XGBoost said and PARSED is a
+         bug in this function, not the other way around.
+
+DATASETS and NAMES must be the same length, checked in `%eval-one-iter' before either
+foreign array is built; see that function's docstring for the hazard an unchecked
+mismatch would reach. Every entry of DATASETS, and BOOSTER itself, is read through
+`handle-live-pointer' and confirmed built by the `:xgboost' backend before any foreign
+call -- passing a released or wrong-backend handle straight to `XGBoosterEvalOneIter'
+would be a segfault, not a catchable condition, exactly as for every other
+caller-supplied handle in this backend. Signals `wrong-backend-reference' when BOOSTER or
+any DATASETS entry was not built by `:xgboost', `released-handle-error' for an
+already-freed one, `backend-not-open' when its own backend has since been closed, and
+`dimension-mismatch' when DATASETS and NAMES differ in length."
+  (with-foreign-float-traps-masked
+    (let* ((booster-pointer
+             (%check-xgboost-booster booster "booster-eval's booster argument"))
+           (dataset-pointers
+             (loop :for dataset :in datasets
+                   :for index :from 0
+                   :collect (%check-xgboost-eval-dataset
+                             dataset (format nil "booster-eval's datasets entry ~D" index))))
+           (raw (%eval-one-iter booster-pointer (%boosted-rounds booster-pointer)
+                                 dataset-pointers names)))
+      (values raw (%parse-eval-result raw)))))
