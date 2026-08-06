@@ -78,6 +78,9 @@
   (:import-from #:cl-gbdt/src/foreign
                 #:check-foreign-call
                 #:with-foreign-float-traps-masked)
+  (:import-from #:cl-gbdt/src/version
+                #:check-backend-version
+                #:*xgboost-version-range*)
   (:export #:xgboost-backend))
 
 (in-package #:cl-gbdt/src/xgboost/backend)
@@ -281,6 +284,13 @@ that function's docstring for the SBCL caveat: it validates the library argument
 on this platform, cannot actually scope the symbol search to it -- or this signals
 `missing-foreign-symbols'.
 
+Once `backend-version' is read, `check-backend-version' compares it against
+`*xgboost-version-range*' and signals `untested-backend-version' -- a warning, not an
+error -- when it falls outside that range's recorded bounds. This is the only backend
+this runs for: LightGBM's C API has no version entry point, so `backend-version' stays
+NIL there and there is nothing to compare -- see
+`cl-gbdt/src/lightgbm/backend''s `initialize-backend'.
+
 `open-backend' only marks a backend open -- and so only calls `close-backend' on it --
 once this method returns normally. So if the symbol probe (or anything else after the
 library loads) signals, the library is closed right here before the condition propagates;
@@ -303,6 +313,8 @@ to close it."
                    (error 'missing-foreign-symbols
                           :backend (backend-name backend) :names missing)))
                (setf (backend-version backend) (%read-version))
+               (check-backend-version :xgboost (backend-version backend)
+                                       *xgboost-version-range*)
                (setf succeeded t))
           (unless succeeded
             (handler-case (cffi:close-foreign-library library)

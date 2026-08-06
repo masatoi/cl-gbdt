@@ -182,6 +182,14 @@ out first:
 | `feature-importance`'s `:num-iteration` | Limits the importance calculation | Signals `unsupported-argument` -- no iteration-limited variant exists |
 | `feature-importance`'s result shape | Always one number per feature | Signals `unsupported-argument` instead of returning a result when the model reports a multi-dimensional score shape -- a `gblinear` booster's importance on a multi-class model, whose scores are a per-class matrix with no single-value reduction this backend will invent |
 | `backend-version` | Always `nil` -- LightGBM's C API has no version entry point | A `"MAJOR.MINOR.PATCH"` string, e.g. `"3.3.0"` |
+| Untested-version warning | Never signalled -- there is no version to compare, so `open-backend` never checks one | `open-backend` signals `untested-backend-version` (a warning, not an error) when the loaded version falls outside the recorded supported range |
+
+`src/version.lisp` records that supported range as two distinguishable claims: a narrow
+*verified* one (the exact version the 105 functional assertions above actually ran against)
+and a wider *inferred* one (the range across which `tools/check-upstream.lisp` confirms cl-gbdt's
+imported C functions' declarations are unchanged). The warning gates on the wider inferred
+range -- a version different from the exact tested one is the common case for a compatible
+caller, not a signal of trouble.
 
 Run together against both backends:
 

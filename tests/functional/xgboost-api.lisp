@@ -150,6 +150,29 @@ binary, so COLUMN is always 0, but the shape still has to be unpacked by hand."
         (testing "close-backend marks the backend closed"
           (ng (cl-gbdt:backend-open-p backend)))))))
 
+;;; Task 3 wired `check-backend-version' into this backend's `initialize-backend' --
+;;; see `cl-gbdt/src/xgboost/backend''s `initialize-backend' and
+;;; `cl-gbdt/src/version''s `*xgboost-version-range*'. The vendored library here is
+;;; 3.3.0, XGBoost's own recorded VERIFIED point and *XGBOOST-VERSION-RANGE*'s
+;;; INFERRED-HIGH -- inside the range by construction. A warning here would mean the
+;;; range itself is recorded wrong, not that the vendored library is somehow suspect.
+
+(deftest xgboost-api-open-backend-against-vendored-library-warns-nothing
+  (with-backend-library (:xgboost)
+    (testing "opening XGBoost against the vendored library signals no version warning"
+      (let ((warnings nil))
+        ;; handler-bind, not handler-case: a WARNING does not unwind the stack on its
+        ;; own, so handler-case around open-backend would establish a non-local exit
+        ;; and change control flow instead of merely observing -- the identical
+        ;; pitfall this repo's own prompts/repl-driven-development.md documents for
+        ;; rove's `signals'.
+        (handler-bind ((cl-gbdt:untested-backend-version
+                          (lambda (c) (push c warnings))))
+          (let ((backend (cl-gbdt:open-backend :xgboost)))
+            (cl-gbdt:close-backend backend)))
+        (ok (null warnings)
+            (format nil "unexpected untested-backend-version warning(s): ~S" warnings))))))
+
 ;;; The LightGBM branch that first built its own version of this fixture documented
 ;;; that its single objective, "binary", cannot catch a `predict' buffer sized as the
 ;;; row count alone -- a single-class objective's row count and true element count

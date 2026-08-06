@@ -1,0 +1,199 @@
+;;;; version.lisp --- Recorded LightGBM/XGBoost version ranges, and the pure
+;;;; comparison used to warn when a loaded library falls outside them.
+;;;;
+;;;; Two different claims are recorded here, deliberately kept distinguishable rather
+;;;; than blended into one:
+;;;;
+;;;;   verified   the exact version(s) the functional suite (layer 2, 105 assertions)
+;;;;              has actually trained and predicted against
+;;;;   inferred   the wider span `tools/check-upstream.lisp' can only argue about from
+;;;;              comparing C header declarations: the 38 functions cl-gbdt imports (18
+;;;;              from LightGBM, 20 from XGBoost) are textually unchanged across it, so
+;;;;              a library in this span is presumed ABI-compatible even though nothing
+;;;;              has actually run a model against it
+;;;;
+;;;; The runtime check below (`check-backend-version') gates on the wider INFERRED
+;;;; bounds, not the narrower VERIFIED ones -- seeing a version different from the one
+;;;; the functional suite happens to run against is the common case for a compatible
+;;;; caller, not a signal of trouble. Warning on that difference would fire on nearly
+;;;; every correctly configured user, and a warning that fires on correct
+;;;; configurations trains people to ignore it. See `check-backend-version''s
+;;;; docstring.
+;;;;
+;;;; A CI version matrix (tracked separately) is expected to run the functional suite
+;;;; against more than one released version and move part of each INFERRED span into
+;;;; the VERIFIED one -- `version-range' keeps both as independent (LOW . HIGH) pairs
+;;;; for exactly that: updating VERIFIED-LOW in place, without touching INFERRED-LOW or
+;;;; restructuring anything else here.
+
+(uiop:define-package #:cl-gbdt/src/version
+  (:use #:cl)
+  (:import-from #:cl-gbdt/src/conditions
+                #:untested-backend-version)
+  (:export #:version-compare
+           #:version-in-range-p
+           #:version-range
+           #:make-version-range
+           #:version-range-verified-low
+           #:version-range-verified-high
+           #:version-range-verified-evidence
+           #:version-range-inferred-low
+           #:version-range-inferred-high
+           #:version-range-inferred-evidence
+           #:version-range-tested-description
+           #:check-backend-version
+           #:*lightgbm-version-range*
+           #:*xgboost-version-range*))
+
+(in-package #:cl-gbdt/src/version)
+
+;;; ---------------------------------------------------------------------------
+;;; Pure version comparison
+
+(defun %parse-version (version)
+  "Parse VERSION into a list of three non-negative integers (MAJOR MINOR PATCH), or
+NIL when VERSION is not a string of exactly that shape.
+
+NIL itself is rejected immediately by `stringp'. So is anything with other than three
+dot-separated components, or a component that is not entirely digits -- an empty
+component (\"1..3\"), a sign (\"1.-2.3\"), or leading/trailing whitespace all fail the
+`every #'digit-char-p' check below rather than being tolerated the way
+`parse-integer' alone would be."
+  (when (stringp version)
+    (let ((components (uiop:split-string version :separator ".")))
+      (when (and (= 3 (length components))
+                 (every (lambda (component)
+                          (and (plusp (length component))
+                               (every #'digit-char-p component)))
+                        components))
+        (mapcar #'parse-integer components)))))
+
+(defun version-compare (a b)
+  "Compare two \"MAJOR.MINOR.PATCH\" version strings A and B component by component.
+
+Returns `:less', `:equal' or `:greater' when both parse. Returns NIL when either does
+not -- including either being NIL itself. NIL deliberately does not sort as the
+smallest possible version: something this project cannot even parse is not
+comparable at all, not merely low."
+  (let ((pa (%parse-version a))
+        (pb (%parse-version b)))
+    (when (and pa pb)
+      (loop :for x :in pa
+            :for y :in pb
+            :when (/= x y) :return (if (< x y) :less :greater)
+            :finally (return :equal)))))
+
+(defun version-in-range-p (version low high)
+  "Return true when VERSION falls within [LOW, HIGH], inclusive, all three
+\"MAJOR.MINOR.PATCH\" strings compared with `version-compare'.
+
+Returns NIL -- \"cannot confirm this is in range\", not \"confirmed out of range\" --
+when VERSION, LOW or HIGH fails to parse. VERSION = NIL needs no special case:
+`version-compare' already returns NIL for it, and `member' on a NIL first argument
+returns NIL in turn."
+  (and (member (version-compare version low) '(:equal :greater))
+       (member (version-compare version high) '(:equal :less))
+       t))
+
+;;; ---------------------------------------------------------------------------
+;;; Recorded ranges
+
+(defstruct version-range
+  "What is known about a backend's compatible library versions, split into the
+VERIFIED and INFERRED claims this file's header comment distinguishes.
+
+VERIFIED-LOW and VERIFIED-HIGH bound the versions the functional suite has actually
+trained and predicted against; today a single point (VERIFIED-LOW = VERIFIED-HIGH)
+for both backends. VERIFIED-EVIDENCE names what backs it, for the warning's report.
+
+INFERRED-LOW and INFERRED-HIGH bound the wider span `tools/check-upstream.lisp'
+argues is ABI-compatible from C header comparison alone. INFERRED-EVIDENCE names
+that argument. VERIFIED-LOW/HIGH always fall within [INFERRED-LOW, INFERRED-HIGH]."
+  verified-low
+  verified-high
+  verified-evidence
+  inferred-low
+  inferred-high
+  inferred-evidence)
+
+(defparameter *lightgbm-version-range*
+  (make-version-range
+   :verified-low "4.7.0" :verified-high "4.7.0"
+   :verified-evidence "105 functional assertions pass against it"
+   :inferred-low "3.0.0" :inferred-high "4.7.0"
+   :inferred-evidence (concatenate
+                        'string
+                        "the 38 imported functions' declarations (18 of them "
+                        "LightGBM's) are unchanged across this range, per "
+                        "tools/check-upstream.lisp"))
+  "LightGBM's recorded compatible-version range.
+
+Never compared against a loaded version at runtime, unlike *XGBOOST-VERSION-RANGE* --
+LightGBM's C API has no version entry point at all (`grep -c Version
+src/lightgbm/c-api.lisp' reports 0), so `backend-version' is always NIL on this
+backend and there is nothing to compare it against. See
+`cl-gbdt/src/lightgbm/backend''s `initialize-backend' and `check-backend-version'
+below. Recorded here anyway, for the same documentation purpose the README's
+backend-differences table serves.
+
+INFERRED-LOW is pinned at \"3.0.0\" and can never move to VERIFIED: `lightgbm==3.0.0'
+predates aarch64 wheels on PyPI, so the CI version matrix this range's header comment
+describes cannot install it on that platform to actually test against -- this lower
+bound stays inferred permanently, not just until the next matrix run.")
+
+(defparameter *xgboost-version-range*
+  (make-version-range
+   :verified-low "3.3.0" :verified-high "3.3.0"
+   :verified-evidence "105 functional assertions pass against it"
+   :inferred-low "1.7.0" :inferred-high "3.3.0"
+   :inferred-evidence (concatenate
+                        'string
+                        "the 38 imported functions' declarations (20 of them "
+                        "XGBoost's) are unchanged across this range, per "
+                        "tools/check-upstream.lisp, spanning two XGBoost major versions"))
+  "XGBoost's recorded compatible-version range -- see *LIGHTGBM-VERSION-RANGE*'s
+docstring for what VERIFIED and INFERRED each mean and this file's header comment for
+why the runtime check gates on INFERRED, not VERIFIED. Unlike LightGBM, this range is
+actually compared against a loaded version: XGBoost's C API does expose one, read by
+`cl-gbdt/src/xgboost/backend''s `%read-version'.")
+
+(defun version-range-tested-description (range)
+  "Return RANGE's evidence as a list of two strings -- the verified point/range, then
+the wider inferred one -- for `untested-backend-version''s :TESTED initarg.
+
+Kept as two separate entries rather than one blended string, so the condition's
+report -- \"Tested: ~{~A~^, ~}\" -- states each claim's own strength instead of
+implying both are the same kind of evidence."
+  (list (format nil "~A~@[-~A~] verified (~A)"
+                (version-range-verified-low range)
+                (let ((high (version-range-verified-high range)))
+                  (unless (string= high (version-range-verified-low range)) high))
+                (version-range-verified-evidence range))
+        (format nil "~A-~A inferred (~A)"
+                (version-range-inferred-low range) (version-range-inferred-high range)
+                (version-range-inferred-evidence range))))
+
+;;; ---------------------------------------------------------------------------
+;;; The warning
+
+(defun check-backend-version (backend-name version range)
+  "Signal `untested-backend-version' -- a WARNING, not an ERROR; see its own docstring
+for why -- when VERSION, BACKEND-NAME's loaded library version, falls outside RANGE's
+*inferred* bounds, or does not parse as a \"MAJOR.MINOR.PATCH\" string at all, VERSION
+= NIL included. Does nothing when VERSION is confirmed within range.
+
+Gates on RANGE's inferred bounds rather than its narrower verified ones -- see this
+file's header comment: warning on every difference from the exact version the
+functional suite happens to run against would fire on nearly every compatible caller.
+
+Only `cl-gbdt/src/xgboost/backend''s `initialize-backend' calls this. It is never
+called for LightGBM: with `backend-version' always NIL there, this would signal on
+every single open, a check that can never actually confirm compatibility -- see
+*LIGHTGBM-VERSION-RANGE*'s docstring for the fuller explanation of that asymmetry."
+  (unless (version-in-range-p version
+                               (version-range-inferred-low range)
+                               (version-range-inferred-high range))
+    (warn 'untested-backend-version
+          :backend backend-name
+          :version version
+          :tested (version-range-tested-description range))))

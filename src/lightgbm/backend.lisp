@@ -268,7 +268,12 @@ Once a library is loaded, every name in *required-symbols* must resolve via
 the library argument but, on this platform, cannot actually scope the symbol
 search to it -- or this signals `missing-foreign-symbols' -- the
 version-mismatch check that function exists for. LightGBM's C API has no
-runtime version query, so `backend-version' is left NIL rather than guessed.
+runtime version query, so `backend-version' is left NIL rather than guessed --
+and, unlike `cl-gbdt/src/xgboost/backend''s `initialize-backend', this never
+calls `cl-gbdt/src/version''s `check-backend-version': with nothing to read, a
+call here could never confirm compatibility, only ever warn on every single
+open, which is not a check worth leaving in. See `*lightgbm-version-range*''s
+docstring for the fuller explanation of this asymmetry between the backends.
 
 `open-backend' only marks a backend open -- and so only calls `close-backend' on
 it -- once this method returns normally. So if the symbol probe (or anything
