@@ -49,7 +49,8 @@
                                :min-data-in-bin 1 :verbose -1 :metric "binary_logloss,auc")
          :loss-metric "binary_logloss"
          :aligns-bin-mappers t
-         :model-file-type "txt")
+         :model-file-type "txt"
+         :value-source :library-doubles)
    (list :backend :xgboost
          :dataset-parameters nil
          :booster-parameters '(:objective "binary:logistic" :max-depth 2 :eta 0.5
@@ -57,7 +58,8 @@
                                :eval-metric "logloss" :eval-metric "error")
          :loss-metric "logloss"
          :aligns-bin-mappers nil
-         :model-file-type "json"))
+         :model-file-type "json"
+         :value-source :parsed-text))
   "One entry per backend: what each needs to train a two-metric booster on this suite's
 eight-row separable fixture, and the name each spells its own log loss with.
 
@@ -67,8 +69,10 @@ is the parameter vocabulary its own library documents, which is the point of `tr
 the RESULT of `cl-gbdt:evaluation' has the same shape either way, not that the inputs do.
 
 :LOSS-METRIC is that backend's own name for log loss -- LightGBM's \"binary_logloss\" and
-XGBoost's \"logloss\" -- used only by the fit-ordering test, which needs a metric that
-falls as a model fits better. Two metrics are configured, not one, so a portable
+XGBoost's \"logloss\" -- used by the fit-ordering test, which needs a metric that falls
+as a model fits better, and by the entry-per-dataset test's index-discrimination check,
+which needs a metric whose value differs between the training set and an
+`INVERT-LABELS'-built validation set. Two metrics are configured, not one, so a portable
 assertion about one metric per dataset cannot pass by accident against an implementation
 that dropped every entry after the first.
 
@@ -81,7 +85,13 @@ the backend that has one.
 
 :MODEL-FILE-TYPE is the extension each library's `save-model' writes -- XGBoost decides
 its serialization format from it and rejects an unknown one -- matching the two backend
-files' own save/load round trips.")
+files' own save/load round trips.
+
+:VALUE-SOURCE is what this backend's own `evaluation' method sets `cl-gbdt:evaluation''s
+second return value's `:VALUE-SOURCE' to -- LightGBM's own doubles versus XGBoost's
+parsed text, see `cl-gbdt:evaluation''s docstring. Pinning it here means a backend that
+started reporting the other backend's provenance would fail the fixture-neutral test
+below rather than pass by construction.")
 
 (defun make-fixture-dataset (fixture backend matrix label &key reference)
   "Build a dataset on BACKEND from MATRIX and LABEL, passing only the `make-dataset'
@@ -121,6 +131,19 @@ values it inspects have already been copied into Lisp."
        (not (sb-ext:float-nan-p value))
        (not (sb-ext:float-infinity-p value))))
 
+(defun invert-labels (label-vector)
+  "Return a fresh `(simple-array single-float (*))' with each of LABEL-VECTOR's 0.0/1.0
+entries flipped to the other class.
+
+Used to build a validation set whose labels disagree with the training set's, over the
+same feature matrix, so a booster fit to LABEL-VECTOR scores clearly worse against the
+result than against its own training labels -- dataset 0 and dataset 1 are then not
+numerically identical by construction, which they would be if the validation set were
+built from LABEL-VECTOR unchanged (both backends' bin-mapper alignment only cares about
+the feature matrix, never labels, so reusing it while inverting labels is safe)."
+  (map '(simple-array single-float (*)) (lambda (label) (if (zerop label) 1.0 0.0))
+       label-vector))
+
 ;;; The shape, order and meaning assertion (design section 7): one entry per metric per
 ;;; dataset, names non-empty, values finite, and the secondary value saying which of the
 ;;; two ways the numbers were produced. Two datasets and two metrics on each backend, so
@@ -131,12 +154,13 @@ values it inspects have already been copied into Lisp."
   (dolist (fixture *fixtures*)
     (with-backend-library ((getf fixture :backend))
       (multiple-value-bind (matrix label-vector) (make-separable-dataset)
-        (let ((backend (cl-gbdt:open-backend (getf fixture :backend))))
+        (let ((backend (cl-gbdt:open-backend (getf fixture :backend)))
+              (valid-label-vector (invert-labels label-vector)))
           (unwind-protect
                (cl-gbdt:with-dataset
                    (train-set (make-fixture-dataset fixture backend matrix label-vector))
                  (cl-gbdt:with-dataset
-                     (valid-set (make-fixture-dataset fixture backend matrix label-vector
+                     (valid-set (make-fixture-dataset fixture backend matrix valid-label-vector
                                                       :reference train-set))
                    (cl-gbdt:with-booster
                        (booster (cl-gbdt:train backend train-set :num-rounds 5
@@ -144,7 +168,8 @@ values it inspects have already been copied into Lisp."
                                                :parameters (getf fixture :booster-parameters)))
                      (multiple-value-bind (entries provenance) (cl-gbdt:evaluation booster)
                        (let ((names (metric-names entries 0))
-                             (backend-name (getf fixture :backend)))
+                             (backend-name (getf fixture :backend))
+                             (metric (getf fixture :loss-metric)))
                          (testing (format nil "~A: every entry is a (DATASET-INDEX ~
                                                METRIC-NAME VALUE) list" backend-name)
                            (ok (and entries
@@ -167,16 +192,38 @@ values it inspects have already been copied into Lisp."
                            (ok (and names (equal names (metric-names entries 1)))
                                (format nil "dataset 0 had ~S, dataset 1 had ~S"
                                        names (metric-names entries 1))))
+                         (let ((training-loss (entry-value entries 0 metric))
+                               (validation-loss (entry-value entries 1 metric)))
+                           (testing (format nil "~A: dataset 1's ~A differs from dataset ~
+                                                 0's -- the inverted-label validation set ~
+                                                 built by INVERT-LABELS proves index 0 and ~
+                                                 index 1 are not the same evaluation ~
+                                                 reported twice" backend-name metric)
+                             (ok (and training-loss validation-loss
+                                      (/= training-loss validation-loss))
+                                 (format nil "dataset 0 ~A was ~S, dataset 1 ~A was ~S"
+                                         metric training-loss metric validation-loss)))
+                           (when (eq (getf fixture :backend) :lightgbm)
+                             (testing (format nil "~A: the inverted-label validation set ~
+                                                   at index 1 fits worse than the ~
+                                                   training set at index 0" backend-name)
+                               (ok (and training-loss validation-loss
+                                        (> validation-loss training-loss))
+                                   (format nil "dataset 0 ~A was ~S, dataset 1 ~A was ~S"
+                                           metric training-loss metric validation-loss)))))
                          (testing (format nil "~A: every value is a finite double-float"
                                           backend-name)
                            (ok (every (lambda (entry) (finite-double-p (third entry)))
                                       entries)
                                (format nil "values were ~S" (mapcar #'third entries))))
                          (testing (format nil "~A: the secondary value says where the ~
-                                               numbers came from" backend-name)
-                           (ok (member (getf provenance :value-source)
-                                       '(:library-doubles :parsed-text))
-                               (format nil "provenance was ~S" provenance)))
+                                               numbers came from, and matches this ~
+                                               backend's own way of producing them"
+                                          backend-name)
+                           (ok (eq (getf provenance :value-source)
+                                   (getf fixture :value-source))
+                               (format nil "expected ~S, provenance was ~S"
+                                       (getf fixture :value-source) provenance)))
                          (testing (format nil "~A: a parsed backend keeps the raw text it ~
                                                parsed, a library-doubles one has none"
                                           backend-name)

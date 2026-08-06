@@ -36,7 +36,7 @@ over both backends.
 
 **Status: functional.** Both backends (`cl-gbdt/lightgbm`, `cl-gbdt/xgboost`) implement
 all 13 generic functions of the unified API -- `make-dataset`, `train`, `predict`, and
-the rest -- against the real shared libraries, exercised by 178 functional assertions in
+the rest -- against the real shared libraries, exercised by 181 functional assertions in
 `cl-gbdt/tests/functional` (layer 2) on top of 244 assertions that need no shared
 library at all (layer 1). Core `cl-gbdt` still loads, and is still tested, without
 either `liblightgbm.so` or `libxgboost.so` present: a shared library is opened only by
@@ -78,19 +78,26 @@ worth stating explicitly rather than leaving them to be rediscovered:
 
 ### Floating-point trap masking around every foreign call
 
-**Every method in `src/lightgbm/backend.lisp` and `src/xgboost/backend.lisp` that calls
-into its shared library wraps its whole body in `with-foreign-float-traps-masked`**
-(`cl-gbdt/src/foreign`), not just the specific call this was first found through.
+**Every method in `src/lightgbm/protocol.lisp` and `src/xgboost/protocol.lisp` that
+calls into its shared library wraps its whole body in `with-foreign-float-traps-masked`**
+(`cl-gbdt/src/foreign`), not just the specific call this was first found through. The
+same rule binds a **`defun` in `src/lightgbm/native.lisp` or `src/xgboost/native.lisp`
+once that backend's public package exports it** (the second `uiop:define-package` form
+in the sibling `all.lisp`, per `tools/ci/check-float-traps.lisp`'s `:export`-clause
+check): such a `defun` is a library-reaching entry point with no `defmethod` left to
+inherit a mask from, so it must wrap its own whole body the same way -- LightGBM's
+`booster-eval`/`booster-eval-names` and XGBoost's `booster-eval` were the first functions
+this applied to.
 SBCL enables the `:invalid`, `:divide-by-zero` and `:overflow` floating-point traps by
 default on x86-64 and none of them on aarch64; LightGBM and XGBoost are C code written
 and tested against the opposite (masked) convention, where an intermediate NaN or
 infinity is data to keep working with, not a signal -- confirmed for XGBoost's
 `multi:softprob` softmax normalization, which produced an uncaught
 `floating-point-invalid-operation` mid-foreign-call on x86-64 only, before this macro
-was added. Adding a raw foreign call inside an already-wrapped method needs nothing
-extra -- the existing method-body wrap already covers it -- but a **new** method added
-to either backend file that reaches the shared library needs the same wrap around its
-own whole body, or it silently reopens the gap on x86-64 while looking identical on
+was added. Adding a raw foreign call inside an already-wrapped method or `defun` needs
+nothing extra -- the existing body wrap already covers it -- but a **new** method, or a
+**newly exported** `defun`, that reaches the shared library needs the same wrap around
+its own whole body, or it silently reopens the gap on x86-64 while looking identical on
 aarch64.
 
 `tools/ci/check-leaf-systems.lisp` loads every leaf system alone, each in its own fresh

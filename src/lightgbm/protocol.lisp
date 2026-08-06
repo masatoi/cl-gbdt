@@ -536,18 +536,18 @@ The values are `LGBM_BoosterGetEval''s own doubles, returned unmodified, which i
 the secondary value's `:value-source :library-doubles' says; unlike XGBoost's, nothing
 here parses text, so there is no :RAW to keep and no VALUE is ever NIL.
 
-`%check-booster-datasets-live' runs before any evaluation call, after `booster-eval-names'
-has checked BOOSTER itself: `LGBM_BoosterGetEval' evaluates each attached validation set
+`%check-booster-datasets-live' runs before any foreign call this method makes, including
+`booster-eval-names': `LGBM_BoosterGetEval' evaluates each attached validation set
 through the metric objects built over that dataset's own label and weight arrays, none of
 which `LGBM_DatasetFree' clears from the booster, so evaluating after one of them was
 freed is a use-after-free rather than a catchable condition -- the identical hazard
 `update-one-iteration' guards against with the same call."
   (with-foreign-float-traps-masked
+    (%check-booster-datasets-live booster)
     (let ((names (booster-eval-names booster))
           (dataset-count (if (booster-training-set booster)
                              (1+ (length (booster-validation-sets booster)))
                              0)))
-      (%check-booster-datasets-live booster)
       (values (loop :for index :below dataset-count
                     :append (loop :for name :in names
                                   :for value :across (booster-eval booster index)
