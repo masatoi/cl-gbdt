@@ -34,12 +34,15 @@ The style rules in `common-lisp-expert.md` (Google CL Style Guide, 2-space inden
 implementations — **LightGBM** and **XGBoost** — exposing a single shared high-level API
 over both backends.
 
-**Status: foundation only.** The condition hierarchy, the backend registry and
-`open-backend` protocol, the zero-copy matrix marshalling, and a binding generator that
-produces the raw CFFI declarations for both C APIs are in place. It does **not** yet call
-into either shared library: `make-dataset`, `train`, `predict`, and the rest of the
-unified API are declared as generic functions with docstrings but no methods. See
-`README.markdown` for the full system table and the design doc it points at.
+**Status: functional.** Both backends (`cl-gbdt/lightgbm`, `cl-gbdt/xgboost`) implement
+all 12 generic functions of the unified API -- `make-dataset`, `train`, `predict`, and
+the rest -- against the real shared libraries, exercised by 103 functional assertions in
+`cl-gbdt/tests/functional` (layer 2) on top of 204 assertions that need no shared
+library at all (layer 1). Core `cl-gbdt` still loads, and is still tested, without
+either `liblightgbm.so` or `libxgboost.so` present: a shared library is opened only by
+an explicit `open-backend` call, from whichever backend system you load on top of the
+core. See `README.markdown`'s Usage section for a worked example, its system table, and
+the design doc it points at.
 
 The system is `:class :package-inferred-system`: one file, one package, and ASDF derives
 each file's dependencies from its own `uiop:define-package` clauses rather than from a
@@ -72,6 +75,23 @@ worth stating explicitly rather than leaving them to be rediscovered:
   bindings"). This is already enforced by `tests/bindings.lisp`'s
   `committed-bindings-match-their-committed-spec` test, which re-emits from the
   committed c2ffi spec and compares the result to the committed file byte-for-byte.
+
+### Floating-point trap masking around every foreign call
+
+**Every method in `src/lightgbm/backend.lisp` and `src/xgboost/backend.lisp` that calls
+into its shared library wraps its whole body in `with-foreign-float-traps-masked`**
+(`cl-gbdt/src/foreign`), not just the specific call this was first found through.
+SBCL enables the `:invalid`, `:divide-by-zero` and `:overflow` floating-point traps by
+default on x86-64 and none of them on aarch64; LightGBM and XGBoost are C code written
+and tested against the opposite (masked) convention, where an intermediate NaN or
+infinity is data to keep working with, not a signal -- confirmed for XGBoost's
+`multi:softprob` softmax normalization, which produced an uncaught
+`floating-point-invalid-operation` mid-foreign-call on x86-64 only, before this macro
+was added. Adding a raw foreign call inside an already-wrapped method needs nothing
+extra -- the existing method-body wrap already covers it -- but a **new** method added
+to either backend file that reaches the shared library needs the same wrap around its
+own whole body, or it silently reopens the gap on x86-64 while looking identical on
+aarch64.
 
 `tools/ci/check-leaf-systems.lisp` loads every leaf system alone, each in its own fresh
 `ros run` subprocess, which is the only way to catch an undeclared dependency that
