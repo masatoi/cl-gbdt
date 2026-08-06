@@ -93,13 +93,19 @@ jobs:
     # Endpoints of the recorded range only, not every release in between -- the pinned
     # versions (4.7.0/3.3.0) are already exercised by the `test' job above, so this adds
     # exactly the two ends: LightGBM's lowest installable version and XGBoost's lowest
-    # verified-compatible one. XGBoost 1.7.0 is also run, deliberately, even though it
-    # fails: it is the original inferred lower bound, and dropping a version from the
-    # matrix because it contradicts the wide range would be exactly the failure mode
-    # this project has caught itself in twice before (see the design doc's testing
-    # section) -- a red job kept honest beats a green one with the losing case quietly
-    # removed. `continue-on-error' keeps that one from blocking merges; it is expected
-    # to stay red.
+    # verified-compatible one.
+    #
+    # XGBoost 1.7.0 -- the original inferred lower bound, which local measurement showed
+    # is ABI-compatible but behaviourally broken (`rank:pairwise' ties within a group) --
+    # was run here as a deliberately-red job, so that the losing case was not quietly
+    # removed. That did not survive contact with CI: the leg failed in `Fetch the backend
+    # shared libraries', never reaching the test, because that wheel does not install on
+    # the runner. A job that fails before it can demonstrate anything teaches nothing, and
+    # it cost roughly six minutes and enough contention to get sibling jobs cancelled.
+    #
+    # The evidence for narrowing the range to 2.0.0 is the local run, recorded in
+    # src/version.lisp's docstring and this branch's task report -- not a red CI job. Kept
+    # out of the matrix for that reason, not because it contradicted the wide range.
     #
     # Layer 1 only -- it needs no shared library and reruns nothing new when the
     # library version changes, so it is not repeated here.
@@ -129,10 +135,6 @@ jobs:
           - name: xgboost-2.0.0
             lightgbm_version: '4.7.0'
             xgboost_version: '2.0.0'
-          - name: xgboost-1.7.0-known-incompatible
-            lightgbm_version: '4.7.0'
-            xgboost_version: '1.7.0'
-            expected-to-fail: true
 
     steps:
       - uses: actions/checkout@v4
