@@ -2,7 +2,7 @@
 ;;;;
 ;;;; Reassembles `cl-gbdt/src/xgboost/native' (Layer 1: library discovery, the error
 ;;;; wrapper, every %-function) and `cl-gbdt/src/xgboost/protocol' (Layer 2: the classes
-;;;; and the fourteen protocol methods) into one package. This is what `cl-gbdt/xgboost'
+;;;; and the fifteen protocol methods) into one package. This is what `cl-gbdt/xgboost'
 ;;;; (see cl-gbdt.asd) depends on, following the same shape `src/all.lisp' and
 ;;;; `src/regen/all.lisp' use for the same reason.
 ;;;;

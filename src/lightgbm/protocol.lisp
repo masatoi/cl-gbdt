@@ -1,4 +1,4 @@
-;;;; protocol.lisp --- LightGBM backend, Layer 2: the classes and all fourteen methods of
+;;;; protocol.lisp --- LightGBM backend, Layer 2: the classes and all fifteen methods of
 ;;;; the unified API's protocol, each delegating its C calls to
 ;;;; `cl-gbdt/src/lightgbm/native'.
 
@@ -36,6 +36,8 @@
                 #:%feature-importance-type
                 #:%booster-num-features
                 #:%feature-importance
+                #:booster-eval-names
+                #:booster-eval
                 #:*library-env-var*
                 #:*vendor-library-directory*
                 #:*vendor-library-pattern*
@@ -63,6 +65,7 @@
                 #:load-model
                 #:model-to-string
                 #:feature-importance
+                #:evaluation
                 #:free-booster)
   (:import-from #:cl-gbdt/src/handle
                 #:dataset
@@ -71,7 +74,9 @@
                 #:release-handle
                 #:handle-live-pointer
                 #:handle-released-p
-                #:handle-backend)
+                #:handle-backend
+                #:booster-training-set
+                #:booster-validation-sets)
   (:import-from #:cl-gbdt/src/conditions
                 #:missing-foreign-symbols
                 #:foreign-call-error)
@@ -88,7 +93,7 @@
 ;;; ---------------------------------------------------------------------------
 ;;; Floating-point trap safety
 ;;;
-;;; Every method below that reaches into lib_lightgbm.so -- all twelve protocol
+;;; Every method below that reaches into lib_lightgbm.so -- all thirteen protocol
 ;;; methods plus `initialize-backend' and `shutdown-backend', which load and unload
 ;;; the library itself -- wraps its entire body in `with-foreign-float-traps-masked'.
 ;;; See that macro's docstring in `cl-gbdt/src/foreign' for why, and
@@ -501,3 +506,50 @@ unbound."
         (dotimes (index count)
           (setf (aref result index) (cffi:mem-aref buffer :double index))))
       result)))
+
+;;; ---------------------------------------------------------------------------
+;;; Evaluation
+
+(defmethod evaluation ((booster lightgbm-booster))
+  "Return BOOSTER's evaluation metrics via `booster-eval-names' and `booster-eval', this
+backend's own Layer 1 evaluation functions -- see the `evaluation' generic function's
+docstring for the portable contract this satisfies.
+
+Reads one `LGBM_BoosterGetEval' result per dataset BOOSTER retains, in the order
+`train' attached them, and pairs entry N of each with entry N of the single metric-name
+list `LGBM_BoosterGetEvalNames' reports for the whole booster -- LightGBM configures
+metrics once per booster, not per dataset, so the names are read once and reused for
+every dataset rather than re-read per index.
+
+DATASET-INDEX is passed straight through to `LGBM_BoosterGetEval' as its `data_idx':
+this backend's own numbering already is the portable contract's numbering, 0 for the
+training set and 1 upward for each `:VALID-SETS' entry in order, so nothing here
+renumbers anything. The datasets are counted from BOOSTER's own retained handles rather
+than asked of the library, which has no entry point reporting how many are attached; a
+`load-model' booster retains none, and is the case that count is 0 for. LightGBM does
+answer `data_idx' 0 for such a booster -- with an empty result, confirmed against the
+vendored library, since a model file carries no metrics -- but there is no dataset behind
+that index for the portable contract to name, so it is not evaluated at all rather than
+reported as index 0.
+
+The values are `LGBM_BoosterGetEval''s own doubles, returned unmodified, which is what
+the secondary value's `:value-source :library-doubles' says; unlike XGBoost's, nothing
+here parses text, so there is no :RAW to keep and no VALUE is ever NIL.
+
+`%check-booster-datasets-live' runs before any evaluation call, after `booster-eval-names'
+has checked BOOSTER itself: `LGBM_BoosterGetEval' evaluates each attached validation set
+through the metric objects built over that dataset's own label and weight arrays, none of
+which `LGBM_DatasetFree' clears from the booster, so evaluating after one of them was
+freed is a use-after-free rather than a catchable condition -- the identical hazard
+`update-one-iteration' guards against with the same call."
+  (with-foreign-float-traps-masked
+    (let ((names (booster-eval-names booster))
+          (dataset-count (if (booster-training-set booster)
+                             (1+ (length (booster-validation-sets booster)))
+                             0)))
+      (%check-booster-datasets-live booster)
+      (values (loop :for index :below dataset-count
+                    :append (loop :for name :in names
+                                  :for value :across (booster-eval booster index)
+                                  :collect (list index name value)))
+              (list :value-source :library-doubles)))))

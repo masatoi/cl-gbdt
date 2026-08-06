@@ -4,7 +4,7 @@
 ;;;; conditions, raw pointers accepted only where a caller already validated them.
 ;;;;
 ;;;; Nothing here is a CLOS protocol method and nothing here depends on
-;;;; `cl-gbdt/src/lightgbm/protocol' -- see that file for the fourteen `defmethod's this
+;;;; `cl-gbdt/src/lightgbm/protocol' -- see that file for the fifteen `defmethod's this
 ;;;; module exists to support. `cl-gbdt/src/lightgbm/protocol''s own docstrings, not this
 ;;;; file's, are the place each function's role in the unified API is explained; the
 ;;;; docstrings below describe only what each function does to the C API.

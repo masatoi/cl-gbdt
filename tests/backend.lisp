@@ -146,6 +146,7 @@
                     cl-gbdt:load-model
                     cl-gbdt:model-to-string
                     cl-gbdt:feature-importance
+                    cl-gbdt:evaluation
                     cl-gbdt:free-dataset
                     cl-gbdt:free-booster))
       (ok (typep (fdefinition name) 'generic-function)

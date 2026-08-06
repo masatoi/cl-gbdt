@@ -10,7 +10,7 @@
 ;;;; NaN or infinity partway through their own numeric code (XGBoost's `multi:softprob'
 ;;;; softmax is the case that surfaced this) is data to keep working with, not a signal.
 ;;;; `cl-gbdt/src/foreign''s `with-foreign-float-traps-masked' restores that convention;
-;;;; every `defmethod' in a backend file -- all twelve protocol methods plus
+;;;; every `defmethod' in a backend file -- all thirteen protocol methods plus
 ;;;; `initialize-backend' and `shutdown-backend' -- wraps its entire body in it. See that
 ;;;; macro's docstring for the full reasoning and
 ;;;; `.superpowers/sdd/2026-08-04-xgboost-backend/float-traps-report.md' for the
@@ -118,7 +118,7 @@
 Both backends used to keep every protocol method in one `backend.lisp'. XGBoost's Task 2
 and LightGBM's Task 3 each split that file into `native.lisp' (Layer 1: the %-functions,
 the error wrapper, and -- since the evaluation-api branch's Task 2 -- any public
-entry-point `defun's too) and `protocol.lisp' (Layer 2: the classes and all fourteen
+entry-point `defun's too) and `protocol.lisp' (Layer 2: the classes and all fifteen
 methods) -- so most `defmethod' forms live in `protocol.lisp', not `native.lisp', but a
 public `defun' can now legitimately live in either. `backend.lisp' is still listed even
 though neither backend has one anymore: a future backend added under that older

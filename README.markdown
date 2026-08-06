@@ -13,13 +13,13 @@ file if you have it locally).
 
 ## Status
 
-**Functional.** Both backends implement all 12 generic functions of the unified API --
+**Functional.** Both backends implement all 13 generic functions of the unified API --
 `make-dataset`, `dataset-num-rows`, `dataset-num-features`, `train`,
 `update-one-iteration`, `predict`, `save-model`, `load-model`, `model-to-string`,
-`feature-importance`, `free-dataset` and `free-booster` -- against the real LightGBM and
-XGBoost shared libraries, exercised by 106 functional assertions (design doc section 12,
-layer 2), in addition to 243 assertions that need no shared library at all (layer 1).
-See [Usage](#usage) below for a worked example.
+`feature-importance`, `evaluation`, `free-dataset` and `free-booster` -- against the real
+LightGBM and XGBoost shared libraries, exercised by 178 functional assertions (design doc
+section 12, layer 2), in addition to 243 assertions that need no shared library at all
+(layer 1). See [Usage](#usage) below for a worked example.
 
 Loading `cl-gbdt` itself still does not require either `liblightgbm.so` or
 `libxgboost.so` to be installed -- see [Systems](#systems): a shared library is opened
@@ -136,21 +136,31 @@ neither package re-exports (policy sections 3 and 11):
 Output:
 
 ```
-(CL-GBDT/SRC/LIGHTGBM/PROTOCOL:LIGHTGBM-BACKEND)
+(CL-GBDT/SRC/LIGHTGBM/NATIVE:BOOSTER-EVAL
+ CL-GBDT/SRC/LIGHTGBM/NATIVE:BOOSTER-EVAL-NAMES
+ CL-GBDT/SRC/LIGHTGBM/PROTOCOL:LIGHTGBM-BACKEND)
 ```
 
-Today that is the entire published surface: the backend's own CLOS class, useful for
+Today that is the entire published surface: the backend's own CLOS class -- useful for
 `typep` or for specializing your own methods on one specific backend rather than the
-shared `backend` -- `open-backend` itself never needs it, since it looks classes up by the
-`:lightgbm`/`:xgboost` keyword internally, not by this symbol. Nothing from either
-backend's `native.lisp` -- library discovery, the raw-status-code checker, the internal
-`%`-functions that turn a raw C call into something safe to call from Lisp -- is published
-yet: none of those is a reviewed, Lisp-level backend-specific operation, only
-infrastructure the two Layer 2 unified-API systems (`cl-gbdt/lightgbm`, `cl-gbdt/xgboost`)
-already use internally. Backend-specific safe API -- LightGBM's `rollback-one-iteration`,
-XGBoost's `booster-slice`, and the rest of policy section 3's Layer 1 examples -- is added
-here one contract at a time as it is designed and reviewed, not by widening today's
-re-export to cover `native` wholesale.
+shared `backend`; `open-backend` itself never needs it, since it looks classes up by the
+`:lightgbm`/`:xgboost` keyword internally, not by this symbol -- plus that backend's own
+evaluation entry points. `cl-gbdt/xgboost` publishes `xgboost-backend` and a
+`booster-eval` of its own, which takes different arguments and returns something different
+(see [the differences table](#where-the-two-backends-genuinely-differ)): the two
+`booster-eval`s are distinct symbols in distinct packages, deliberately, so a program that
+`:use`s both packages has to resolve the conflict rather than get one of them silently.
+Package-qualify them -- `cl-gbdt/lightgbm:booster-eval`, `cl-gbdt/xgboost:booster-eval` --
+or use the portable `cl-gbdt:evaluation` instead, which is one name for both.
+
+Nothing else from either backend's `native.lisp` -- library discovery, the
+raw-status-code checker, the internal `%`-functions that turn a raw C call into something
+safe to call from Lisp -- is published: none of those is a reviewed, Lisp-level
+backend-specific operation, only infrastructure the two backend systems already use
+internally. Backend-specific safe API -- LightGBM's `rollback-one-iteration`, XGBoost's
+`booster-slice`, and the rest of policy section 3's Layer 1 examples -- is added here one
+contract at a time as it is designed and reviewed, not by widening today's re-export to
+cover `native` wholesale.
 
 ### Finding the shared library
 
@@ -217,18 +227,23 @@ out first:
 | `model-to-string`'s `:num-iteration` | Limits the rounds serialized | Signals `unsupported-argument` -- no iteration-limited variant exists |
 | `feature-importance`'s `:num-iteration` | Limits the importance calculation | Signals `unsupported-argument` -- no iteration-limited variant exists |
 | `feature-importance`'s result shape | Always one number per feature | Signals `unsupported-argument` instead of returning a result when the model reports a multi-dimensional score shape -- a `gblinear` booster's importance on a multi-class model, whose scores are a per-class matrix with no single-value reduction this backend will invent |
+| What `evaluation` evaluates | The datasets `train` attached, read back by index (`LGBM_BoosterGetEval`): the library computed these metrics during training and this reads them out | The booster's own retained training set and `:valid-sets` entries, which this backend hands to `XGBoosterEvalOneIter` explicitly -- that call evaluates whatever DMatrices it is given and consults nothing the booster was built with, so passing the retained ones is what makes the index mean the same thing on both backends |
+| `evaluation`'s values | `LGBM_BoosterGetEval`'s own doubles, returned unmodified -- the secondary value says `:value-source :library-doubles` | Parsed out of the single formatted line `XGBoosterEvalOneIter` produces -- `:value-source :parsed-text`, with that line itself kept verbatim under `:raw`, and a value XGBoost spelled `inf`/`nan` coming back as `nil` rather than a number. The same line is `cl-gbdt/xgboost:booster-eval`'s own primary value at Layer 1, for a caller who wants it without going through the portable API |
 | `backend-version` | Always `nil` -- LightGBM's C API has no version entry point | A `"MAJOR.MINOR.PATCH"` string, e.g. `"3.3.0"` |
 | Untested-version warning | Never signalled -- there is no version to compare, so `open-backend` never checks one | `open-backend` signals `untested-backend-version` (a warning, not an error) when the loaded version falls outside the recorded supported range |
 
 `src/version.lisp` records that supported range as two distinguishable claims: a narrow
-*verified* one (the versions the 106 functional assertions above have actually run against)
+*verified* one (the versions the functional suite above has actually run against)
 and a wider *inferred* one (the range across which `tools/check-upstream.lisp` confirms cl-gbdt's
 imported C functions' declarations are unchanged). The warning gates on the wider inferred
 range -- a version different from the exact tested one is the common case for a compatible
 caller, not a signal of trouble.
 
 A version matrix (task 4) turned part of each inferred range into a measured one by actually
-running the functional suite -- not just comparing headers -- against the range's endpoints:
+running the functional suite -- not just comparing headers -- against the range's endpoints.
+The counts below are what that suite had when the matrix was measured; it has grown since,
+and the rows are left as the measurement recorded them rather than restated against a total
+that run never saw:
 
 | library | version | result |
 |---|---|---|
@@ -370,6 +385,73 @@ Output:
 ```
 feature-importance SIGNALED: UNSUPPORTED-ARGUMENT: feature-importance's booster is not supported by XGBOOST: XGBoosterFeatureScore reported a 2-dimensional shape (3 3) instead of one score per feature -- most likely a linear (gblinear) booster's :split importance on a multi-class model, whose scores are a per-class matrix; no single value per feature can be derived without inventing a reduction this backend does not vouch for.
 ```
+
+And `evaluation`, whose two rows above are about how each backend produces the numbers
+rather than about one backend refusing something. The same call, the same 8 rows, the same
+one `:valid-sets` entry, on both backends -- dataset 0 is the training set, dataset 1 is
+that validation set, and the metric names are each library's own:
+
+```lisp
+(ql:quickload '(:cl-gbdt :cl-gbdt/lightgbm :cl-gbdt/xgboost) :silent t)
+
+(defparameter *eval-matrix*
+  (make-array '(8 2) :element-type 'double-float
+                      :initial-contents '((0.0d0 0.0d0) (0.0d0 1.0d0) (0.0d0 2.0d0)
+                                           (0.0d0 3.0d0) (5.0d0 0.0d0) (5.0d0 1.0d0)
+                                           (5.0d0 2.0d0) (5.0d0 3.0d0))))
+(defparameter *eval-label*
+  (make-array 8 :element-type 'single-float
+                 :initial-contents '(0.0 0.0 0.0 0.0 1.0 1.0 1.0 1.0)))
+
+(defun show (name backend dataset-parameters booster-parameters reference-p)
+  (cl-gbdt:with-dataset (train-set (apply #'cl-gbdt:make-dataset backend *eval-matrix*
+                                          :label *eval-label* dataset-parameters))
+    (cl-gbdt:with-dataset (valid-set (apply #'cl-gbdt:make-dataset backend *eval-matrix*
+                                            :label *eval-label*
+                                            (append (when reference-p
+                                                      (list :reference train-set))
+                                                    dataset-parameters)))
+      (cl-gbdt:with-booster (booster (cl-gbdt:train backend train-set :num-rounds 5
+                                                     :valid-sets (list valid-set)
+                                                     :parameters booster-parameters))
+        (multiple-value-bind (entries provenance) (cl-gbdt:evaluation booster)
+          (format t "~A entries:    ~S~%~A provenance: ~S~%" name entries name provenance))))))
+
+(let ((lgbm (cl-gbdt:open-backend :lightgbm))
+      (xgb (cl-gbdt:open-backend :xgboost)))
+  (show "LightGBM" lgbm
+        '(:parameters (:min-data-in-leaf 1 :min-data-in-bin 1 :verbose -1))
+        '(:objective "binary" :num-leaves 2 :min-data-in-leaf 1 :min-data-in-bin 1
+          :verbose -1 :metric "binary_logloss,auc")
+        t)
+  (show "XGBoost " xgb '()
+        '(:objective "binary:logistic" :max-depth 2 :eta 0.5 :verbosity 0
+          :eval-metric "logloss" :eval-metric "error")
+        nil)
+  (cl-gbdt:close-backend lgbm)
+  (cl-gbdt:close-backend xgb))
+```
+
+Output:
+
+```
+LightGBM entries:    ((0 "binary_logloss" 0.35374722486733523d0)
+                      (0 "auc" 1.0d0)
+                      (1 "binary_logloss" 0.35374722486733523d0)
+                      (1 "auc" 1.0d0))
+LightGBM provenance: (:VALUE-SOURCE :LIBRARY-DOUBLES)
+XGBoost  entries:    ((0 "logloss" 0.4740770012140274d0) (0 "error" 0.0d0)
+                      (1 "logloss" 0.4740770012140274d0) (1 "error" 0.0d0))
+XGBoost  provenance: (:VALUE-SOURCE :PARSED-TEXT :RAW
+                      "[5]	0-logloss:0.47407700121402740	0-error:0.00000000000000000	1-logloss:0.47407700121402740	1-error:0.00000000000000000")
+```
+
+Dataset 0 and dataset 1 agree here because the validation set is built over the same rows
+as the training set. Nothing names those datasets: LightGBM knows a validation set by its
+index and by nothing else, so the portable API reports the position the caller supplied it
+in rather than inventing `"valid_0"`-style names. The `0-`/`1-` prefixes inside XGBoost's
+`:raw` line are the names this backend must pass `XGBoosterEvalOneIter` -- that call
+demands one per DMatrix -- and are the indices themselves for exactly that reason.
 
 ## Systems
 

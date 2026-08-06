@@ -4,7 +4,7 @@
 ;;;; conditions, raw pointers accepted only where a caller already validated them.
 ;;;;
 ;;;; Nothing here is a CLOS protocol method and nothing here depends on
-;;;; `cl-gbdt/src/xgboost/protocol' -- see that file for the fourteen `defmethod's this
+;;;; `cl-gbdt/src/xgboost/protocol' -- see that file for the fifteen `defmethod's this
 ;;;; module exists to support. `cl-gbdt/src/xgboost/protocol''s own docstrings, not this
 ;;;; file's, are the place each function's role in the unified API is explained; the
 ;;;; docstrings below describe only what each function does to the C API.
@@ -101,6 +101,7 @@
            #:%feature-score-index
            #:%check-feature-score-dim
            #:%feature-score
+           #:%split-eval-label
            #:booster-eval))
 
 (in-package #:cl-gbdt/src/xgboost/native)
@@ -971,6 +972,43 @@ Returns NIL when RAW has no fields after the marker -- an empty DMATRIX-POINTERS
           :when colon
             :collect (cons (subseq field 0 colon)
                             (%read-eval-value (subseq field (1+ colon)))))))
+
+(defun %split-eval-label (label names)
+  "Return (VALUES INDEX METRIC-NAME) for LABEL, one `%parse-eval-result' entry's label,
+given NAMES -- the exact list of dataset names that was passed to `booster-eval' for the
+call LABEL came out of. INDEX is LABEL's dataset's position in NAMES; METRIC-NAME is
+what is left of LABEL after that name and the hyphen joining it to XGBoost's own metric
+name.
+
+`%parse-eval-result' deliberately does not do this itself -- see its docstring: a hyphen
+is legal inside a caller-supplied name too, so nothing in the raw string alone can tell
+the two halves apart, and only a caller that knows NAMES verbatim can. This is that
+caller's half of the split, kept here beside the parser rather than in
+`cl-gbdt/src/xgboost/protocol' so that all of this backend's knowledge of
+`XGBoosterEvalOneIter''s undocumented text format lives in one file.
+
+The match is on the whole `\"NAME-\"' prefix, not on NAME alone, and no two distinct
+entries of NAMES can both match one LABEL that way: if `\"A-\"' and `\"B-\"' both
+prefixed it, one of A and B would have to be the other followed by a hyphen, which
+`evaluation''s own decimal-index names never are.
+
+Signals `foreign-call-error' when no entry of NAMES prefixes LABEL that way, rather than
+guessing an index or dropping the field: a label that cannot be attributed to a dataset
+would mean `XGBoosterEvalOneIter' no longer builds its labels the way this file assumes,
+and reporting a metric against the wrong dataset silently is exactly the failure this
+project treats as most serious. Mirrors `%feature-score-index''s identical refusal to
+guess when `XGBoosterFeatureScore' reports a feature name outside the form it documents."
+  (loop :for name :in names
+        :for index :from 0
+        :for prefix := (concatenate 'string name "-")
+        :when (and (> (length label) (length prefix))
+                   (string= prefix label :end2 (length prefix)))
+          :do (return (values index (subseq label (length prefix))))
+        :finally (error 'foreign-call-error
+                        :function-name "XGBoosterEvalOneIter"
+                        :code 0
+                        :message (format nil "result label ~S matches none of the dataset ~
+                                              names ~S this call supplied" label names))))
 
 (defun booster-eval (booster datasets names)
   "Evaluate BOOSTER against DATASETS via `XGBoosterEvalOneIter', labeling each entry of
