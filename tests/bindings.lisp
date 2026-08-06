@@ -131,8 +131,9 @@ regenerated it (spec 5.2: local architecture only)."
     ;; exactly when it is a DIRECT child of src/ -- src/*.lisp, one level, no recursion
     ;; into a subdirectory. Every package the clause currently names (conditions, data,
     ;; backend, protocol, handle, parameters, library, foreign) is a direct child; every
-    ;; file deliberately left out -- src/lightgbm/backend.lisp, src/xgboost/native.lisp,
-    ;; src/xgboost/protocol.lisp, src/xgboost/all.lisp, src/xgboost/array-interface.lisp,
+    ;; file deliberately left out -- src/lightgbm/native.lisp, src/lightgbm/protocol.lisp,
+    ;; src/lightgbm/all.lisp, src/xgboost/native.lisp, src/xgboost/protocol.lisp,
+    ;; src/xgboost/all.lisp, src/xgboost/array-interface.lisp,
     ;; both generated c-api.lisp files, and everything under src/regen/ -- lives one level deeper,
     ;; under a subdirectory. That is the whole rule: a new src/foo.lisp belongs in the
     ;; list; a new src/<backend-or-tool>/foo.lisp does not, and this glob -- "src/*.lisp",

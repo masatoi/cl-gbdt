@@ -10,10 +10,11 @@
   ;; with a double colon, which keeps the trespass visible at every call site rather than
   ;; hiding it behind an export list the design does not want.
   (:local-nicknames (#:lgbm #:cl-gbdt/src/lightgbm/c-api)
-                     ;; F1 needs the backend's own *default-library-name*, an internal
-                     ;; (unexported) special -- reached the same double-colon way as lgbm::
-                     ;; above.
-                     (#:lightgbm-backend #:cl-gbdt/src/lightgbm/backend))
+                     ;; F1 needs *default-library-name*, an internal (unexported) special
+                     ;; -- reached the same double-colon way as lgbm:: above. It lives in
+                     ;; native.lisp (Layer 1), not protocol.lisp, since this branch's
+                     ;; Task 3 split the old backend.lisp in two.
+                     (#:lightgbm-native #:cl-gbdt/src/lightgbm/native))
   (:import-from #:cl-gbdt/tests/functional/support
                 #:backend-library-path
                 #:with-backend-library
@@ -63,10 +64,10 @@ Returns what `ok' returns, so a caller can gate the rest of a sequence on it."
   (with-backend-library (:lightgbm)
     (testing "the :default designator resolves *default-library-name* to the vendored file"
       (let ((resolved (resolve-via-cffi-default
-                        :lightgbm lightgbm-backend::*default-library-name*)))
+                        :lightgbm lightgbm-native::*default-library-name*)))
         (ok resolved
             (format nil "(:default ~S) did not resolve to any file"
-                    lightgbm-backend::*default-library-name*))
+                    lightgbm-native::*default-library-name*))
         (when resolved
           (ok (equal (file-namestring resolved)
                       (file-namestring (backend-library-path :lightgbm)))
@@ -137,8 +138,8 @@ output during the suite.")
                      ;; to drive the loop even though this body never touches it, so
                      ;; `ignore' conflicts with the macroexpansion's own use and produces
                      ;; three STYLE-WARNINGs, not the "this really is unused" declaration it
-                     ;; looks like -- matching `cl-gbdt/src/lightgbm/backend''s `train' and
-                     ;; `cl-gbdt/src/xgboost/backend''s `train', which both hit the same
+                     ;; looks like -- matching `cl-gbdt/src/lightgbm/protocol''s `train' and
+                     ;; `cl-gbdt/src/xgboost/protocol''s `train', which both hit the same
                      ;; thing and both already use `ignorable' for it.
                      (declare (ignorable iteration))
                      (lgbm-check (lgbm::lgbm-booster-update-one-iter booster finished))))

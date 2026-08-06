@@ -84,12 +84,12 @@
 ;;;;     backend file. Every call in both backends today goes through `:import-from', by
 ;;;;     convention, but this script trusts that convention rather than scanning call
 ;;;;     sites for qualified symbols.
-;;;;   - A backend file that does not follow the `src/<backend>/backend.lisp' (LightGBM,
-;;;;     still one file) or `src/<backend>/native.lisp' (XGBoost, since this branch's
-;;;;     Task 2 split) and `src/<backend>/c-api.lisp' layout named in +BACKENDS+ below --
-;;;;     a future backend added under a different convention needs that list extended,
-;;;;     the same caveat +BACKEND-FILE-PATTERN+ carries in check-float-traps.lisp and
-;;;;     +LEAF-ROOTS+ carries in check-leaf-systems.lisp.
+;;;;   - A backend file that does not follow the `src/<backend>/native.lisp' (both
+;;;;     backends, since this branch's Task 2 and Task 3 splits) and `src/<backend>/c-api.lisp'
+;;;;     layout named in +BACKENDS+ below -- a future backend added under a different
+;;;;     convention needs that list extended, the same caveat +BACKEND-FILE-PATTERN+
+;;;;     carries in check-float-traps.lisp and +LEAF-ROOTS+ carries in
+;;;;     check-leaf-systems.lisp.
 ;;;;   - A new hazard upstream introduces that nobody has added to ABI-BLACKLIST.md yet
 ;;;;     (CHECK A). This script enforces the list; it does not maintain it. Design doc
 ;;;;     section 11 and this branch's Task 2 describe the drift-detection tool that
@@ -116,19 +116,19 @@
 
 (defparameter +backends+
   '((:lightgbm "src/lightgbm/c-api.lisp" "CL-GBDT/SRC/LIGHTGBM/C-API"
-               "src/lightgbm/backend.lisp")
+               "src/lightgbm/native.lisp")
     (:xgboost "src/xgboost/c-api.lisp" "CL-GBDT/SRC/XGBOOST/C-API"
               "src/xgboost/native.lisp"))
   "(backend-id c-api-path c-api-package-name backend-path) for each backend, all paths
 relative to the repository root. See WHAT THIS CANNOT CATCH above for what adding a
 backend that does not follow this layout would require.
 
-XGBoost's fourth element points at `native.lisp', not a `backend.lisp' -- the Phase 1
-split (this branch's Task 2) moved both `*required-symbols*' and the `:import-from'
-clause naming the c-api package there, out of the single file this list originally
-named. `protocol.lisp', the other half of that split, imports the c-api package from
-nowhere at all -- it calls no C function directly, only `native.lisp''s wrappers -- so
-it has nothing for this check to read.")
+Both fourth elements point at a `native.lisp', not a `backend.lisp' -- the Phase 1 split
+(XGBoost in this branch's Task 2, LightGBM in Task 3) moved both `*required-symbols*'
+and the `:import-from' clause naming the c-api package there, out of the single file
+this list originally named for each backend in turn. `protocol.lisp', the other half of
+each split, imports the c-api package from nowhere at all -- it calls no C function
+directly, only `native.lisp''s wrappers -- so it has nothing for this check to read.")
 
 ;;; ---- Reading Lisp source as data, never as code ----
 ;;;

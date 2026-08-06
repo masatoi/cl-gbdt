@@ -28,7 +28,8 @@
 ;;; separate systems layered on it. Listing `cl-gbdt/src/xgboost/array-interface' here made
 ;;; the core depend on an XGBoost file and re-exported an XGBoost implementation detail from
 ;;; `CL-GBDT'. Every consumer imports it directly from its own package instead, which is why
-;;; nothing broke when it was removed. `src/lightgbm/backend' was never listed, for the same
+;;; nothing broke when it was removed. `src/lightgbm/native'/`protocol'/`all' (formerly one
+;;; `src/lightgbm/backend', split in this branch's Task 3) were never listed, for the same
 ;;; reason.
 
 ;;; package-inferred-system infers a file's dependencies from the file's *first*

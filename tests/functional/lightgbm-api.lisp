@@ -13,10 +13,12 @@
   (:import-from #:cl-gbdt)
   ;; Zero symbols: nothing below refers to this package by name. Its only job is to
   ;; run at load time and register :lightgbm with `open-backend' -- see
-  ;; `register-backend' at the bottom of src/lightgbm/backend.lisp. Without this
+  ;; `register-backend' near the top of src/lightgbm/protocol.lisp. Without this
   ;; clause, package-inferred-system has no edge to that file at all, and
-  ;; `(cl-gbdt:open-backend :lightgbm)' below would signal `unknown-backend'.
-  (:import-from #:cl-gbdt/src/lightgbm/backend)
+  ;; `(cl-gbdt:open-backend :lightgbm)' below would signal `unknown-backend'. Depends on
+  ;; `all', the leaf `cl-gbdt/lightgbm' itself depends on, rather than `protocol'
+  ;; directly, so this exercises the same load path a real caller would.
+  (:import-from #:cl-gbdt/src/lightgbm/all)
   (:import-from #:cl-gbdt/tests/functional/support
                 #:with-backend-library
                 #:make-separable-dataset

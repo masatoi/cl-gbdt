@@ -77,19 +77,20 @@
   '("src/*/backend.lisp" "src/*/native.lisp" "src/*/protocol.lisp")
   "Globs, relative to the repository root, for files this check scans.
 
-LightGBM still keeps every protocol method in one `backend.lisp'. XGBoost's Task 2 split
-that file into `native.lisp' (Layer 1: no `defmethod' at all, only the %-functions and
-the error wrapper) and `protocol.lisp' (Layer 2: the classes and all fourteen methods) --
-so the file that actually holds XGBoost's `defmethod' forms is `protocol.lisp', not
-`native.lisp'. Both are still listed: `native.lisp' currently contributes zero
-`defmethod' forms to scan, but a future edit that moved one there by mistake -- or a
-LightGBM split that names its own halves differently -- should still be caught by this
-scan rather than silently exempted from it, the same reasoning
-`tools/ci/check-abi-blacklist.lisp' gives for reading `native.lisp' specifically for the
-c-api `:import-from' clause. A backend split under some other naming convention entirely
-would still silently not be scanned -- extend this list rather than assume it stays
-accurate on its own, the same caveat `tools/ci/check-leaf-systems.lisp''s +LEAF-ROOTS+
-carries for the same reason.")
+Both backends used to keep every protocol method in one `backend.lisp'. XGBoost's Task 2
+and LightGBM's Task 3 each split that file into `native.lisp' (Layer 1: no `defmethod'
+at all, only the %-functions and the error wrapper) and `protocol.lisp' (Layer 2: the
+classes and all fourteen methods) -- so the file that actually holds each backend's
+`defmethod' forms is `protocol.lisp', not `native.lisp'. `backend.lisp' is still listed
+even though neither backend has one anymore: a future backend added under that older
+convention should still be caught by this scan rather than silently exempted from it.
+`native.lisp' currently contributes zero `defmethod' forms to scan for either backend,
+but a future edit that moved one there by mistake should still be caught the same way --
+the same reasoning `tools/ci/check-abi-blacklist.lisp' gives for reading `native.lisp'
+specifically for the c-api `:import-from' clause. A backend split under some other
+naming convention entirely would still silently not be scanned -- extend this list
+rather than assume it stays accurate on its own, the same caveat
+`tools/ci/check-leaf-systems.lisp''s +LEAF-ROOTS+ carries for the same reason.")
 
 (defun backend-files ()
   "Return the sorted list of pathnames matching any of +BACKEND-FILE-PATTERNS+."
