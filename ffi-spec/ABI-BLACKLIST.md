@@ -45,9 +45,51 @@ bindings.
 
 ## Maintaining this list
 
-Design doc section 11 specifies `tools/check-upstream.lisp`, an upstream-drift
-checker not yet built on this branch, to compare the vendored headers against the
-latest release tag and drive updates here: a function that disappears from the
-diff should move from "still present" to "moot," and a newly detected signature
-change should be added to "still present." Until that tool exists, updates happen
-manually when `tools/fetch-headers.sh` is re-run against a newer tag.
+`tools/check-upstream.lisp` is the upstream-drift checker design doc section 5
+specifies. It compares each backend's *imported* functions (not the whole header --
+see that file's own header for why) between the vendored spec and a release tag,
+after normalising away whitespace, asterisk placement, parameter names, and `const`
+so only ABI-meaningful differences are reported.
+
+Run it:
+
+```bash
+ros run -- --non-interactive --load tools/check-upstream.lisp
+```
+
+With no environment variables, it checks both backends against the tags
+`ffi-spec/VERSIONS` pins -- the same tags the vendored headers and generated
+bindings were produced from -- and should report clean. To check a specific tag
+instead (a prospective upgrade, or to confirm a known break), override the
+relevant backend's tag:
+
+```bash
+CHECK_UPSTREAM_LIGHTGBM_TAG=v5.0.0 ros run -- --non-interactive \
+  --load tools/check-upstream.lisp
+CHECK_UPSTREAM_XGBOOST_TAG=v1.5.0 ros run -- --non-interactive \
+  --load tools/check-upstream.lisp
+```
+
+It needs network access to fetch the upstream header at the tag being checked, and
+exits non-zero -- reported as `FAIL`, never folded into a clean result -- if that
+fetch fails, so a red exit status always means either "could not check" or "found
+drift," never "nothing to report." Both are worth investigating: an offline or
+otherwise failed run should simply be re-run once network is available, and a
+`FAIL: this tool's own parser disagrees with a vendored header` result means the
+vendored spec (or this tool's parser) is stale, not upstream, and should be
+resolved by re-running `tools/fetch-headers.sh` before trusting the rest of the
+report.
+
+What to do with a real drift finding, per function reported:
+
+- **`ABSENT`** (removed upstream, at or before the checked tag): move the entry
+  from "still present" above to "moot," or add it fresh if it is new -- and update
+  `src/backend.lisp`/the backend's call sites to stop relying on it, the same way
+  `XGBoosterGetModelRaw` and its neighbours already were.
+- **`CHANGED`** (present but the normalised signature no longer matches): add a row
+  to "still present" naming what changed and, if one exists, a safe replacement --
+  the same shape `LGBM_DatasetCreateFromMats`' entry already has.
+
+Either way, `tools/ci/check-abi-blacklist.lisp` picks up the updated table on its
+next run with no further wiring: it re-parses this file's tables from scratch every
+time.

@@ -9,6 +9,10 @@ on:
     branches: [master]
   pull_request:
   workflow_dispatch:
+  # Weekly, for the version-matrix job below: the compatible range moves when upstream
+  # releases, not when we commit, so a schedule is the event that actually matches it.
+  schedule:
+    - cron: '0 6 * * 1'
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
@@ -78,6 +82,98 @@ jobs:
         run: ./tools/fetch-libs.sh
 
       - name: Layer 2 - the real LightGBM and XGBoost
+        env:
+          CL_GBDT_TEST_SYSTEM: cl-gbdt/tests/functional
+        run: ros run -- --non-interactive --load tools/ci/run-tests.lisp
+
+  version-matrix:
+    # Task 4: turns src/version.lisp's recorded compatible-version range from a claim
+    # inferred by comparing C headers (tools/check-upstream.lisp) into one actually
+    # measured by running layer 2 against real, older/newer libraries -- see
+    # README.markdown's "Where the two backends genuinely differ" section for the
+    # results and src/version.lisp's *lightgbm-version-range*/*xgboost-version-range*
+    # docstrings for the full account.
+    #
+    # Endpoints of the recorded range only, not every release in between -- the pinned
+    # versions (4.7.0/3.3.0) are already exercised by the `test' job above, so this adds
+    # exactly the two ends: LightGBM's lowest installable version and XGBoost's lowest
+    # verified-compatible one.
+    #
+    # XGBoost 1.7.0 -- the original inferred lower bound, which local measurement showed
+    # is ABI-compatible but behaviourally broken (`rank:pairwise' ties within a group) --
+    # was run here as a deliberately-red job, so that the losing case was not quietly
+    # removed. That did not survive contact with CI: the leg failed in `Fetch the backend
+    # shared libraries', never reaching the test, because that wheel does not install on
+    # the runner. A job that fails before it can demonstrate anything teaches nothing, and
+    # it cost roughly six minutes and enough contention to get sibling jobs cancelled.
+    #
+    # The evidence for narrowing the range to 2.0.0 is the local run, recorded in
+    # src/version.lisp's docstring and this branch's task report -- not a red CI job. Kept
+    # out of the matrix for that reason, not because it contradicted the wide range.
+    #
+    # Layer 1 only -- it needs no shared library and reruns nothing new when the
+    # library version changes, so it is not repeated here.
+    #
+    # One platform only, Linux x86_64, not all three the `test' job above covers: that
+    # job's three platforms exist to catch platform-specific bugs (byte order, calling
+    # convention, .dylib vs .so discovery) in bindings generated once and committed. A
+    # library *version* difference is a property of the upstream C source, identical on
+    # every platform cl-gbdt runs on, so crossing this axis with all three platforms
+    # would triple this job's cost for no new information.
+    #
+    # The two libraries are independent shared objects with no interaction between
+    # them, so each one's own endpoint is tested against the *other* library's pinned
+    # version, not against the other's endpoints too -- a full cross product would cost
+    # more for a combination this project has no reason to think behaves differently
+    # from either axis tested alone.
+    #
+    # NOT run on pull requests. Each leg costs six to nine minutes -- pip download, wheel
+    # extraction, then the whole functional suite -- and adding two of them took this
+    # workflow from four jobs to six. On a busy runner pool that was enough to leave every
+    # job queued for over thirty minutes with zero steps executed, against a 1m37s master
+    # run the same day, and to get sibling jobs cancelled outright. The feedback loop a
+    # pull request needs is worth more than re-confirming a range on every commit.
+    #
+    # What this job checks changes when *upstream* releases, not when we commit, so
+    # push-to-master plus the weekly schedule above is the cadence that matches it.
+    if: github.event_name != 'pull_request'
+    name: version-matrix (${{ matrix.name }})
+    runs-on: ubuntu-latest
+    continue-on-error: ${{ matrix.expected-to-fail || false }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: lightgbm-4.0.0
+            lightgbm_version: '4.0.0'
+            xgboost_version: '3.3.0'
+          - name: xgboost-2.0.0
+            lightgbm_version: '4.7.0'
+            xgboost_version: '2.0.0'
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Roswell
+        run: |
+          curl -fsSL https://raw.githubusercontent.com/roswell/roswell/master/scripts/install-for-ci.sh | sh
+          echo "$HOME/.roswell/bin" >> "$GITHUB_PATH"
+
+      - name: Make the checkout visible to ASDF
+        run: |
+          mkdir -p ~/.roswell/local-projects
+          ln -sfn "$GITHUB_WORKSPACE" ~/.roswell/local-projects/cl-gbdt
+
+      - name: Install a current ASDF
+        run: ros install asdf
+
+      - name: Fetch the backend shared libraries
+        env:
+          LIGHTGBM_VERSION: ${{ matrix.lightgbm_version }}
+          XGBOOST_VERSION: ${{ matrix.xgboost_version }}
+        run: ./tools/fetch-libs.sh
+
+      - name: Layer 2 - functional suite against this version combination
         env:
           CL_GBDT_TEST_SYSTEM: cl-gbdt/tests/functional
         run: ros run -- --non-interactive --load tools/ci/run-tests.lisp

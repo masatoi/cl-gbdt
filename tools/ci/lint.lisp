@@ -24,14 +24,18 @@ CLAUDE.md.")
 
 (defparameter +source-patterns+
   '("src/*.lisp" "src/regen/*.lisp" "src/lightgbm/*.lisp" "src/xgboost/*.lisp"
-    "tests/*.lisp" "tests/functional/*.lisp" "tools/ci/*.lisp" "tools/regen.lisp")
+    "tests/*.lisp" "tests/functional/*.lisp" "tools/ci/*.lisp" "tools/*.lisp")
   "Hand-written Lisp sources, relative to the repository root.
 
 The per-backend patterns were added once a backend's first hand-written file
 (`src/lightgbm/backend.lisp') existed to lint -- until then those directories held
 only generated `c-api.lisp', already excluded below, so a glob that stopped at
 `src/*.lisp' quietly linted nothing there. Follows the same shape `src/regen/*.lisp'
-already established for the same reason.")
+already established for the same reason.
+
+`tools/*.lisp' (added for `tools/check-upstream.lisp') covers every hand-written
+script directly under tools/, including `tools/regen.lisp' -- CL's `*.lisp' wildcard
+does not cross the `ci/' subdirectory, so this does not overlap `tools/ci/*.lisp'.")
 
 (defun hand-written-sources ()
   "Return the pathnames of every hand-written Lisp source, generated files excluded."

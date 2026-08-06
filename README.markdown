@@ -17,8 +17,8 @@ file if you have it locally).
 `make-dataset`, `dataset-num-rows`, `dataset-num-features`, `train`,
 `update-one-iteration`, `predict`, `save-model`, `load-model`, `model-to-string`,
 `feature-importance`, `free-dataset` and `free-booster` -- against the real LightGBM and
-XGBoost shared libraries, exercised by 105 functional assertions (design doc section 12,
-layer 2), in addition to 204 assertions that need no shared library at all (layer 1).
+XGBoost shared libraries, exercised by 106 functional assertions (design doc section 12,
+layer 2), in addition to 243 assertions that need no shared library at all (layer 1).
 See [Usage](#usage) below for a worked example.
 
 Loading `cl-gbdt` itself still does not require either `liblightgbm.so` or
@@ -182,6 +182,45 @@ out first:
 | `feature-importance`'s `:num-iteration` | Limits the importance calculation | Signals `unsupported-argument` -- no iteration-limited variant exists |
 | `feature-importance`'s result shape | Always one number per feature | Signals `unsupported-argument` instead of returning a result when the model reports a multi-dimensional score shape -- a `gblinear` booster's importance on a multi-class model, whose scores are a per-class matrix with no single-value reduction this backend will invent |
 | `backend-version` | Always `nil` -- LightGBM's C API has no version entry point | A `"MAJOR.MINOR.PATCH"` string, e.g. `"3.3.0"` |
+| Untested-version warning | Never signalled -- there is no version to compare, so `open-backend` never checks one | `open-backend` signals `untested-backend-version` (a warning, not an error) when the loaded version falls outside the recorded supported range |
+
+`src/version.lisp` records that supported range as two distinguishable claims: a narrow
+*verified* one (the versions the 106 functional assertions above have actually run against)
+and a wider *inferred* one (the range across which `tools/check-upstream.lisp` confirms cl-gbdt's
+imported C functions' declarations are unchanged). The warning gates on the wider inferred
+range -- a version different from the exact tested one is the common case for a compatible
+caller, not a signal of trouble.
+
+A version matrix (task 4) turned part of each inferred range into a measured one by actually
+running the functional suite -- not just comparing headers -- against the range's endpoints:
+
+| library | version | result |
+|---|---|---|
+| LightGBM | 3.0.0 | not tested -- no aarch64 wheel exists on PyPI for this release, confirmed directly (`pip download lightgbm==3.0.0 --only-binary=:all:` finds no candidate); permanently inferred-only on this platform |
+| LightGBM | 4.0.0 | ✅ all 106 assertions pass |
+| LightGBM | 4.7.0 (pinned) | ✅ all 106 assertions pass |
+| XGBoost | 1.7.0 | ❌ 105 of 106 pass; the ranking round trip fails (see below) |
+| XGBoost | 2.0.0 | ✅ all 106 assertions pass |
+| XGBoost | 3.3.0 (pinned) | ✅ all 106 assertions pass |
+
+XGBoost 1.7.0 is a real, measured incompatibility, not a gap in coverage: every assertion
+`tools/check-upstream.lisp` cannot see -- plain classification and multiclass round trips,
+`feature-importance`, save/load, every close-backend guard -- passes unchanged, but
+`xgboost-api-ranking-round-trip-respects-group-boundaries` (tests/functional/xgboost-api.lisp)
+does not. That test trains a deliberately low-capacity `rank:pairwise` booster and asserts
+predictions increase strictly within each query group; at 1.7.0 the first two rows of each
+group tie instead. `XGBoosterUpdateOneIter` and `XGDMatrixSetUIntInfo` are both still present
+and both still return success -- this is `rank:pairwise`'s internal behavior differing between
+releases, the exact kind of break header comparison cannot see because no function's
+declaration changed. XGBoost 2.0.0 was tried next and passed everything 3.3.0 does, so the
+recorded range's lower bound moved to 2.0.0, not 1.7.0 -- see `*xgboost-version-range*`'s
+docstring in `src/version.lisp` for the full account, including why this pulled both the
+*verified* and the *inferred* bound up together rather than leaving 1.7.0 covered by a
+header-only claim the functional suite had, by then, already disproven.
+
+The matrix runs on Linux x86_64 only, not all three platforms `.github/workflows/test.yml`
+already covers for the pinned versions -- see [Continuous integration](#continuous-integration)
+for why that is a deliberate restriction, not a gap.
 
 Run together against both backends:
 
@@ -395,6 +434,24 @@ whole workflow file, not a job:
   aarch64. The matrix is the point: the bindings are generated on one machine and
   committed, so passing on that machine proves little. macOS is also the only place the
   `.dylib` discovery path is exercised at all.
+- The same workflow's `version-matrix` job (task 4) reruns layer 2 -- only layer 2, since
+  layer 1 needs no library and gains nothing from repetition -- against the endpoints of the
+  recorded compatible-version range: LightGBM 4.0.0, XGBoost 2.0.0, and XGBoost 1.7.0. The
+  1.7.0 leg is `continue-on-error: true` and expected to stay red -- it is the version-matrix
+  table's failing row, kept running rather than deleted once it stopped supporting the wider
+  claim (see [Usage](#usage)'s table above): a red job that keeps confirming a measured
+  incompatibility is worth more than a green matrix with the contradicting case quietly
+  removed, and `continue-on-error` keeps it from blocking merges while it does that. The
+  pinned versions (4.7.0/3.3.0) are already covered by the job above, so this job does
+  not repeat them. **One platform only, Linux x86_64** -- the three-platform matrix above
+  exists to catch platform-specific bugs (byte order, calling convention, `.dylib` vs `.so`
+  discovery) in bindings generated once and committed; a library *version* difference is a
+  property of the upstream C source, identical across every platform cl-gbdt runs on, so
+  crossing this axis with all three platforms would have tripled the job's cost for no new
+  information. Crossing the two axes fully was also rejected for the same reason -- a
+  LightGBM version and an XGBoost version load two independent shared libraries with no
+  interaction between them, so each axis's own endpoints are varied one at a time against the
+  other's pinned version, not against each other's endpoints too.
 - `.github/workflows/lint.yml` runs the static checks on one target, since nothing they
   look at varies by machine.
 
