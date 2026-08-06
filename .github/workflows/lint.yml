@@ -75,6 +75,13 @@ jobs:
         # not depend on that: it is a text scan either way).
         run: ros run -- --non-interactive --load tools/ci/check-float-traps.lisp
 
+      - name: No backend imports an ABI-blacklisted function
+        # ffi-spec/ABI-BLACKLIST.md's own opening line is "the only defence is to never
+        # call them" -- see tools/ci/check-abi-blacklist.lisp's header for how this
+        # enforces that mechanically instead of relying on human memory, and for the
+        # empty-parse guard that keeps a passing run meaning "checked and clean."
+        run: ros run -- --non-interactive --load tools/ci/check-abi-blacklist.lisp
+
       - name: Compile every system without warnings
         # All six systems, not just the three non-test ones: cl-gbdt/regen and the two
         # test systems went unchecked before, which is how tests/functional/lightgbm.lisp
