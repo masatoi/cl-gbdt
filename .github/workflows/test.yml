@@ -81,3 +81,82 @@ jobs:
         env:
           CL_GBDT_TEST_SYSTEM: cl-gbdt/tests/functional
         run: ros run -- --non-interactive --load tools/ci/run-tests.lisp
+
+  version-matrix:
+    # Task 4: turns src/version.lisp's recorded compatible-version range from a claim
+    # inferred by comparing C headers (tools/check-upstream.lisp) into one actually
+    # measured by running layer 2 against real, older/newer libraries -- see
+    # README.markdown's "Where the two backends genuinely differ" section for the
+    # results and src/version.lisp's *lightgbm-version-range*/*xgboost-version-range*
+    # docstrings for the full account.
+    #
+    # Endpoints of the recorded range only, not every release in between -- the pinned
+    # versions (4.7.0/3.3.0) are already exercised by the `test' job above, so this adds
+    # exactly the two ends: LightGBM's lowest installable version and XGBoost's lowest
+    # verified-compatible one. XGBoost 1.7.0 is also run, deliberately, even though it
+    # fails: it is the original inferred lower bound, and dropping a version from the
+    # matrix because it contradicts the wide range would be exactly the failure mode
+    # this project has caught itself in twice before (see the design doc's testing
+    # section) -- a red job kept honest beats a green one with the losing case quietly
+    # removed. `continue-on-error' keeps that one from blocking merges; it is expected
+    # to stay red.
+    #
+    # Layer 1 only -- it needs no shared library and reruns nothing new when the
+    # library version changes, so it is not repeated here.
+    #
+    # One platform only, Linux x86_64, not all three the `test' job above covers: that
+    # job's three platforms exist to catch platform-specific bugs (byte order, calling
+    # convention, .dylib vs .so discovery) in bindings generated once and committed. A
+    # library *version* difference is a property of the upstream C source, identical on
+    # every platform cl-gbdt runs on, so crossing this axis with all three platforms
+    # would triple this job's cost for no new information.
+    #
+    # The two libraries are independent shared objects with no interaction between
+    # them, so each one's own endpoint is tested against the *other* library's pinned
+    # version, not against the other's endpoints too -- a full cross product would cost
+    # more for a combination this project has no reason to think behaves differently
+    # from either axis tested alone.
+    name: version-matrix (${{ matrix.name }})
+    runs-on: ubuntu-latest
+    continue-on-error: ${{ matrix.expected-to-fail || false }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: lightgbm-4.0.0
+            lightgbm_version: '4.0.0'
+            xgboost_version: '3.3.0'
+          - name: xgboost-2.0.0
+            lightgbm_version: '4.7.0'
+            xgboost_version: '2.0.0'
+          - name: xgboost-1.7.0-known-incompatible
+            lightgbm_version: '4.7.0'
+            xgboost_version: '1.7.0'
+            expected-to-fail: true
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Roswell
+        run: |
+          curl -fsSL https://raw.githubusercontent.com/roswell/roswell/master/scripts/install-for-ci.sh | sh
+          echo "$HOME/.roswell/bin" >> "$GITHUB_PATH"
+
+      - name: Make the checkout visible to ASDF
+        run: |
+          mkdir -p ~/.roswell/local-projects
+          ln -sfn "$GITHUB_WORKSPACE" ~/.roswell/local-projects/cl-gbdt
+
+      - name: Install a current ASDF
+        run: ros install asdf
+
+      - name: Fetch the backend shared libraries
+        env:
+          LIGHTGBM_VERSION: ${{ matrix.lightgbm_version }}
+          XGBOOST_VERSION: ${{ matrix.xgboost_version }}
+        run: ./tools/fetch-libs.sh
+
+      - name: Layer 2 - functional suite against this version combination
+        env:
+          CL_GBDT_TEST_SYSTEM: cl-gbdt/tests/functional
+        run: ros run -- --non-interactive --load tools/ci/run-tests.lisp

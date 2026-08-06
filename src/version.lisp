@@ -118,8 +118,11 @@ that argument. VERIFIED-LOW/HIGH always fall within [INFERRED-LOW, INFERRED-HIGH
 
 (defparameter *lightgbm-version-range*
   (make-version-range
-   :verified-low "4.7.0" :verified-high "4.7.0"
-   :verified-evidence "105 functional assertions pass against it"
+   :verified-low "4.0.0" :verified-high "4.7.0"
+   :verified-evidence (concatenate
+                        'string
+                        "106 functional assertions pass against both endpoints, "
+                        "task 4's local version matrix")
    :inferred-low "3.0.0" :inferred-high "4.7.0"
    :inferred-evidence (concatenate
                         'string
@@ -136,26 +139,51 @@ backend and there is nothing to compare it against. See
 below. Recorded here anyway, for the same documentation purpose the README's
 backend-differences table serves.
 
+VERIFIED-LOW moved from \"4.7.0\" to \"4.0.0\" once task 4 actually ran the functional
+suite against it -- confirmed clean, same 106 assertions as the pinned \"4.7.0\".
+
 INFERRED-LOW is pinned at \"3.0.0\" and can never move to VERIFIED: `lightgbm==3.0.0'
-predates aarch64 wheels on PyPI, so the CI version matrix this range's header comment
-describes cannot install it on that platform to actually test against -- this lower
-bound stays inferred permanently, not just until the next matrix run.")
+predates aarch64 wheels on PyPI -- confirmed directly by task 4 (`pip download
+lightgbm==3.0.0 --only-binary=:all:' finds no candidate at all on this platform) -- so
+the CI version matrix this range's header comment describes cannot install it to
+actually test against. This lower bound stays inferred permanently, not just until the
+next matrix run.")
 
 (defparameter *xgboost-version-range*
   (make-version-range
-   :verified-low "3.3.0" :verified-high "3.3.0"
-   :verified-evidence "105 functional assertions pass against it"
-   :inferred-low "1.7.0" :inferred-high "3.3.0"
+   :verified-low "2.0.0" :verified-high "3.3.0"
+   :verified-evidence (concatenate
+                        'string
+                        "106 functional assertions pass against both endpoints, "
+                        "task 4's local version matrix")
+   :inferred-low "2.0.0" :inferred-high "3.3.0"
    :inferred-evidence (concatenate
                         'string
                         "the 38 imported functions' declarations (20 of them "
-                        "XGBoost's) are unchanged across this range, per "
-                        "tools/check-upstream.lisp, spanning two XGBoost major versions"))
+                        "XGBoost's) are unchanged all the way back to 1.7.0, per "
+                        "tools/check-upstream.lisp -- but task 4 measured 1.7.0 itself "
+                        "and it failed (see below), so the claimed range does not "
+                        "reach that low despite the header comparison alone allowing it"))
   "XGBoost's recorded compatible-version range -- see *LIGHTGBM-VERSION-RANGE*'s
 docstring for what VERIFIED and INFERRED each mean and this file's header comment for
 why the runtime check gates on INFERRED, not VERIFIED. Unlike LightGBM, this range is
 actually compared against a loaded version: XGBoost's C API does expose one, read by
-`cl-gbdt/src/xgboost/backend''s `%read-version'.")
+`cl-gbdt/src/xgboost/backend''s `%read-version'.
+
+Both bounds moved up from task 3's \"1.7.0\": task 4 ran the functional suite against
+`xgboost==1.7.0' and its ranking round trip failed --
+`xgboost-api-ranking-round-trip-respects-group-boundaries' in
+tests/functional/xgboost-api.lisp requires predictions to increase strictly within each
+query group, and 1.7.0 instead produced a tie between the first two rows of each group
+where 3.3.0 keeps all four strictly increasing. Every other assertion (105 of 106,
+including the plain classification and multiclass round trips, feature-importance,
+save/load, and every close-backend guard) passed unchanged at 1.7.0 -- this is a real
+function returning different numbers, not a symptom of a missing symbol or a crash, so
+`probe-foreign-symbols' and `tools/check-upstream.lisp''s header comparison could never
+have caught it. `xgboost==2.0.0' was tried next and passed everything the pinned
+\"3.3.0\" does, so INFERRED-LOW moved up to meet VERIFIED-LOW at \"2.0.0\" rather than
+leave the disproven \"1.7.0\" claim in place under a wider, ABI-only label. Nothing
+between 1.7.0 and 2.0.0 was tested, so this range makes no claim about it either.")
 
 (defun version-range-tested-description (range)
   "Return RANGE's evidence as a list of two strings -- the verified point/range, then
