@@ -68,11 +68,26 @@ jobs:
         # order shifts. Each leaf is loaded in its own fresh image to catch that.
         run: ros run -- --non-interactive --load tools/ci/check-leaf-systems.lisp
 
+      - name: Every backend defmethod is float-trap masked
+        # A source-level scan, not a dynamic one -- see tools/ci/check-float-traps.lisp's
+        # own header for exactly what it catches and what it cannot. SBCL enables FP traps
+        # by default on x86-64, not on aarch64 (this runner is x86-64, but the check does
+        # not depend on that: it is a text scan either way).
+        run: ros run -- --non-interactive --load tools/ci/check-float-traps.lisp
+
       - name: Compile every system without warnings
+        # All six systems, not just the three non-test ones: cl-gbdt/regen and the two
+        # test systems went unchecked before, which is how tests/functional/lightgbm.lisp
+        # carried ignored-variable style warnings nobody noticed -- see this file's
+        # commit history and CLAUDE.md's testing notes for the fix.
         run: |
           ros run -- --non-interactive \
-            --eval '(ql:quickload (list "cl-gbdt" "cl-gbdt/lightgbm" "cl-gbdt/xgboost") :silent t)' \
-            --eval '(dolist (s (list "cl-gbdt" "cl-gbdt/lightgbm" "cl-gbdt/xgboost"))
+            --eval '(ql:quickload (list "cl-gbdt" "cl-gbdt/lightgbm" "cl-gbdt/xgboost"
+                                         "cl-gbdt/regen" "cl-gbdt/tests"
+                                         "cl-gbdt/tests/functional") :silent t)' \
+            --eval '(dolist (s (list "cl-gbdt" "cl-gbdt/lightgbm" "cl-gbdt/xgboost"
+                                      "cl-gbdt/regen" "cl-gbdt/tests"
+                                      "cl-gbdt/tests/functional"))
                       (asdf:compile-system s :force t))' 2>&1 | tee /tmp/compile.log
           if grep -iE 'caught .*(WARNING|ERROR)' /tmp/compile.log; then
             echo "::error::compilation emitted warnings"

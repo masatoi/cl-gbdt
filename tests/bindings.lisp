@@ -125,6 +125,46 @@ regenerated it (spec 5.2: local architecture only)."
               (format nil "missing from cl-gbdt/tests's :depends-on: ~{~A~^, ~}" missing)
               "every tests/*.lisp file is in cl-gbdt/tests's :depends-on")))))
 
+(deftest all-lisp-reexports-every-top-level-src-file
+  (testing "cl-gbdt/src/all's :use-reexport clause lists every direct src/*.lisp file"
+    ;; The rule, not the list: a file belongs in cl-gbdt/src/all's :use-reexport clause
+    ;; exactly when it is a DIRECT child of src/ -- src/*.lisp, one level, no recursion
+    ;; into a subdirectory. Every package the clause currently names (conditions, data,
+    ;; backend, protocol, handle, parameters, library, foreign) is a direct child; every
+    ;; file deliberately left out -- src/lightgbm/backend.lisp,
+    ;; src/xgboost/backend.lisp, src/xgboost/array-interface.lisp, both generated
+    ;; c-api.lisp files, and everything under src/regen/ -- lives one level deeper,
+    ;; under a subdirectory. That is the whole rule: a new src/foo.lisp belongs in the
+    ;; list; a new src/<backend-or-tool>/foo.lisp does not, and this glob -- "src/*.lisp",
+    ;; not "src/**/*.lisp" -- already makes that distinction, so a file added under a
+    ;; subdirectory is silently, correctly, never expected to appear here. See
+    ;; src/all.lisp's own comment for why those subdirectories stay excluded
+    ;; architecturally, not just by this glob: cl-gbdt is the core system and loads
+    ;; without either shared library, so a backend-specific symbol reexported from
+    ;; CL-GBDT would make the core depend on one.
+    ;;
+    ;; package-inferred-system infers a component's dependencies from its file's
+    ;; *first* defpackage form only (src/all.lisp's own comment above its second form
+    ;; says so directly), so asdf:component-sideway-dependencies on "cl-gbdt/src/all"
+    ;; reports exactly that first form's :use-reexport contents -- the same technique
+    ;; test-suite-depends-on-lists-every-test-file above uses for cl-gbdt/tests's
+    ;; :depends-on, applied to the file this project's history shows gets forgotten
+    ;; just as easily, twice on the XGBoost branch alone. Unlike that test, forgetting
+    ;; here fails green, not merely short a suite: the symbols never reach CL-GBDT and
+    ;; the file is never compiled, so this is the only thing that would ever catch it.
+    (let* ((declared (asdf:component-sideway-dependencies (asdf:find-system "cl-gbdt/src/all")))
+           (src-root (merge-pathnames "src/*.lisp" (asdf:system-source-directory "cl-gbdt")))
+           (on-disk (remove "cl-gbdt/src/all"
+                             (mapcar (lambda (path)
+                                       (format nil "cl-gbdt/src/~(~A~)" (pathname-name path)))
+                                     (directory src-root))
+                             :test #'string=))
+           (missing (sort (set-difference on-disk declared :test #'string=) #'string<)))
+      (ok (null missing)
+          (if missing
+              (format nil "missing from cl-gbdt/src/all's :use-reexport: ~{~A~^, ~}" missing)
+              "every direct src/*.lisp file is in cl-gbdt/src/all's :use-reexport")))))
+
 (deftest committed-bindings-match-their-committed-spec
   (testing "re-emitting from the committed c2ffi spec reproduces the committed file byte-for-byte"
     ;; Catches a hand-edited c-api.lisp, or a bumped ffi-spec/VERSIONS with a

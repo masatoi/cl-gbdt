@@ -133,7 +133,14 @@ output during the suite.")
                      (return-from round-trip)))
                  (cffi:with-foreign-object (finished :int)
                    (dotimes (iteration 5)
-                     (declare (ignore iteration))
+                     ;; `ignorable', not `ignore': `dotimes' itself reads and sets ITERATION
+                     ;; to drive the loop even though this body never touches it, so
+                     ;; `ignore' conflicts with the macroexpansion's own use and produces
+                     ;; three STYLE-WARNINGs, not the "this really is unused" declaration it
+                     ;; looks like -- matching `cl-gbdt/src/lightgbm/backend''s `train' and
+                     ;; `cl-gbdt/src/xgboost/backend''s `train', which both hit the same
+                     ;; thing and both already use `ignorable' for it.
+                     (declare (ignorable iteration))
                      (lgbm-check (lgbm::lgbm-booster-update-one-iter booster finished))))
                  (cffi:with-foreign-object (iterations :int)
                    (lgbm-check (lgbm::lgbm-booster-get-current-iteration booster iterations))
