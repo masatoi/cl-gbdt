@@ -116,6 +116,42 @@ NIL
 `cl-gbdt/src/protocol:make-dataset`, but the friendly `cl-gbdt:` spelling needs the core
 system loaded too -- as the quick start above does, loading both at once.
 
+### Backend-specific packages
+
+`cl-gbdt/lightgbm` and `cl-gbdt/xgboost` name a package now, not only the system in the
+heading above. `docs/cl-gbdt-layered-api-implementation-policy.md` section 3 calls these
+the public packages for backend-specific API -- distinct from each backend's internal
+`cl-gbdt/src/lightgbm/all`/`cl-gbdt/src/xgboost/all` aggregation, and, always, from the raw
+generated CFFI bindings (`cl-gbdt/src/lightgbm/c-api`, `cl-gbdt/src/xgboost/c-api`), which
+neither package re-exports (policy sections 3 and 11):
+
+```lisp
+(ql:quickload :cl-gbdt/lightgbm :silent t)
+(format t "~S~%"
+        (sort (loop :for symbol :being :the :external-symbols :of "CL-GBDT/LIGHTGBM"
+                    :collect symbol)
+              #'string< :key #'symbol-name))
+```
+
+Output:
+
+```
+(CL-GBDT/SRC/LIGHTGBM/PROTOCOL:LIGHTGBM-BACKEND)
+```
+
+Today that is the entire published surface: the backend's own CLOS class, useful for
+`typep` or for specializing your own methods on one specific backend rather than the
+shared `backend` -- `open-backend` itself never needs it, since it looks classes up by the
+`:lightgbm`/`:xgboost` keyword internally, not by this symbol. Nothing from either
+backend's `native.lisp` -- library discovery, the raw-status-code checker, the internal
+`%`-functions that turn a raw C call into something safe to call from Lisp -- is published
+yet: none of those is a reviewed, Lisp-level backend-specific operation, only
+infrastructure the two Layer 2 unified-API systems (`cl-gbdt/lightgbm`, `cl-gbdt/xgboost`)
+already use internally. Backend-specific safe API -- LightGBM's `rollback-one-iteration`,
+XGBoost's `booster-slice`, and the rest of policy section 3's Layer 1 examples -- is added
+here one contract at a time as it is designed and reviewed, not by widening today's
+re-export to cover `native` wholesale.
+
 ### Finding the shared library
 
 `open-backend`'s `:path`, when supplied, wins outright over everything else. Otherwise,
