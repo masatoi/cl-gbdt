@@ -9,6 +9,10 @@ on:
     branches: [master]
   pull_request:
   workflow_dispatch:
+  # Weekly, for the version-matrix job below: the compatible range moves when upstream
+  # releases, not when we commit, so a schedule is the event that actually matches it.
+  schedule:
+    - cron: '0 6 * * 1'
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
@@ -122,6 +126,17 @@ jobs:
     # version, not against the other's endpoints too -- a full cross product would cost
     # more for a combination this project has no reason to think behaves differently
     # from either axis tested alone.
+    #
+    # NOT run on pull requests. Each leg costs six to nine minutes -- pip download, wheel
+    # extraction, then the whole functional suite -- and adding two of them took this
+    # workflow from four jobs to six. On a busy runner pool that was enough to leave every
+    # job queued for over thirty minutes with zero steps executed, against a 1m37s master
+    # run the same day, and to get sibling jobs cancelled outright. The feedback loop a
+    # pull request needs is worth more than re-confirming a range on every commit.
+    #
+    # What this job checks changes when *upstream* releases, not when we commit, so
+    # push-to-master plus the weekly schedule above is the cadence that matches it.
+    if: github.event_name != 'pull_request'
     name: version-matrix (${{ matrix.name }})
     runs-on: ubuntu-latest
     continue-on-error: ${{ matrix.expected-to-fail || false }}
