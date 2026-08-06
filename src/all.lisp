@@ -18,7 +18,17 @@
                  #:cl-gbdt/src/backend
                  #:cl-gbdt/src/protocol
                  #:cl-gbdt/src/handle
-                 #:cl-gbdt/src/parameters))
+                 #:cl-gbdt/src/parameters
+                 #:cl-gbdt/src/library
+                 #:cl-gbdt/src/foreign))
+
+;;; Backend-specific files do not belong in the list above. `cl-gbdt' is the core system
+;;; and loads without either shared library; `cl-gbdt/lightgbm' and `cl-gbdt/xgboost' are
+;;; separate systems layered on it. Listing `cl-gbdt/src/xgboost/array-interface' here made
+;;; the core depend on an XGBoost file and re-exported an XGBoost implementation detail from
+;;; `CL-GBDT'. Every consumer imports it directly from its own package instead, which is why
+;;; nothing broke when it was removed. `src/lightgbm/backend' was never listed, for the same
+;;; reason.
 
 ;;; package-inferred-system infers a file's dependencies from the file's *first*
 ;;; defpackage form only. This second form's :use-reexport clause is therefore

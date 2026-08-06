@@ -20,7 +20,8 @@
            #:foreign-matrix-element-type
            #:call-with-foreign-matrix
            #:with-foreign-matrix
-           #:foreign-element-type))
+           #:foreign-element-type
+           #:write-foreign-sequence))
 
 (in-package #:cl-gbdt/src/data)
 
@@ -49,6 +50,13 @@ Signals `unsupported-element-type' for anything else."
   (cond ((eq element-type 'double-float) :double)
         ((eq element-type 'single-float) :float)
         (t (error 'unsupported-element-type :given element-type))))
+
+(defun write-foreign-sequence (pointer cffi-type sequence coercer)
+  "Copy SEQUENCE into the foreign array at POINTER, each element passed through
+COERCER before being stored as CFFI-TYPE."
+  (let ((vector (coerce sequence 'vector)))
+    (dotimes (index (length vector))
+      (setf (cffi:mem-aref pointer cffi-type index) (funcall coercer (aref vector index))))))
 
 (defun %normalized-element-type (array)
   "Return ARRAY's element type normalized to `double-float' or `single-float'.

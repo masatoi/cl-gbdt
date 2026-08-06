@@ -66,8 +66,6 @@
                 #:booster-training-set
                 #:booster-validation-sets)
   (:import-from #:cl-gbdt/src/conditions
-                #:backend-library-not-found
-                #:backend-library-load-failed
                 #:missing-foreign-symbols
                 #:backend-not-open
                 #:foreign-call-error
@@ -76,10 +74,30 @@
   (:import-from #:cl-gbdt/src/parameters
                 #:normalize-parameters)
   (:import-from #:cl-gbdt/src/data
-                #:with-foreign-matrix)
+                #:with-foreign-matrix
+                #:write-foreign-sequence)
+  (:import-from #:cl-gbdt/src/library
+                #:resolve-and-load-library)
+  (:import-from #:cl-gbdt/src/foreign
+                #:check-foreign-call
+                #:with-foreign-float-traps-masked)
   (:export #:lightgbm-backend))
 
 (in-package #:cl-gbdt/src/lightgbm/backend)
+
+;;; ---------------------------------------------------------------------------
+;;; Floating-point trap safety
+;;;
+;;; Every method below that reaches into lib_lightgbm.so -- all twelve protocol
+;;; methods plus `initialize-backend' and `shutdown-backend', which load and unload
+;;; the library itself -- wraps its entire body in `with-foreign-float-traps-masked'.
+;;; See that macro's docstring in `cl-gbdt/src/foreign' for why, and
+;;; `cl-gbdt/src/xgboost/backend''s identical commentary for the concrete case
+;;; (XGBoost's `multi:softprob' softmax) that surfaced this: LightGBM has not tripped
+;;; it yet, but its C API is exactly as unprotected against SBCL's x86-64 trap
+;;; defaults, so it gets the same treatment rather than waiting for its own CI
+;;; failure. Method-body granularity, not per-call, so a call added later inside an
+;;; already-wrapped method cannot reopen this gap by omission.
 
 ;;; ---------------------------------------------------------------------------
 ;;; Error checking
@@ -100,13 +118,15 @@ identifies which C function reported CODE, for the condition's report. Every
 foreign call this backend makes goes through this: the functional tests found
 five `LGBM_BoosterUpdateOneIter' calls all returning 0 while the model did not
 train, so a status code alone is necessary but not sufficient -- this is the
-part that is sufficient to check here."
-  (if (zerop code)
-      code
-      (error 'foreign-call-error
-             :function-name function-name
-             :code code
-             :message (%last-error-message))))
+part that is sufficient to check here.
+
+Thin wrapper around `check-foreign-call' supplying `%last-error-message' as
+LightGBM's last-error thunk -- see that function's docstring for the shared
+0-on-success idiom both backends follow. Kept as a named wrapper, rather than
+calling `check-foreign-call' directly at each of this file's call sites, so
+none of them needed editing when the check itself moved to
+`cl-gbdt/src/foreign'."
+  (check-foreign-call code function-name #'%last-error-message))
 
 (defun %check-backend-open (backend)
   "Signal `backend-not-open' when BACKEND is not open.
@@ -176,6 +196,16 @@ The extension stays wild because `tools/fetch-libs.sh' preserves whatever the
 platform's wheel ships -- `.so' on Linux, `.dylib' on macOS -- and discovery must
 not assume either.")
 
+(defparameter *default-library-name* "lib_lightgbm"
+  "Name passed to CFFI's own system library search when no other candidate is found.
+
+CFFI's `:default' designator only appends the platform's shared-library suffix (`.so' on
+Linux) to this string -- it never adds a `lib' prefix, the same as
+`cl-gbdt/src/xgboost/backend''s identical constant, whose docstring carries the full
+measurement. LightGBM's compiled basename is `_lightgbm', but the file on disk is
+`lib_lightgbm.so', so this constant has to spell out `lib_lightgbm' in full or CFFI's
+system search never finds it.")
+
 (defparameter *required-symbols*
   '("LGBM_GetLastError"
     "LGBM_DatasetCreateFromMat"
@@ -197,73 +227,6 @@ not assume either.")
     "LGBM_BoosterGetNumFeature")
   "C function names this backend calls, checked with `probe-foreign-symbols' right
 after the library loads.")
-
-(defun %env-library-path ()
-  "Return the value of *library-env-var*, or NIL when it is unset or empty."
-  (let ((value (uiop:getenv *library-env-var*)))
-    (when (and value (plusp (length value)))
-      value)))
-
-(defun %vendor-search-path ()
-  "Return the merged pathname `directory' is searched with for the vendored
-LightGBM library."
-  (merge-pathnames *vendor-library-pattern*
-                    (asdf:system-relative-pathname "cl-gbdt" *vendor-library-directory*)))
-
-(defun %vendor-library-path ()
-  "Return the vendored LightGBM library's path, or NIL when none is present.
-
-Searches *vendor-library-directory* for *vendor-library-pattern*, exactly as
-`tests/functional/support.lisp' does for the test suite. `tools/fetch-libs.sh'
-vendors at most one file, so the first match is returned without further checking."
-  (first (directory (%vendor-search-path))))
-
-(defun %resolve-library-path (backend path)
-  "Return the library path `initialize-backend' should load, honoring PATH, then
-*library-env-var*, then the vendored directory, in that order. Returns NIL when
-none of the three names a candidate; the caller then falls back to CFFI's own
-system search.
-
-Signals `backend-library-not-found' when *library-env-var* is set but names a
-path that does not exist -- the same strict rule `tests/functional/support.lisp'
-follows: a bad override is an error, not a silent fall-through to the next
-source."
-  (let ((override (%env-library-path)))
-    (cond
-      (path path)
-      (override
-       (if (probe-file override)
-           override
-           (error 'backend-library-not-found
-                  :backend (backend-name backend) :searched (list override))))
-      (t (%vendor-library-path)))))
-
-(defun %load-candidate (backend path)
-  "Load PATH as BACKEND's shared library. Returns the `cffi:foreign-library' CFFI
-reports having loaded.
-
-Signals `backend-library-load-failed' when `cffi:load-foreign-library' rejects
-PATH, wrapping whatever condition it signaled as :cause."
-  (handler-case (cffi:load-foreign-library path)
-    (error (condition)
-      (error 'backend-library-load-failed
-             :backend (backend-name backend) :path path :cause condition))))
-
-(defun %load-system-search (backend)
-  "Let CFFI search the system library paths for LightGBM's shared library, whose
-compiled basename is `_lightgbm' -- the file is `lib_lightgbm.so', and the
-leading `lib' is the platform prefix `:default' adds, not part of the name given
-to it. Returns the `cffi:foreign-library' CFFI reports having loaded.
-
-Signals `backend-library-not-found' when nothing turns up anywhere -- PATH,
-*library-env-var* and the vendored directory were all already ruled out by the
-time this runs."
-  (handler-case (cffi:load-foreign-library '(:default "_lightgbm"))
-    (error ()
-      (error 'backend-library-not-found
-             :backend (backend-name backend)
-             :searched (list (namestring (%vendor-search-path))
-                              "system library search path")))))
 
 ;;; ---------------------------------------------------------------------------
 ;;; The backend class
@@ -295,9 +258,9 @@ cl-gbdt's unified backend protocol."))
   "Load LightGBM's shared library and record its capabilities on BACKEND.
 
 Discovery order: PATH, then *library-env-var*, then the vendored directory under
-*vendor-library-directory*, then CFFI's system library search -- see
-`%resolve-library-path' and `%load-system-search' for the exact rules and the
-conditions each failure mode signals.
+*vendor-library-directory*, then CFFI's system library search for
+*default-library-name* -- see `resolve-and-load-library' for the exact rules and
+the conditions each failure mode signals.
 
 Once a library is loaded, every name in *required-symbols* must resolve via
 `probe-foreign-symbols', passed the `cffi:foreign-library' just loaded as
@@ -312,26 +275,29 @@ it -- once this method returns normally. So if the symbol probe (or anything
 else after the library loads) signals, the library is closed right here before
 the condition propagates; otherwise it would stay mapped into the process with
 BACKEND dropped and nothing left able to close it."
-  (let* ((candidate (%resolve-library-path backend path))
-         (library (if candidate
-                       (%load-candidate backend candidate)
-                       (%load-system-search backend)))
-         (succeeded nil))
-    (unwind-protect
-         (progn
-           (setf (%lightgbm-foreign-library backend) library)
-           (setf (backend-library-path backend)
-                 (namestring (cffi:foreign-library-pathname library)))
-           (let ((missing (probe-foreign-symbols *required-symbols* :library library)))
-             (when missing
-               (error 'missing-foreign-symbols :backend (backend-name backend) :names missing)))
-           (setf (backend-version backend) nil)
-           (setf succeeded t))
-      (unless succeeded
-        (handler-case (cffi:close-foreign-library library)
-          (error () nil))
-        (setf (%lightgbm-foreign-library backend) nil)))
-    backend))
+  (with-foreign-float-traps-masked
+    (multiple-value-bind (library library-path)
+        (resolve-and-load-library backend :path path
+                                           :env-var *library-env-var*
+                                           :directory *vendor-library-directory*
+                                           :pattern *vendor-library-pattern*
+                                           :default-name *default-library-name*)
+      (let ((succeeded nil))
+        (unwind-protect
+             (progn
+               (setf (%lightgbm-foreign-library backend) library)
+               (setf (backend-library-path backend) library-path)
+               (let ((missing (probe-foreign-symbols *required-symbols* :library library)))
+                 (when missing
+                   (error 'missing-foreign-symbols
+                          :backend (backend-name backend) :names missing)))
+               (setf (backend-version backend) nil)
+               (setf succeeded t))
+          (unless succeeded
+            (handler-case (cffi:close-foreign-library library)
+              (error () nil))
+            (setf (%lightgbm-foreign-library backend) nil)))
+        backend))))
 
 (defmethod shutdown-backend ((backend lightgbm-backend))
   "Close LightGBM's shared library.
@@ -341,11 +307,12 @@ where the C loader honors `dlclose' reference counting, may unmap the library;
 POSIX does not guarantee an actual unload, so this cannot promise the library's
 code and data are gone from the process afterward -- only that cl-gbdt no
 longer holds it open."
-  (let ((library (%lightgbm-foreign-library backend)))
-    (when library
-      (cffi:close-foreign-library library)
-      (setf (%lightgbm-foreign-library backend) nil)))
-  backend)
+  (with-foreign-float-traps-masked
+    (let ((library (%lightgbm-foreign-library backend)))
+      (when library
+        (cffi:close-foreign-library library)
+        (setf (%lightgbm-foreign-library backend) nil)))
+    backend))
 
 ;;; ---------------------------------------------------------------------------
 ;;; Datasets
@@ -357,20 +324,13 @@ LightGBM's C API expects. NIL yields the empty string."
           (mapcar (lambda (pair) (format nil "~A=~A" (car pair) (cdr pair)))
                    (normalize-parameters parameters))))
 
-(defun %write-foreign-sequence (pointer cffi-type sequence coercer)
-  "Copy SEQUENCE into the foreign array at POINTER, each element passed through
-COERCER before being stored as CFFI-TYPE."
-  (let ((vector (coerce sequence 'vector)))
-    (dotimes (index (length vector))
-      (setf (cffi:mem-aref pointer cffi-type index) (funcall coercer (aref vector index))))))
-
 (defun %set-dataset-field (dataset-pointer field-name values cffi-type dtype coercer)
   "Attach the sequence VALUES to DATASET-POINTER's FIELD-NAME via
 `LGBM_DatasetSetField'. Each element is coerced through COERCER and stored as
 CFFI-TYPE; DTYPE is the matching C_API_DTYPE constant."
   (let ((count (length values)))
     (cffi:with-foreign-object (buffer cffi-type count)
-      (%write-foreign-sequence buffer cffi-type values coercer)
+      (write-foreign-sequence buffer cffi-type values coercer)
       (cffi:with-foreign-string (name field-name)
         (check-lgbm (lgbm-dataset-set-field dataset-pointer name buffer count dtype)
                     "LGBM_DatasetSetField")))))
@@ -433,60 +393,65 @@ ran; when it did not, the raw dataset is freed here instead of orphaned.
 
 Signals `backend-not-open' before any of that when BACKEND is not open -- see
 `%check-backend-open'."
-  (%check-backend-open backend)
-  (let* ((reference-pointer (%reference-pointer backend reference))
-         (parameter-string (%parameter-string parameters))
-         (dataset-pointer
-           (with-foreign-matrix (data-pointer nrow ncol element-type) matrix
-             (let ((data-type (ecase element-type
-                                 (double-float +c-api-dtype-float64+)
-                                 (single-float +c-api-dtype-float32+))))
-               (cffi:with-foreign-string (parameter-cstring parameter-string)
-                 (cffi:with-foreign-object (out :pointer)
-                   (check-lgbm (lgbm-dataset-create-from-mat
-                                data-pointer data-type nrow ncol 1
-                                parameter-cstring reference-pointer out)
-                               "LGBM_DatasetCreateFromMat")
-                   (cffi:mem-ref out :pointer)))))))
-    (when (cffi:null-pointer-p dataset-pointer)
-      (error 'foreign-call-error
-             :function-name "LGBM_DatasetCreateFromMat"
-             :code 0
-             :message "reported success but returned a null dataset handle"))
-    (let ((owned nil))
-      (unwind-protect
-           (progn
-             (when label
-               (%set-dataset-field dataset-pointer "label" label :float +c-api-dtype-float32+
-                                    (lambda (value) (coerce value 'single-float))))
-             (when weight
-               (%set-dataset-field dataset-pointer "weight" weight :float +c-api-dtype-float32+
-                                    (lambda (value) (coerce value 'single-float))))
-             (when group
-               (%set-dataset-field dataset-pointer "group" group :int32 +c-api-dtype-int32+
-                                    #'round))
-             (when feature-names
-               (%set-feature-names dataset-pointer feature-names))
-             (prog1
-                 (make-handle 'lightgbm-dataset dataset-pointer backend :dataset)
-               (setf owned t)))
-        (unless owned
-          (handler-case (lgbm-dataset-free dataset-pointer)
-            (error () nil)))))))
+  (with-foreign-float-traps-masked
+    (%check-backend-open backend)
+    (let* ((reference-pointer (%reference-pointer backend reference))
+           (parameter-string (%parameter-string parameters))
+           (dataset-pointer
+             (with-foreign-matrix (data-pointer nrow ncol element-type) matrix
+               (let ((data-type (ecase element-type
+                                   (double-float +c-api-dtype-float64+)
+                                   (single-float +c-api-dtype-float32+))))
+                 (cffi:with-foreign-string (parameter-cstring parameter-string)
+                   (cffi:with-foreign-object (out :pointer)
+                     (check-lgbm (lgbm-dataset-create-from-mat
+                                  data-pointer data-type nrow ncol 1
+                                  parameter-cstring reference-pointer out)
+                                 "LGBM_DatasetCreateFromMat")
+                     (cffi:mem-ref out :pointer)))))))
+      (when (cffi:null-pointer-p dataset-pointer)
+        (error 'foreign-call-error
+               :function-name "LGBM_DatasetCreateFromMat"
+               :code 0
+               :message "reported success but returned a null dataset handle"))
+      (let ((owned nil))
+        (unwind-protect
+             (progn
+               (when label
+                 (%set-dataset-field dataset-pointer "label" label :float
+                                      +c-api-dtype-float32+
+                                      (lambda (value) (coerce value 'single-float))))
+               (when weight
+                 (%set-dataset-field dataset-pointer "weight" weight :float
+                                      +c-api-dtype-float32+
+                                      (lambda (value) (coerce value 'single-float))))
+               (when group
+                 (%set-dataset-field dataset-pointer "group" group :int32
+                                      +c-api-dtype-int32+ #'round))
+               (when feature-names
+                 (%set-feature-names dataset-pointer feature-names))
+               (prog1
+                   (make-handle 'lightgbm-dataset dataset-pointer backend :dataset)
+                 (setf owned t)))
+          (unless owned
+            (handler-case (lgbm-dataset-free dataset-pointer)
+              (error () nil))))))))
 
 (defmethod dataset-num-rows ((dataset lightgbm-dataset))
   "Return DATASET's row count, read via `LGBM_DatasetGetNumData'."
-  (let ((pointer (handle-live-pointer dataset)))
-    (cffi:with-foreign-object (out :int32)
-      (check-lgbm (lgbm-dataset-get-num-data pointer out) "LGBM_DatasetGetNumData")
-      (cffi:mem-ref out :int32))))
+  (with-foreign-float-traps-masked
+    (let ((pointer (handle-live-pointer dataset)))
+      (cffi:with-foreign-object (out :int32)
+        (check-lgbm (lgbm-dataset-get-num-data pointer out) "LGBM_DatasetGetNumData")
+        (cffi:mem-ref out :int32)))))
 
 (defmethod dataset-num-features ((dataset lightgbm-dataset))
   "Return DATASET's feature count, read via `LGBM_DatasetGetNumFeature'."
-  (let ((pointer (handle-live-pointer dataset)))
-    (cffi:with-foreign-object (out :int32)
-      (check-lgbm (lgbm-dataset-get-num-feature pointer out) "LGBM_DatasetGetNumFeature")
-      (cffi:mem-ref out :int32))))
+  (with-foreign-float-traps-masked
+    (let ((pointer (handle-live-pointer dataset)))
+      (cffi:with-foreign-object (out :int32)
+        (check-lgbm (lgbm-dataset-get-num-feature pointer out) "LGBM_DatasetGetNumFeature")
+        (cffi:mem-ref out :int32)))))
 
 (defmethod free-dataset ((dataset lightgbm-dataset))
   "Free DATASET via `LGBM_DatasetFree'. Does nothing if it was already freed.
@@ -501,15 +466,16 @@ instead marked released without calling `LGBM_DatasetFree' -- the shared library
 no longer be mapped into the process, so that call cannot be trusted not to crash --
 and a `warn' reports the foreign memory as leaked, since it is genuinely
 unreclaimable at that point."
-  (if (backend-open-p (handle-backend dataset))
-      (release-handle
-       dataset
-       (lambda (pointer) (check-lgbm (lgbm-dataset-free pointer) "LGBM_DatasetFree")))
-      (let ((already-released (handle-released-p dataset)))
-        (release-handle dataset (lambda (pointer) (declare (ignore pointer))))
-        (unless already-released
-          (warn "Freeing a LightGBM dataset after its backend was closed: the foreign ~
-                 dataset was not freed and its memory is leaked.")))))
+  (with-foreign-float-traps-masked
+    (if (backend-open-p (handle-backend dataset))
+        (release-handle
+         dataset
+         (lambda (pointer) (check-lgbm (lgbm-dataset-free pointer) "LGBM_DatasetFree")))
+        (let ((already-released (handle-released-p dataset)))
+          (release-handle dataset (lambda (pointer) (declare (ignore pointer))))
+          (unless already-released
+            (warn "Freeing a LightGBM dataset after its backend was closed: the foreign ~
+                   dataset was not freed and its memory is leaked."))))))
 
 ;;; ---------------------------------------------------------------------------
 ;;; Training
@@ -600,29 +566,32 @@ instead of orphaned.
 
 Signals `backend-not-open' before any of that when BACKEND is not open -- see
 `%check-backend-open'."
-  (%check-backend-open backend)
-  (let* ((valid-sets (copy-list valid-sets))
-         (train-data-pointer
-           (%check-lightgbm-dataset backend dataset "train's dataset argument"))
-         (valid-set-pointers
-           (mapcar (lambda (valid-set)
-                     (%check-lightgbm-dataset backend valid-set "a train :valid-sets entry"))
-                   valid-sets)))
-    (let ((booster-pointer (%create-booster train-data-pointer (%parameter-string parameters))))
-      (let ((owned nil))
-        (unwind-protect
-             (progn
-               (%add-valid-data booster-pointer valid-set-pointers)
-               (dotimes (round num-rounds)
-                 (declare (ignorable round))
-                 (%update-one-iteration booster-pointer))
-               (prog1
-                   (make-handle 'lightgbm-booster booster-pointer backend :booster
-                                :training-set dataset :validation-sets valid-sets)
-                 (setf owned t)))
-          (unless owned
-            (handler-case (lgbm-booster-free booster-pointer)
-              (error () nil))))))))
+  (with-foreign-float-traps-masked
+    (%check-backend-open backend)
+    (let* ((valid-sets (copy-list valid-sets))
+           (train-data-pointer
+             (%check-lightgbm-dataset backend dataset "train's dataset argument"))
+           (valid-set-pointers
+             (mapcar (lambda (valid-set)
+                       (%check-lightgbm-dataset
+                        backend valid-set "a train :valid-sets entry"))
+                     valid-sets)))
+      (let ((booster-pointer
+              (%create-booster train-data-pointer (%parameter-string parameters))))
+        (let ((owned nil))
+          (unwind-protect
+               (progn
+                 (%add-valid-data booster-pointer valid-set-pointers)
+                 (dotimes (round num-rounds)
+                   (declare (ignorable round))
+                   (%update-one-iteration booster-pointer))
+                 (prog1
+                     (make-handle 'lightgbm-booster booster-pointer backend :booster
+                                  :training-set dataset :validation-sets valid-sets)
+                   (setf owned t)))
+            (unless owned
+              (handler-case (lgbm-booster-free booster-pointer)
+                (error () nil)))))))))
 
 (defun %check-booster-datasets-live (booster)
   "Signal `released-handle-error' when any dataset BOOSTER depends on -- its training
@@ -652,8 +621,9 @@ Returns false once an iteration produces no further split, per the generic
 function's contract. Signals `released-handle-error' when BOOSTER's training set,
 or any of its validation sets, has already been freed -- see
 `%check-booster-datasets-live'."
-  (%check-booster-datasets-live booster)
-  (zerop (%update-one-iteration (handle-live-pointer booster))))
+  (with-foreign-float-traps-masked
+    (%check-booster-datasets-live booster)
+    (zerop (%update-one-iteration (handle-live-pointer booster)))))
 
 (defmethod free-booster ((booster lightgbm-booster))
   "Free BOOSTER via `LGBM_BoosterFree'. Does nothing if it was already freed.
@@ -661,15 +631,16 @@ or any of its validation sets, has already been freed -- see
 See `free-dataset''s docstring for why this does not signal `backend-not-open' when
 BOOSTER's backend has already been closed -- the same `with-booster' cleanup-form
 reasoning applies here."
-  (if (backend-open-p (handle-backend booster))
-      (release-handle
-       booster
-       (lambda (pointer) (check-lgbm (lgbm-booster-free pointer) "LGBM_BoosterFree")))
-      (let ((already-released (handle-released-p booster)))
-        (release-handle booster (lambda (pointer) (declare (ignore pointer))))
-        (unless already-released
-          (warn "Freeing a LightGBM booster after its backend was closed: the foreign ~
-                 booster was not freed and its memory is leaked.")))))
+  (with-foreign-float-traps-masked
+    (if (backend-open-p (handle-backend booster))
+        (release-handle
+         booster
+         (lambda (pointer) (check-lgbm (lgbm-booster-free pointer) "LGBM_BoosterFree")))
+        (let ((already-released (handle-released-p booster)))
+          (release-handle booster (lambda (pointer) (declare (ignore pointer))))
+          (unless already-released
+            (warn "Freeing a LightGBM booster after its backend was closed: the foreign ~
+                   booster was not freed and its memory is leaked."))))))
 
 ;;; ---------------------------------------------------------------------------
 ;;; Inference
@@ -733,32 +704,39 @@ guarded by `%predict-ncol'. `LGBM_BoosterPredictForMat' also writes its own
 element count back through OUT-LEN; this is asserted equal to
 `LGBM_BoosterCalcNumPredict''s count rather than trusted silently, since the
 buffer was sized from the latter and a mismatch would mean either an
-under-filled result or a write past the allocated buffer going unnoticed."
-  (let ((pointer (handle-live-pointer booster))
-        (predict-type (%predict-type kind))
-        (iteration-count (%resolve-num-iteration num-iteration)))
-    (with-foreign-matrix (data-pointer nrow ncol element-type) matrix
-      (let ((data-type (ecase element-type
-                          (double-float +c-api-dtype-float64+)
-                          (single-float +c-api-dtype-float32+)))
-            (element-count (%calc-num-predict pointer nrow predict-type 0 iteration-count)))
-        (let* ((ncol-result (%predict-ncol element-count nrow))
-               (result (make-array (list nrow ncol-result) :element-type 'double-float)))
-          (cffi:with-foreign-string (parameter-cstring "")
-            (cffi:with-foreign-objects ((out-len :int64) (buffer :double element-count))
-              (check-lgbm (lgbm-booster-predict-for-mat
-                           pointer data-pointer data-type nrow ncol 1 predict-type 0
-                           iteration-count parameter-cstring out-len buffer)
-                          "LGBM_BoosterPredictForMat")
-              (assert (= element-count (cffi:mem-ref out-len :int64)) ()
-                      "LGBM_BoosterPredictForMat wrote ~D elements, expected ~D from ~
-                       LGBM_BoosterCalcNumPredict"
-                      (cffi:mem-ref out-len :int64) element-count)
-              (dotimes (row nrow)
-                (dotimes (col ncol-result)
-                  (setf (aref result row col)
-                        (cffi:mem-aref buffer :double (+ (* row ncol-result) col)))))))
-          result)))))
+under-filled result or a write past the allocated buffer going unnoticed.
+
+Deliberately does not scan the result for NaN or infinity -- see
+`cl-gbdt/src/xgboost/backend''s `predict' for the identical reasoning, which applies
+here unchanged: `with-foreign-float-traps-masked' restores the C calling convention
+around this call, it does not and should not decide what counts as a valid model
+output."
+  (with-foreign-float-traps-masked
+    (let ((pointer (handle-live-pointer booster))
+          (predict-type (%predict-type kind))
+          (iteration-count (%resolve-num-iteration num-iteration)))
+      (with-foreign-matrix (data-pointer nrow ncol element-type) matrix
+        (let ((data-type (ecase element-type
+                            (double-float +c-api-dtype-float64+)
+                            (single-float +c-api-dtype-float32+)))
+              (element-count (%calc-num-predict pointer nrow predict-type 0 iteration-count)))
+          (let* ((ncol-result (%predict-ncol element-count nrow))
+                 (result (make-array (list nrow ncol-result) :element-type 'double-float)))
+            (cffi:with-foreign-string (parameter-cstring "")
+              (cffi:with-foreign-objects ((out-len :int64) (buffer :double element-count))
+                (check-lgbm (lgbm-booster-predict-for-mat
+                             pointer data-pointer data-type nrow ncol 1 predict-type 0
+                             iteration-count parameter-cstring out-len buffer)
+                            "LGBM_BoosterPredictForMat")
+                (assert (= element-count (cffi:mem-ref out-len :int64)) ()
+                        "LGBM_BoosterPredictForMat wrote ~D elements, expected ~D from ~
+                         LGBM_BoosterCalcNumPredict"
+                        (cffi:mem-ref out-len :int64) element-count)
+                (dotimes (row nrow)
+                  (dotimes (col ncol-result)
+                    (setf (aref result row col)
+                          (cffi:mem-aref buffer :double (+ (* row ncol-result) col)))))))
+            result))))))
 
 ;;; ---------------------------------------------------------------------------
 ;;; Persistence
@@ -768,13 +746,14 @@ under-filled result or a write past the allocated buffer going unnoticed."
 
 NUM-ITERATION limits how many trees are saved; nil saves all of them, which
 LightGBM spells as 0. Returns PATH."
-  (let ((pointer (handle-live-pointer booster)))
-    (cffi:with-foreign-string (filename (namestring path))
-      (check-lgbm (lgbm-booster-save-model
-                   pointer 0 (%resolve-num-iteration num-iteration)
-                   +c-api-feature-importance-split+ filename)
-                  "LGBM_BoosterSaveModel")))
-  path)
+  (with-foreign-float-traps-masked
+    (let ((pointer (handle-live-pointer booster)))
+      (cffi:with-foreign-string (filename (namestring path))
+        (check-lgbm (lgbm-booster-save-model
+                     pointer 0 (%resolve-num-iteration num-iteration)
+                     +c-api-feature-importance-split+ filename)
+                    "LGBM_BoosterSaveModel")))
+    path))
 
 (defmethod load-model ((backend lightgbm-backend) path)
   "Load a LightGBM model from PATH via `LGBM_BoosterCreateFromModelfile' and
@@ -783,21 +762,37 @@ return a new booster.
 The returned booster has no training set -- see the `booster' class'
 documentation -- since PATH names a model, not a dataset.
 
+The raw booster handle exists in C from the moment `LGBM_BoosterCreateFromModelfile'
+returns, but `make-handle' does not take ownership of it until it also succeeds --
+mirroring `cl-gbdt/src/xgboost/backend''s `load-model', which has the identical
+OWNED/`unwind-protect' pattern for the same reason: nothing here guarantees
+`make-handle' cannot signal, and a raw handle it never took ownership of would
+otherwise be orphaned rather than freed.
+
 Signals `backend-not-open' before the foreign call when BACKEND is not open --
 see `%check-backend-open'."
-  (%check-backend-open backend)
-  (let ((booster-pointer
-          (cffi:with-foreign-string (filename (namestring path))
-            (cffi:with-foreign-objects ((out-num-iterations :int) (out :pointer))
-              (check-lgbm (lgbm-booster-create-from-modelfile filename out-num-iterations out)
-                          "LGBM_BoosterCreateFromModelfile")
-              (cffi:mem-ref out :pointer)))))
-    (when (cffi:null-pointer-p booster-pointer)
-      (error 'foreign-call-error
-             :function-name "LGBM_BoosterCreateFromModelfile"
-             :code 0
-             :message "reported success but returned a null booster handle"))
-    (make-handle 'lightgbm-booster booster-pointer backend :booster)))
+  (with-foreign-float-traps-masked
+    (%check-backend-open backend)
+    (let ((booster-pointer
+            (cffi:with-foreign-string (filename (namestring path))
+              (cffi:with-foreign-objects ((out-num-iterations :int) (out :pointer))
+                (check-lgbm (lgbm-booster-create-from-modelfile
+                             filename out-num-iterations out)
+                            "LGBM_BoosterCreateFromModelfile")
+                (cffi:mem-ref out :pointer)))))
+      (when (cffi:null-pointer-p booster-pointer)
+        (error 'foreign-call-error
+               :function-name "LGBM_BoosterCreateFromModelfile"
+               :code 0
+               :message "reported success but returned a null booster handle"))
+      (let ((owned nil))
+        (unwind-protect
+             (prog1
+                 (make-handle 'lightgbm-booster booster-pointer backend :booster)
+               (setf owned t))
+          (unless owned
+            (handler-case (lgbm-booster-free booster-pointer)
+              (error () nil))))))))
 
 (defun %save-model-to-string (booster-pointer num-iteration)
   "Return BOOSTER-POINTER's model as a Lisp string via the two-call
@@ -825,7 +820,9 @@ not knowable ahead of time, so one fixed-size buffer cannot be assumed to fit."
 
 (defmethod model-to-string ((booster lightgbm-booster) &key num-iteration)
   "Return BOOSTER's model as a string via `LGBM_BoosterSaveModelToString'."
-  (%save-model-to-string (handle-live-pointer booster) (%resolve-num-iteration num-iteration)))
+  (with-foreign-float-traps-masked
+    (%save-model-to-string (handle-live-pointer booster)
+                            (%resolve-num-iteration num-iteration))))
 
 ;;; ---------------------------------------------------------------------------
 ;;; Feature importance
@@ -847,17 +844,18 @@ The result has one entry per feature. The width comes from
 `LGBM_BoosterGetNumFeature', which works whether BOOSTER came from `train' or
 `load-model' -- unlike a booster's training set, which `load-model' leaves
 unbound."
-  (let* ((pointer (handle-live-pointer booster))
-         (importance-type (%feature-importance-type kind))
-         (count (cffi:with-foreign-object (out :int)
-                  (check-lgbm (lgbm-booster-get-num-feature pointer out)
-                              "LGBM_BoosterGetNumFeature")
-                  (cffi:mem-ref out :int)))
-         (result (make-array count :element-type 'double-float)))
-    (cffi:with-foreign-object (buffer :double count)
-      (check-lgbm (lgbm-booster-feature-importance
-                   pointer (%resolve-num-iteration num-iteration) importance-type buffer)
-                  "LGBM_BoosterFeatureImportance")
-      (dotimes (index count)
-        (setf (aref result index) (cffi:mem-aref buffer :double index))))
-    result))
+  (with-foreign-float-traps-masked
+    (let* ((pointer (handle-live-pointer booster))
+           (importance-type (%feature-importance-type kind))
+           (count (cffi:with-foreign-object (out :int)
+                    (check-lgbm (lgbm-booster-get-num-feature pointer out)
+                                "LGBM_BoosterGetNumFeature")
+                    (cffi:mem-ref out :int)))
+           (result (make-array count :element-type 'double-float)))
+      (cffi:with-foreign-object (buffer :double count)
+        (check-lgbm (lgbm-booster-feature-importance
+                     pointer (%resolve-num-iteration num-iteration) importance-type buffer)
+                    "LGBM_BoosterFeatureImportance")
+        (dotimes (index count)
+          (setf (aref result index) (cffi:mem-aref buffer :double index))))
+      result)))

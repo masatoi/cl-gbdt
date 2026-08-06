@@ -3,11 +3,16 @@
 (uiop:define-package #:cl-gbdt/tests/functional/support
   (:use #:cl #:rove)
   (:import-from #:cffi)
+  (:import-from #:cl-gbdt/src/xgboost/array-interface
+                #:array-interface-json)
   (:export #:backend-library-path
            #:ensure-backend-library
            #:with-backend-library
+           #:resolve-via-cffi-default
            #:make-separable-dataset
            #:predictions-separate-p
+           #:make-multiclass-dataset
+           #:predictions-match-labels-p
            #:array-interface-json))
 
 (in-package #:cl-gbdt/tests/functional/support)
@@ -85,6 +90,31 @@ macro in the same `deftest' would still run with no library loaded."
            (skip (missing-library-message ,backend))
            (progn ,@body)))))
 
+(defun resolve-via-cffi-default (backend default-name)
+  "Return the pathname CFFI's `:default' designator resolves DEFAULT-NAME to, with
+BACKEND's own vendored directory pushed onto `cffi:*foreign-library-directories*', or
+NIL when it fails to resolve there. Callers must already know BACKEND's vendored
+library exists -- e.g. by running inside `with-backend-library' -- this does not check.
+
+This exercises exactly the CFFI call `resolve-and-load-library' falls back to when no
+explicit :path, env-var override, or vendored-directory match is found -- a branch
+`with-backend-library''s own round trip never reaches, since the vendored directory is
+always found first there. That fallback is a system-search, not a directory lookup, so
+BACKEND's vendored directory has to be pushed onto CFFI's own
+`*foreign-library-directories*' for `:default' to have anything to find.
+
+The library CFFI opens here is deliberately never closed: this project's functional
+suite already leaves every library it loads open for the rest of the process --
+`ensure-backend-library' above never closes either -- rather than risk a premature
+`cffi:close-foreign-library' unmapping symbols something else in the same run still
+depends on."
+  (let* ((directory (uiop:pathname-directory-pathname (backend-library-path backend)))
+         (cffi:*foreign-library-directories*
+           (cons directory cffi:*foreign-library-directories*)))
+    (handler-case
+        (cffi:foreign-library-pathname (cffi:load-foreign-library (list :default default-name)))
+      (error () nil))))
+
 (defun make-separable-dataset (&key (rows 8) (cols 3))
   "Return two values: a feature matrix and its labels, for a trivially separable problem.
 
@@ -131,14 +161,51 @@ letting an empty selection produce a confident but meaningless answer."
              (length negatives) (length positives)))
     (< (reduce #'max negatives) (reduce #'min positives))))
 
-(defun array-interface-json (pointer typestr &rest shape)
-  "Return a NumPy array-interface descriptor for POINTER as a JSON string.
+(defun make-multiclass-dataset (&key (rows-per-class 3) (num-classes 3) (cols 3))
+  "Return two values: a feature matrix and its labels, for a trivially separable
+NUM-CLASSES-way classification problem.
 
-XGBoost's current entry points take the buffer this way rather than as a bare pointer.
-TYPESTR is a NumPy type code -- \"<f8\" for double-float, \"<f4\" for single-float. The
-descriptor's shape is fixed, so no JSON library is needed to emit it.
+The matrix is a `(simple-array double-float (ROWS COLS))', ROWS = ROWS-PER-CLASS *
+NUM-CLASSES, grouped by class: row I belongs to class `(floor I ROWS-PER-CLASS)', and
+every element of that row is `(class * 10) + offset + column', where OFFSET is the
+row's position within its class -- large enough a step between classes that no bin a
+backend chooses can straddle two of them, while rows within a class still differ so
+they are not literally identical inputs. The labels are a `(simple-array single-float
+(ROWS))', 0.0 through `(NUM-CLASSES - 1).0', grouped the same way.
 
-The buffer must stay pinned and alive for as long as XGBoost reads it, which for
-`XGDMatrixCreateFromDense' is the duration of that call."
-  (format nil "{\"data\":[~D,false],\"typestr\":\"~A\",\"shape\":[~{~D~^,~}],\"version\":3}"
-          (cffi:pointer-address pointer) typestr shape))
+The defaults produce a nine-row, three-class fixture -- verified against XGBoost's
+`multi:softprob' objective to make `predict' return shape (9 3).
+
+The problem is deliberately trivial, in the same spirit as `make-separable-dataset':
+these tests check that data and per-class predictions cross the FFI boundary intact,
+not that the libraries learn anything hard."
+  (let* ((rows (* rows-per-class num-classes))
+         (matrix (make-array (list rows cols) :element-type 'double-float))
+         (label-vector (make-array rows :element-type 'single-float)))
+    (dotimes (row rows)
+      (let ((class (floor row rows-per-class))
+            (offset (mod row rows-per-class)))
+        (dotimes (col cols)
+          (setf (aref matrix row col) (coerce (+ (* class 10) offset col) 'double-float)))
+        (setf (aref label-vector row) (coerce class 'single-float))))
+    (values matrix label-vector)))
+
+(defun predictions-match-labels-p (predictions label-vector)
+  "True when every row of PREDICTIONS, a 2D array of per-class scores as `predict'
+returns for a multiclass booster, has its largest value in the column LABEL-VECTOR
+names for that row.
+
+This is `make-multiclass-dataset''s analogue of `predictions-separate-p': the ordering
+property a multiclass round trip can check without depending on exact probabilities,
+which would break on any upstream version bump without telling us anything new."
+  (let ((rows (array-dimension predictions 0))
+        (cols (array-dimension predictions 1)))
+    (loop :for row :below rows
+          :always (let ((label (round (aref label-vector row))))
+                    (loop :with best-column := 0
+                          :with best-value := (aref predictions row 0)
+                          :for column :from 1 :below cols
+                          :when (> (aref predictions row column) best-value)
+                            :do (setf best-value (aref predictions row column)
+                                      best-column column)
+                          :finally (return (= best-column label)))))))

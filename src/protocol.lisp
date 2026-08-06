@@ -61,8 +61,11 @@ Free the result with `free-booster' or wrap it in `with-booster'."))
 (defgeneric update-one-iteration (booster)
   (:documentation "Advance BOOSTER by one boosting iteration.
 
-Use this to drive the training loop yourself. Returns false when no further split
-was possible."))
+Use this to drive the training loop yourself. Returns false when no further split was
+possible and the backend can report that -- LightGBM does. XGBoost's booster protocol
+has no equivalent signal, so its `update-one-iteration' always returns true after a
+successful call; treat a true return as \"the call succeeded\", not as proof a split
+happened, unless the backend is known to be LightGBM."))
 
 (defgeneric predict (booster matrix &key kind num-iteration)
   (:documentation "Predict on MATRIX using BOOSTER.
@@ -74,18 +77,44 @@ limits how many trees are used; nil uses all of them.
 Returns a `(simple-array double-float (* *))'."))
 
 (defgeneric save-model (booster path &key num-iteration)
-  (:documentation "Save BOOSTER's model to PATH."))
+  (:documentation "Save BOOSTER's model to PATH.
+
+NUM-ITERATION limits how many boosted rounds are saved on LightGBM, nil meaning all of
+them. XGBoost has no such limit -- `XGBoosterSaveModel' always saves every round -- so
+supplying NUM-ITERATION there signals `unsupported-argument' instead of being silently
+ignored."))
 
 (defgeneric load-model (backend path)
   (:documentation "Load a model from PATH and return a BACKEND booster."))
 
 (defgeneric model-to-string (booster &key num-iteration)
-  (:documentation "Return BOOSTER's model as a string."))
+  (:documentation "Return BOOSTER's model as a string.
+
+NUM-ITERATION behaves as it does for `save-model': LightGBM honors it, nil meaning
+every round; XGBoost has no iteration-limited variant of this call and signals
+`unsupported-argument' when NUM-ITERATION is supplied."))
 
 (defgeneric feature-importance (booster &key kind num-iteration)
   (:documentation "Return BOOSTER's feature importances as `(simple-array double-float (*))'.
 
-KIND is `:split' (how often a feature was used to split) or `:gain' (total gain)."))
+KIND is `:split' (how often a feature was used to split) or `:gain' (total gain). The
+result has one entry per feature, in column order, zero for a feature never used in a
+split. LightGBM's own C call is already dense; XGBoost's reports only features actually
+used, identified by name rather than column, so this backend's method reconstructs the
+dense, per-column result from that.
+
+NUM-ITERATION behaves as it does for `save-model': LightGBM limits the importance
+calculation to that many rounds, nil meaning all of them; XGBoost has no such limit and
+signals `unsupported-argument' when NUM-ITERATION is supplied.
+
+Every result is one-dimensional -- one number per feature, full stop. XGBoost's
+`gblinear' booster reports a per-class matrix instead of a single score per feature for
+a multi-class model, which has no defined single-value reduction (summing signed linear
+coefficients across classes can cancel a feature that matters to none near zero); rather
+than invent one, that backend signals `unsupported-argument' instead of returning
+anything for that combination. LightGBM's own call never reports that shape: it already
+aggregates a multi-class model's per-class contributions into one number per feature
+inside the library."))
 
 (defgeneric free-dataset (dataset)
   (:documentation "Free DATASET. Does nothing if it was already freed."))
