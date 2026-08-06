@@ -166,6 +166,19 @@ produces) defined by a `cffi:defcfun' in PATH to its C name."
           (when lisp-name
             (setf (gethash lisp-name table) c-name)))))))
 
+(defun constant-names (path)
+  "Return the names (string, upper-case) of every `defconstant' in PATH.
+
+A backend imports constants such as `+c-api-dtype-float32+' from the same c-api package
+it imports functions from, and those have no `cffi:defcfun' behind them. Without this
+they would look exactly like an unresolved function name to `check-backend'."
+  (let ((names '()))
+    (dolist (form (read-top-level-forms path) names)
+      (when (and (consp form)
+                 (member (first form) '(defconstant cl:defconstant))
+                 (symbolp (second form)))
+        (push (symbol-name (second form)) names)))))
+
 ;;; ---- Step 3: the backend's :import-from clause ----
 
 (defun define-package-form (forms)
@@ -200,6 +213,7 @@ produces) defined by a `cffi:defcfun' in PATH to its C name."
   "Return the list of (ID LISP-NAME C-NAME) violations for one backend spec from
 +BACKENDS+, printing progress as it goes."
   (let ((name-map (c-name-map c-api-path))
+        (constants (constant-names c-api-path))
         (imports (backend-imports backend-path c-api-package-name))
         (violations '()))
     (format t "~&~A: ~D imported name~:P from ~A~%"
@@ -207,13 +221,30 @@ produces) defined by a `cffi:defcfun' in PATH to its C name."
             (enough-namestring c-api-path (uiop:getcwd)))
     (dolist (lisp-name imports violations)
       (let ((c-name (gethash lisp-name name-map)))
-        (when (and c-name (member c-name blacklist :test #'string=))
-          (push (list id lisp-name c-name) violations)
-          (format *error-output*
-                  "~&FAIL ~A imports ~A, which is ~A, a blacklisted C function ~
-                   (see ~A)~%"
-                  (enough-namestring backend-path (uiop:getcwd)) lisp-name c-name
-                  +blacklist-path+))))))
+        (cond
+          ;; An imported name with no `defcfun' behind it is reported, not skipped. Nothing
+          ;; else notices one: `:import-from' on a symbol the source package does not export
+          ;; interns it silently rather than erroring, so the build stays green -- verified.
+          ;; Skipping it would also blind this check to the blacklist's "removed upstream,
+          ;; never emitted" table, whose entries have no `defcfun' by definition and would
+          ;; therefore never map. Treating "I could not resolve this" as "this is fine" is
+          ;; the same failure this file's empty-parse guard exists to prevent.
+          ((member lisp-name constants :test #'string=))   ; a constant, not a function
+          ((null c-name)
+           (push (list id lisp-name "<unresolved>") violations)
+           (format *error-output*
+                   "~&FAIL ~A imports ~A, which has no `cffi:defcfun' in ~A. Either it is ~
+                    misspelled, or it names something removed upstream -- see the second ~
+                    table in ~A.~%"
+                   (enough-namestring backend-path (uiop:getcwd)) lisp-name
+                   (enough-namestring c-api-path (uiop:getcwd)) +blacklist-path+))
+          ((member c-name blacklist :test #'string=)
+           (push (list id lisp-name c-name) violations)
+           (format *error-output*
+                   "~&FAIL ~A imports ~A, which is ~A, a blacklisted C function ~
+                    (see ~A)~%"
+                   (enough-namestring backend-path (uiop:getcwd)) lisp-name c-name
+                   +blacklist-path+)))))))
 
 (let* ((root (uiop:getcwd))
        (blacklist-file (merge-pathnames +blacklist-path+ root))
