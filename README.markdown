@@ -13,30 +13,311 @@ file if you have it locally).
 
 ## Status
 
-**Foundation only.** This branch establishes the condition hierarchy, the backend
-registry and `open-backend` protocol, the zero-copy matrix marshalling, and a
-binding generator that produces the raw CFFI declarations for both C APIs. It does
-**not** yet call into either shared library: `make-dataset`, `train`, `predict`,
-and the rest of the unified API are declared as generic functions with
-docstrings but no methods. Loading `cl-gbdt` does not require either
-`liblightgbm.so` or `libxgboost.so` to be installed.
+**Functional.** Both backends implement all 12 generic functions of the unified API --
+`make-dataset`, `dataset-num-rows`, `dataset-num-features`, `train`,
+`update-one-iteration`, `predict`, `save-model`, `load-model`, `model-to-string`,
+`feature-importance`, `free-dataset` and `free-booster` -- against the real LightGBM and
+XGBoost shared libraries, exercised by 105 functional assertions (design doc section 12,
+layer 2), in addition to 204 assertions that need no shared library at all (layer 1).
+See [Usage](#usage) below for a worked example.
+
+Loading `cl-gbdt` itself still does not require either `liblightgbm.so` or
+`libxgboost.so` to be installed -- see [Systems](#systems): a shared library is opened
+only by an explicit `open-backend` call, from whichever backend system(s) you load on
+top of the core.
+
+## Usage
+
+A worked example first, then the details a caller moving between the two backends
+needs. Every code block below was actually run to produce the output pasted beneath it
+(SBCL via `ros run`, with `./tools/fetch-libs.sh`'s vendored libraries already present).
+
+### Quick start
+
+Load the core system and one backend system, open the backend, build a dataset from a
+`double-float` matrix and its labels, train, predict, and free everything with
+`with-dataset`/`with-booster` -- explicit resource management is this library's
+documented first-class pattern; see their docstrings for why finalizers are only a
+safety net, not something to rely on.
+
+```lisp
+(ql:quickload '(:cl-gbdt :cl-gbdt/lightgbm) :silent t)
+
+(let* ((backend (cl-gbdt:open-backend :lightgbm))
+       (matrix (make-array '(8 2) :element-type 'double-float
+                            :initial-contents '((0.0d0 0.0d0) (0.0d0 1.0d0)
+                                                 (0.0d0 2.0d0) (0.0d0 3.0d0)
+                                                 (5.0d0 0.0d0) (5.0d0 1.0d0)
+                                                 (5.0d0 2.0d0) (5.0d0 3.0d0))))
+       (label (make-array 8 :element-type 'single-float
+                             :initial-contents '(0.0 0.0 0.0 0.0 1.0 1.0 1.0 1.0))))
+  (cl-gbdt:with-dataset (dataset (cl-gbdt:make-dataset
+                                   backend matrix
+                                   :label label
+                                   :parameters '(:min-data-in-leaf 1 :min-data-in-bin 1
+                                                  :verbose -1)))
+    (format t "rows=~D features=~D~%"
+            (cl-gbdt:dataset-num-rows dataset) (cl-gbdt:dataset-num-features dataset))
+    (cl-gbdt:with-booster (booster (cl-gbdt:train
+                                     backend dataset
+                                     :num-rounds 10
+                                     :parameters '(:objective "binary" :num-leaves 2
+                                                    :min-data-in-leaf 1 :min-data-in-bin 1
+                                                    :verbose -1)))
+      (format t "predictions:~%~S~%" (cl-gbdt:predict booster matrix))))
+  (cl-gbdt:close-backend backend)
+  (format t "done~%"))
+```
+
+Output:
+
+```
+rows=8 features=2
+predictions:
+#2A((0.17926923885828328d0)
+    (0.17926923885828328d0)
+    (0.17926923885828328d0)
+    (0.17926923885828328d0)
+    (0.8207307611417167d0)
+    (0.8207307611417167d0)
+    (0.8207307611417167d0)
+    (0.8207307611417167d0))
+done
+```
+
+`with-booster` nests inside `with-dataset`, never the other way around: a booster holds
+a strong reference to the dataset it was trained on, so `with-dataset`'s cleanup must run
+after `with-booster`'s, and only this nesting guarantees that order. `close-backend` runs
+last, outside both, since it closes the shared library both handles' pointers are backed
+by. `label`, `weight` and `group` each accept any sequence, not only a `single-float`
+array -- every element is coerced internally.
+
+### Two backends, two ASDF systems
+
+`cl-gbdt/lightgbm` and `cl-gbdt/xgboost` are separate systems (`cl-gbdt.asd`). Loading
+one does not load the other, and neither is a dependency of core `cl-gbdt`; load
+whichever one (or both) matches the shared library you have.
+
+Loading only a backend system, without the core `cl-gbdt` system, attaches its methods
+to the generic functions but does not define the `cl-gbdt` package itself:
+
+```lisp
+(ql:quickload :cl-gbdt/lightgbm :silent t)
+(format t "~S~%" (find-package :cl-gbdt))
+```
+
+Output:
+
+```
+NIL
+```
+
+`make-dataset` and the rest are still callable, package-qualified as
+`cl-gbdt/src/protocol:make-dataset`, but the friendly `cl-gbdt:` spelling needs the core
+system loaded too -- as the quick start above does, loading both at once.
+
+### Finding the shared library
+
+`open-backend`'s `:path`, when supplied, wins outright over everything else. Otherwise,
+in order: `CL_GBDT_LIGHTGBM_LIB` / `CL_GBDT_XGBOOST_LIB`, then the vendored directory
+`./tools/fetch-libs.sh` writes to (`vendor/lightgbm/lib/` / `vendor/xgboost/lib/`), then
+CFFI's own system library search.
+
+**A set-but-nonexistent environment variable is an error, not a fall-through to the next
+source** -- a typo in an override that silently loads a different library would be worse
+than a failure:
+
+```lisp
+(ql:quickload '(:cl-gbdt :cl-gbdt/lightgbm) :silent t)
+(handler-case (cl-gbdt:open-backend :lightgbm)
+  (error (c) (format t "SIGNALED: ~A: ~A~%" (type-of c) c)))
+```
+
+Run with `CL_GBDT_LIGHTGBM_LIB=/nonexistent/lib_lightgbm.so` in the environment, this
+prints:
+
+```
+SIGNALED: BACKEND-LIBRARY-NOT-FOUND: Shared library for LIGHTGBM not found. Searched:
+  /nonexistent/lib_lightgbm.so
+```
+
+### Parameters
+
+`make-dataset`'s and `train`'s `:parameters` is a plist. Each keyword is downcased with
+dashes turned into underscores; each value is stringified and passed through untouched,
+so a backend-specific key works with no per-key allowlist:
+
+```lisp
+(ql:quickload :cl-gbdt :silent t)
+(cl-gbdt:normalize-parameters
+ (list :num-leaves 31 :learning-rate 0.05d0 :verbose -1 :feature-fraction 1/3
+       :use-two-round-loading t :early-stopping-round nil))
+```
+
+Output:
+
+```
+(("num_leaves" . "31") ("learning_rate" . "0.05") ("verbose" . "-1")
+ ("feature_fraction" . "0.3333333333333333") ("use_two_round_loading" . "true")
+ ("early_stopping_round" . "false"))
+```
+
+`t`/`nil` become LightGBM's own spelling for a boolean, `"true"`/`"false"`; a ratio
+prints as a decimal, not `"1/3"`; a string value passes through unquoted -- see
+`:objective "binary:logistic"` below, whose colon survives intact.
+
+### Where the two backends genuinely differ
+
+A caller moving code from one backend to the other needs this in one place -- checked
+directly against both backends' source, not only the differences the design doc calls
+out first:
+
+| | LightGBM | XGBoost |
+|---|---|---|
+| `make-dataset`'s `:reference` | Aligns the new dataset's bin mapper to an existing one's (required for a `train` `:valid-sets` entry) | Signals `unsupported-argument` -- no bin-mapper concept |
+| `make-dataset`'s `:parameters` | Configures the dataset's own binning (`max_bin` and friends) | Signals `unsupported-argument`: the vendored header (`ffi-spec/xgboost/include/xgboost/c_api.h`) documents only `missing`/`nthread`/`data_split_mode` for `XGDMatrixCreateFromDense`'s config JSON, none of which are LightGBM's dataset-level binning keys, and confirmed empirically, the library silently ignores any other key rather than rejecting it -- forwarding `:parameters` there regardless would just move today's silent drop one layer deeper instead of fixing it |
+| `update-one-iteration`'s return value | `nil` once an iteration produces no further split -- a real signal | Always `t` after a successful call; XGBoost's booster protocol has no equivalent signal |
+| `save-model`'s `:num-iteration` | Limits how many trees are saved | Signals `unsupported-argument` -- `XGBoosterSaveModel` always saves every round |
+| `model-to-string`'s `:num-iteration` | Limits the rounds serialized | Signals `unsupported-argument` -- no iteration-limited variant exists |
+| `feature-importance`'s `:num-iteration` | Limits the importance calculation | Signals `unsupported-argument` -- no iteration-limited variant exists |
+| `feature-importance`'s result shape | Always one number per feature | Signals `unsupported-argument` instead of returning a result when the model reports a multi-dimensional score shape -- a `gblinear` booster's importance on a multi-class model, whose scores are a per-class matrix with no single-value reduction this backend will invent |
+| `backend-version` | Always `nil` -- LightGBM's C API has no version entry point | A `"MAJOR.MINOR.PATCH"` string, e.g. `"3.3.0"` |
+
+Run together against both backends:
+
+```lisp
+(ql:quickload '(:cl-gbdt :cl-gbdt/lightgbm :cl-gbdt/xgboost) :silent t)
+
+(defparameter *matrix*
+  (make-array '(4 2) :element-type 'double-float
+                      :initial-contents '((0.0d0 0.0d0) (0.0d0 1.0d0)
+                                           (5.0d0 0.0d0) (5.0d0 1.0d0))))
+(defparameter *label*
+  (make-array 4 :element-type 'single-float :initial-contents '(0.0 0.0 1.0 1.0)))
+
+(let ((lgbm (cl-gbdt:open-backend :lightgbm))
+      (xgb (cl-gbdt:open-backend :xgboost)))
+  (format t "LightGBM backend-version: ~S~%" (cl-gbdt:backend-version lgbm))
+  (format t "XGBoost  backend-version: ~S~%" (cl-gbdt:backend-version xgb))
+
+  (cl-gbdt:with-dataset (lgbm-ds1 (cl-gbdt:make-dataset lgbm *matrix* :label *label*
+                                     :parameters '(:min-data-in-leaf 1 :min-data-in-bin 1
+                                                    :verbose -1)))
+    (cl-gbdt:with-dataset (lgbm-ds2 (cl-gbdt:make-dataset lgbm *matrix* :label *label*
+                                       :reference lgbm-ds1
+                                       :parameters '(:min-data-in-leaf 1 :min-data-in-bin 1
+                                                      :verbose -1)))
+      (format t "LightGBM :reference accepted; aligned dataset has ~D rows~%"
+              (cl-gbdt:dataset-num-rows lgbm-ds2))))
+
+  (cl-gbdt:with-dataset (xgb-ds1 (cl-gbdt:make-dataset xgb *matrix* :label *label*))
+    (handler-case (cl-gbdt:make-dataset xgb *matrix* :label *label* :reference xgb-ds1)
+      (error (c) (format t "XGBoost  :reference SIGNALED ~A: ~A~%" (type-of c) c)))
+    (cl-gbdt:with-dataset (xgb-ds-grouped (cl-gbdt:make-dataset xgb *matrix* :label *label*
+                                             :group '(2 2)))
+      (format t "XGBoost  :group accepted; grouped dataset has ~D rows~%"
+              (cl-gbdt:dataset-num-rows xgb-ds-grouped)))
+    (handler-case (cl-gbdt:make-dataset xgb *matrix* :label *label* :parameters '(:max-bin 3))
+      (error (c) (format t "XGBoost  :parameters SIGNALED ~A: ~A~%" (type-of c) c)))
+
+    (cl-gbdt:with-booster (xgb-booster (cl-gbdt:train xgb xgb-ds1 :num-rounds 1
+                                          :parameters '(:objective "binary:logistic"
+                                                         :max-depth 2 :verbosity 0)))
+      (format t "XGBoost  update-one-iteration => ~S~%"
+              (cl-gbdt:update-one-iteration xgb-booster))
+      (dolist (call (list (lambda () (cl-gbdt:save-model xgb-booster "/tmp/m.json"
+                                                           :num-iteration 1))
+                           (lambda () (cl-gbdt:model-to-string xgb-booster :num-iteration 1))
+                           (lambda () (cl-gbdt:feature-importance xgb-booster :num-iteration 1))))
+        (handler-case (funcall call)
+          (error (c) (format t "SIGNALED ~A: ~A~%" (type-of c) c))))))
+
+  (cl-gbdt:with-dataset (lgbm-ds (cl-gbdt:make-dataset lgbm *matrix* :label *label*
+                                    :parameters '(:min-data-in-leaf 1 :min-data-in-bin 1
+                                                   :verbose -1)))
+    (cl-gbdt:with-booster (lgbm-booster (cl-gbdt:train lgbm lgbm-ds :num-rounds 1
+                                           :parameters '(:objective "binary" :num-leaves 2
+                                                          :min-data-in-leaf 1 :min-data-in-bin 1
+                                                          :verbose -1)))
+      (format t "LightGBM update-one-iteration => ~S~%"
+              (cl-gbdt:update-one-iteration lgbm-booster))))
+
+  (cl-gbdt:close-backend lgbm)
+  (cl-gbdt:close-backend xgb))
+```
+
+Output:
+
+```
+LightGBM backend-version: NIL
+XGBoost  backend-version: "3.3.0"
+LightGBM :reference accepted; aligned dataset has 4 rows
+XGBoost  :reference SIGNALED UNSUPPORTED-ARGUMENT: make-dataset's :reference is not supported by XGBOOST: XGBoost has no bin-mapper alignment; :reference is a LightGBM-only concept.
+XGBoost  :group accepted; grouped dataset has 4 rows
+XGBoost  :parameters SIGNALED UNSUPPORTED-ARGUMENT: make-dataset's :parameters is not supported by XGBOOST: XGDMatrixCreateFromDense's config JSON only recognizes missing/nthread/data_split_mode, none of which are LightGBM's dataset-level binning parameters, and the library silently ignores any other key rather than rejecting it.
+XGBoost  update-one-iteration => T
+SIGNALED UNSUPPORTED-ARGUMENT: save-model's :num-iteration is not supported by XGBOOST: XGBoosterSaveModel has no iteration limit; every boosted round is saved.
+SIGNALED UNSUPPORTED-ARGUMENT: model-to-string's :num-iteration is not supported by XGBOOST: XGBoosterSaveModelToBuffer has no iteration limit.
+SIGNALED UNSUPPORTED-ARGUMENT: feature-importance's :num-iteration is not supported by XGBOOST: XGBoosterFeatureScore has no iteration limit.
+LightGBM update-one-iteration => T
+```
+
+And, separately, the `feature-importance` shape rejection above, which needs a linear
+(`gblinear`), multi-class booster to trigger -- a `multi:softprob` objective over 9 rows
+in 3 classes:
+
+```lisp
+(ql:quickload '(:cl-gbdt :cl-gbdt/xgboost) :silent t)
+
+(let* ((backend (cl-gbdt:open-backend :xgboost))
+       (rows-per-class 3) (num-classes 3) (cols 3)
+       (rows (* rows-per-class num-classes))
+       (matrix (make-array (list rows cols) :element-type 'double-float))
+       (label (make-array rows :element-type 'single-float)))
+  (dotimes (row rows)
+    (let ((class (floor row rows-per-class)) (offset (mod row rows-per-class)))
+      (dotimes (col cols)
+        (setf (aref matrix row col) (coerce (+ (* class 10) offset col) 'double-float)))
+      (setf (aref label row) (coerce class 'single-float))))
+  (cl-gbdt:with-dataset (dataset (cl-gbdt:make-dataset backend matrix :label label))
+    (cl-gbdt:with-booster (booster (cl-gbdt:train backend dataset :num-rounds 5
+                                     :parameters (list :booster "gblinear"
+                                                        :objective "multi:softprob"
+                                                        :num-class num-classes
+                                                        :verbosity 0)))
+      (handler-case (cl-gbdt:feature-importance booster :kind :split)
+        (error (c) (format t "feature-importance SIGNALED: ~A: ~A~%" (type-of c) c)))))
+  (cl-gbdt:close-backend backend))
+```
+
+Output:
+
+```
+feature-importance SIGNALED: UNSUPPORTED-ARGUMENT: feature-importance's booster is not supported by XGBOOST: XGBoosterFeatureScore reported a 2-dimensional shape (3 3) instead of one score per feature -- most likely a linear (gblinear) booster's :split importance on a multi-class model, whose scores are a per-class matrix; no single value per feature can be derived without inventing a reduction this backend does not vouch for.
+```
 
 ## Systems
 
 | System | Purpose |
 |---|---|
-| `cl-gbdt` | Core: package, condition hierarchy, matrix marshalling, backend registry and `open-backend` protocol, the unified API's generic functions |
-| `cl-gbdt/lightgbm` | Generated CFFI bindings for the LightGBM C API (`src/lightgbm/c-api.lisp`) |
-| `cl-gbdt/xgboost` | Generated CFFI bindings for the XGBoost C API (`src/xgboost/c-api.lisp`) |
+| `cl-gbdt` | Core: package, condition hierarchy, matrix marshalling, backend registry and `open-backend` protocol, the unified API's generic functions -- no methods, and no shared library required to load it |
+| `cl-gbdt/lightgbm` | The LightGBM backend: all 12 unified-API methods (`src/lightgbm/backend.lisp`), built on the generated CFFI bindings for the LightGBM C API (`src/lightgbm/c-api.lisp`) |
+| `cl-gbdt/xgboost` | The XGBoost backend: all 12 unified-API methods (`src/xgboost/backend.lisp`), built on the generated CFFI bindings for the XGBoost C API (`src/xgboost/c-api.lisp`) |
 | `cl-gbdt/regen` | The binding emitter (`src/regen/`). Development-only -- never appears in `cl-gbdt`'s, `cl-gbdt/lightgbm`'s, or `cl-gbdt/xgboost`'s dependency graph, so an ordinary user never needs it or its dependencies (`alexandria`, `com.inuoe.jzon`). `cffi/c2ffi` is *not* one of them -- it is a dependency of `tools/regen.lisp`, which quickloads it directly, not of the `cl-gbdt/regen` system itself |
 | `cl-gbdt/tests` | The Rove test suite |
 
-Each backend system currently depends only on `cffi`, by way of its generated
-`c-api.lisp` (`cl-gbdt/lightgbm` depends on `cl-gbdt/src/lightgbm/c-api`, which
-declares nothing but `cl` and `cffi`). Neither backend system depends on `cl-gbdt`
-itself yet, since the unified API has no methods to call into them (see Status
-above). Each backend is loadable independently, so the library works on a machine
-where only one of the two shared libraries is present.
+Each backend system (`cl-gbdt/lightgbm` depends on `cl-gbdt/src/lightgbm/backend`,
+`cl-gbdt/xgboost` on `cl-gbdt/src/xgboost/backend`) implements all 12 methods of the
+unified API for its library. It depends on `cffi`, its own generated `c-api.lisp`, and
+the individual `cl-gbdt/src/*` leaf systems its methods need -- `protocol`, `handle`,
+`backend`, `conditions`, `parameters`, `data`, `library`, `foreign` -- but not on the
+aggregate `cl-gbdt` system/package that re-exports all of those under one name (see
+`src/all.lisp`). Loading only a backend system therefore attaches its methods to the
+generic functions but leaves the `cl-gbdt` package itself undefined; load core
+`cl-gbdt` too for the `cl-gbdt:make-dataset` spelling rather than
+`cl-gbdt/src/protocol:make-dataset` (see [Usage](#usage)). Each backend is loadable
+independently of the other, so the library works on a machine where only one of the two
+shared libraries is present.
 
 ## Running the tests
 

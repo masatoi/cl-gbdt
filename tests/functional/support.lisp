@@ -11,6 +11,7 @@
            #:resolve-via-cffi-default
            #:make-separable-dataset
            #:predictions-separate-p
+           #:within-group-strictly-increasing-p
            #:make-multiclass-dataset
            #:predictions-match-labels-p
            #:array-interface-json))
@@ -160,6 +161,22 @@ letting an empty selection produce a confident but meaningless answer."
               must be present."
              (length negatives) (length positives)))
     (< (reduce #'max negatives) (reduce #'min positives))))
+
+(defun within-group-strictly-increasing-p (predictions group-sizes)
+  "True when PREDICTIONS -- a list of per-row scores, in row order -- increases strictly
+within each consecutive run of GROUP-SIZES, and false otherwise. GROUP-SIZES must sum to
+PREDICTIONS' length; a caller error there signals from `subseq'/`nthcdr' rather than
+returning a silently wrong answer.
+
+This is the ordering property a ranking round trip can check without depending on raw
+score values, which would break on any upstream version bump without telling us anything
+new -- the same reasoning `predictions-separate-p' above and `predictions-match-labels-p'
+below apply to a classification round trip's label boundary and multiclass argmax,
+respectively."
+  (loop :with remaining := predictions
+        :for size :in group-sizes
+        :always (prog1 (apply #'< (subseq remaining 0 size))
+                  (setf remaining (nthcdr size remaining)))))
 
 (defun make-multiclass-dataset (&key (rows-per-class 3) (num-classes 3) (cols 3))
   "Return two values: a feature matrix and its labels, for a trivially separable
