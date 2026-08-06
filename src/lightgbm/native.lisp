@@ -712,7 +712,8 @@ BOOSTER, `backend-not-open' when its own backend has since been closed."
     (error 'wrong-backend-reference
            :backend :lightgbm
            :given (class-name (class-of booster))
-           :argument argument-description))
+           :argument argument-description
+           :expected "booster"))
   (handle-live-pointer booster))
 
 (defun %booster-eval-count (pointer)

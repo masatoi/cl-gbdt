@@ -741,14 +741,21 @@ two groups.")
              (cl-gbdt:with-booster (other-booster (cl-gbdt:train
                                                     backend training-set :num-rounds 1
                                                     :parameters *booster-parameters*))
-               (testing "train with a booster inside :valid-sets signals"
-                 (ok (handler-case
-                         (progn (cl-gbdt:train backend training-set :num-rounds 1
-                                                :valid-sets (list other-booster)
-                                                :parameters *booster-parameters*)
-                                nil)
-                       (cl-gbdt:wrong-backend-reference () t))
-                     "train accepted a booster inside :valid-sets"))))
+               (testing "train with a booster inside :valid-sets signals, naming a ~
+                         dataset as what was expected"
+                 ;; Regression: `wrong-backend-reference' gained an EXPECTED slot so
+                 ;; `booster-eval'/`booster-eval-names' could report "booster" instead of
+                 ;; "dataset" -- this asserts the pre-existing :valid-sets path still
+                 ;; reports "dataset", its own default, unaffected by that addition.
+                 (let ((message (handler-case
+                                     (progn (cl-gbdt:train backend training-set :num-rounds 1
+                                                            :valid-sets (list other-booster)
+                                                            :parameters *booster-parameters*)
+                                            nil)
+                                   (cl-gbdt:wrong-backend-reference (c) (princ-to-string c)))))
+                   (ok message "train accepted a booster inside :valid-sets")
+                   (ok (and message (search "must be a dataset built by" message))
+                       (format nil "report was ~S" message))))))
         (cl-gbdt:close-backend backend)))))
 
 ;;; Task 2: `cl-gbdt/lightgbm:booster-eval-names' and `cl-gbdt/lightgbm:booster-eval', the
@@ -933,15 +940,28 @@ test that only checked a single name/value pair could not pass by accident if
                (setf train-set (cl-gbdt:make-dataset backend matrix
                                                        :label label-vector
                                                        :parameters *dataset-parameters*))
-               (testing "booster-eval-names with a dataset as its argument signals"
-                 (ok (handler-case
-                         (progn (cl-gbdt/lightgbm:booster-eval-names train-set) nil)
-                       (cl-gbdt:wrong-backend-reference () t))
-                     "booster-eval-names accepted a dataset as its booster argument"))
-               (testing "booster-eval with a dataset as its argument signals"
-                 (ok (handler-case (progn (cl-gbdt/lightgbm:booster-eval train-set 0) nil)
-                       (cl-gbdt:wrong-backend-reference () t))
-                     "booster-eval accepted a dataset as its booster argument")))
+               (testing "booster-eval-names with a dataset as its argument signals, ~
+                         naming a booster as what was expected"
+                 ;; Regression: the old report format hardcoded "dataset" even when
+                 ;; rejecting an actual dataset because a booster was required, e.g.
+                 ;; "must be a dataset built by LIGHTGBM itself, not LIGHTGBM-DATASET" --
+                 ;; self-contradictory. `%check-lightgbm-booster' now passes `:expected
+                 ;; "booster"'; this asserts the report says so.
+                 (let ((message (handler-case
+                                     (progn (cl-gbdt/lightgbm:booster-eval-names train-set)
+                                            nil)
+                                   (cl-gbdt:wrong-backend-reference (c) (princ-to-string c)))))
+                   (ok message "booster-eval-names accepted a dataset as its booster argument")
+                   (ok (and message (search "must be a booster built by" message))
+                       (format nil "report was ~S" message))))
+               (testing "booster-eval with a dataset as its argument signals, naming a ~
+                         booster as what was expected"
+                 (let ((message (handler-case
+                                     (progn (cl-gbdt/lightgbm:booster-eval train-set 0) nil)
+                                   (cl-gbdt:wrong-backend-reference (c) (princ-to-string c)))))
+                   (ok message "booster-eval accepted a dataset as its booster argument")
+                   (ok (and message (search "must be a booster built by" message))
+                       (format nil "report was ~S" message)))))
           (progn
             (when train-set (cl-gbdt:free-dataset train-set))
             (cl-gbdt:close-backend backend)))))))
