@@ -31,6 +31,9 @@
                 #:lgbm-booster-create-from-modelfile
                 #:lgbm-booster-feature-importance
                 #:lgbm-booster-get-num-feature
+                #:lgbm-booster-get-eval-counts
+                #:lgbm-booster-get-eval-names
+                #:lgbm-booster-get-eval
                 #:+c-api-dtype-float32+
                 #:+c-api-dtype-float64+
                 #:+c-api-dtype-int32+
@@ -46,6 +49,8 @@
   (:import-from #:cl-gbdt/src/handle
                 #:handle-live-pointer
                 #:handle-released-p
+                #:handle-backend
+                #:booster
                 #:booster-training-set
                 #:booster-validation-sets)
   (:import-from #:cl-gbdt/src/conditions
@@ -59,7 +64,8 @@
                 #:with-foreign-matrix
                 #:write-foreign-sequence)
   (:import-from #:cl-gbdt/src/foreign
-                #:check-foreign-call)
+                #:check-foreign-call
+                #:with-foreign-float-traps-masked)
   (:export #:check-lgbm
            #:*library-env-var*
            #:*vendor-library-directory*
@@ -95,22 +101,35 @@
            #:%save-model-to-string
            #:%feature-importance-type
            #:%booster-num-features
-           #:%feature-importance))
+           #:%feature-importance
+           #:booster-eval-names
+           #:booster-eval))
 
 (in-package #:cl-gbdt/src/lightgbm/native)
 
 ;;; ---------------------------------------------------------------------------
 ;;; Floating-point trap safety
 ;;;
-;;; Nothing here wraps itself in `with-foreign-float-traps-masked' -- every function in
-;;; this file is only ever called from inside a `cl-gbdt/src/lightgbm/protocol' `defmethod'
-;;; body that already established the mask, at method-body granularity, before making any
-;;; of the calls below. See that file's identical commentary, and
+;;; Almost nothing here wraps itself in `with-foreign-float-traps-masked' -- almost every
+;;; function in this file is only ever called from inside a `cl-gbdt/src/lightgbm/protocol'
+;;; `defmethod' body that already established the mask, at method-body granularity, before
+;;; making any of the calls below. See that file's identical commentary, and
 ;;; `with-foreign-float-traps-masked''s own docstring in `cl-gbdt/src/foreign', for why:
 ;;; SBCL enables floating-point traps by default on x86-64 and not on aarch64, and
 ;;; `cl-gbdt/src/xgboost/native''s identical commentary describes the concrete case
 ;;; (XGBoost's `multi:softprob' softmax) that surfaced this. LightGBM has not tripped it
 ;;; yet, but its C API is exactly as unprotected against SBCL's x86-64 trap defaults.
+;;;
+;;; `booster-eval-names' and `booster-eval', in the Evaluation section near the end of this
+;;; file, are the exception: Phase 2 (policy section 3's Layer 1) exports both directly from
+;;; `cl-gbdt/lightgbm' -- see `src/lightgbm/all.lisp' -- so neither is ever reached through a
+;;; `cl-gbdt/src/lightgbm/protocol' `defmethod'. There is no outer call site left to establish
+;;; the mask for them, so each wraps its own whole body instead, the same method-body
+;;; granularity `protocol.lisp' uses, just with the wrapping function living here rather than
+;;; there. `tools/ci/check-float-traps.lisp' does not scan this file for `defmethod' forms
+;;; the way it does `protocol.lisp' -- see that script's own header -- so this pair is not
+;;; machine-checked; verified by hand instead, alongside every other new export this file
+;;; ever adds directly to a public package.
 
 ;;; ---------------------------------------------------------------------------
 ;;; Error checking
@@ -245,7 +264,10 @@ system search never finds it.")
     "LGBM_BoosterSaveModelToString"
     "LGBM_BoosterCreateFromModelfile"
     "LGBM_BoosterFeatureImportance"
-    "LGBM_BoosterGetNumFeature")
+    "LGBM_BoosterGetNumFeature"
+    "LGBM_BoosterGetEvalCounts"
+    "LGBM_BoosterGetEvalNames"
+    "LGBM_BoosterGetEval")
   "C function names this backend calls, checked with `probe-foreign-symbols' right
 after the library loads.")
 
@@ -650,3 +672,165 @@ directly. `feature-importance' still owns sizing BUFFER from
 `%booster-num-features' and copying its contents out afterward."
   (check-lgbm (lgbm-booster-feature-importance pointer num-iteration importance-type buffer)
               "LGBM_BoosterFeatureImportance"))
+
+;;; ---------------------------------------------------------------------------
+;;; Evaluation
+;;;
+;;; `booster-eval-names' and `booster-eval' below are this file's first two exports that
+;;; are not `%'-prefixed internal helpers: Phase 2 (policy section 3's Layer 1) exports
+;;; both directly from `cl-gbdt/lightgbm' -- see `src/lightgbm/all.lisp' -- rather than
+;;; through a `cl-gbdt/src/lightgbm/protocol' `defmethod' the way every other public
+;;; operation on a booster is reached. See this file's own "Floating-point trap safety"
+;;; header comment for what that changes about the mask.
+
+(defun %check-lightgbm-booster (booster argument-description)
+  "Return BOOSTER's live foreign pointer, after confirming BOOSTER is a booster built by
+the `:lightgbm' backend.
+
+BOOSTER's own concrete class -- `cl-gbdt/src/lightgbm/protocol''s `lightgbm-booster' --
+cannot be named directly here: this file must not depend on
+`cl-gbdt/src/lightgbm/protocol', for the reason this file's own header gives, and unlike
+`%check-lightgbm-dataset' there is no `protocol.lisp' caller to hand this one the class as
+a parameter -- `booster-eval-names' and `booster-eval' below are called directly by end
+users, never by a `defmethod'. `(typep booster 'booster)' -- the backend-agnostic base
+class from `cl-gbdt/src/handle' -- combined with BOOSTER's own `handle-backend' reporting
+`:lightgbm' as its `backend-name' identifies exactly the set of objects
+`(typep booster 'lightgbm-booster)' would: only a `lightgbm-backend''s `train' or
+`load-model' ever builds a `lightgbm-booster', and every one of those stores that same
+`lightgbm-backend' -- whose `backend-name' is always `:lightgbm', set once at
+`open-backend' -- as the handle's `handle-backend'.
+
+ARGUMENT-DESCRIPTION names which caller-supplied argument BOOSTER came from, for
+`wrong-backend-reference''s report.
+
+Signals `wrong-backend-reference' when BOOSTER is not a `booster' at all -- a dataset, or
+any other non-handle value -- or is one built by a different backend, and whatever
+`handle-live-pointer' signals otherwise: `released-handle-error' for an already-freed
+BOOSTER, `backend-not-open' when its own backend has since been closed."
+  (unless (and (typep booster 'booster)
+               (eq (backend-name (handle-backend booster)) :lightgbm))
+    (error 'wrong-backend-reference
+           :backend :lightgbm
+           :given (class-name (class-of booster))
+           :argument argument-description))
+  (handle-live-pointer booster))
+
+(defun %booster-eval-count (pointer)
+  "Return the number of evaluation metrics configured on the booster at POINTER, read via
+`LGBM_BoosterGetEvalCounts'.
+
+`booster-eval-names' and `booster-eval' both call this to size their buffers -- 0 for a
+booster trained with `metric=none' or returned by `load-model', neither of which ever had
+metrics attached."
+  (cffi:with-foreign-object (out :int)
+    (check-lgbm (lgbm-booster-get-eval-counts pointer out) "LGBM_BoosterGetEvalCounts")
+    (cffi:mem-ref out :int)))
+
+(defun %booster-eval-names (pointer count)
+  "Return the COUNT evaluation metric names configured on the booster at POINTER, as a
+list of strings, via the two-call `LGBM_BoosterGetEvalNames' idiom: a first call with a
+modest per-name buffer learns the longest name's required length from its OUT-BUFFER-LEN
+parameter, and -- only when that length exceeds what was already tried -- a second call
+with every buffer sized to exactly that length fetches them all. No single metric name's
+length is knowable ahead of time, so one fixed-size buffer cannot be assumed to fit every
+one of them. Mirrors `%save-model-to-string''s two-call idiom, extended from one buffer to
+COUNT of them, since `LGBM_BoosterGetEvalNames' fills COUNT separate `char*' buffers
+rather than one string.
+
+Returns NIL when COUNT is 0 without making any foreign call: there is no data_idx or other
+per-call validation `LGBM_BoosterGetEvalNames' performs -- it reports the same COUNT names
+regardless of which dataset they will later be read against -- so skipping the call when
+there is nothing to fetch loses no safety, unlike `%booster-eval' below."
+  (if (zerop count)
+      nil
+      (flet ((fetch (buffer-length)
+               (cffi:with-foreign-objects ((out-len :int) (out-buffer-len :size)
+                                            (out-strs :pointer count))
+                 (dotimes (index count)
+                   (setf (cffi:mem-aref out-strs :pointer index)
+                         (cffi:foreign-alloc :char :count buffer-length)))
+                 (unwind-protect
+                      (progn
+                        (check-lgbm (lgbm-booster-get-eval-names
+                                     pointer count out-len buffer-length
+                                     out-buffer-len out-strs)
+                                    "LGBM_BoosterGetEvalNames")
+                        (values (cffi:mem-ref out-buffer-len :size)
+                                (loop :for index :below count
+                                      :collect (cffi:foreign-string-to-lisp
+                                                (cffi:mem-aref out-strs :pointer index)))))
+                   (dotimes (index count)
+                     (cffi:foreign-free (cffi:mem-aref out-strs :pointer index)))))))
+        (let ((probe-length 64))
+          (multiple-value-bind (required names) (fetch probe-length)
+            (if (<= required probe-length)
+                names
+                (nth-value 1 (fetch required))))))))
+
+(defun %booster-eval (pointer data-index count)
+  "Return the COUNT evaluation metric values for the dataset at DATA-INDEX on the booster
+at POINTER, via `LGBM_BoosterGetEval', as a fresh `(simple-array double-float (count))' in
+the same order `%booster-eval-names' reports the metrics' names.
+
+Always calls `LGBM_BoosterGetEval', even when COUNT is 0: unlike `%booster-eval-names',
+this call also validates DATA-INDEX against the datasets BOOSTER actually has attached,
+and skipping it would skip that check too, silently returning an empty array for an
+out-of-range DATA-INDEX instead of signalling -- confirmed directly against the vendored
+library, which rejects an out-of-range DATA-INDEX the same way whether COUNT is 0 or not.
+The output buffer is sized `(max count 1)' doubles so a zero-metric booster never asks
+CFFI for a zero-length foreign array.
+
+`LGBM_BoosterGetEval' writes its own element count back through OUT-LEN; this is asserted
+equal to COUNT rather than trusted silently, since the buffer was sized from
+`%booster-eval-count' and a mismatch would mean either an under-filled result or a write
+past the allocated buffer going unnoticed -- the same check `predict' makes against
+`LGBM_BoosterCalcNumPredict'."
+  (cffi:with-foreign-objects ((out-len :int) (buffer :double (max count 1)))
+    (check-lgbm (lgbm-booster-get-eval pointer data-index out-len buffer) "LGBM_BoosterGetEval")
+    (assert (= count (cffi:mem-ref out-len :int)) ()
+            "LGBM_BoosterGetEval wrote ~D elements, expected ~D from LGBM_BoosterGetEvalCounts"
+            (cffi:mem-ref out-len :int) count)
+    (let ((result (make-array count :element-type 'double-float)))
+      (dotimes (index count result)
+        (setf (aref result index) (cffi:mem-aref buffer :double index))))))
+
+(defun booster-eval-names (booster)
+  "Return the names of BOOSTER's configured evaluation metrics, as a fresh list of
+strings, via `LGBM_BoosterGetEvalCounts' and `LGBM_BoosterGetEvalNames'.
+
+The returned list belongs to the caller outright; cl-gbdt keeps no reference to it. Entry
+N here names entry N of the value list `booster-eval' returns for any DATA-INDEX -- metric
+names are configured once for the whole booster, not per dataset, which is why this takes
+no DATA-INDEX argument of its own, unlike `booster-eval'. NIL when BOOSTER has no metrics
+configured -- trained with `metric=none', or returned by `load-model', which never had
+metrics attached in the first place.
+
+Signals `wrong-backend-reference' when BOOSTER was not built by the LightGBM backend,
+`released-handle-error' when it has already been freed, and `backend-not-open' when its
+own backend has since been closed."
+  (with-foreign-float-traps-masked
+    (let* ((pointer (%check-lightgbm-booster booster "booster-eval-names's booster argument"))
+           (count (%booster-eval-count pointer)))
+      (%booster-eval-names pointer count))))
+
+(defun booster-eval (booster data-index)
+  "Return BOOSTER's evaluation metric values for the dataset at DATA-INDEX, as a fresh
+`(simple-array double-float (*))', via `LGBM_BoosterGetEvalCounts' and
+`LGBM_BoosterGetEval'. Entry N corresponds to entry N of `booster-eval-names' -- call that
+separately for the metric names, since LightGBM reports them independently of DATA-INDEX.
+
+DATA-INDEX is LightGBM's own numbering, passed straight through to `LGBM_BoosterGetEval'
+unmodified: 0 means the training set BOOSTER was built from; 1 means the first dataset in
+`train''s :VALID-SETS, 2 the second, and so on. Nothing here assigns a name to any of
+them -- see design policy section 4's rule against inventing dataset names for LightGBM.
+
+Signals `foreign-call-error' when DATA-INDEX is negative or exceeds the number of datasets
+BOOSTER actually has attached -- confirmed directly against the vendored library, which
+rejects both with a descriptive `LGBM_GetLastError' message rather than reading out of
+bounds. Also signals `wrong-backend-reference' when BOOSTER was not built by the LightGBM
+backend, `released-handle-error' when it has already been freed, and `backend-not-open'
+when its own backend has since been closed."
+  (with-foreign-float-traps-masked
+    (let* ((pointer (%check-lightgbm-booster booster "booster-eval's booster argument"))
+           (count (%booster-eval-count pointer)))
+      (%booster-eval pointer data-index count))))

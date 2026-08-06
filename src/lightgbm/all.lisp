@@ -36,18 +36,26 @@
 ;;; public surface by accident -- exactly what this task's brief warns an accidental export
 ;;; becomes: a compatibility obligation.
 ;;;
-;;; So this re-exports `cl-gbdt/src/lightgbm/protocol' only, which today exports exactly one
-;;; symbol, `lightgbm-backend' -- the CLOS class a caller can specialize methods on or check
-;;; with `typep'. Nothing from `native' is published here: none of its current exports is a
-;;; reviewed, Lisp-level LightGBM-specific operation -- that is Phase 2's job
-;;; (docs/superpowers/specs/2026-08-06-evaluation-api-design.md), which adds functions here
-;;; built and documented as public contracts, named explicitly when they are, never picked up
-;;; by widening this clause.
+;;; This re-exports `cl-gbdt/src/lightgbm/protocol' in full -- today just `lightgbm-backend',
+;;; the CLOS class a caller can specialize methods on or check with `typep' -- plus two named
+;;; symbols pulled explicitly from `native': `booster-eval-names' and `booster-eval', Phase 2's
+;;; first LightGBM-specific safe API (docs/superpowers/specs/2026-08-06-evaluation-api-design.md,
+;;; policy section 3's Layer 1). Nothing else from `native' is published here: none of its
+;;; remaining exports is a reviewed, Lisp-level LightGBM-specific operation. A future Phase 2
+;;; addition follows the same shape -- named explicitly in both the `:import-from' and the
+;;; `:export' clause above, never picked up by widening either into a blanket re-export of
+;;; `native' as a whole; see this comment block's own earlier paragraph for why that stays
+;;; forbidden.
 ;;;
 ;;; And, as ever: never `#:cl-gbdt/src/lightgbm/c-api', the raw CFFI bindings -- see the
 ;;; comment above `cl-gbdt/src/lightgbm/all'.
 (uiop:define-package #:cl-gbdt/lightgbm
-  (:use-reexport #:cl-gbdt/src/lightgbm/protocol))
+  (:use-reexport #:cl-gbdt/src/lightgbm/protocol)
+  (:import-from #:cl-gbdt/src/lightgbm/native
+                #:booster-eval-names
+                #:booster-eval)
+  (:export #:booster-eval-names
+           #:booster-eval))
 
 ;;; This second form's dependency on `protocol' is already covered by the first form's own
 ;;; `:use-reexport' above -- package-inferred-system infers a file's dependencies from the

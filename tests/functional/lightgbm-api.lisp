@@ -19,6 +19,12 @@
   ;; `all', the leaf `cl-gbdt/lightgbm' itself depends on, rather than `protocol'
   ;; directly, so this exercises the same load path a real caller would.
   (:import-from #:cl-gbdt/src/lightgbm/all)
+  ;; Zero symbols, same reasoning as the `#:cl-gbdt' clause above: every reference below is
+  ;; package-qualified, `cl-gbdt/lightgbm:booster-eval-names' and `cl-gbdt/lightgbm:booster-eval'.
+  ;; Declared anyway so this file's dependency on Task 2's new public functions is explicit
+  ;; rather than riding along on `#:cl-gbdt/src/lightgbm/all' above, which exists here only
+  ;; for its `register-backend' load-time side effect, not for anything it exports.
+  (:import-from #:cl-gbdt/lightgbm)
   (:import-from #:cl-gbdt/tests/functional/support
                 #:with-backend-library
                 #:make-separable-dataset
@@ -744,3 +750,257 @@ two groups.")
                        (cl-gbdt:wrong-backend-reference () t))
                      "train accepted a booster inside :valid-sets"))))
         (cl-gbdt:close-backend backend)))))
+
+;;; Task 2: `cl-gbdt/lightgbm:booster-eval-names' and `cl-gbdt/lightgbm:booster-eval', the
+;;; LightGBM backend's first Layer 1 (backend-specific safe API) functions -- see
+;;; docs/cl-gbdt-layered-api-implementation-policy.md section 3 and
+;;; docs/superpowers/specs/2026-08-06-evaluation-api-design.md. Both are plain functions
+;;; exported directly from `cl-gbdt/lightgbm', not `defmethod's reached through `cl-gbdt',
+;;; so they are exercised here, alongside this file's other round trips through the public
+;;; API, rather than in tests/functional/lightgbm.lisp, which never wraps a raw pointer in a
+;;; handle object at all.
+
+(defparameter *eval-booster-parameters*
+  '(:objective "binary" :num-leaves 2 :min-data-in-leaf 1 :min-data-in-bin 1 :verbose -1
+    :metric "binary_logloss,auc")
+  "LightGBM booster parameters for the evaluation tests below. Two metrics, not one, so a
+test that only checked a single name/value pair could not pass by accident if
+`booster-eval' or `booster-eval-names' silently dropped every entry after the first.")
+
+;;; Step 3 of this task's brief: metric names come from `LGBM_BoosterGetEvalNames' and their
+;;; count matches `LGBM_BoosterGetEvalCounts'. *EVAL-BOOSTER-PARAMETERS* configures exactly
+;;; two metrics, "binary_logloss" and "auc", in that order -- LightGBM reports metric names
+;;; in configuration order, confirmed directly against the vendored library -- so this checks
+;;; order as well as count, which a test using a single default metric could not distinguish
+;;; from a name/value pair silently transposed or dropped.
+
+(deftest lightgbm-api-booster-eval-names-and-values-match-configured-metrics
+  (with-backend-library (:lightgbm)
+    (multiple-value-bind (matrix label-vector) (make-separable-dataset)
+      (let ((backend (cl-gbdt:open-backend :lightgbm))
+            (train-set nil)
+            (valid-set nil)
+            (booster nil))
+        (unwind-protect
+             (progn
+               (setf train-set (cl-gbdt:make-dataset backend matrix
+                                                       :label label-vector
+                                                       :parameters *dataset-parameters*))
+               (setf valid-set (cl-gbdt:make-dataset backend matrix
+                                                      :label label-vector
+                                                      :parameters *dataset-parameters*))
+               (setf booster (cl-gbdt:train backend train-set :num-rounds 5
+                                             :valid-sets (list valid-set)
+                                             :parameters *eval-booster-parameters*))
+               (testing "booster-eval-names reports both configured metrics, in order"
+                 (ok (equal '("binary_logloss" "auc")
+                            (cl-gbdt/lightgbm:booster-eval-names booster))
+                     (format nil "booster-eval-names returned ~S"
+                             (cl-gbdt/lightgbm:booster-eval-names booster))))
+               (testing "booster-eval on the training set (index 0) has one finite, ~
+                         metric-appropriate value per metric"
+                 (let ((values (cl-gbdt/lightgbm:booster-eval booster 0)))
+                   (ok (= 2 (length values)) (format nil "length was ~D" (length values)))
+                   (ok (plusp (aref values 0))
+                       (format nil "binary_logloss was ~S" (aref values 0)))
+                   (ok (<= 0.0d0 (aref values 1) 1.0d0)
+                       (format nil "auc was ~S" (aref values 1)))))
+               (testing "booster-eval on the validation set (index 1) has one value per metric"
+                 (let ((values (cl-gbdt/lightgbm:booster-eval booster 1)))
+                   (ok (= (length (cl-gbdt/lightgbm:booster-eval-names booster)) (length values))
+                       (format nil "length was ~D" (length values))))))
+          (progn
+            (when booster (cl-gbdt:free-booster booster))
+            (when valid-set (cl-gbdt:free-dataset valid-set))
+            (when train-set (cl-gbdt:free-dataset train-set))
+            (cl-gbdt:close-backend backend)))))))
+
+;;; Design doc section 7's explicit ask: a test that would fail if evaluation were faked.
+;;; Every other assertion in this file about `booster-eval' checks shape and range, both of
+;;; which a function returning plausible constants could pass by accident. Training the same
+;;; separable fixture for one round versus thirty, then reading `binary_logloss' back off the
+;;; same data each was trained on, cannot: confirmed directly against the vendored library,
+;;; one round's `binary_logloss' is ~0.598 and thirty rounds' is ~0.024 on this fixture -- the
+;;; metric has to fall as the model actually fits the data better, which a stub has no way to
+;;; reproduce without actually training the booster.
+
+(deftest lightgbm-api-booster-eval-tracks-actual-model-fit
+  (with-backend-library (:lightgbm)
+    (multiple-value-bind (matrix label-vector) (make-separable-dataset)
+      (let ((backend (cl-gbdt:open-backend :lightgbm))
+            (train-set nil)
+            (undertrained nil)
+            (overtrained nil))
+        (unwind-protect
+             (progn
+               (setf train-set (cl-gbdt:make-dataset backend matrix
+                                                       :label label-vector
+                                                       :parameters *dataset-parameters*))
+               (setf undertrained (cl-gbdt:train backend train-set :num-rounds 1
+                                                  :parameters *eval-booster-parameters*))
+               (setf overtrained (cl-gbdt:train backend train-set :num-rounds 30
+                                                 :parameters *eval-booster-parameters*))
+               (testing "more boosting rounds lowers binary_logloss on the training set"
+                 (let ((loss-1 (aref (cl-gbdt/lightgbm:booster-eval undertrained 0) 0))
+                       (loss-30 (aref (cl-gbdt/lightgbm:booster-eval overtrained 0) 0)))
+                   (ok (< loss-30 loss-1)
+                       (format nil "1 round: ~S, 30 rounds: ~S" loss-1 loss-30)))))
+          (progn
+            (when undertrained (cl-gbdt:free-booster undertrained))
+            (when overtrained (cl-gbdt:free-booster overtrained))
+            (when train-set (cl-gbdt:free-dataset train-set))
+            (cl-gbdt:close-backend backend)))))))
+
+;;; `metric=none' is LightGBM's own way to configure zero evaluation metrics -- confirmed
+;;; directly against the vendored library, `LGBM_BoosterGetEvalCounts' reports 0 and
+;;; `LGBM_BoosterGetEval' reports an empty result rather than erroring. `%booster-eval-names'
+;;; skips its own foreign call in that case, while `%booster-eval' still makes its, with a
+;;; one-double buffer it never reads from -- see both functions' docstrings in native.lisp.
+;;; This proves the public functions return the expected empty values, not a signal or a
+;;; garbage-filled array.
+
+(deftest lightgbm-api-booster-eval-with-no-metrics-configured-returns-empty
+  (with-backend-library (:lightgbm)
+    (multiple-value-bind (matrix label-vector) (make-separable-dataset)
+      (let ((backend (cl-gbdt:open-backend :lightgbm))
+            (train-set nil)
+            (booster nil))
+        (unwind-protect
+             (progn
+               (setf train-set (cl-gbdt:make-dataset backend matrix
+                                                       :label label-vector
+                                                       :parameters *dataset-parameters*))
+               (setf booster (cl-gbdt:train backend train-set :num-rounds 1
+                                             :parameters '(:objective "binary" :num-leaves 2
+                                                           :min-data-in-leaf 1
+                                                           :min-data-in-bin 1 :verbose -1
+                                                           :metric "None")))
+               (testing "booster-eval-names is empty when no metric is configured"
+                 (ok (null (cl-gbdt/lightgbm:booster-eval-names booster))
+                     (format nil "got ~S" (cl-gbdt/lightgbm:booster-eval-names booster))))
+               (testing "booster-eval on the training set is a zero-length array"
+                 (let ((values (cl-gbdt/lightgbm:booster-eval booster 0)))
+                   (ok (typep values '(simple-array double-float (0)))
+                       (format nil "got ~S" values)))))
+          (progn
+            (when booster (cl-gbdt:free-booster booster))
+            (when train-set (cl-gbdt:free-dataset train-set))
+            (cl-gbdt:close-backend backend)))))))
+
+;;; DATA-INDEX 0 always means the training set; with no :valid-sets attached, index 1 is out
+;;; of range -- confirmed directly against the vendored library, `LGBM_BoosterGetEval' rejects
+;;; it with a "Check failed: data_idx >= 0 && data_idx <= ..." message rather than reading
+;;; past the end of an internal array. This proves `booster-eval' turns that into
+;;; `foreign-call-error' rather than crashing or returning a bogus result.
+
+(deftest lightgbm-api-booster-eval-out-of-range-data-index-signals
+  (with-backend-library (:lightgbm)
+    (multiple-value-bind (matrix label-vector) (make-separable-dataset)
+      (let ((backend (cl-gbdt:open-backend :lightgbm))
+            (train-set nil)
+            (booster nil))
+        (unwind-protect
+             (progn
+               (setf train-set (cl-gbdt:make-dataset backend matrix
+                                                       :label label-vector
+                                                       :parameters *dataset-parameters*))
+               (setf booster (cl-gbdt:train backend train-set :num-rounds 1
+                                             :parameters *eval-booster-parameters*))
+               (testing "booster-eval with no attached validation set at index 1 signals"
+                 ;; handler-case, not rove's `signals' -- see this file's other guard
+                 ;; tests for why.
+                 (ok (handler-case (progn (cl-gbdt/lightgbm:booster-eval booster 1) nil)
+                       (cl-gbdt:foreign-call-error () t))
+                     "booster-eval did not signal foreign-call-error for an out-of-range index")))
+          (progn
+            (when booster (cl-gbdt:free-booster booster))
+            (when train-set (cl-gbdt:free-dataset train-set))
+            (cl-gbdt:close-backend backend)))))))
+
+;;; `booster-eval' and `booster-eval-names' are plain functions, not `defmethod's -- unlike
+;;; every other operation this file guards against a mismatched handle, CLOS dispatch does not
+;;; rule out the wrong kind on its own here. `%check-lightgbm-booster' is the explicit check
+;;; that stands in for it; this proves it runs before either foreign call, using a dataset
+;;; handle -- the same one `train''s own DATASET argument accepts -- as the wrong kind.
+
+(deftest lightgbm-api-booster-eval-with-a-dataset-as-booster-argument-signals
+  (with-backend-library (:lightgbm)
+    (multiple-value-bind (matrix label-vector) (make-separable-dataset)
+      (let ((backend (cl-gbdt:open-backend :lightgbm))
+            (train-set nil))
+        (unwind-protect
+             (progn
+               (setf train-set (cl-gbdt:make-dataset backend matrix
+                                                       :label label-vector
+                                                       :parameters *dataset-parameters*))
+               (testing "booster-eval-names with a dataset as its argument signals"
+                 (ok (handler-case
+                         (progn (cl-gbdt/lightgbm:booster-eval-names train-set) nil)
+                       (cl-gbdt:wrong-backend-reference () t))
+                     "booster-eval-names accepted a dataset as its booster argument"))
+               (testing "booster-eval with a dataset as its argument signals"
+                 (ok (handler-case (progn (cl-gbdt/lightgbm:booster-eval train-set 0) nil)
+                       (cl-gbdt:wrong-backend-reference () t))
+                     "booster-eval accepted a dataset as its booster argument")))
+          (progn
+            (when train-set (cl-gbdt:free-dataset train-set))
+            (cl-gbdt:close-backend backend)))))))
+
+;;; `booster-eval' and `booster-eval-names' read BOOSTER's pointer through
+;;; `handle-live-pointer', the same guard every other operation in this file goes through --
+;;; this proves it, mirroring `lightgbm-api-free-dataset-releases-the-handle''s proof for
+;;; datasets.
+
+(deftest lightgbm-api-booster-eval-after-free-booster-signals
+  (with-backend-library (:lightgbm)
+    (multiple-value-bind (matrix label-vector) (make-separable-dataset)
+      (let ((backend (cl-gbdt:open-backend :lightgbm))
+            (train-set nil)
+            (booster nil))
+        (unwind-protect
+             (progn
+               (setf train-set (cl-gbdt:make-dataset backend matrix
+                                                       :label label-vector
+                                                       :parameters *dataset-parameters*))
+               (setf booster (cl-gbdt:train backend train-set :num-rounds 1
+                                             :parameters *eval-booster-parameters*))
+               (cl-gbdt:free-booster booster)
+               (testing "booster-eval-names on a freed booster signals released-handle-error"
+                 (ok (handler-case (progn (cl-gbdt/lightgbm:booster-eval-names booster) nil)
+                       (cl-gbdt:released-handle-error () t))
+                     "booster-eval-names did not signal released-handle-error"))
+               (testing "booster-eval on a freed booster signals released-handle-error"
+                 (ok (handler-case (progn (cl-gbdt/lightgbm:booster-eval booster 0) nil)
+                       (cl-gbdt:released-handle-error () t))
+                     "booster-eval did not signal released-handle-error")))
+          (progn
+            (when train-set (cl-gbdt:free-dataset train-set))
+            (cl-gbdt:close-backend backend)))))))
+
+;;; Same guard as the free-booster proof above, for a closed backend instead -- mirroring
+;;; `lightgbm-api-operation-after-close-backend-signals-backend-not-open''s proof for
+;;; `dataset-num-rows'.
+
+(deftest lightgbm-api-booster-eval-after-close-backend-signals
+  (with-backend-library (:lightgbm)
+    (multiple-value-bind (matrix label-vector) (make-separable-dataset)
+      (let* ((backend (cl-gbdt:open-backend :lightgbm))
+             (train-set (cl-gbdt:make-dataset backend matrix
+                                               :label label-vector
+                                               :parameters *dataset-parameters*))
+             (booster (cl-gbdt:train backend train-set :num-rounds 1
+                                      :parameters *eval-booster-parameters*)))
+        (cl-gbdt:close-backend backend)
+        (unwind-protect
+             (progn
+               (testing "booster-eval-names after close-backend signals backend-not-open"
+                 (ok (handler-case (progn (cl-gbdt/lightgbm:booster-eval-names booster) nil)
+                       (cl-gbdt:backend-not-open () t))
+                     "booster-eval-names did not signal backend-not-open"))
+               (testing "booster-eval after close-backend signals backend-not-open"
+                 (ok (handler-case (progn (cl-gbdt/lightgbm:booster-eval booster 0) nil)
+                       (cl-gbdt:backend-not-open () t))
+                     "booster-eval did not signal backend-not-open")))
+          (progn
+            (when booster (cl-gbdt:free-booster booster))
+            (when train-set (cl-gbdt:free-dataset train-set))))))))
