@@ -42,14 +42,17 @@
                 #:*vendor-library-directory*
                 #:*vendor-library-pattern*
                 #:*default-library-name*
-                #:*required-symbols*)
+                #:*required-symbols*
+                #:*optional-symbols*)
   (:import-from #:cl-gbdt/src/backend
                 #:backend
                 #:backend-name
                 #:backend-library-path
                 #:backend-version
+                #:backend-capabilities
                 #:backend-open-p
                 #:probe-foreign-symbols
+                #:probe-capabilities
                 #:register-backend
                 #:initialize-backend
                 #:shutdown-backend)
@@ -146,8 +149,13 @@ Once a library is loaded, every name in *required-symbols* must resolve via
 :LIBRARY -- see that function's docstring for the SBCL caveat: it validates
 the library argument but, on this platform, cannot actually scope the symbol
 search to it -- or this signals `missing-foreign-symbols' -- the
-version-mismatch check that function exists for. LightGBM's C API has no
-runtime version query, so `backend-version' is left NIL rather than guessed --
+version-mismatch check that function exists for. Only once that required check
+has passed does this probe *optional-symbols* via `probe-capabilities' and
+record the result on `backend-capabilities' -- unlike a missing required
+symbol, a missing optional one never signals; it only makes
+`backend-supports-p' answer NIL for the capability that symbol backs.
+LightGBM's C API has no runtime version query, so `backend-version' is left
+NIL rather than guessed --
 and, unlike `cl-gbdt/src/xgboost/protocol''s `initialize-backend', this never
 calls `cl-gbdt/src/version''s `check-backend-version': with nothing to read, a
 call here could never confirm compatibility, only ever warn on every single
@@ -175,6 +183,8 @@ BACKEND dropped and nothing left able to close it."
                  (when missing
                    (error 'missing-foreign-symbols
                           :backend (backend-name backend) :names missing)))
+               (setf (backend-capabilities backend)
+                     (probe-capabilities *optional-symbols* :library library))
                (setf (backend-version backend) nil)
                (setf succeeded t))
           (unless succeeded

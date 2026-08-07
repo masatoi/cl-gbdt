@@ -72,6 +72,7 @@
            #:*vendor-library-pattern*
            #:*default-library-name*
            #:*required-symbols*
+           #:*optional-symbols*
            #:%check-backend-open
            #:%check-lightgbm-dataset
            #:%reference-pointer
@@ -270,6 +271,17 @@ system search never finds it.")
     "LGBM_BoosterGetEval")
   "C function names this backend calls, checked with `probe-foreign-symbols' right
 after the library loads.")
+
+(defparameter *optional-symbols*
+  '()
+  "Capability name to the C function names that capability needs. Empty: LightGBM has no
+optional capability yet.
+
+Declared rather than omitted so that `initialize-backend' below takes the same shape as
+XGBoost's, and so the next optional capability is an entry in an existing list rather than a
+new mechanism. LightGBM having no counterpart to `XGBoosterSlice' is why
+`(backend-supports-p backend :model-slicing)' is false here -- which is the case the whole
+capability model is tested against.")
 
 ;;; ---------------------------------------------------------------------------
 ;;; Datasets

@@ -8,7 +8,8 @@
   (:use #:cl)
   (:import-from #:cffi)
   (:import-from #:cl-gbdt/src/conditions
-                #:unknown-backend)
+                #:unknown-backend
+                #:unknown-capability)
   (:export #:backend
            #:backend-name
            #:backend-library-path
@@ -22,7 +23,10 @@
            #:close-backend
            #:initialize-backend
            #:shutdown-backend
-           #:probe-foreign-symbols))
+           #:probe-foreign-symbols
+           #:*known-capabilities*
+           #:backend-supports-p
+           #:probe-capabilities))
 
 (in-package #:cl-gbdt/src/backend)
 
@@ -39,9 +43,10 @@
                  :documentation "Path of the shared library actually loaded.")
    (capabilities :initform nil
                  :accessor backend-capabilities
-                 :documentation "Plist of backend-specific features. Reserved for future
-symbol-probing-based detection; no backend populates this yet, so `backend-info' always
-reports it as NIL.")
+                 :documentation "Plist of capability keyword to T/NIL, as returned by
+`probe-capabilities' at `open-backend' time. Read through `backend-supports-p' rather
+than directly, so an unregistered keyword signals `unknown-capability' instead of
+silently reading as NIL.")
    (version :initform nil
             :accessor backend-version
             :documentation "Library version; an inferred value or nil when unavailable.")
@@ -72,8 +77,9 @@ Each backend system calls this when it loads."
 
 When PATH is supplied it takes precedence over the search. On failure this signals
 `backend-library-not-found', `backend-library-load-failed', or
-`missing-foreign-symbols'. Does not populate `backend-capabilities' -- no backend
-probes capabilities yet, so it stays NIL. Implemented by each backend."))
+`missing-foreign-symbols'. Expected to populate `backend-capabilities' with the plist
+`probe-capabilities' returns, so `backend-supports-p' has something to read. Implemented
+by each backend."))
 
 (defgeneric shutdown-backend (backend)
   (:documentation "Close BACKEND's shared library and release its resources.
@@ -140,3 +146,55 @@ right file; only a LightGBM already loaded by something else, providing every
 name in *required-symbols* under the same names, defeats that, and no argument
 to this function can detect it here."
   (remove-if (lambda (name) (cffi:foreign-symbol-pointer name :library library)) names))
+
+(defparameter *known-capabilities*
+  '(:sparse-input
+    :evaluation-history
+    :early-stopping
+    :model-slicing
+    :multidimensional-feature-score)
+  "Every capability name `backend-supports-p' will answer for.
+
+Policy section 7's five names. A name is registered here as soon as it is a question worth
+asking, whether or not any backend answers true to it yet -- `:early-stopping' is registered
+and false everywhere, which says \"not supported yet\" rather than \"never heard of it\".
+Registering the name is what makes a misspelling distinguishable from a real answer.")
+
+(defun backend-supports-p (backend capability)
+  "Return true when BACKEND provides CAPABILITY, NIL when it does not.
+
+CAPABILITY must be one of `*known-capabilities*'; anything else signals
+`unknown-capability' rather than answering NIL, so a typo cannot be mistaken for a
+supported-but-absent feature.
+
+A true answer means the shared library actually loaded resolved every foreign symbol the
+capability needs, as probed at `open-backend' -- not that the headers cl-gbdt was built
+against declared them. A false answer means the feature is unavailable here, and is never a
+licence to fall back to something else silently: the operation itself signals
+`capability-unavailable' (policy section 7)."
+  (unless (member capability *known-capabilities*)
+    (error 'unknown-capability :capability capability :known *known-capabilities*))
+  (and (getf (backend-capabilities backend) capability) t))
+
+(defun probe-capabilities (optional-symbols &key (library :default))
+  "Return the capability plist for OPTIONAL-SYMBOLS, probed against LIBRARY.
+
+OPTIONAL-SYMBOLS is an alist of a capability keyword and the C function names that capability
+needs: ((:model-slicing \"XGBoosterSlice\") ...). A capability is true when every one of its
+names resolves.
+
+Every declared capability appears in the result, true and false alike, rather than only the
+true ones -- `backend-info' should be able to report what was asked as well as what was
+answered.
+
+**This never signals for a missing symbol**, which is the whole difference between an optional
+symbol and a required one: policy section 8 says an optional symbol's absence disables that one
+capability rather than preventing the backend from opening. Callers wanting the required
+behaviour use `probe-foreign-symbols' directly and signal `missing-foreign-symbols'
+themselves.
+
+LIBRARY is passed through to `probe-foreign-symbols'; see its docstring for the SBCL caveat
+about scoping a probe to one library."
+  (loop :for (capability . names) :in optional-symbols
+        :append (list capability
+                      (null (probe-foreign-symbols names :library library)))))

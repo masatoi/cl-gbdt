@@ -43,15 +43,33 @@
 ;;;; `XGBoosterGetNumFeature' were both called but neither was declared -- found once, by
 ;;;; inspection, which is the argument for checking it mechanically instead.
 ;;;;
-;;;; This assumes every imported function is required -- true of both backends today, so
-;;;; there is nothing to exempt. Design doc section 8 also describes an *optional* symbol
-;;;; tier: a function whose absence should degrade one capability rather than fail
-;;;; `open-backend' outright. Neither backend declares one, and this check does not invent
-;;;; that tier -- doing so with no real optional symbol to test it against would mean
-;;;; shipping the distinction unverified, the same failure shape as a check that has never
-;;;; been seen to fail (see the empty-parse guard below). Section 7's capability work is
-;;;; where that tier belongs; until then, "imported but not required" is unconditionally a
-;;;; failure here.
+;;;; Design doc section 8 also describes an *optional* symbol tier: a function whose absence
+;;;; degrades one capability rather than failing `open-backend' outright. This file's earlier
+;;;; version deliberately did not invent that tier -- with no real optional symbol to test it
+;;;; against, shipping the distinction would have meant shipping a branch nobody had seen
+;;;; fail, the same failure shape as the empty-parse guard below. Section 7's capability work
+;;;; brought the first one: `XGBoosterSlice', declared in XGBoost's `*optional-symbols*',
+;;;; probed into `backend-capabilities' at `open-backend' and required by
+;;;; `cl-gbdt/xgboost:slice-model'. So CHECK B is now three-valued -- an import's C name is
+;;;; REQUIRED (in `*required-symbols*'), OPTIONAL (named by some entry of
+;;;; `*optional-symbols*'), or a failure -- and "imported but declared nowhere" is what fails.
+;;;;
+;;;; CHECK C: no *optional-symbols* capability escapes the registry
+;;;;
+;;;; The optional tier has a second way to go wrong that the required tier does not: its
+;;;; entries are keyed by a capability name, and `backend-supports-p' answers only for names
+;;;; in `*known-capabilities*' (src/backend.lisp), signalling `unknown-capability' for
+;;;; anything else. A backend declaring an optional symbol under a capability the registry
+;;;; does not list would probe it, record it in `backend-capabilities', and then have every
+;;;; query for it signal instead of answering -- a declaration and a registry that have
+;;;; drifted apart, silently, because nothing loads both together. CHECK C is that check.
+;;;;
+;;;; What the optional tier still TRUSTS, and this file cannot check: whether a symbol
+;;;; belongs in `*required-symbols*' or `*optional-symbols*' at all. Moving a genuinely
+;;;; required name into the optional list would silence CHECK B for it and turn an
+;;;; `open-backend'-time `missing-foreign-symbols' into a call-time failure, and nothing here
+;;;; can tell that from a real capability -- only that every import is declared somewhere and
+;;;; every capability named is one the registry knows.
 ;;;;
 ;;;; WHAT THIS CHECKS
 ;;;;
@@ -66,10 +84,12 @@
 ;;;;    checked (see tools/ci/lint.lisp's own header).
 ;;;; 3. For each backend, builds the Lisp-name -> C-name map and the imported-name list
 ;;;;    described above (`check-backend'). CHECK A reports any import whose C name is on
-;;;;    the blacklist. CHECK B separately reads the backend's `*required-symbols*'
-;;;;    `defparameter' (`required-c-names') and reports any import whose C name is absent
-;;;;    from it. The two reports are independent: an import can fail either, both, or
-;;;;    neither.
+;;;;    the blacklist. CHECK B separately reads the backend's `*required-symbols*' and
+;;;;    `*optional-symbols*' `defparameter's (`required-c-names', `optional-symbol-entries')
+;;;;    and reports any import whose C name is in neither. The two reports are independent:
+;;;;    an import can fail either, both, or neither.
+;;;; 4. CHECK C reads `*known-capabilities*' from +CAPABILITY-REGISTRY-PATH+ and reports any
+;;;;    capability an `*optional-symbols*' entry is keyed by that the registry does not list.
 ;;;;
 ;;;; Like tools/ci/check-float-traps.lisp, every file here is read as data via `read',
 ;;;; never loaded or evaluated -- nothing in src/*/c-api.lisp or src/*/backend.lisp runs,
@@ -97,9 +117,14 @@
 ;;;;   - Whether a name declared in `*required-symbols*' but no longer imported anywhere
 ;;;;     (CHECK B checks only the import -> required direction, not the reverse) is stale.
 ;;;;     A stale entry is over-cautious, not unsafe, so this does not flag it.
-;;;;   - Whether the *right* symbols are optional versus required at all -- CHECK B only
-;;;;     enforces the required-only assumption stated above; it cannot tell a genuinely
-;;;;     optional capability from one nobody has split out yet.
+;;;;   - Whether the *right* symbols are optional versus required -- see the paragraph on
+;;;;     what the optional tier trusts, above. CHECK B enforces that every import is declared
+;;;;     in one list or the other, and CHECK C that every optional entry's capability is a
+;;;;     registered one; neither can tell which list a name belongs in.
+;;;;   - Whether an optional symbol's capability is the one the operation guarding it
+;;;;     actually checks. `cl-gbdt/xgboost:slice-model' asking `backend-supports-p' for the
+;;;;     wrong capability keyword would be caught by its functional tests, not here: this
+;;;;     script never reads a call site.
 
 (require :asdf)
 
@@ -113,6 +138,10 @@
 
 (defparameter +blacklist-path+ "ffi-spec/ABI-BLACKLIST.md"
   "Path, relative to the repository root, of the first-class blacklist record.")
+
+(defparameter +capability-registry-path+ "src/backend.lisp"
+  "Path, relative to the repository root, of the `*known-capabilities*' registry
+`backend-supports-p' answers for. CHECK C reads it; see this file's header.")
 
 (defparameter +backends+
   '((:lightgbm "src/lightgbm/c-api.lisp" "CL-GBDT/SRC/LIGHTGBM/C-API"
@@ -259,43 +288,71 @@ they would look exactly like an unresolved function name to `check-backend'."
       (error "no uiop:define-package form found in ~A" backend-path))
     (import-from-names form c-api-package-name)))
 
-;;; ---- Step 4: the backend's *required-symbols* declaration (CHECK B) ----
+;;; ---- Step 4: the backend's symbol declarations (CHECK B) and the registry (CHECK C) ----
 
 (defun defparameter-form-p (form)
   "True when FORM is a top-level `(defparameter ...)' form."
   (and (consp form) (symbol-name-string= (car form) "DEFPARAMETER")))
 
-(defun required-symbols-form (forms)
-  "Return the `(defparameter *required-symbols* ...)' form in FORMS, or NIL if none is
-present."
-  (find-if (lambda (form)
-             (and (defparameter-form-p form)
-                  (symbol-name-string= (second form) "*REQUIRED-SYMBOLS*")))
-           forms))
+(defun quoted-literal-value (path parameter-name)
+  "Return the literal list held by PATH's `(defparameter PARAMETER-NAME '(...))' form.
+
+Signals an error, rather than silently treating the declaration as empty, when the form is
+missing or is not a quoted literal list -- the same reasoning `backend-imports' applies to a
+missing `uiop:define-package' form: a checker that cannot find what it is supposed to check
+against must say so loudly, not report a result that happens to look like a real one. Here
+an empty `*required-symbols*' would make every import look like a gap, and an empty
+`*optional-symbols*' would make a correctly declared optional import look like one -- and
+that second one fails in the direction that lets a real defect through, since a name missing
+from both lists is what CHECK B exists to find."
+  (let* ((forms (read-top-level-forms path))
+         (form (find-if (lambda (f)
+                          (and (defparameter-form-p f)
+                               (symbol-name-string= (second f) parameter-name)))
+                        forms)))
+    (unless form
+      (error "no ~A defparameter found in ~A" parameter-name path))
+    (let ((value-form (third form)))
+      (unless (and (consp value-form) (symbol-name-string= (car value-form) "QUOTE"))
+        (error "~A in ~A is not a quoted literal list" parameter-name path))
+      (second value-form))))
 
 (defun required-c-names (backend-path)
   "Return the list of C function name strings BACKEND-PATH's `*required-symbols*'
 declares -- what `probe-foreign-symbols' checks at `open-backend', per that parameter's
-own docstring in each backend file.
+own docstring in each backend file."
+  (mapcar (lambda (name)
+            (unless (stringp name)
+              (error "non-string entry ~S in *required-symbols* in ~A" name backend-path))
+            name)
+          (quoted-literal-value backend-path "*REQUIRED-SYMBOLS*")))
 
-Signals an error, rather than silently treating a name as uncovered, when the form is
-missing or is not a quoted literal list of strings -- the same reasoning
-`backend-imports' applies to a missing `uiop:define-package' form: a checker that cannot
-find what it is supposed to check against must say so loudly, not report a coverage
-result that happens to look like a real one (here, every import would look like a gap
-against a required-set this function silently treated as empty)."
-  (let* ((forms (read-top-level-forms backend-path))
-         (form (required-symbols-form forms)))
-    (unless form
-      (error "no *required-symbols* defparameter found in ~A" backend-path))
-    (let ((value-form (third form)))
-      (unless (and (consp value-form) (symbol-name-string= (car value-form) "QUOTE"))
-        (error "*required-symbols* in ~A is not a quoted literal list" backend-path))
-      (mapcar (lambda (name)
-                (unless (stringp name)
-                  (error "non-string entry ~S in *required-symbols* in ~A" name backend-path))
-                name)
-              (second value-form)))))
+(defun optional-symbol-entries (backend-path)
+  "Return BACKEND-PATH's `*optional-symbols*' as a list of (CAPABILITY . C-NAMES) conses --
+policy section 8's optional tier, probed by `probe-capabilities' at `open-backend' and never
+signalled for. Empty when the backend declares no optional capability, as LightGBM does
+today; the declaration itself is still required to be present, so a new backend takes the
+same shape rather than being silently exempted from CHECK B's optional half."
+  (let ((entries (quoted-literal-value backend-path "*OPTIONAL-SYMBOLS*")))
+    (dolist (entry entries entries)
+      (unless (and (consp entry) (keywordp (car entry)) (consp (cdr entry))
+                   (every #'stringp (cdr entry)))
+        (error "malformed *optional-symbols* entry ~S in ~A -- expected ~
+                (CAPABILITY-KEYWORD \"CFunctionName\" ...)"
+               entry backend-path)))))
+
+(defun optional-c-names (entries)
+  "Return every C function name string named by any entry of ENTRIES, an
+`optional-symbol-entries' result."
+  (loop :for entry :in entries :append (copy-list (cdr entry))))
+
+(defun known-capability-names (path)
+  "Return the capability keywords PATH's `*known-capabilities*' registers -- every name
+`backend-supports-p' will answer for rather than signal `unknown-capability' on."
+  (let ((names (quoted-literal-value path "*KNOWN-CAPABILITIES*")))
+    (dolist (name names names)
+      (unless (keywordp name)
+        (error "non-keyword entry ~S in *known-capabilities* in ~A" name path)))))
 
 ;;; ---- Main check ----
 
@@ -304,20 +361,24 @@ against a required-set this function silently treated as empty)."
 +BACKENDS+, printing progress as it goes. Each is a list of (ID LISP-NAME C-NAME).
 
 BLACKLIST-VIOLATIONS holds every import whose C name is on BLACKLIST -- CHECK A in this
-file's header. COVERAGE-VIOLATIONS holds every import whose C name is absent from
-BACKEND-PATH's `*required-symbols*' -- CHECK B. Both read from the same NAME-MAP,
-CONSTANTS and IMPORTS computed once below, per this file's header note on why the two
-checks share one parser rather than each deriving its own. They are otherwise
-independent: a single import can fail either, both, or neither."
-  (let ((name-map (c-name-map c-api-path))
-        (constants (constant-names c-api-path))
-        (imports (backend-imports backend-path c-api-package-name))
-        (required (required-c-names backend-path))
-        (blacklist-violations '())
-        (coverage-violations '()))
-    (format t "~&~A: ~D imported name~:P from ~A, ~D required symbol~:P declared~%"
+file's header. COVERAGE-VIOLATIONS holds every import whose C name is in neither
+BACKEND-PATH's `*required-symbols*' nor its `*optional-symbols*' -- CHECK B, three-valued
+since section 7's capability work gave the optional tier its first real member. Both read
+from the same NAME-MAP, CONSTANTS and IMPORTS computed once below, per this file's header
+note on why the two checks share one parser rather than each deriving its own. They are
+otherwise independent: a single import can fail either, both, or neither."
+  (let* ((name-map (c-name-map c-api-path))
+         (constants (constant-names c-api-path))
+         (imports (backend-imports backend-path c-api-package-name))
+         (required (required-c-names backend-path))
+         (optional-entries (optional-symbol-entries backend-path))
+         (optional (optional-c-names optional-entries))
+         (blacklist-violations '())
+         (coverage-violations '()))
+    (format t "~&~A: ~D imported name~:P from ~A, ~D required and ~D optional symbol~:P ~
+               declared~%"
             (enough-namestring backend-path (uiop:getcwd)) (length imports)
-            (enough-namestring c-api-path (uiop:getcwd)) (length required))
+            (enough-namestring c-api-path (uiop:getcwd)) (length required) (length optional))
     (dolist (lisp-name imports)
       (let ((c-name (gethash lisp-name name-map)))
         (cond
@@ -346,15 +407,48 @@ independent: a single import can fail either, both, or neither."
                       (see ~A)~%"
                      (enough-namestring backend-path (uiop:getcwd)) lisp-name c-name
                      +blacklist-path+))
-           (unless (member c-name required :test #'string=)
-             (push (list id lisp-name c-name) coverage-violations)
-             (format *error-output*
-                     "~&FAIL ~A imports ~A, which is ~A, but its *required-symbols* does ~
-                      not declare that name. probe-foreign-symbols would not check it at ~
-                      open-backend, so an incompatible library could open successfully and ~
-                      fail only later, at this call.~%"
-                     (enough-namestring backend-path (uiop:getcwd)) lisp-name c-name))))))
+           (cond
+             ((member c-name required :test #'string=))   ; required tier, nothing to report
+             ((member c-name optional :test #'string=)
+              ;; Reported rather than passed over in silence: the optional tier is the one
+              ;; place a name is deliberately NOT probed at open-backend, so which imports
+              ;; are in it belongs in the check's own output, not only in its exit code.
+              (format t "~&  ~A is ~A, optional (~{~S~^, ~}) -- not probed at open-backend~%"
+                      lisp-name c-name
+                      (loop :for (capability . names) :in optional-entries
+                            :when (member c-name names :test #'string=)
+                              :collect capability)))
+             (t
+              (push (list id lisp-name c-name) coverage-violations)
+              (format *error-output*
+                      "~&FAIL ~A imports ~A, which is ~A, but neither its ~
+                       *required-symbols* nor its *optional-symbols* declares that name. ~
+                       probe-foreign-symbols would not check it at open-backend and no ~
+                       capability gates it, so an incompatible library could open ~
+                       successfully and fail only later, at this call.~%"
+                      (enough-namestring backend-path (uiop:getcwd)) lisp-name c-name)))))))
     (values blacklist-violations coverage-violations)))
+
+(defun check-optional-capabilities (id backend-path known-capabilities)
+  "Return the list of (ID CAPABILITY) pairs BACKEND-PATH's `*optional-symbols*' is keyed by
+that KNOWN-CAPABILITIES does not register -- CHECK C in this file's header. Printing as it
+goes, like `check-backend'.
+
+Separate from `check-backend' because it shares none of that function's parsing: it reads
+`*optional-symbols*' against the registry, never the c-api map or the import list, so
+folding it in would only widen that function's argument list."
+  (let ((violations '()))
+    (dolist (entry (optional-symbol-entries backend-path) violations)
+      (let ((capability (car entry)))
+        (unless (member capability known-capabilities)
+          (push (list id capability) violations)
+          (format *error-output*
+                  "~&FAIL ~A declares optional symbol~{ ~S~} under the capability ~S, which ~
+                   ~A does not register. backend-supports-p would signal ~
+                   unknown-capability for it rather than answering, so the probe at ~
+                   open-backend would record a capability nothing can ever query.~%"
+                  (enough-namestring backend-path (uiop:getcwd)) (cdr entry) capability
+                  +capability-registry-path+))))))
 
 (let* ((root (uiop:getcwd))
        (blacklist-file (merge-pathnames +blacklist-path+ root))
@@ -375,21 +469,34 @@ independent: a single import can fail either, both, or neither."
              markdown table row's first column).~%"
             +blacklist-path+)
     (uiop:quit 1))
-  (let ((blacklist-violations '())
-        (coverage-violations '()))
+  (let ((known-capabilities (known-capability-names
+                             (merge-pathnames +capability-registry-path+ root)))
+        (blacklist-violations '())
+        (coverage-violations '())
+        (capability-violations '()))
+    (format t "~&~D capabilit~:@P registered in ~A~%"
+            (length known-capabilities) +capability-registry-path+)
     (dolist (spec +backends+)
       (destructuring-bind (id c-api-path c-api-package-name backend-path) spec
-        (multiple-value-bind (backend-blacklist-violations backend-coverage-violations)
-            (check-backend id
-                           (merge-pathnames c-api-path root)
-                           c-api-package-name
-                           (merge-pathnames backend-path root)
-                           blacklist)
-          (setf blacklist-violations (append blacklist-violations backend-blacklist-violations))
-          (setf coverage-violations
-                (append coverage-violations backend-coverage-violations)))))
+        (let ((full-backend-path (merge-pathnames backend-path root)))
+          (multiple-value-bind (backend-blacklist-violations backend-coverage-violations)
+              (check-backend id
+                             (merge-pathnames c-api-path root)
+                             c-api-package-name
+                             full-backend-path
+                             blacklist)
+            (setf blacklist-violations
+                  (append blacklist-violations backend-blacklist-violations))
+            (setf coverage-violations
+                  (append coverage-violations backend-coverage-violations)))
+          (setf capability-violations
+                (append capability-violations
+                        (check-optional-capabilities id full-backend-path
+                                                     known-capabilities))))))
     (format t "~&~D blacklisted import~:P found across ~D backend~:P~%"
             (length blacklist-violations) (length +backends+))
-    (format t "~&~D required-symbols coverage gap~:P found across ~D backend~:P~%"
+    (format t "~&~D symbol-declaration gap~:P found across ~D backend~:P~%"
             (length coverage-violations) (length +backends+))
-    (uiop:quit (if (or blacklist-violations coverage-violations) 1 0))))
+    (format t "~&~D unregistered optional capabilit~:@P found across ~D backend~:P~%"
+            (length capability-violations) (length +backends+))
+    (uiop:quit (if (or blacklist-violations coverage-violations capability-violations) 1 0))))

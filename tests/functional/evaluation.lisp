@@ -517,3 +517,26 @@ answer for itself and skips the whole body if either is missing."
         (progn
           (when lightgbm-set (cl-gbdt:free-dataset lightgbm-set))
           (when xgboost-set (cl-gbdt:free-dataset xgboost-set)))))))
+
+;;; The capability model's own discriminating case. Policy section 7 requires capability to
+;;; reflect the foreign symbols that actually resolved rather than a table keyed by backend
+;;; name; what makes that testable at all is a capability one backend has and the other does
+;;; not. `XGBoosterSlice' has no LightGBM counterpart, so this pair of assertions fails
+;;; against an implementation that answers T unconditionally AND against one that answers NIL
+;;; unconditionally -- which no single-backend assertion can do.
+
+(deftest capability-model-discriminates-between-the-backends
+  (with-both-backends (lightgbm xgboost matrix label)
+    ;; `with-both-backends' splices this body into `(progn ,@body)', which does not accept a
+    ;; leading `declare' -- `locally' does, and neither requires touching the macro.
+    (locally (declare (ignore matrix label))
+      (testing "XGBoost reports :model-slicing"
+        (ok (cl-gbdt:backend-supports-p xgboost :model-slicing)
+            "XGBoost did not report :model-slicing"))
+      (testing "LightGBM does not report :model-slicing"
+        (ok (null (cl-gbdt:backend-supports-p lightgbm :model-slicing))
+            "LightGBM reported :model-slicing, which it has no C function for"))
+      (testing "a capability neither backend implements is false on both"
+        (ok (and (null (cl-gbdt:backend-supports-p xgboost :early-stopping))
+                 (null (cl-gbdt:backend-supports-p lightgbm :early-stopping)))
+            "a backend reported :early-stopping, which this phase does not implement")))))

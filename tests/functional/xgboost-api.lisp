@@ -19,6 +19,16 @@
   ;; `all', the leaf `cl-gbdt/xgboost' itself depends on, rather than `protocol'
   ;; directly, so this exercises the same load path a real caller would.
   (:import-from #:cl-gbdt/src/xgboost/all)
+  ;; Zero symbols, same load-time reason as the clause above, for the other backend:
+  ;; `xgboost-api-slice-model-rejects-a-lightgbm-booster' needs a real LightGBM booster to
+  ;; hand `slice-model', and `(cl-gbdt:open-backend :lightgbm)' signals `unknown-backend'
+  ;; unless something has loaded that backend's `register-backend' call. This one test is
+  ;; the file's only LightGBM reference and it is still an XGBoost test -- it asserts that
+  ;; *XGBoost's* entry point rejects a foreign handle, which is why it belongs here rather
+  ;; than in the backend-neutral `cl-gbdt/tests/functional/evaluation', whose own package
+  ;; form carries both clauses for the different reason that it runs the same assertions
+  ;; against both backends.
+  (:import-from #:cl-gbdt/src/lightgbm/all)
   ;; Zero symbols, same reasoning as the `#:cl-gbdt' clause above: every reference below is
   ;; package-qualified, `cl-gbdt/xgboost:evaluate-one-iteration'. Declared anyway so this file's
   ;; dependency on Task 3's new public function is explicit rather than riding along on
@@ -1181,3 +1191,255 @@ catch is the right scope here, not a narrower one."
           (progn
             (when booster (cl-gbdt:free-booster booster))
             (when train-set (cl-gbdt:free-dataset train-set))))))))
+
+;;; ---------------------------------------------------------------------------
+;;; Model slicing
+;;;
+;;; `cl-gbdt/xgboost:slice-model' is the operation policy section 7's capability model
+;;; gates, and `cl-gbdt/xgboost:booster-boosted-rounds' is the query its interval is
+;;; expressed against. Both are Layer 1 and XGBoost-only: LightGBM's C API has no
+;;; counterpart to `XGBoosterSlice', so there is no portable generic function for these to
+;;; be methods of -- see policy section 4's criterion for the unified API, and
+;;; `cl-gbdt/tests/functional/evaluation''s `capability-model-discriminates-between-the-backends'
+;;; for the pair of assertions that pins that asymmetry itself.
+;;;
+;;; `XGBoosterSlice''s three undocumented behaviours -- its interval semantics, whether it
+;;; really reduces the model, and whether the result depends on its parent's memory -- were
+;;; measured against the vendored library before these tests were written, not assumed;
+;;; `+parent-rounds+'/`+sliced-rounds+' below and
+;;; `xgboost-api-slice-model-outlives-its-parent' are the three answers written down as
+;;; assertions.
+
+(defconstant +parent-rounds+ 10
+  "Boosting rounds the slicing tests train their parent booster for. Ten rather than the
+one or two the guard tests above use, so that a half-open [0,5) slice is unambiguously
+smaller than its parent and `+sliced-rounds+' can distinguish half-open from closed.")
+
+(defconstant +sliced-rounds+ 5
+  "Rounds a `:begin 0 :end 5' slice of a `+parent-rounds+'-round booster has.
+
+Measured, not derived: `XGBoosterSlice''s header documents no interval semantics at all.
+Against the vendored libxgboost 3.3.0 the answer is 5, i.e. the interval is half-open
+[BEGIN, END) -- `:begin 3 :end 7' likewise gives 4, and XGBoost rejects `:begin 5 :end 5'
+outright with \"Empty slice is not allowed\", which only a half-open reading explains. A
+closed [BEGIN, END] reading would make this 6.")
+
+(deftest xgboost-api-slice-model-returns-a-smaller-model
+  ;; The assertion that a slice-model returning its argument unchanged would fail. Every other
+  ;; assertion about slicing in this file would pass against that implementation, which is why
+  ;; this one is here and why it compares predictions rather than only counting rounds.
+  (with-backend-library (:xgboost)
+    (multiple-value-bind (matrix label-vector) (make-separable-dataset)
+      (let ((backend (cl-gbdt:open-backend :xgboost))
+            (train-set nil)
+            (booster nil)
+            (sliced nil))
+        (unwind-protect
+             (progn
+               (setf train-set (cl-gbdt:make-dataset backend matrix :label label-vector))
+               (setf booster (cl-gbdt:train backend train-set :num-rounds +parent-rounds+
+                                             :parameters *eval-booster-parameters*))
+               (setf sliced (cl-gbdt/xgboost:slice-model booster :begin 0 :end 5))
+               (testing "the parent kept every round it was trained for"
+                 (ok (= +parent-rounds+ (cl-gbdt/xgboost:booster-boosted-rounds booster))
+                     "booster-boosted-rounds disagreed with train's :num-rounds"))
+               (testing "the slice keeps the layers the interval names"
+                 (ok (= +sliced-rounds+ (cl-gbdt/xgboost:booster-boosted-rounds sliced))
+                     "slice-model did not produce the round count its interval promises"))
+               (testing "the slice predicts differently from its parent"
+                 (ok (not (equalp (cl-gbdt:predict sliced matrix)
+                                  (cl-gbdt:predict booster matrix)))
+                     "slice-model returned a model that predicts identically to its parent")))
+          (progn
+            (when sliced (cl-gbdt:free-booster sliced))
+            (when booster (cl-gbdt:free-booster booster))
+            (when train-set (cl-gbdt:free-dataset train-set))
+            (cl-gbdt:close-backend backend)))))))
+
+;;; The lifetime answer, measured before `slice-model' was written and the reason it builds an
+;;; ordinary booster with no retained parent, exactly as `load-model' does. `XGBoosterSlice'
+;;; copies the layers it selects into a fresh booster: after the parent and the DMatrix it was
+;;; trained on are both freed, the slice still predicts, and predicts the same values it did
+;;; while its parent was alive. Had this faulted or drifted instead, `slice-model' would have
+;;; had to retain the parent and liveness-check it the way `train' does its datasets -- and
+;;; retaining it anyway, "just in case", is not the safe default it looks like: it would make
+;;; the `free-booster' below signal `released-handle-error' on correct code.
+
+(deftest xgboost-api-slice-model-outlives-its-parent
+  (with-backend-library (:xgboost)
+    (multiple-value-bind (matrix label-vector) (make-separable-dataset)
+      (let ((backend (cl-gbdt:open-backend :xgboost))
+            (train-set nil)
+            (booster nil)
+            (sliced nil))
+        (unwind-protect
+             (progn
+               (setf train-set (cl-gbdt:make-dataset backend matrix :label label-vector))
+               (setf booster (cl-gbdt:train backend train-set :num-rounds +parent-rounds+
+                                             :parameters *eval-booster-parameters*))
+               (setf sliced (cl-gbdt/xgboost:slice-model booster :begin 0 :end 5))
+               (let ((before (cl-gbdt:predict sliced matrix)))
+                 (cl-gbdt:free-booster booster)
+                 (cl-gbdt:free-dataset train-set)
+                 (testing "the slice still predicts once its parent and its data are freed"
+                   (ok (equalp before (cl-gbdt:predict sliced matrix))
+                       "slice-model's result did not survive its parent being freed"))
+                 (testing "the slice still reports its own round count"
+                   (ok (= +sliced-rounds+ (cl-gbdt/xgboost:booster-boosted-rounds sliced))
+                       "slice-model's result lost its layers when its parent was freed"))))
+          (progn
+            (when sliced (cl-gbdt:free-booster sliced))
+            (when booster (cl-gbdt:free-booster booster))
+            (when train-set (cl-gbdt:free-dataset train-set))
+            (cl-gbdt:close-backend backend)))))))
+
+(deftest xgboost-api-slice-model-rejects-a-lightgbm-booster
+  ;; Check order: the handle-kind guard runs before the capability check, so a LightGBM
+  ;; booster reports the wrong handle rather than "LightGBM cannot slice" -- true, but the
+  ;; wrong mistake. This test is what pins that order.
+  ;;
+  ;; It lives in this file, not evaluation.lisp: it is about one backend's entry point
+  ;; rejecting a foreign handle, not a portable contract asserted against both.
+  ;; Only the LightGBM backend is opened. `slice-model' reaches `%check-handle-kind' before
+  ;; any XGBoost call, so it signals without the XGBoost library being open at all -- which
+  ;; is itself part of what this asserts: the guard runs before the library does.
+  (with-backend-library (:lightgbm)
+    (multiple-value-bind (matrix label-vector) (make-separable-dataset)
+      (let ((lightgbm (cl-gbdt:open-backend :lightgbm))
+            (train-set nil)
+            (booster nil))
+        (unwind-protect
+             (progn
+               (setf train-set (cl-gbdt:make-dataset
+                                lightgbm matrix :label label-vector
+                                :parameters '(:min-data-in-leaf 1 :min-data-in-bin 1
+                                              :verbose -1)))
+               (setf booster (cl-gbdt:train lightgbm train-set :num-rounds 1
+                                             :parameters '(:objective "binary"
+                                                           :num-leaves 2
+                                                           :min-data-in-leaf 1
+                                                           :min-data-in-bin 1
+                                                           :verbose -1)))
+               (testing "slice-model rejects a LightGBM booster as a wrong handle"
+                 (ok (handler-case
+                         (progn (cl-gbdt/xgboost:slice-model booster :end 1) nil)
+                       (cl-gbdt:wrong-backend-reference () t))
+                     "slice-model accepted a LightGBM booster")))
+          (progn
+            (when booster (cl-gbdt:free-booster booster))
+            (when train-set (cl-gbdt:free-dataset train-set))
+            (cl-gbdt:close-backend lightgbm)))))))
+
+(deftest xgboost-api-slice-model-on-a-freed-booster-signals
+  (with-backend-library (:xgboost)
+    (multiple-value-bind (matrix label-vector) (make-separable-dataset)
+      (let ((backend (cl-gbdt:open-backend :xgboost))
+            (train-set nil)
+            (booster nil))
+        (unwind-protect
+             (progn
+               (setf train-set (cl-gbdt:make-dataset backend matrix :label label-vector))
+               (setf booster (cl-gbdt:train backend train-set :num-rounds 2
+                                             :parameters *eval-booster-parameters*))
+               (cl-gbdt:free-booster booster)
+               (testing "slice-model on a freed booster signals released-handle-error"
+                 (ok (handler-case
+                         (progn (cl-gbdt/xgboost:slice-model booster :end 1) nil)
+                       (cl-gbdt:released-handle-error () t))
+                     "slice-model did not signal released-handle-error")))
+          (progn
+            (when train-set (cl-gbdt:free-dataset train-set))
+            (cl-gbdt:close-backend backend)))))))
+
+;;; The two things `slice-model' promises about a bad interval, one of which is its own
+;;; refusal and one of which is XGBoost's, passed through. `:END 0' is the refusal: NIL and 0
+;;; would otherwise both reach `XGBoosterSlice' as its own `end_layer' 0, which means "through
+;;; the last layer" -- so a caller writing `:END 0' for "no layers" would silently get the
+;;; whole model, the translation policy section 5 exists to prevent. An END past the last
+;;; layer is XGBoost's own refusal, asserted here because the docstring promises it comes back
+;;; as a condition rather than a crash or a clamped result.
+
+(deftest xgboost-api-slice-model-rejects-an-interval-it-cannot-honour
+  (with-backend-library (:xgboost)
+    (multiple-value-bind (matrix label-vector) (make-separable-dataset)
+      (let ((backend (cl-gbdt:open-backend :xgboost))
+            (train-set nil)
+            (booster nil))
+        (unwind-protect
+             (progn
+               (setf train-set (cl-gbdt:make-dataset backend matrix :label label-vector))
+               (setf booster (cl-gbdt:train backend train-set :num-rounds +parent-rounds+
+                                             :parameters *eval-booster-parameters*))
+               (testing "an explicit :END of 0 signals rather than meaning the whole model"
+                 (ok (handler-case
+                         (progn (cl-gbdt/xgboost:slice-model booster :begin 0 :end 0) nil)
+                       (cl-gbdt:unsupported-argument () t))
+                     "slice-model accepted :END 0, which XGBoost would read as \"everything\""))
+               (testing "an END past the last layer is XGBoost's error, not a clamp"
+                 ;; `XGBoosterSlice' returns -2, not -1, for this path, and takes it before
+                 ;; upstream's usual exception-to-XGBGetLastError plumbing runs -- confirmed
+                 ;; against the vendored library, `XGBGetLastError' comes back empty in a fresh
+                 ;; process for this call, or holding an earlier, unrelated failure's message
+                 ;; verbatim in a process where one had already happened. Asserting only the
+                 ;; condition type, as this test used to, would stay green for either of those
+                 ;; broken messages; this checks the message itself instead.
+                 (let* ((out-of-range-end (1+ +parent-rounds+))
+                        (condition
+                          (handler-case
+                              (progn (cl-gbdt/xgboost:slice-model
+                                      booster :begin 0 :end out-of-range-end)
+                                     nil)
+                            (cl-gbdt:foreign-call-error (c) c))))
+                   (ok condition
+                       "slice-model did not surface XGBoost's refusal of an out-of-range END")
+                   (ok (and condition
+                            (plusp (length (or (cl-gbdt:foreign-call-error-message condition)
+                                                ""))))
+                       "slice-model's foreign-call-error carried no message -- either a bare ~
+                        colon (an empty XGBGetLastError) or the (no message) fallback")
+                   (ok (and condition
+                            (search (format nil "end ~D" out-of-range-end)
+                                    (or (cl-gbdt:foreign-call-error-message condition) "")))
+                       "slice-model's foreign-call-error message did not name the offending ~
+                        END, so it cannot be this call's own diagnostic"))))
+          (progn
+            (when booster (cl-gbdt:free-booster booster))
+            (when train-set (cl-gbdt:free-dataset train-set))
+            (cl-gbdt:close-backend backend)))))))
+
+;;; Policy section 7's central rule, and the only assertion in the suite that exercises it:
+;;; the operation re-checks the capability itself rather than trusting the caller to have
+;;; asked `backend-supports-p' first, and signals rather than falling back to anything else.
+;;; The vendored library does provide `XGBoosterSlice' -- `capability-model-discriminates-
+;;; between-the-backends' asserts exactly that -- so the only way to reach this branch is to
+;;; overwrite the probed plist, which is what an XGBoost too old to have the symbol would
+;;; have produced at `open-backend'. Without this test the whole capability gate is a branch
+;;; nobody has seen taken.
+
+(deftest xgboost-api-slice-model-signals-when-the-capability-is-absent
+  (with-backend-library (:xgboost)
+    (multiple-value-bind (matrix label-vector) (make-separable-dataset)
+      (let ((backend (cl-gbdt:open-backend :xgboost))
+            (train-set nil)
+            (booster nil))
+        (unwind-protect
+             (progn
+               (setf train-set (cl-gbdt:make-dataset backend matrix :label label-vector))
+               (setf booster (cl-gbdt:train backend train-set :num-rounds 2
+                                             :parameters *eval-booster-parameters*))
+               (setf (cl-gbdt:backend-capabilities backend) '(:model-slicing nil))
+               (testing "slice-model signals capability-unavailable, naming the capability"
+                 (let ((condition (handler-case
+                                      (progn (cl-gbdt/xgboost:slice-model booster :end 1) nil)
+                                    (cl-gbdt:capability-unavailable (c) c))))
+                   (ok condition "slice-model sliced with the capability reported absent")
+                   (ok (and condition
+                            (eq :model-slicing
+                                (cl-gbdt:capability-unavailable-capability condition)))
+                       "capability-unavailable did not name :model-slicing")
+                   (ok (and condition (eq :xgboost (cl-gbdt:backend-error-backend condition)))
+                       "capability-unavailable did not name the backend"))))
+          (progn
+            (when booster (cl-gbdt:free-booster booster))
+            (when train-set (cl-gbdt:free-dataset train-set))
+            (cl-gbdt:close-backend backend)))))))
