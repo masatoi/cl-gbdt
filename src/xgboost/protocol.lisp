@@ -95,6 +95,9 @@
                 #:capability-unavailable)
   (:import-from #:cl-gbdt/src/data
                 #:with-foreign-matrix)
+  (:import-from #:cl-gbdt/src/training-report
+                #:make-training-series
+                #:make-training-report)
   (:import-from #:cl-gbdt/src/library
                 #:resolve-and-load-library)
   (:import-from #:cl-gbdt/src/foreign
@@ -335,14 +338,30 @@ genuinely unreclaimable at that point."
 
 (defmethod train ((backend xgboost-backend) dataset
                    &key valid-sets (num-rounds 100) parameters)
-  "Train an XGBoost booster on DATASET for NUM-ROUNDS boosting iterations.
+  "Train an XGBoost booster on DATASET for NUM-ROUNDS boosting iterations, and return it
+and a `training-report' of the run.
 
 Builds the booster with `XGBoosterCreate' over DATASET and every VALID-SETS entry's
 DMatrix handle together -- see `%create-booster' for why XGBoost takes the whole set up
 front rather than adding validation data afterward. Applies PARAMETERS one at a time via
 `XGBoosterSetParam', then drives `XGBoosterUpdateOneIter' NUM-ROUNDS times. See the
-`train' generic function's docstring for what each argument means; NUM-ROUNDS defaults
-to 100 when not supplied.
+`train' generic function's docstring for what each argument means, and for what the
+secondary value holds; NUM-ROUNDS defaults to 100 when not supplied.
+
+After each iteration this reads the whole evaluation through `%read-evaluation' -- the
+same function the `evaluation' method calls, over the same DMatrix pointers in the same
+order, which is what keeps the history and what `evaluation' answers afterward from being
+able to disagree -- and appends each entry's value to the series for its (DATASET-INDEX,
+METRIC-NAME) pair. Series are keyed in first-seen order, which for this backend is the
+order `XGBoosterEvalOneIter' formatted its own result in, so the report's series arrive in
+exactly the order `evaluation' reports its entries in without anything being sorted. A
+field the parse could not read as a `double-float' is recorded as NIL, keeping its place
+in the series rather than shortening it -- see `training-series-values'.
+
+A read that fails propagates, freeing the booster through the OWNED dance below rather
+than returning a report whose series are shorter than NUM-ROUNDS: a short series is
+indistinguishable from one a buggy loop recorded, and \"one value per iteration\" is the
+invariant a caller reading the report relies on.
 
 DATASET and every entry of VALID-SETS are each run through `%check-xgboost-dataset'
 before any foreign call. `train' dispatches on BACKEND, not on DATASET, so unlike
@@ -383,19 +402,41 @@ Signals `backend-not-open' before any of that when BACKEND is not open -- see
              (mapcar (lambda (valid-set)
                        (%check-xgboost-dataset backend valid-set "a train :valid-sets entry"
                                                 'xgboost-dataset))
-                     valid-sets)))
-      (let ((booster-pointer (%create-booster (cons train-data-pointer valid-set-pointers))))
+                     valid-sets))
+           (dataset-pointers (cons train-data-pointer valid-set-pointers))
+           (history (make-hash-table :test #'equal))
+           (recorded-keys '()))
+      (let ((booster-pointer (%create-booster dataset-pointers)))
         (let ((owned nil))
           (unwind-protect
                (progn
                  (%set-parameters booster-pointer parameters)
                  (dotimes (round num-rounds)
                    (declare (ignorable round))
-                   (%update-one-iteration booster-pointer train-data-pointer))
-                 (prog1
-                     (make-handle 'xgboost-booster booster-pointer backend :booster
-                                  :training-set dataset :validation-sets valid-sets)
-                   (setf owned t)))
+                   (%update-one-iteration booster-pointer train-data-pointer)
+                   ;; Primary value only: `%read-evaluation''s RAW is `evaluation''s
+                   ;; provenance, and a report carries no per-iteration raw text.
+                   (dolist (entry (%read-evaluation booster-pointer dataset-pointers))
+                     (destructuring-bind (index metric-name value) entry
+                       (let ((key (cons index metric-name)))
+                         (unless (nth-value 1 (gethash key history))
+                           (push key recorded-keys))
+                         (push value (gethash key history))))))
+                 (let* ((series
+                          (loop :for key :in (nreverse recorded-keys)
+                                :collect (make-training-series
+                                          :index (car key)
+                                          :metric (cdr key)
+                                          :values (coerce (reverse (gethash key history))
+                                                          'simple-vector))))
+                        (report (make-training-report :series series
+                                                      :num-rounds num-rounds)))
+                   (multiple-value-prog1
+                       (values (make-handle 'xgboost-booster booster-pointer backend :booster
+                                            :training-set dataset
+                                            :validation-sets valid-sets)
+                               report)
+                     (setf owned t))))
             (unless owned
               (handler-case (%free-booster-unchecked booster-pointer)
                 (error () nil)))))))))

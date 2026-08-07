@@ -52,12 +52,40 @@ Free the result with `free-dataset' or wrap it in `with-dataset'."))
   (:documentation "Return the number of features in DATASET."))
 
 (defgeneric train (backend dataset &key valid-sets num-rounds parameters)
-  (:documentation "Train a BACKEND model on DATASET and return a booster.
+  (:documentation "Train a BACKEND model on DATASET and return two values: a booster and
+a `training-report' of the run.
 
 VALID-SETS is a list of validation datasets, NUM-ROUNDS the number of boosting
 iterations, and PARAMETERS a plist passed through to the backend.
 
-Free the result with `free-booster' or wrap it in `with-booster'."))
+Free the booster with `free-booster' or wrap it in `with-booster'. `with-booster' binds
+the primary value only, so a caller who wants the report has to use
+`multiple-value-bind' and free the booster itself; a caller who ignores the second value
+is unaffected by its existence.
+
+The secondary value is a `training-report'. Its `training-report-series' is a list of
+`training-series', one per metric per dataset -- the same (DATASET-INDEX, METRIC-NAME)
+pairs `evaluation' reports for the trained booster, in the same order, so a series can be
+found by the index and metric name a caller already knows. Each series carries
+`training-series-values', one element per completed iteration in order: a `double-float',
+or NIL where the backend reported a value that could not be read as a real. The last
+element of a series is what `evaluation' answers for that pair immediately after `train'
+returns; the earlier ones are what it would have answered at each earlier iteration, and
+are the only way to see them, since a trained booster no longer remembers them.
+
+`training-report-num-rounds' is how many iterations actually ran -- NUM-ROUNDS in this
+phase, since nothing stops a run early yet. `training-report-best-iteration',
+`-best-score' and `-early-stopped-p' are NIL: determining them needs to know whether a
+metric improves upward or downward, which this API does not infer from a metric's name.
+
+`training-report-series' is empty when the booster has no metric configured at all --
+LightGBM's `metric=none', XGBoost's `disable_default_eval_metric=1'. An empty series list
+is not an error and says nothing about whether training succeeded; NUM-ROUNDS iterations
+still ran, and `training-report-num-rounds' still says so.
+
+`training-series-name' is NIL for every series: this phase's :VALID-SETS holds bare
+datasets, and no name is invented for one -- see `evaluation' for why an index, not a
+name, is what identifies a dataset here."))
 
 (defgeneric update-one-iteration (booster)
   (:documentation "Advance BOOSTER by one boosting iteration.

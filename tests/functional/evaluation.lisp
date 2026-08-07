@@ -44,7 +44,18 @@
   (:import-from #:cl-gbdt/xgboost)
   (:import-from #:cl-gbdt/tests/functional/support
                 #:with-backend-library
-                #:make-separable-dataset))
+                #:make-separable-dataset)
+  ;; The fixture table and the two helpers that build data from it, for the other
+  ;; backend-neutral files in this suite -- `cl-gbdt/tests/functional/training-report' is the
+  ;; first. They need the same two-metric booster over the same eight rows this file trains,
+  ;; and a second table saying the same thing in its own words is how two files that must
+  ;; agree stop agreeing. Only these three: everything else here is an assertion helper for
+  ;; this file's own tests. (If a third portable file ever wants them,
+  ;; tests/functional/support.lisp is their natural home -- it is already this suite's shared
+  ;; fixture file -- but moving them there is a change to a file no current task touches.)
+  (:export #:*fixtures*
+           #:make-fixture-dataset
+           #:invert-labels))
 
 (in-package #:cl-gbdt/tests/functional/evaluation)
 
@@ -55,6 +66,8 @@
          :booster-parameters '(:objective "binary" :num-leaves 2 :min-data-in-leaf 1
                                :min-data-in-bin 1 :verbose -1 :metric "binary_logloss,auc")
          :loss-metric "binary_logloss"
+         :no-metric-parameters '(:objective "binary" :num-leaves 2 :min-data-in-leaf 1
+                                 :min-data-in-bin 1 :verbose -1 :metric "none")
          :aligns-bin-mappers t
          :model-file-type "txt"
          :value-source :library-doubles)
@@ -64,6 +77,9 @@
                                :verbosity 0 :min-child-weight 0
                                :eval-metric "logloss" :eval-metric "error")
          :loss-metric "logloss"
+         :no-metric-parameters '(:objective "binary:logistic" :max-depth 2 :eta 0.5
+                                 :verbosity 0 :min-child-weight 0
+                                 :disable-default-eval-metric 1)
          :aligns-bin-mappers nil
          :model-file-type "json"
          :value-source :parsed-text))
@@ -82,6 +98,14 @@ which needs a metric whose value differs between the training set and an
 `INVERT-LABELS'-built validation set. Two metrics are configured, not one, so a portable
 assertion about one metric per dataset cannot pass by accident against an implementation
 that dropped every entry after the first.
+
+:NO-METRIC-PARAMETERS is the same booster with every metric turned off, which each library
+spells its own way: LightGBM's `metric=none' and XGBoost's `disable_default_eval_metric=1'
+-- the latter is needed because XGBoost configures a metric from the objective when the
+caller names none, so simply omitting :EVAL-METRIC would leave \"logloss\" configured.
+Unused by this file; `cl-gbdt/tests/functional/training-report' asserts on it, that being
+the only place a booster with no metric at all is the subject. Both were confirmed against
+the vendored libraries to make `cl-gbdt:evaluation' return an empty result.
 
 :DATASET-PARAMETERS is NIL for XGBoost because that backend signals `unsupported-argument'
 for `make-dataset''s :PARAMETERS rather than accepting and ignoring it; :ALIGNS-BIN-MAPPERS
