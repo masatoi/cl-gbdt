@@ -151,9 +151,10 @@ different (see [the differences table](#where-the-two-backends-genuinely-differ)
 operations were deliberately given different names -- `cl-gbdt/lightgbm:booster-eval` reads
 the validation data LightGBM attached at train time, addressed by index, while
 `cl-gbdt/xgboost:evaluate-one-iteration` evaluates whatever DMatrices the caller passes it
-and ignores `valid-sets` entirely -- rather than sharing one name across packages that a
-caller `:use`-ing both would have to resolve a conflict over. Package-qualify them, or use
-the portable `cl-gbdt:evaluation` instead, which is one name for both.
+and ignores `valid-sets` entirely -- rather than one shared name that a caller `:use`-ing
+both packages would have to resolve a conflict over. Package-qualify them anyway, so it
+stays clear at the call site which backend's entry point you mean, or use the portable
+`cl-gbdt:evaluation` instead, which is one name for both.
 
 Nothing else from either backend's `native.lisp` -- library discovery, the
 raw-status-code checker, the internal `%`-functions that turn a raw C call into something

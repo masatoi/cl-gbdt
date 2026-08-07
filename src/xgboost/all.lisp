@@ -37,16 +37,16 @@
 ;;; public surface by accident -- exactly what this task's brief warns an accidental export
 ;;; becomes: a compatibility obligation.
 ;;;
-;;; This re-exports `cl-gbdt/src/xgboost/protocol' in full -- today just `xgboost-backend',
-;;; the CLOS class a caller can specialize methods on or check with `typep' -- plus one named
-;;; symbol pulled explicitly from `native': `evaluate-one-iteration', Task 3's XGBoost-specific
-;;; Layer 1 addition (docs/superpowers/specs/2026-08-06-evaluation-api-design.md, policy section 3's
-;;; Layer 1), mirroring `cl-gbdt/lightgbm''s identical `booster-eval-names'/`booster-eval' pair from
-;;; Task 2. Nothing else from `native' is published here: none of its remaining
-;;; exports is a reviewed, Lisp-level XGBoost-specific operation. A future Phase 2 addition
-;;; follows the same shape -- named explicitly in both the `:import-from' and the `:export'
-;;; clause below, never picked up by widening either into a blanket re-export of `native' as
-;;; a whole; see this comment block's own earlier paragraph for why that stays forbidden.
+;;; This re-exports `cl-gbdt/src/xgboost/protocol' in full -- today just `xgboost-backend', the
+;;; CLOS class a caller can specialize methods on or check with `typep' -- plus one named symbol
+;;; pulled explicitly from `native': `evaluate-one-iteration', Task 3's XGBoost-specific Layer 1
+;;; addition (docs/superpowers/specs/2026-08-06-evaluation-api-design.md, policy section 3's
+;;; Layer 1), mirroring `cl-gbdt/lightgbm''s identical `booster-eval-names'/`booster-eval' pair
+;;; from Task 2. Nothing else from `native' is published here: none of its remaining exports is
+;;; a reviewed, Lisp-level XGBoost-specific operation. A future Phase 2 addition follows the
+;;; same shape -- named explicitly in both the `:import-from' and the `:export' clause below,
+;;; never picked up by widening either into a blanket re-export of `native' as a whole; see this
+;;; comment block's own earlier paragraph for why that stays forbidden.
 ;;;
 ;;; And, as ever: never `#:cl-gbdt/src/xgboost/c-api', the raw CFFI bindings -- see the
 ;;; comment above `cl-gbdt/src/xgboost/all'.

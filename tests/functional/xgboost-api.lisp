@@ -918,8 +918,8 @@ catch is the right scope here, not a narrower one."
                (setf booster (cl-gbdt:train backend train-set :num-rounds 5
                                              :parameters *eval-booster-parameters*))
                (multiple-value-bind (raw parsed)
-                   (cl-gbdt/xgboost:evaluate-one-iteration booster (list train-set valid-set)
-                                                  '("train" "valid"))
+                   (cl-gbdt/xgboost:evaluate-one-iteration
+                    booster (list train-set valid-set) '("train" "valid"))
                  (testing "raw starts with XGBoosterEvalOneIter's own \"[iteration]\" marker"
                    (ok (and (plusp (length raw)) (char= (char raw 0) #\[))
                        (format nil "raw was ~S" raw)))
