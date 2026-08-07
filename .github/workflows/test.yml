@@ -39,6 +39,29 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      # install-for-ci.sh has two Linux paths. x86_64 gets a prebuilt release tarball and
+      # runs `$SUDO make install' unconditionally, so it is fine. Every other Linux arch --
+      # here, aarch64 -- builds from source, and that path picks sudo by probing the
+      # *prefix*:
+      #
+      #     ./configure --prefix=$ROSWELL_INSTALL_DIR      # /usr/local
+      #     if [ -w "$ROSWELL_INSTALL_DIR" ]; then make install; else $SUDO make install; fi
+      #
+      # while `make install' actually writes into /usr/local/etc and /usr/local/share/man.
+      # The ubuntu-24.04-arm image grants the runner user /usr/local and /usr/local/bin but
+      # not /usr/local/etc, so the probe answers "no sudo needed" and the install then dies
+      # on `mkdir: cannot create directory '/usr/local/etc/roswell': Permission denied'.
+      # This started on 2026-08-07: the same job passed at 02:58 UTC and failed at 05:01
+      # with an unchanged workflow, an unchanged script URL and unchanged repository
+      # contents.
+      #
+      # Granting the runner the two directories the install really writes lets the script's
+      # own non-sudo path succeed, without pinning the script or second-guessing its
+      # prefix. Linux only: macOS installs through brew and never reaches this code.
+      - name: Give the Roswell installer the directories it writes
+        if: runner.os == 'Linux'
+        run: sudo install -d -o "$(id -u)" -g "$(id -g)" /usr/local/etc /usr/local/share/man/man1
+
       - name: Install Roswell
         run: |
           curl -fsSL https://raw.githubusercontent.com/roswell/roswell/master/scripts/install-for-ci.sh | sh
@@ -153,6 +176,12 @@ jobs:
 
     steps:
       - uses: actions/checkout@v4
+
+      # This job is x86_64-only, so it takes the prebuilt path that already sudo's and does
+      # not need this today. It is here so that a future runner-image change cannot break
+      # this job the way it broke linux-aarch64 -- see the long comment in the job above.
+      - name: Give the Roswell installer the directories it writes
+        run: sudo install -d -o "$(id -u)" -g "$(id -g)" /usr/local/etc /usr/local/share/man/man1
 
       - name: Install Roswell
         run: |
