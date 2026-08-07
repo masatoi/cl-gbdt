@@ -46,7 +46,12 @@
            #:untested-backend-version
            #:untested-backend-version-backend
            #:untested-backend-version-version
-           #:untested-backend-version-tested))
+           #:untested-backend-version-tested
+           #:unknown-capability
+           #:unknown-capability-capability
+           #:unknown-capability-known
+           #:capability-unavailable
+           #:capability-unavailable-capability))
 
 (in-package #:cl-gbdt/src/conditions)
 
@@ -308,3 +313,37 @@ same reason `%check-booster-datasets-live' checks the pointers it does."))
 
 This is a warning rather than an error so that a new upstream release does not
 immediately render cl-gbdt unusable."))
+
+(define-condition unknown-capability (gbdt-error)
+  ((capability :initarg :capability
+               :reader unknown-capability-capability
+               :documentation "The keyword the caller asked about.")
+   (known :initarg :known
+          :initform nil
+          :reader unknown-capability-known
+          :documentation "Every capability name this build knows."))
+  (:report (lambda (condition stream)
+             (format stream "~S is not a known capability. Known capabilities: ~{~S~^, ~}."
+                     (unknown-capability-capability condition)
+                     (unknown-capability-known condition))))
+  (:documentation "Signalled when a capability keyword is not in `*known-capabilities*'.
+
+A programming error, not a backend limitation: returning NIL for a misspelled capability
+would be indistinguishable from \"this backend does not support it\", and a caller that
+believes the second silently skips the feature. Policy section 7 forbids exactly that
+silent path."))
+
+(define-condition capability-unavailable (backend-error)
+  ((capability :initarg :capability
+               :reader capability-unavailable-capability
+               :documentation "The capability the operation needed."))
+  (:report (lambda (condition stream)
+             (format stream "~A does not provide ~S in the library that is loaded."
+                     (backend-error-backend condition)
+                     (capability-unavailable-capability condition))))
+  (:documentation "Signalled when an operation needs a capability this backend does not have.
+
+Distinct from `unknown-capability': the question was well formed and the answer is no.
+Policy section 7 requires the operation itself to signal this rather than relying on the
+caller having asked `backend-supports-p' first, and forbids falling back to some other
+behaviour instead."))

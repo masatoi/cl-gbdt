@@ -187,3 +187,48 @@
          (declare (ignore booster))
          (error "boom")))
       (ok (equal '(:booster) *freed*)))))
+
+(deftest backend-supports-p-answers-a-declared-capability
+  (testing "a capability the backend recorded as true reads back true"
+    (let ((backend (cl-gbdt:open-backend :mock)))
+      (setf (cl-gbdt:backend-capabilities backend) '(:model-slicing t))
+      (ok (eq t (cl-gbdt:backend-supports-p backend :model-slicing))
+          "backend-supports-p did not report a declared capability as true"))))
+
+(deftest backend-supports-p-answers-nil-for-a-known-but-undeclared-capability
+  (testing "a registered capability no backend declared reads back NIL"
+    (let ((backend (cl-gbdt:open-backend :mock)))
+      (setf (cl-gbdt:backend-capabilities backend) '(:model-slicing t))
+      (ok (null (cl-gbdt:backend-supports-p backend :early-stopping))
+          "backend-supports-p did not report an undeclared capability as NIL"))))
+
+(deftest backend-supports-p-signals-on-an-unregistered-capability
+  ;; The point of the registry: a typo must not be indistinguishable from "not supported".
+  ;; handler-case, not rove's `signals' -- see prompts/repl-driven-development.md.
+  (testing "an unregistered keyword signals unknown-capability"
+    (let ((backend (cl-gbdt:open-backend :mock)))
+      (ok (handler-case
+              (progn (cl-gbdt:backend-supports-p backend :model-slcing) nil)
+            (cl-gbdt:unknown-capability () t))
+          "backend-supports-p accepted an unregistered capability keyword"))))
+
+(deftest probe-capabilities-reports-every-declared-capability
+  ;; False capabilities are present with a NIL value, not omitted, so `backend-info' can
+  ;; report what was asked as well as what was answered.
+  (testing "a capability whose symbol cannot resolve is present and false"
+    (let ((probed (cl-gbdt:probe-capabilities
+                   '((:model-slicing "ThisSymbolDoesNotExistAnywhere")))))
+      (ok (and (member :model-slicing probed)
+               (null (getf probed :model-slicing)))
+          "probe-capabilities omitted or wrongly answered an unresolvable capability"))))
+
+(deftest probe-capabilities-does-not-signal-for-a-missing-symbol
+  ;; Policy section 8: an optional symbol's absence disables one capability rather than
+  ;; failing the backend. This is the difference from *required-symbols* in one assertion.
+  (testing "an unresolvable optional symbol signals nothing"
+    (ok (handler-case
+            (progn (cl-gbdt:probe-capabilities
+                    '((:model-slicing "ThisSymbolDoesNotExistAnywhere")))
+                   t)
+          (error () nil))
+        "probe-capabilities signalled for a missing optional symbol")))
