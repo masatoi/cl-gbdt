@@ -15,6 +15,7 @@
                 #:*vendor-library-pattern*
                 #:*default-library-name*
                 #:*required-symbols*
+                #:*optional-symbols*
                 #:%create-dmatrix
                 #:%set-info-field
                 #:%set-group-field
@@ -50,8 +51,10 @@
                 #:backend-name
                 #:backend-library-path
                 #:backend-version
+                #:backend-capabilities
                 #:backend-open-p
                 #:probe-foreign-symbols
+                #:probe-capabilities
                 #:register-backend
                 #:initialize-backend
                 #:shutdown-backend)
@@ -152,6 +155,11 @@ that function's docstring for the SBCL caveat: it validates the library argument
 on this platform, cannot actually scope the symbol search to it -- or this signals
 `missing-foreign-symbols'.
 
+Only once that required check has passed does this probe *optional-symbols* via
+`probe-capabilities' and record the result on `backend-capabilities' -- unlike a missing
+required symbol, a missing optional one never signals; it only makes `backend-supports-p'
+answer NIL for the capability that symbol backs.
+
 Once `backend-version' is read, `check-backend-version' compares it against
 `*xgboost-version-range*' and signals `untested-backend-version' -- a warning, not an
 error -- when it falls outside that range's recorded bounds. This is the only backend
@@ -180,6 +188,8 @@ to close it."
                  (when missing
                    (error 'missing-foreign-symbols
                           :backend (backend-name backend) :names missing)))
+               (setf (backend-capabilities backend)
+                     (probe-capabilities *optional-symbols* :library library))
                (setf (backend-version backend) (%read-version))
                (check-backend-version :xgboost (backend-version backend)
                                        *xgboost-version-range*)

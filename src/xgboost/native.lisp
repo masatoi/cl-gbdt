@@ -68,6 +68,7 @@
            #:*vendor-library-pattern*
            #:*default-library-name*
            #:*required-symbols*
+           #:*optional-symbols*
            #:%check-backend-open
            #:%check-xgboost-dataset
            #:%check-unsupported
@@ -269,6 +270,18 @@ included -- unlike LightGBM's, whose compiled basename genuinely omits it; see
     "XGBoosterFeatureScore")
   "C function names this backend calls, checked with `probe-foreign-symbols' right after
 the library loads.")
+
+(defparameter *optional-symbols*
+  '((:model-slicing "XGBoosterSlice"))
+  "Capability name to the C function names that capability needs.
+
+Unlike `*required-symbols*', whose absence makes `open-backend' signal
+`missing-foreign-symbols', a name missing from here disables one capability and nothing else
+-- policy section 8. An XGBoost too old to have `XGBoosterSlice' is a working XGBoost that
+cannot slice, not a broken installation.
+
+`XGBoosterSlice' is bound in c-api.lisp and called only from `slice-model', which checks the
+capability before reaching it.")
 
 (defun %read-version ()
   "Return XGBoost's version as a \"MAJOR.MINOR.PATCH\" string, read via `XGBoostVersion'.
