@@ -1024,3 +1024,73 @@ test that only checked a single name/value pair could not pass by accident if
           (progn
             (when booster (cl-gbdt:free-booster booster))
             (when train-set (cl-gbdt:free-dataset train-set))))))))
+
+;;; Codex flagged this on PR #11: `booster-eval' is a public entry point, so a caller can
+;;; reach `LGBM_BoosterGetEval' without going through the `evaluation' method that guards
+;;; the retained datasets. `LGBM_DatasetFree' clears none of the dataset pointers the
+;;; booster stores, so evaluating after one of them was freed is a segfault, not a
+;;; catchable condition -- the identical hazard `update-one-iteration' has always guarded
+;;; against, and the one the `evaluation' method guards at Layer 2. These two tests hold
+;;; the Layer 1 entry point to the same standard for both the training set and a
+;;; validation set.
+
+(deftest lightgbm-api-booster-eval-after-training-set-freed-signals
+  (with-backend-library (:lightgbm)
+    (multiple-value-bind (matrix label-vector) (make-separable-dataset)
+      (let ((backend (cl-gbdt:open-backend :lightgbm))
+            (train-set nil)
+            (booster nil))
+        (unwind-protect
+             (progn
+               (setf train-set (cl-gbdt:make-dataset backend matrix
+                                                      :label label-vector
+                                                      :parameters *dataset-parameters*))
+               (setf booster (cl-gbdt:train backend train-set :num-rounds 1
+                                             :parameters *eval-booster-parameters*))
+               (cl-gbdt:free-dataset train-set)
+               (testing "booster-eval on a booster whose training set was freed signals"
+                 ;; handler-case, not rove's `signals' -- `signals' does not reliably
+                 ;; catch conditions raised inside `restart-case', a documented pitfall
+                 ;; in this repo's own prompts/repl-driven-development.md.
+                 (ok (handler-case (progn (cl-gbdt/lightgbm:booster-eval booster 0) nil)
+                       (cl-gbdt:released-handle-error () t))
+                     "booster-eval did not signal released-handle-error")))
+          (progn
+            (when booster (cl-gbdt:free-booster booster))
+            (cl-gbdt:close-backend backend)))))))
+
+(deftest lightgbm-api-booster-eval-after-validation-set-freed-signals
+  (with-backend-library (:lightgbm)
+    (multiple-value-bind (matrix label-vector) (make-separable-dataset)
+      (let ((backend (cl-gbdt:open-backend :lightgbm))
+            (train-set nil)
+            (valid-set nil)
+            (booster nil))
+        (unwind-protect
+             (progn
+               (setf train-set (cl-gbdt:make-dataset backend matrix
+                                                      :label label-vector
+                                                      :parameters *dataset-parameters*))
+               (setf valid-set (cl-gbdt:make-dataset backend matrix
+                                                      :label label-vector
+                                                      :parameters *dataset-parameters*))
+               (setf booster (cl-gbdt:train backend train-set :num-rounds 1
+                                             :valid-sets (list valid-set)
+                                             :parameters *eval-booster-parameters*))
+               (cl-gbdt:free-dataset valid-set)
+               (testing "booster-eval at the training index still notices the freed ~
+                         validation set"
+                 ;; Index 0 is the training set, which is still live -- the guard has to
+                 ;; cover every dataset the booster retains, not just the one addressed,
+                 ;; because LightGBM builds its metric objects over all of them.
+                 (ok (handler-case (progn (cl-gbdt/lightgbm:booster-eval booster 0) nil)
+                       (cl-gbdt:released-handle-error () t))
+                     "booster-eval did not signal released-handle-error"))
+               (testing "booster-eval at the freed validation set's own index signals"
+                 (ok (handler-case (progn (cl-gbdt/lightgbm:booster-eval booster 1) nil)
+                       (cl-gbdt:released-handle-error () t))
+                     "booster-eval did not signal released-handle-error")))
+          (progn
+            (when booster (cl-gbdt:free-booster booster))
+            (when train-set (cl-gbdt:free-dataset train-set))
+            (cl-gbdt:close-backend backend)))))))

@@ -829,9 +829,26 @@ Signals `foreign-call-error' when DATA-INDEX is negative or exceeds the number o
 BOOSTER actually has attached -- confirmed directly against the vendored library, which
 rejects both with a descriptive `LGBM_GetLastError' message rather than reading out of
 bounds. Also signals `wrong-backend-reference' when BOOSTER was not built by the LightGBM
-backend, `released-handle-error' when it has already been freed, and `backend-not-open'
-when its own backend has since been closed."
+backend, `released-handle-error' when BOOSTER itself or any dataset it retains has already
+been freed, and `backend-not-open' when its own backend has since been closed.
+
+`%check-booster-datasets-live' runs before any foreign call here, and covers every dataset
+BOOSTER retains rather than only the one DATA-INDEX addresses: `LGBM_BoosterGetEval'
+evaluates through metric objects built over each attached dataset's own label and weight
+arrays, none of which `LGBM_DatasetFree' clears from the booster. Evaluating after any of
+them was freed reads memory that is no longer ours -- it does not reliably crash, which is
+what makes it worth a guard rather than a warning. This is the same check
+`update-one-iteration' has always made, and the one the `evaluation' method makes at
+Layer 2; it is repeated here because this function is public in `cl-gbdt/lightgbm' and so
+is reachable without going through that method at all.
+
+It runs after `%check-lightgbm-booster' rather than before it, unlike in the `evaluation'
+method, because that method reaches its body only for an argument CLOS already dispatched
+as a `lightgbm-booster' while this one accepts whatever the caller passes: reading
+`booster-training-set' out of a dataset would fail as a slot type error instead of the
+`wrong-backend-reference' this promises. Neither check makes a foreign call, so both still
+precede every one of them."
   (with-foreign-float-traps-masked
-    (let* ((pointer (%check-lightgbm-booster booster "booster-eval's booster argument"))
-           (count (%booster-eval-count pointer)))
-      (%booster-eval pointer data-index count))))
+    (let ((pointer (%check-lightgbm-booster booster "booster-eval's booster argument")))
+      (%check-booster-datasets-live booster)
+      (%booster-eval pointer data-index (%booster-eval-count pointer)))))
