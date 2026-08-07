@@ -19,6 +19,14 @@
   ;; `all', the leaf `cl-gbdt/xgboost' itself depends on, rather than `protocol'
   ;; directly, so this exercises the same load path a real caller would.
   (:import-from #:cl-gbdt/src/xgboost/all)
+  ;; Zero symbols, same reasoning as the `#:cl-gbdt' clause above: every reference below is
+  ;; package-qualified, `cl-gbdt/xgboost:evaluate-one-iteration'. Declared anyway so this file's
+  ;; dependency on Task 3's new public function is explicit rather than riding along on
+  ;; `#:cl-gbdt/src/xgboost/all' above, which exists here only for its `register-backend'
+  ;; load-time side effect, not for anything it exports. Matches
+  ;; `cl-gbdt/tests/functional/lightgbm-api''s identical clause for Task 2's
+  ;; `cl-gbdt/lightgbm'.
+  (:import-from #:cl-gbdt/xgboost)
   (:import-from #:cl-gbdt/tests/functional/support
                 #:with-backend-library
                 #:make-separable-dataset
@@ -737,3 +745,439 @@ library -- see `cl-gbdt/src/xgboost/native''s `%check-feature-score-dim'.")
             (when booster (cl-gbdt:free-booster booster))
             (when dataset (cl-gbdt:free-dataset dataset))
             (cl-gbdt:close-backend backend)))))))
+
+;;; ---------------------------------------------------------------------------
+;;; Evaluation
+;;;
+;;; Task 3: `cl-gbdt/xgboost:evaluate-one-iteration', the XGBoost backend's first Layer 1
+;;; (backend-specific safe API) function -- see
+;;; docs/cl-gbdt-layered-api-implementation-policy.md section 3 and
+;;; docs/superpowers/specs/2026-08-06-evaluation-api-design.md. It is a plain function
+;;; exported directly from `cl-gbdt/xgboost', not a `defmethod' reached through `cl-gbdt',
+;;; so it is exercised here, alongside this file's other round trips through the public
+;;; API, rather than in tests/functional/xgboost.lisp, which never wraps a raw pointer in
+;;; a handle object at all. Mirrors `cl-gbdt/tests/functional/lightgbm-api''s own Task 2
+;;; evaluation section, but this section's shape differs from LightGBM's own exactly as
+;;; much as `LGBM_BoosterGetEval' and `XGBoosterEvalOneIter' do -- see
+;;; docs/superpowers/specs/2026-08-06-evaluation-api-design.md section 2: one function
+;;; here, not two, and DATASETS/NAMES are caller-supplied arguments to `evaluate-one-iteration'
+;;; itself rather than read back from `train''s `:valid-sets'.
+
+(defparameter *eval-booster-parameters*
+  '(:objective "binary:logistic" :max-depth 2 :eta 0.5 :verbosity 0 :min-child-weight 0
+    :eval-metric "logloss" :eval-metric "error")
+  "XGBoost booster parameters for the evaluation tests below. `:min-child-weight 0' is
+needed for `xgboost-api-evaluate-one-iteration-tracks-actual-model-fit' below to show any change at
+all: confirmed empirically against the vendored library, the default `:min-child-weight 1'
+lets the very first boosting round already saturate every leaf's Hessian sum below that
+threshold on this file's eight-row fixture, refusing every split after it and leaving
+every later round's tree empty -- `predict' returns bit-identical output at 1 round and at
+30 without this. Two metrics, not one, so a test that only checked a single label/value
+pair could not pass by accident if `evaluate-one-iteration' silently dropped every field after the
+first -- the same reasoning `cl-gbdt/tests/functional/lightgbm-api''s own
+*eval-booster-parameters* gives for its two LightGBM metrics.")
+
+(defparameter *%raw-field-value-reader-package*
+  (or (find-package '#:cl-gbdt/tests/functional/xgboost-api/raw-field-scratch)
+      (make-package '#:cl-gbdt/tests/functional/xgboost-api/raw-field-scratch :use nil))
+  "Throwaway package used only as `*package*' while `%raw-field-value' reads a numeric
+token, for the identical reason `cl-gbdt/src/xgboost/native''s own
+`*%eval-value-reader-package*' exists -- a token that is not valid `double-float' syntax
+(XGBoost's `\"inf\"'/`\"nan\"' spellings included) still reads as a plain symbol, which
+would otherwise be interned into this test file's own `*package*' as a side effect of the
+read. Deliberately a *different* package object from `native''s own scratch package:
+`%raw-field-value' exists specifically to be an independent re-derivation of a (label,
+value) pair from RAW, not a second call path that happens to share the parser under
+test's own plumbing -- see that function's docstring.")
+
+(defun %raw-field-value (raw label)
+  "Return the double-float value following \"LABEL:\" in RAW, up to the next tab or the
+end of RAW; NIL when LABEL does not appear in RAW at all, or when the text after its
+colon is not valid `double-float' syntax -- XGBoost's own `\"inf\"'/`\"-inf\"'/`\"nan\"'/
+`\"-nan\"' spellings for a non-finite value included.
+
+Independent of `cl-gbdt/src/xgboost/native''s own `%parse-eval-result': this is the
+functional suite's own re-derivation of a (label, value) pair straight out of the raw
+string, used only to check that `evaluate-one-iteration''s PARSED return value agrees with its RAW
+one -- reusing the function under test to check itself would prove nothing. `*package*'
+is bound to *%raw-field-value-reader-package* for the read, never this file's own -- see
+that parameter's docstring. `handler-case' catches `error' broadly rather than one named
+condition, matching `cl-gbdt/src/xgboost/native''s own `%read-eval-value', which this
+function deliberately does not call -- see that function's docstring for why a broad
+catch is the right scope here, not a narrower one."
+  (let ((start (search (concatenate 'string label ":") raw)))
+    (when start
+      (let* ((value-start (+ start (length label) 1))
+             (tab (position #\Tab raw :start value-start))
+             (value-end (or tab (length raw)))
+             (*read-eval* nil)
+             (*read-default-float-format* 'double-float)
+             (*package* *%raw-field-value-reader-package*)
+             (value (handler-case (read-from-string (subseq raw value-start value-end))
+                      (error () nil))))
+        (when (realp value)
+          (coerce value 'double-float))))))
+
+;;; Task 3 review, Important 1: XGBoost formats a metric value through `std::ostream',
+;;; which spells a non-finite double as "inf", "-inf", "nan" or "-nan" -- reachable from
+;;; real objectives, e.g. `mape' on a zero label or `rmsle' on a negative prediction, or
+;;; from an empty field (a trailing tab with nothing after it). `%parse-eval-result' used
+;;; to call a bare `read-from-string'/`coerce' on that text with no guard, so any of those
+;;; shapes signalled TYPE-ERROR (a symbol read from "inf"/"nan" is not REAL) or
+;;; END-OF-FILE (nothing to read from "") and aborted `evaluate-one-iteration' entirely --
+;;; destroying RAW along with it, exactly what policy section 5 forbids and that function's own
+;;; docstring calls "the only value this function can promise is faithful". This proves the
+;;; parser survives every shape the review probed, calling it directly -- `::' because
+;;; `%parse-eval-result' is a deliberately unexported internal of
+;;; `cl-gbdt/src/xgboost/native', reached here to test its defensiveness in isolation from
+;;; any foreign call, which no shared library is needed for; this test does not wrap itself
+;;; in `with-backend-library' for exactly that reason -- it exercises no FFI call at all,
+;;; and skipping it on a machine with no vendored library would be wrong.
+
+(deftest xgboost-api-parse-eval-result-survives-non-finite-and-malformed-fields
+  (testing "a plain finite value still parses to a double-float"
+    (ok (equal '(("train-logloss" . 0.1d0))
+               (cl-gbdt/src/xgboost/native::%parse-eval-result
+                (format nil "[5]~Ctrain-logloss:0.1" #\Tab)))
+        (format nil "got ~S"
+                (cl-gbdt/src/xgboost/native::%parse-eval-result
+                 (format nil "[5]~Ctrain-logloss:0.1" #\Tab)))))
+  (testing "\"inf\" does not signal; the field survives, keyed by LABEL, with a NIL value"
+    (ok (equal '(("train-mape" . nil))
+               (cl-gbdt/src/xgboost/native::%parse-eval-result
+                (format nil "[5]~Ctrain-mape:inf" #\Tab)))
+        (format nil "got ~S"
+                (cl-gbdt/src/xgboost/native::%parse-eval-result
+                 (format nil "[5]~Ctrain-mape:inf" #\Tab)))))
+  (testing "\"-inf\" does not signal either"
+    (ok (equal '(("train-mape" . nil))
+               (cl-gbdt/src/xgboost/native::%parse-eval-result
+                (format nil "[5]~Ctrain-mape:-inf" #\Tab)))
+        (format nil "got ~S"
+                (cl-gbdt/src/xgboost/native::%parse-eval-result
+                 (format nil "[5]~Ctrain-mape:-inf" #\Tab)))))
+  (testing "\"nan\" does not signal; the field survives with a NIL value"
+    (ok (equal '(("train-auc" . nil))
+               (cl-gbdt/src/xgboost/native::%parse-eval-result
+                (format nil "[5]~Ctrain-auc:nan" #\Tab)))
+        (format nil "got ~S"
+                (cl-gbdt/src/xgboost/native::%parse-eval-result
+                 (format nil "[5]~Ctrain-auc:nan" #\Tab)))))
+  (testing "\"-nan\" does not signal either"
+    (ok (equal '(("train-auc" . nil))
+               (cl-gbdt/src/xgboost/native::%parse-eval-result
+                (format nil "[5]~Ctrain-auc:-nan" #\Tab)))
+        (format nil "got ~S"
+                (cl-gbdt/src/xgboost/native::%parse-eval-result
+                 (format nil "[5]~Ctrain-auc:-nan" #\Tab)))))
+  (testing "an empty value after the colon does not signal end-of-file"
+    (ok (equal '(("train-x" . nil))
+               (cl-gbdt/src/xgboost/native::%parse-eval-result
+                (format nil "[5]~Ctrain-x:" #\Tab)))
+        (format nil "got ~S"
+                (cl-gbdt/src/xgboost/native::%parse-eval-result
+                 (format nil "[5]~Ctrain-x:" #\Tab)))))
+  (testing "a mix of finite and non-finite fields keeps every label, only the ~
+            non-finite ones lose their value"
+    (let ((raw (format nil "[5]~Ctrain-logloss:0.1~Ctrain-mape:inf" #\Tab #\Tab)))
+      (ok (equal '(("train-logloss" . 0.1d0) ("train-mape" . nil))
+                 (cl-gbdt/src/xgboost/native::%parse-eval-result raw))
+          (format nil "got ~S" (cl-gbdt/src/xgboost/native::%parse-eval-result raw))))))
+
+;;; Task 3 review, Minor 2, same finding: reading "inf"/"nan" interns a real symbol
+;;; somewhere, and without `%read-eval-value''s throwaway `*package*' binding it would
+;;; land in whatever package was current when `evaluate-one-iteration' was called -- a runtime
+;;; `intern' as a side effect of parsing a result string. This proves reading a
+;;; non-finite field does not touch this test's own `*package*'.
+
+(deftest xgboost-api-parse-eval-result-does-not-intern-into-the-callers-package
+  (let ((accessible-before (nth-value 1 (find-symbol "INF" *package*))))
+    (cl-gbdt/src/xgboost/native::%parse-eval-result (format nil "[5]~Ctrain-mape:inf" #\Tab))
+    (testing "INF was not accessible in this file's own package before the call"
+      (ok (null accessible-before)
+          (format nil "INF was already accessible in ~A: ~A" *package* accessible-before)))
+    (testing "INF is still not accessible in this file's own package after the call"
+      (ok (null (nth-value 1 (find-symbol "INF" *package*)))
+          (format nil "INF became accessible in ~A" *package*)))))
+
+;;; Step 3 of this task's brief: the raw string is returned intact, and the parse agrees
+;;; with it. Two datasets and two metrics, so this also proves `evaluate-one-iteration' does not
+;;; silently drop or transpose any of the four (dataset, metric) fields XGBoost reports.
+
+(deftest xgboost-api-evaluate-one-iteration-raw-string-and-parse-agree
+  (with-backend-library (:xgboost)
+    (multiple-value-bind (matrix label-vector) (make-separable-dataset)
+      (let ((backend (cl-gbdt:open-backend :xgboost))
+            (train-set nil)
+            (valid-set nil)
+            (booster nil))
+        (unwind-protect
+             (progn
+               (setf train-set (cl-gbdt:make-dataset backend matrix :label label-vector))
+               (setf valid-set (cl-gbdt:make-dataset backend matrix :label label-vector))
+               (setf booster (cl-gbdt:train backend train-set :num-rounds 5
+                                             :parameters *eval-booster-parameters*))
+               (multiple-value-bind (raw parsed)
+                   (cl-gbdt/xgboost:evaluate-one-iteration
+                    booster (list train-set valid-set) '("train" "valid"))
+                 (testing "raw starts with XGBoosterEvalOneIter's own \"[iteration]\" marker"
+                   (ok (and (plusp (length raw)) (char= (char raw 0) #\[))
+                       (format nil "raw was ~S" raw)))
+                 (testing "parsed has one entry per (dataset, metric) pair -- two datasets, ~
+                           two metrics"
+                   (ok (= 4 (length parsed)) (format nil "parsed was ~S" parsed)))
+                 (dolist (label '("train-logloss" "train-error" "valid-logloss" "valid-error"))
+                   (let ((parsed-value (cdr (assoc label parsed :test #'string=)))
+                         (raw-value (%raw-field-value raw label)))
+                     (testing (format nil "~A is present in both raw and parsed" label)
+                       (ok (and parsed-value raw-value)
+                           (format nil "parsed: ~S, raw: ~S" parsed raw)))
+                     (testing (format nil "~A's parsed value agrees with raw's" label)
+                       (ok (and parsed-value raw-value (= parsed-value raw-value))
+                           (format nil "~A: parsed ~S, raw ~S" label parsed-value
+                                   raw-value)))))))
+          (progn
+            (when booster (cl-gbdt:free-booster booster))
+            (when valid-set (cl-gbdt:free-dataset valid-set))
+            (when train-set (cl-gbdt:free-dataset train-set))
+            (cl-gbdt:close-backend backend)))))))
+
+;;; Design doc section 7's explicit ask: a test that would fail if evaluation were faked.
+;;; See `cl-gbdt/tests/functional/lightgbm-api''s identical commentary above its own
+;;; version of this test for why shape/range assertions alone cannot catch a stub.
+
+(deftest xgboost-api-evaluate-one-iteration-tracks-actual-model-fit
+  (with-backend-library (:xgboost)
+    (multiple-value-bind (matrix label-vector) (make-separable-dataset)
+      (let ((backend (cl-gbdt:open-backend :xgboost))
+            (train-set nil)
+            (undertrained nil)
+            (overtrained nil))
+        (unwind-protect
+             (progn
+               (setf train-set (cl-gbdt:make-dataset backend matrix :label label-vector))
+               (setf undertrained (cl-gbdt:train backend train-set :num-rounds 1
+                                                  :parameters *eval-booster-parameters*))
+               (setf overtrained (cl-gbdt:train backend train-set :num-rounds 30
+                                                 :parameters *eval-booster-parameters*))
+               (testing "more boosting rounds lowers logloss on the training set"
+                 (let ((loss-1 (%raw-field-value
+                                (cl-gbdt/xgboost:evaluate-one-iteration
+                                 undertrained (list train-set) '("train"))
+                                "train-logloss"))
+                       (loss-30 (%raw-field-value
+                                 (cl-gbdt/xgboost:evaluate-one-iteration
+                                  overtrained (list train-set) '("train"))
+                                 "train-logloss")))
+                   (ok (< loss-30 loss-1)
+                       (format nil "1 round: ~S, 30 rounds: ~S" loss-1 loss-30)))))
+          (progn
+            (when undertrained (cl-gbdt:free-booster undertrained))
+            (when overtrained (cl-gbdt:free-booster overtrained))
+            (when train-set (cl-gbdt:free-dataset train-set))
+            (cl-gbdt:close-backend backend)))))))
+
+;;; An empty DATASETS -- nothing to evaluate -- is a real call, not an error: confirmed
+;;; directly against the vendored library, `XGBoosterEvalOneIter' still succeeds with a
+;;; null `dmats'/`evnames' pair and length 0, returning just the bare "[iteration]" marker.
+;;; This proves `evaluate-one-iteration' returns that marker as RAW and an empty PARSED, not a
+;;; signal.
+
+(deftest xgboost-api-evaluate-one-iteration-with-no-datasets-returns-empty-parse
+  (with-backend-library (:xgboost)
+    (multiple-value-bind (matrix label-vector) (make-separable-dataset)
+      (let ((backend (cl-gbdt:open-backend :xgboost))
+            (train-set nil)
+            (booster nil))
+        (unwind-protect
+             (progn
+               (setf train-set (cl-gbdt:make-dataset backend matrix :label label-vector))
+               (setf booster (cl-gbdt:train backend train-set :num-rounds 1
+                                             :parameters *eval-booster-parameters*))
+               (multiple-value-bind (raw parsed)
+                   (cl-gbdt/xgboost:evaluate-one-iteration booster nil nil)
+                 (testing "raw is still XGBoosterEvalOneIter's own non-empty marker string"
+                   (ok (plusp (length raw)) (format nil "raw was ~S" raw)))
+                 (testing "parsed is empty"
+                   (ok (null parsed) (format nil "parsed was ~S" parsed)))))
+          (progn
+            (when booster (cl-gbdt:free-booster booster))
+            (when train-set (cl-gbdt:free-dataset train-set))
+            (cl-gbdt:close-backend backend)))))))
+
+;;; `%eval-one-iter' checks DATASETS and NAMES are the same length before either foreign
+;;; array is built -- a shorter NAMES would otherwise leave `evnames' entries pointing at
+;;; whatever garbage memory `cffi:with-foreign-object' happened to allocate, which
+;;; `XGBoosterEvalOneIter' would dereference as a C string: a segfault, not a catchable
+;;; condition. This proves the check runs instead, before that allocation.
+
+(deftest xgboost-api-evaluate-one-iteration-with-mismatched-names-signals-dimension-mismatch
+  (with-backend-library (:xgboost)
+    (multiple-value-bind (matrix label-vector) (make-separable-dataset)
+      (let ((backend (cl-gbdt:open-backend :xgboost))
+            (train-set nil)
+            (booster nil))
+        (unwind-protect
+             (progn
+               (setf train-set (cl-gbdt:make-dataset backend matrix :label label-vector))
+               (setf booster (cl-gbdt:train backend train-set :num-rounds 1
+                                             :parameters *eval-booster-parameters*))
+               (testing "evaluate-one-iteration with more names than datasets signals ~
+                         dimension-mismatch"
+                 ;; handler-case, not rove's `signals' -- see this file's other guard
+                 ;; tests for why.
+                 (ok (handler-case
+                         (progn (cl-gbdt/xgboost:evaluate-one-iteration
+                                 booster (list train-set) '("train" "extra"))
+                                nil)
+                       (cl-gbdt:dimension-mismatch () t))
+                     "evaluate-one-iteration did not signal dimension-mismatch")))
+          (progn
+            (when booster (cl-gbdt:free-booster booster))
+            (when train-set (cl-gbdt:free-dataset train-set))
+            (cl-gbdt:close-backend backend)))))))
+
+;;; `evaluate-one-iteration' is a plain function, not a `defmethod' -- unlike every other operation
+;;; this file guards against a mismatched handle, CLOS dispatch does not rule out the wrong
+;;; kind on its own here. `%check-xgboost-booster' is the explicit check that stands in for
+;;; it; this proves it runs before any foreign call, using a dataset handle as the wrong
+;;; kind, mirroring `cl-gbdt/tests/functional/lightgbm-api''s identical proof for
+;;; `booster-eval'/`booster-eval-names'.
+
+(deftest xgboost-api-evaluate-one-iteration-with-a-dataset-as-booster-argument-signals
+  (with-backend-library (:xgboost)
+    (multiple-value-bind (matrix label-vector) (make-separable-dataset)
+      (let ((backend (cl-gbdt:open-backend :xgboost))
+            (train-set nil))
+        (unwind-protect
+             (progn
+               (setf train-set (cl-gbdt:make-dataset backend matrix :label label-vector))
+               (testing "evaluate-one-iteration with a dataset as its booster argument signals, ~
+                         naming a booster as what was expected"
+                 (let ((message (handler-case
+                                     (progn (cl-gbdt/xgboost:evaluate-one-iteration
+                                             train-set (list train-set) '("train"))
+                                            nil)
+                                   (cl-gbdt:wrong-backend-reference (c) (princ-to-string c)))))
+                   (ok message "evaluate-one-iteration accepted a dataset as its booster argument")
+                   (ok (and message (search "must be a booster built by" message))
+                       (format nil "report was ~S" message)))))
+          (progn
+            (when train-set (cl-gbdt:free-dataset train-set))
+            (cl-gbdt:close-backend backend)))))))
+
+;;; Same hazard, reached through DATASETS instead of BOOSTER: `%check-xgboost-eval-dataset'
+;;; is what rejects a booster passed where a dataset belongs, before
+;;; `XGBoosterEvalOneIter' ever runs. This also stands in for "a DMatrix from the other
+;;; backend": an `xgboost-booster' is the wrong kind for the identical reason a LightGBM
+;;; dataset would be -- neither is an XGBoost `dataset', which is all this check actually
+;;; tests, mirroring `cl-gbdt/tests/functional/lightgbm-api''s own
+;;; `lightgbm-api-make-dataset-with-a-non-dataset-reference-signals' commentary on the same
+;;; point.
+
+(deftest xgboost-api-evaluate-one-iteration-with-a-booster-in-datasets-signals
+  (with-backend-library (:xgboost)
+    (multiple-value-bind (matrix label-vector) (make-separable-dataset)
+      (let ((backend (cl-gbdt:open-backend :xgboost))
+            (train-set nil)
+            (booster nil))
+        (unwind-protect
+             (progn
+               (setf train-set (cl-gbdt:make-dataset backend matrix :label label-vector))
+               (setf booster (cl-gbdt:train backend train-set :num-rounds 1
+                                             :parameters *eval-booster-parameters*))
+               (testing "evaluate-one-iteration with a booster inside datasets signals, naming a ~
+                         dataset as what was expected"
+                 (let ((message (handler-case
+                                     (progn (cl-gbdt/xgboost:evaluate-one-iteration
+                                             booster (list booster) '("train"))
+                                            nil)
+                                   (cl-gbdt:wrong-backend-reference (c) (princ-to-string c)))))
+                   (ok message "evaluate-one-iteration accepted a booster inside datasets")
+                   (ok (and message (search "must be a dataset built by" message))
+                       (format nil "report was ~S" message)))))
+          (progn
+            (when booster (cl-gbdt:free-booster booster))
+            (when train-set (cl-gbdt:free-dataset train-set))
+            (cl-gbdt:close-backend backend)))))))
+
+;;; `evaluate-one-iteration' reads BOOSTER's pointer through `handle-live-pointer', the same guard
+;;; every other operation in this file goes through -- this proves it, mirroring
+;;; `xgboost-api-free-dataset-releases-the-handle''s proof for datasets.
+
+(deftest xgboost-api-evaluate-one-iteration-after-free-booster-signals
+  (with-backend-library (:xgboost)
+    (multiple-value-bind (matrix label-vector) (make-separable-dataset)
+      (let ((backend (cl-gbdt:open-backend :xgboost))
+            (train-set nil)
+            (booster nil))
+        (unwind-protect
+             (progn
+               (setf train-set (cl-gbdt:make-dataset backend matrix :label label-vector))
+               (setf booster (cl-gbdt:train backend train-set :num-rounds 1
+                                             :parameters *eval-booster-parameters*))
+               (cl-gbdt:free-booster booster)
+               (testing "evaluate-one-iteration on a freed booster signals released-handle-error"
+                 (ok (handler-case
+                         (progn (cl-gbdt/xgboost:evaluate-one-iteration
+                                 booster (list train-set) '("train"))
+                                nil)
+                       (cl-gbdt:released-handle-error () t))
+                     "evaluate-one-iteration did not signal released-handle-error")))
+          (progn
+            (when train-set (cl-gbdt:free-dataset train-set))
+            (cl-gbdt:close-backend backend)))))))
+
+;;; Same guard, for a DATASETS entry instead of BOOSTER itself: `%check-xgboost-eval-dataset'
+;;; reads it through `handle-live-pointer' too. This proves a freed dataset inside DATASETS
+;;; is rejected before `XGBoosterEvalOneIter' ever dereferences its stale pointer.
+
+(deftest xgboost-api-evaluate-one-iteration-with-a-freed-dataset-signals
+  (with-backend-library (:xgboost)
+    (multiple-value-bind (matrix label-vector) (make-separable-dataset)
+      (let ((backend (cl-gbdt:open-backend :xgboost))
+            (train-set nil)
+            (other-set nil)
+            (booster nil))
+        (unwind-protect
+             (progn
+               (setf train-set (cl-gbdt:make-dataset backend matrix :label label-vector))
+               (setf other-set (cl-gbdt:make-dataset backend matrix :label label-vector))
+               (setf booster (cl-gbdt:train backend train-set :num-rounds 1
+                                             :parameters *eval-booster-parameters*))
+               (cl-gbdt:free-dataset other-set)
+               (testing "evaluate-one-iteration with a freed dataset in datasets signals ~
+                         released-handle-error"
+                 (ok (handler-case
+                         (progn (cl-gbdt/xgboost:evaluate-one-iteration
+                                 booster (list other-set) '("other"))
+                                nil)
+                       (cl-gbdt:released-handle-error () t))
+                     "evaluate-one-iteration did not signal released-handle-error")))
+          (progn
+            (when booster (cl-gbdt:free-booster booster))
+            (when train-set (cl-gbdt:free-dataset train-set))
+            (cl-gbdt:close-backend backend)))))))
+
+;;; Same guard as `xgboost-api-operation-after-close-backend-signals-backend-not-open'
+;;; above, for `evaluate-one-iteration' instead of `dataset-num-rows'.
+
+(deftest xgboost-api-evaluate-one-iteration-after-close-backend-signals-backend-not-open
+  (with-backend-library (:xgboost)
+    (multiple-value-bind (matrix label-vector) (make-separable-dataset)
+      (let* ((backend (cl-gbdt:open-backend :xgboost))
+             (train-set (cl-gbdt:make-dataset backend matrix :label label-vector))
+             (booster (cl-gbdt:train backend train-set :num-rounds 1
+                                      :parameters *eval-booster-parameters*)))
+        (cl-gbdt:close-backend backend)
+        (unwind-protect
+             (testing "evaluate-one-iteration after close-backend signals backend-not-open"
+               (ok (handler-case
+                       (progn (cl-gbdt/xgboost:evaluate-one-iteration
+                               booster (list train-set) '("train"))
+                              nil)
+                     (cl-gbdt:backend-not-open () t))
+                   "evaluate-one-iteration did not signal backend-not-open"))
+          (progn
+            (when booster (cl-gbdt:free-booster booster))
+            (when train-set (cl-gbdt:free-dataset train-set))))))))

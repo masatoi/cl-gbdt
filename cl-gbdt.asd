@@ -63,5 +63,9 @@ guard, and have no portable fallback."
   :depends-on ("cl-gbdt/tests/functional/lightgbm"
                "cl-gbdt/tests/functional/lightgbm-api"
                "cl-gbdt/tests/functional/xgboost"
-               "cl-gbdt/tests/functional/xgboost-api")
+               "cl-gbdt/tests/functional/xgboost-api"
+               ;; Backend-neutral: the same assertions against both backends, per policy
+               ;; section 13's portable-contract split. See its own header for why it is
+               ;; not part of either backend's file.
+               "cl-gbdt/tests/functional/evaluation")
   :perform (test-op (op c) (symbol-call :rove :run c)))

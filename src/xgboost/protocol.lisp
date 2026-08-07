@@ -1,4 +1,4 @@
-;;;; protocol.lisp --- XGBoost backend, Layer 2: the classes and all fourteen methods of
+;;;; protocol.lisp --- XGBoost backend, Layer 2: the classes and all fifteen methods of
 ;;;; the unified API's protocol, each delegating its C calls to
 ;;;; `cl-gbdt/src/xgboost/native'.
 
@@ -42,7 +42,9 @@
                 #:%booster-num-features
                 #:%feature-score-index
                 #:%check-feature-score-dim
-                #:%feature-score)
+                #:%feature-score
+                #:%split-eval-label
+                #:evaluate-one-iteration)
   (:import-from #:cl-gbdt/src/backend
                 #:backend
                 #:backend-name
@@ -65,6 +67,7 @@
                 #:load-model
                 #:model-to-string
                 #:feature-importance
+                #:evaluation
                 #:free-booster)
   (:import-from #:cl-gbdt/src/handle
                 #:dataset
@@ -74,7 +77,8 @@
                 #:handle-live-pointer
                 #:handle-released-p
                 #:handle-backend
-                #:booster-training-set)
+                #:booster-training-set
+                #:booster-validation-sets)
   (:import-from #:cl-gbdt/src/conditions
                 #:missing-foreign-symbols
                 #:foreign-call-error
@@ -95,7 +99,7 @@
 ;;; ---------------------------------------------------------------------------
 ;;; Floating-point trap safety
 ;;;
-;;; Every method below that reaches into libxgboost.so -- all twelve protocol methods
+;;; Every method below that reaches into libxgboost.so -- all thirteen protocol methods
 ;;; plus `initialize-backend' (`XGBoostVersion') and `shutdown-backend' (closing the
 ;;; library can run its own static finalizers) -- wraps its entire body in
 ;;; `with-foreign-float-traps-masked'. See that macro's docstring in
@@ -629,3 +633,58 @@ inventing a reduction XGBoost itself does not define."
                 (setf (aref result column)
                       (coerce (cffi:mem-aref scores-pointer :float used-index)
                               'double-float))))))))))
+
+;;; ---------------------------------------------------------------------------
+;;; Evaluation
+
+(defmethod evaluation ((booster xgboost-booster))
+  "Return BOOSTER's evaluation metrics via `evaluate-one-iteration', this backend's own Layer 1
+evaluation function -- see the `evaluation' generic function's docstring for the portable
+contract this satisfies.
+
+`XGBoosterEvalOneIter' evaluates whatever DMatrices it is handed and consults nothing the
+booster was built with, so the datasets this evaluates are BOOSTER's own retained
+handles: its training set first, then each `train' :VALID-SETS entry in the order the
+caller supplied them. That is what makes DATASET-INDEX mean the same thing here as it
+does on LightGBM, which can only evaluate what training attached -- measured before this
+method was written: for one booster, one set of handles and one iteration,
+`XGBoosterEvalOneIter' called directly and this path through `evaluate-one-iteration' produce
+byte-identical result strings, and both agree with the logloss and error rate computed
+independently from `predict' on the same data. A `load-model' booster retains no dataset
+at all, which is the case an empty result comes from.
+
+Each dataset is named to `XGBoosterEvalOneIter' by its own decimal index -- \"0\" for the
+training set, \"1\" for the first validation set -- because the call requires one name per
+DMatrix and builds each result label by joining that name to the metric's name with a
+hyphen. `%split-eval-label' takes the label back apart against those same names, which is
+the only way to recover the metric name: nothing in the result string alone marks where
+one half ends and the other begins. Those names are an argument to a C call, never a
+dataset name this API reports -- the caller sees the index, exactly as on LightGBM.
+
+The values are `%parse-eval-result''s reading of `XGBoosterEvalOneIter''s formatted
+output, which is what the secondary value's `:value-source :parsed-text' says, and its
+`:raw' carries that output unmodified so nothing the library actually wrote is lost to
+the parse. A field whose value the parser could not read as a `double-float' -- XGBoost
+spells a non-finite one \"inf\" or \"nan\" -- keeps its entry with VALUE NIL rather than
+disappearing from the result.
+
+`evaluate-one-iteration' reads BOOSTER and every dataset handed to it through `handle-live-pointer'
+before any foreign call, so a freed booster or a freed retained dataset signals
+`released-handle-error' from there; unlike `cl-gbdt/src/lightgbm/protocol''s method, this
+one needs no separate `%check-booster-datasets-live', since every dataset it evaluates is
+one it passes to Layer 1 explicitly and is checked there by name."
+  (with-foreign-float-traps-masked
+    (let* ((training-set (booster-training-set booster))
+           (datasets (if training-set
+                         (cons training-set (booster-validation-sets booster))
+                         '()))
+           ;; `~D', not `princ-to-string': `~D' binds `*print-base*' to 10 itself, so a
+           ;; caller who has bound it to something else gets the decimal names this
+           ;; method's docstring promises rather than that base's digits.
+           (names (loop :for index :below (length datasets) :collect (format nil "~D" index))))
+      (multiple-value-bind (raw parsed) (evaluate-one-iteration booster datasets names)
+        (values (loop :for (label . value) :in parsed
+                      :collect (multiple-value-bind (index metric-name)
+                                   (%split-eval-label label names)
+                                 (list index metric-name value)))
+                (list :value-source :parsed-text :raw raw))))))

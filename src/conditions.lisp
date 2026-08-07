@@ -28,6 +28,7 @@
            #:wrong-backend-reference-backend
            #:wrong-backend-reference-given
            #:wrong-backend-reference-argument
+           #:wrong-backend-reference-expected
            #:unsupported-argument
            #:unsupported-argument-backend
            #:unsupported-argument-argument
@@ -197,33 +198,48 @@ guarantee that order."))
    (given :initarg :given
           :initform nil
           :reader wrong-backend-reference-given
-          :documentation "The class of the object actually passed where a dataset built by
-BACKEND was expected.")
+          :documentation "The class of the object actually passed where a handle of kind
+EXPECTED, built by BACKEND, was expected.")
    (argument :initarg :argument
              :initform nil
              :reader wrong-backend-reference-argument
              :documentation "Description of which caller-supplied argument received the wrong
-value, e.g. \"make-dataset's :reference\" or \"train's dataset argument\", for the report."))
+value, e.g. \"make-dataset's :reference\" or \"train's dataset argument\", for the report.")
+   (expected :initarg :expected
+             :initform "dataset"
+             :reader wrong-backend-reference-expected
+             :documentation "What kind of handle the argument should have been, as a noun
+for the report -- \"dataset\" (the default, and every caller before `booster-eval' and
+`booster-eval-names') or \"booster\". Defaulting to \"dataset\" means the two existing
+callers, `%check-lightgbm-dataset' and `%check-xgboost-dataset', need no change of their
+own to keep reporting exactly what they always have."))
   (:report
    (lambda (condition stream)
-     (format stream "~A must be a dataset built by ~A itself, not ~A."
+     (format stream "~A must be a ~A built by ~A itself, not ~A."
              (or (wrong-backend-reference-argument condition) "The argument")
+             (wrong-backend-reference-expected condition)
              (wrong-backend-reference-backend condition)
              (wrong-backend-reference-given condition))))
-  (:documentation "A caller-supplied dataset argument did not belong to the same backend as
-the operation it was passed to.
+  (:documentation "A caller-supplied dataset or booster argument did not belong to the same
+backend as the operation it was passed to, or was the wrong kind of handle outright.
 
 Several entry points funnel through this same condition: `make-dataset''s :REFERENCE,
-`train''s DATASET argument, and each entry of `train''s :VALID-SETS. All three hand a
-caller-supplied handle straight to a foreign function that expects a `DatasetHandle',
-without a CLOS specializer to rule out the wrong kind of handle first -- `make-dataset' and
-`train' both dispatch on the backend, not on the handle, so a dataset built by a different
-backend, or a booster, or any other non-dataset handle, would otherwise reach the foreign
-call unexamined.
+`train''s DATASET argument, and each entry of `train''s :VALID-SETS all expect a dataset,
+EXPECTED's default; `cl-gbdt/lightgbm''s `booster-eval' and `booster-eval-names' expect a
+booster instead, the first callers to pass `:expected \"booster\"' -- without that slot,
+reusing this condition unmodified for them produced a self-contradictory report, e.g.
+\"must be a dataset built by LIGHTGBM itself, not LIGHTGBM-DATASET\" when a dataset was
+rejected because a *booster* was required. Every one of these entry points hands a
+caller-supplied handle straight to a foreign function that expects a specific handle kind,
+without a CLOS specializer to rule out the wrong one first -- `make-dataset' and `train'
+both dispatch on the backend, not on the handle, and `booster-eval'/`booster-eval-names'
+are plain functions with no CLOS dispatch at all, so a handle built by a different
+backend, of the wrong kind, or not a handle at all, would otherwise reach the foreign call
+unexamined.
 
-A dataset handle is an opaque pointer as far as the underlying C API is concerned: handing
-it the wrong one is undefined behaviour once it crosses the FFI boundary, not something the
-C library can reject on its own. This is checked here, before any foreign call, so the
+A handle is an opaque pointer as far as the underlying C API is concerned: handing it the
+wrong one is undefined behaviour once it crosses the FFI boundary, not something the C
+library can reject on its own. This is checked here, before any foreign call, so the
 failure is a condition instead of a crash or silent corruption."))
 
 (define-condition unsupported-argument (data-error)

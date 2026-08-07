@@ -20,6 +20,7 @@
            #:load-model
            #:model-to-string
            #:feature-importance
+           #:evaluation
            #:free-dataset
            #:free-booster
            #:with-dataset
@@ -115,6 +116,55 @@ than invent one, that backend signals `unsupported-argument' instead of returnin
 anything for that combination. LightGBM's own call never reports that shape: it already
 aggregates a multi-class model's per-class contributions into one number per feature
 inside the library."))
+
+(defgeneric evaluation (booster)
+  (:documentation "Return BOOSTER's evaluation metrics as a fresh list of
+(DATASET-INDEX METRIC-NAME VALUE) lists -- one entry per metric per dataset.
+
+DATASET-INDEX identifies the dataset a value was computed on by its position among the
+datasets BOOSTER retains: 0 is the training set BOOSTER was trained on, 1 is the first
+entry of `train''s :VALID-SETS, 2 the second, and so on -- the order the caller supplied
+them in, which is also LightGBM's own `data_idx' numbering. No name is invented for any
+of them: LightGBM identifies a validation set by index and by nothing else, so there is
+no upstream name to report and this API does not fabricate one.
+
+METRIC-NAME is the backend's own name for the metric, exactly as that backend spells it.
+LightGBM's \"binary_logloss\" and XGBoost's \"logloss\" name related quantities under
+different names, and neither is translated into the other's vocabulary. Which metrics a
+booster has at all is decided by what `train' was given (LightGBM's `metric', XGBoost's
+`eval_metric') and by the objective's own default, not by this call.
+
+VALUE is a `double-float', or NIL when the backend reported a value this library could
+not read as one. Only XGBoost produces NIL: its values arrive as formatted text (see
+:VALUE-SOURCE below) and its `std::ostream' spells a non-finite double \"inf\" or
+\"nan\", which is not `double-float' syntax. LightGBM's values are already doubles and
+are returned unmodified, a non-finite one included.
+
+Entries are ordered by DATASET-INDEX, and within one dataset in the backend's own metric
+order -- the same metrics, in the same order, for every dataset.
+
+The result is empty when BOOSTER has no metrics configured (LightGBM's `metric=none') and
+when BOOSTER retains no dataset to evaluate at all -- a `load-model' booster, which has
+neither a training set nor validation sets.
+
+The secondary value is a plist saying where the numbers came from, because the two
+backends do not produce them the same way and a caller must not have to guess which kind
+it is holding:
+
+  :VALUE-SOURCE  `:library-doubles' when the backend handed over binary doubles
+                 (LightGBM's `LGBM_BoosterGetEval'), or `:parsed-text' when this library
+                 read them out of a string the backend formatted (XGBoost's
+                 `XGBoosterEvalOneIter'). A `:parsed-text' number is this library's
+                 reading of a text format upstream does not document as stable, not a
+                 number the backend itself reported.
+  :RAW           Present for `:parsed-text' only: the exact string the backend produced,
+                 unmodified, so the parse loses nothing upstream said.
+                 `cl-gbdt/xgboost:evaluate-one-iteration' returns that same string directly.
+
+Signals `released-handle-error' when BOOSTER, or any dataset it retains, has already been
+freed -- both backends read a retained validation set's own memory while evaluating, so
+this is checked before any foreign call rather than left to crash -- and
+`backend-not-open' when BOOSTER's backend has since been closed."))
 
 (defgeneric free-dataset (dataset)
   (:documentation "Free DATASET. Does nothing if it was already freed."))
