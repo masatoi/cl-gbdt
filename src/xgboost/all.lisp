@@ -39,10 +39,10 @@
 ;;;
 ;;; This re-exports `cl-gbdt/src/xgboost/protocol' in full -- today just `xgboost-backend',
 ;;; the CLOS class a caller can specialize methods on or check with `typep' -- plus one named
-;;; symbol pulled explicitly from `native': `booster-eval', Task 3's XGBoost-specific Layer 1
-;;; addition (docs/superpowers/specs/2026-08-06-evaluation-api-design.md, policy section 3's
-;;; Layer 1), mirroring `cl-gbdt/lightgbm''s identical `booster-eval-names'/`booster-eval'
-;;; pair from Task 2. Nothing else from `native' is published here: none of its remaining
+;;; symbol pulled explicitly from `native': `evaluate-one-iteration', Task 3's XGBoost-specific
+;;; Layer 1 addition (docs/superpowers/specs/2026-08-06-evaluation-api-design.md, policy section 3's
+;;; Layer 1), mirroring `cl-gbdt/lightgbm''s identical `booster-eval-names'/`booster-eval' pair from
+;;; Task 2. Nothing else from `native' is published here: none of its remaining
 ;;; exports is a reviewed, Lisp-level XGBoost-specific operation. A future Phase 2 addition
 ;;; follows the same shape -- named explicitly in both the `:import-from' and the `:export'
 ;;; clause below, never picked up by widening either into a blanket re-export of `native' as
@@ -53,8 +53,8 @@
 (uiop:define-package #:cl-gbdt/xgboost
   (:use-reexport #:cl-gbdt/src/xgboost/protocol)
   (:import-from #:cl-gbdt/src/xgboost/native
-                #:booster-eval)
-  (:export #:booster-eval))
+                #:evaluate-one-iteration)
+  (:export #:evaluate-one-iteration))
 
 ;;; This second form's dependency on `protocol' is already covered by the first form's own
 ;;; `:use-reexport' above -- package-inferred-system infers a file's dependencies from the

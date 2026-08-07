@@ -102,7 +102,7 @@
            #:%check-feature-score-dim
            #:%feature-score
            #:%split-eval-label
-           #:booster-eval))
+           #:evaluate-one-iteration))
 
 (in-package #:cl-gbdt/src/xgboost/native)
 
@@ -119,7 +119,7 @@
 ;;; `multi:softprob' prediction -- was written and tested against the C convention of
 ;;; those traps staying masked.
 ;;;
-;;; `booster-eval', in the Evaluation section near the end of this file, is the exception:
+;;; `evaluate-one-iteration', in the Evaluation section near the end of this file, is the exception:
 ;;; Task 3 (policy section 3's Layer 1) exports it directly from `cl-gbdt/xgboost' -- see
 ;;; `src/xgboost/all.lisp' -- so it is never reached through a `cl-gbdt/src/xgboost/protocol'
 ;;; `defmethod'. There is no outer call site left to establish the mask for it, so it wraps
@@ -754,7 +754,7 @@ itself to this file instead of naming `xg-booster-feature-score' directly.
 ;;; ---------------------------------------------------------------------------
 ;;; Evaluation
 ;;;
-;;; `booster-eval' below is this file's first export that is not a `%'-prefixed internal
+;;; `evaluate-one-iteration' below is this file's first export that is not a `%'-prefixed internal
 ;;; helper: Task 3 (policy section 3's Layer 1) exports it directly from `cl-gbdt/xgboost'
 ;;; -- see `src/xgboost/all.lisp' -- rather than through a `cl-gbdt/src/xgboost/protocol'
 ;;; `defmethod' the way every other public operation on a booster is reached. See this
@@ -773,7 +773,7 @@ BOOSTER's own concrete class -- `cl-gbdt/src/xgboost/protocol''s `xgboost-booste
 cannot be named directly here: this file must not depend on
 `cl-gbdt/src/xgboost/protocol', for the reason this file's own header gives, and unlike
 `%check-xgboost-dataset' there is no `protocol.lisp' caller to hand this one the class as
-a parameter -- `booster-eval' below is called directly by end users, never by a
+a parameter -- `evaluate-one-iteration' below is called directly by end users, never by a
 `defmethod'. `(typep booster 'booster)' -- the backend-agnostic base class from
 `cl-gbdt/src/handle' -- combined with BOOSTER's own `handle-backend' reporting `:xgboost'
 as its `backend-name' identifies exactly the set of objects `(typep booster
@@ -804,11 +804,11 @@ BOOSTER, `backend-not-open' when its own backend has since been closed."
 the `:xgboost' backend.
 
 Mirrors `%check-xgboost-booster' immediately above, but for `dataset' -- needed for the
-same reason: `booster-eval''s DATASETS argument is a list of caller-supplied handles this
+same reason: `evaluate-one-iteration''s DATASETS argument is a list of caller-supplied handles this
 file must check before ever handing their pointers to `XGBoosterEvalOneIter', and the
 existing `%check-xgboost-dataset' cannot be reused as-is, since its only caller,
 `cl-gbdt/src/xgboost/protocol''s `train', already has the concrete `xgboost-dataset' class
-symbol to hand it as a parameter -- `booster-eval' has no such caller to get it from, the
+symbol to hand it as a parameter -- `evaluate-one-iteration' has no such caller to get it from, the
 identical gap `%check-xgboost-booster' fills for booster arguments.
 
 ARGUMENT-DESCRIPTION names which caller-supplied argument DATASET came from, for
@@ -841,7 +841,7 @@ hazard this file's every other caller-supplied-array construction (`%set-feature
 `%create-booster') already checks its own inputs against before allocating. Signals
 `dimension-mismatch' instead.
 
-An empty DMATRIX-POINTERS -- `booster-eval' called with no datasets to evaluate -- passes
+An empty DMATRIX-POINTERS -- `evaluate-one-iteration' called with no datasets to evaluate -- passes
 a null pointer and length 0 to `XGBoosterEvalOneIter' rather than a zero-length foreign
 array, mirroring `%create-booster''s identical choice for the same reason: to avoid
 depending on whether a zero-count `cffi:with-foreign-object' allocation is meaningful.
@@ -896,7 +896,7 @@ A token that is not valid `double-float' syntax -- XGBoost's own `\"inf\"', `\"-
 `\"nan\"' or `\"-nan\"' spellings for a non-finite value included -- still reads as a
 plain symbol rather than signalling on the read itself, and that symbol has to be
 interned *somewhere*. Left unbound, `*package*' would be whatever was current when
-`booster-eval' was called -- the caller's own package -- so `read-from-string' would
+`evaluate-one-iteration' was called -- the caller's own package -- so `read-from-string' would
 silently leave `INF' or `NAN' newly accessible there, a runtime `intern' as a side effect
 of parsing a result string, which this project's own style guide forbids. Binding it to
 this throwaway package instead confines every such symbol here, never touching the
@@ -922,7 +922,7 @@ whose exact failure mode is not the point -- see e.g. `cl-gbdt/src/xgboost/proto
 string this function does not otherwise control the shape of, so a reader condition this
 docstring has not enumerated is exactly the case this stays broad for. Either way this
 returns NIL rather than signalling out of `%parse-eval-result' and, through it,
-`booster-eval' -- see that function's own docstring for why losing RAW over a value this
+`evaluate-one-iteration' -- see that function's own docstring for why losing RAW over a value this
 function cannot make sense of is not acceptable.
 
 `*read-eval*' is bound to NIL so a stray `#.' in an unexpected metric string cannot run
@@ -941,7 +941,7 @@ whole BODY below, including the nested `let' that reads TEXT, which is all this 
 
 (defun %parse-eval-result (raw)
   "Parse RAW -- `XGBoosterEvalOneIter''s own result string, as `%eval-one-iter' returns
-it unmodified -- into a fresh list of (LABEL . VALUE) conses, `booster-eval''s own
+it unmodified -- into a fresh list of (LABEL . VALUE) conses, `evaluate-one-iteration''s own
 derived interpretation of an undocumented text format, never a substitute for RAW itself.
 
 Confirmed directly against the vendored library: RAW looks like
@@ -953,10 +953,10 @@ own, so the last colon in the field is always the LABEL/VALUE boundary regardles
 LABEL itself contains.
 
 LABEL is returned exactly as XGBoost wrote it, e.g. \"train-logloss\" -- the
-caller-supplied name (`booster-eval''s own NAMES argument) and XGBoost's own metric name,
+caller-supplied name (`evaluate-one-iteration''s own NAMES argument) and XGBoost's own metric name,
 joined with a hyphen. This does not attempt to split LABEL further into the two: a hyphen
 is also legal inside a caller-supplied name, so nothing in RAW alone can tell the two
-apart -- only `booster-eval''s own caller, which already knows every entry of NAMES
+apart -- only `evaluate-one-iteration''s own caller, which already knows every entry of NAMES
 verbatim, can. VALUE is `%read-eval-value''s result: a `double-float' for ordinary numeric
 text, or NIL when that text is not valid `double-float' syntax -- XGBoost's own
 `\"inf\"'/`\"-inf\"'/`\"nan\"'/`\"-nan\"' spellings for a non-finite metric value are the
@@ -975,7 +975,7 @@ Returns NIL when RAW has no fields after the marker -- an empty DMATRIX-POINTERS
 
 (defun %split-eval-label (label names)
   "Return (VALUES INDEX METRIC-NAME) for LABEL, one `%parse-eval-result' entry's label,
-given NAMES -- the exact list of dataset names that was passed to `booster-eval' for the
+given NAMES -- the exact list of dataset names that was passed to `evaluate-one-iteration' for the
 call LABEL came out of. INDEX is LABEL's dataset's position in NAMES; METRIC-NAME is
 what is left of LABEL after that name and the hyphen joining it to XGBoost's own metric
 name.
@@ -1010,7 +1010,7 @@ guess when `XGBoosterFeatureScore' reports a feature name outside the form it do
                         :message (format nil "result label ~S matches none of the dataset ~
                                               names ~S this call supplied" label names))))
 
-(defun booster-eval (booster datasets names)
+(defun evaluate-one-iteration (booster datasets names)
   "Evaluate BOOSTER against DATASETS via `XGBoosterEvalOneIter', labeling each entry of
 DATASETS with the corresponding entry of NAMES, at BOOSTER's own current boosted-round
 count (read fresh via `XGBoosterBoostedRounds', the same source `update-one-iteration'
@@ -1056,12 +1056,13 @@ already-freed one, `backend-not-open' when its own backend has since been closed
 `dimension-mismatch' when DATASETS and NAMES differ in length."
   (with-foreign-float-traps-masked
     (let* ((booster-pointer
-             (%check-xgboost-booster booster "booster-eval's booster argument"))
+             (%check-xgboost-booster booster "evaluate-one-iteration's booster argument"))
            (dataset-pointers
              (loop :for dataset :in datasets
                    :for index :from 0
                    :collect (%check-xgboost-eval-dataset
-                             dataset (format nil "booster-eval's datasets entry ~D" index))))
+                             dataset
+                             (format nil "evaluate-one-iteration's datasets entry ~D" index))))
            (raw (%eval-one-iter booster-pointer (%boosted-rounds booster-pointer)
                                  dataset-pointers names)))
       (values raw (%parse-eval-result raw)))))

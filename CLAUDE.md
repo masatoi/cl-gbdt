@@ -86,8 +86,8 @@ once that backend's public package exports it** (the second `uiop:define-package
 in the sibling `all.lisp`, per `tools/ci/check-float-traps.lisp`'s `:export`-clause
 check): such a `defun` is a library-reaching entry point with no `defmethod` left to
 inherit a mask from, so it must wrap its own whole body the same way -- LightGBM's
-`booster-eval`/`booster-eval-names` and XGBoost's `booster-eval` were the first functions
-this applied to.
+`booster-eval`/`booster-eval-names` and XGBoost's `evaluate-one-iteration` were the first
+functions this applied to.
 SBCL enables the `:invalid`, `:divide-by-zero` and `:overflow` floating-point traps by
 default on x86-64 and none of them on aarch64; LightGBM and XGBoost are C code written
 and tested against the opposite (masked) convention, where an intermediate NaN or

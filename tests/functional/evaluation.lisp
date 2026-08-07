@@ -9,7 +9,8 @@
 ;;;; part of either backend's own. tests/functional/lightgbm.lisp and xgboost.lisp call the
 ;;;; raw FFI bindings; lightgbm-api.lisp and xgboost-api.lisp go through the public API but
 ;;;; each is about ONE backend -- their own headers say so, and Tasks 2 and 3 put each
-;;;; backend's Layer 1 `booster-eval' tests in the matching one. A portable contract test
+;;;; backend's Layer 1 evaluation-primitive tests (`booster-eval' for LightGBM,
+;;;; `evaluate-one-iteration' for XGBoost) in the matching one. A portable contract test
 ;;;; belongs in neither: asserting XGBoost's behavior inside a file named for LightGBM would
 ;;;; miscategorise it, and writing the assertions twice, once per backend file, is exactly
 ;;;; the drift "the same assertions against both backends" exists to rule out. Backend-

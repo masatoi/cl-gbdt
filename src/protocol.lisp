@@ -159,7 +159,7 @@ it is holding:
                  number the backend itself reported.
   :RAW           Present for `:parsed-text' only: the exact string the backend produced,
                  unmodified, so the parse loses nothing upstream said.
-                 `cl-gbdt/xgboost:booster-eval' returns that same string directly.
+                 `cl-gbdt/xgboost:evaluate-one-iteration' returns that same string directly.
 
 Signals `released-handle-error' when BOOSTER, or any dataset it retains, has already been
 freed -- both backends read a retained validation set's own memory while evaluating, so

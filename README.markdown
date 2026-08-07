@@ -145,13 +145,15 @@ Today that is the entire published surface: the backend's own CLOS class -- usef
 `typep` or for specializing your own methods on one specific backend rather than the
 shared `backend`; `open-backend` itself never needs it, since it looks classes up by the
 `:lightgbm`/`:xgboost` keyword internally, not by this symbol -- plus that backend's own
-evaluation entry points. `cl-gbdt/xgboost` publishes `xgboost-backend` and a
-`booster-eval` of its own, which takes different arguments and returns something different
-(see [the differences table](#where-the-two-backends-genuinely-differ)): the two
-`booster-eval`s are distinct symbols in distinct packages, deliberately, so a program that
-`:use`s both packages has to resolve the conflict rather than get one of them silently.
-Package-qualify them -- `cl-gbdt/lightgbm:booster-eval`, `cl-gbdt/xgboost:booster-eval` --
-or use the portable `cl-gbdt:evaluation` instead, which is one name for both.
+evaluation entry points. `cl-gbdt/xgboost` publishes `xgboost-backend` and an
+`evaluate-one-iteration` of its own, which takes different arguments and returns something
+different (see [the differences table](#where-the-two-backends-genuinely-differ)): the two
+operations were deliberately given different names -- `cl-gbdt/lightgbm:booster-eval` reads
+the validation data LightGBM attached at train time, addressed by index, while
+`cl-gbdt/xgboost:evaluate-one-iteration` evaluates whatever DMatrices the caller passes it
+and ignores `valid-sets` entirely -- rather than sharing one name across packages that a
+caller `:use`-ing both would have to resolve a conflict over. Package-qualify them, or use
+the portable `cl-gbdt:evaluation` instead, which is one name for both.
 
 Nothing else from either backend's `native.lisp` -- library discovery, the
 raw-status-code checker, the internal `%`-functions that turn a raw C call into something
@@ -228,7 +230,7 @@ out first:
 | `feature-importance`'s `:num-iteration` | Limits the importance calculation | Signals `unsupported-argument` -- no iteration-limited variant exists |
 | `feature-importance`'s result shape | Always one number per feature | Signals `unsupported-argument` instead of returning a result when the model reports a multi-dimensional score shape -- a `gblinear` booster's importance on a multi-class model, whose scores are a per-class matrix with no single-value reduction this backend will invent |
 | What `evaluation` evaluates | The datasets `train` attached, read back by index (`LGBM_BoosterGetEval`): the library computed these metrics during training and this reads them out | The booster's own retained training set and `:valid-sets` entries, which this backend hands to `XGBoosterEvalOneIter` explicitly -- that call evaluates whatever DMatrices it is given and consults nothing the booster was built with, so passing the retained ones is what makes the index mean the same thing on both backends |
-| `evaluation`'s values | `LGBM_BoosterGetEval`'s own doubles, returned unmodified -- the secondary value says `:value-source :library-doubles` | Parsed out of the single formatted line `XGBoosterEvalOneIter` produces -- `:value-source :parsed-text`, with that line itself kept verbatim under `:raw`, and a value XGBoost spelled `inf`/`nan` coming back as `nil` rather than a number. The same line is `cl-gbdt/xgboost:booster-eval`'s own primary value at Layer 1, for a caller who wants it without going through the portable API |
+| `evaluation`'s values | `LGBM_BoosterGetEval`'s own doubles, returned unmodified -- the secondary value says `:value-source :library-doubles` | Parsed out of the single formatted line `XGBoosterEvalOneIter` produces -- `:value-source :parsed-text`, with that line itself kept verbatim under `:raw`, and a value XGBoost spelled `inf`/`nan` coming back as `nil` rather than a number. The same line is `cl-gbdt/xgboost:evaluate-one-iteration`'s own primary value at Layer 1, for a caller who wants it without going through the portable API |
 | `backend-version` | Always `nil` -- LightGBM's C API has no version entry point | A `"MAJOR.MINOR.PATCH"` string, e.g. `"3.3.0"` |
 | Untested-version warning | Never signalled -- there is no version to compare, so `open-backend` never checks one | `open-backend` signals `untested-backend-version` (a warning, not an error) when the loaded version falls outside the recorded supported range |
 

@@ -44,7 +44,7 @@
                 #:%check-feature-score-dim
                 #:%feature-score
                 #:%split-eval-label
-                #:booster-eval)
+                #:evaluate-one-iteration)
   (:import-from #:cl-gbdt/src/backend
                 #:backend
                 #:backend-name
@@ -638,7 +638,7 @@ inventing a reduction XGBoost itself does not define."
 ;;; Evaluation
 
 (defmethod evaluation ((booster xgboost-booster))
-  "Return BOOSTER's evaluation metrics via `booster-eval', this backend's own Layer 1
+  "Return BOOSTER's evaluation metrics via `evaluate-one-iteration', this backend's own Layer 1
 evaluation function -- see the `evaluation' generic function's docstring for the portable
 contract this satisfies.
 
@@ -648,7 +648,7 @@ handles: its training set first, then each `train' :VALID-SETS entry in the orde
 caller supplied them. That is what makes DATASET-INDEX mean the same thing here as it
 does on LightGBM, which can only evaluate what training attached -- measured before this
 method was written: for one booster, one set of handles and one iteration,
-`XGBoosterEvalOneIter' called directly and this path through `booster-eval' produce
+`XGBoosterEvalOneIter' called directly and this path through `evaluate-one-iteration' produce
 byte-identical result strings, and both agree with the logloss and error rate computed
 independently from `predict' on the same data. A `load-model' booster retains no dataset
 at all, which is the case an empty result comes from.
@@ -668,7 +668,7 @@ the parse. A field whose value the parser could not read as a `double-float' -- 
 spells a non-finite one \"inf\" or \"nan\" -- keeps its entry with VALUE NIL rather than
 disappearing from the result.
 
-`booster-eval' reads BOOSTER and every dataset handed to it through `handle-live-pointer'
+`evaluate-one-iteration' reads BOOSTER and every dataset handed to it through `handle-live-pointer'
 before any foreign call, so a freed booster or a freed retained dataset signals
 `released-handle-error' from there; unlike `cl-gbdt/src/lightgbm/protocol''s method, this
 one needs no separate `%check-booster-datasets-live', since every dataset it evaluates is
@@ -682,7 +682,7 @@ one it passes to Layer 1 explicitly and is checked there by name."
            ;; caller who has bound it to something else gets the decimal names this
            ;; method's docstring promises rather than that base's digits.
            (names (loop :for index :below (length datasets) :collect (format nil "~D" index))))
-      (multiple-value-bind (raw parsed) (booster-eval booster datasets names)
+      (multiple-value-bind (raw parsed) (evaluate-one-iteration booster datasets names)
         (values (loop :for (label . value) :in parsed
                       :collect (multiple-value-bind (index metric-name)
                                    (%split-eval-label label names)
