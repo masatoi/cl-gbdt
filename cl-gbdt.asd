@@ -44,7 +44,8 @@
                "cl-gbdt/tests/parameters"
                "cl-gbdt/tests/library"
                "cl-gbdt/tests/foreign"
-               "cl-gbdt/tests/version")
+               "cl-gbdt/tests/version"
+               "cl-gbdt/tests/training-report")
   :perform (test-op (op c) (symbol-call :rove :run c)))
 
 ;;; Named for its path, like every other system here. That is not only for consistency:
