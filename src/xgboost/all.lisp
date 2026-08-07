@@ -37,24 +37,39 @@
 ;;; public surface by accident -- exactly what this task's brief warns an accidental export
 ;;; becomes: a compatibility obligation.
 ;;;
-;;; This re-exports `cl-gbdt/src/xgboost/protocol' in full -- today just `xgboost-backend', the
-;;; CLOS class a caller can specialize methods on or check with `typep' -- plus one named symbol
-;;; pulled explicitly from `native': `evaluate-one-iteration', Task 3's XGBoost-specific Layer 1
-;;; addition (docs/superpowers/specs/2026-08-06-evaluation-api-design.md, policy section 3's
-;;; Layer 1), mirroring `cl-gbdt/lightgbm''s identical `booster-eval-names'/`booster-eval' pair
-;;; from Task 2. Nothing else from `native' is published here: none of its remaining exports is
-;;; a reviewed, Lisp-level XGBoost-specific operation. A future Phase 2 addition follows the
-;;; same shape -- named explicitly in both the `:import-from' and the `:export' clause below,
-;;; never picked up by widening either into a blanket re-export of `native' as a whole; see this
-;;; comment block's own earlier paragraph for why that stays forbidden.
+;;; This re-exports `cl-gbdt/src/xgboost/protocol' in full -- `xgboost-backend', the CLOS class
+;;; a caller can specialize methods on or check with `typep', and `slice-model', the capability
+;;; work's Layer 1 addition, which lives in `protocol' rather than `native' only because it
+;;; builds a booster handle and so must name the concrete `xgboost-booster' class (see that
+;;; file's Model slicing section) -- plus two named symbols pulled explicitly from `native':
+;;; `evaluate-one-iteration' (docs/superpowers/specs/2026-08-06-evaluation-api-design.md) and
+;;; `booster-boosted-rounds', the round count `slice-model''s interval is expressed against.
+;;; All three are policy section 3's Layer 1, mirroring `cl-gbdt/lightgbm''s
+;;; `booster-eval-names'/`booster-eval' pair. Nothing else from `native' is published here:
+;;; none of its remaining exports is a reviewed, Lisp-level XGBoost-specific operation. A
+;;; future Phase 2 addition follows the same shape -- named explicitly in both the
+;;; `:import-from' and the `:export' clause below, never picked up by widening either into a
+;;; blanket re-export of `native' as a whole; see this comment block's own earlier paragraph
+;;; for why that stays forbidden.
+;;;
+;;; `slice-model' is named in `:export' below even though the `:use-reexport' above already
+;;; publishes it, and that is deliberate rather than redundant. This clause is the reviewed
+;;; public surface: `tools/ci/check-float-traps.lisp' reads exactly this `:export' to decide
+;;; which `defun's are entry points reached without a `defmethod' to inherit a float-trap mask
+;;; from, so a public `defun' that appeared here only by way of `:use-reexport' would slip that
+;;; check silently. A future Layer 1 addition in `protocol' is listed here for the same reason;
+;;; a CLOS class such as `xgboost-backend' needs no entry, having no body to mask.
 ;;;
 ;;; And, as ever: never `#:cl-gbdt/src/xgboost/c-api', the raw CFFI bindings -- see the
 ;;; comment above `cl-gbdt/src/xgboost/all'.
 (uiop:define-package #:cl-gbdt/xgboost
   (:use-reexport #:cl-gbdt/src/xgboost/protocol)
   (:import-from #:cl-gbdt/src/xgboost/native
-                #:evaluate-one-iteration)
-  (:export #:evaluate-one-iteration))
+                #:evaluate-one-iteration
+                #:booster-boosted-rounds)
+  (:export #:evaluate-one-iteration
+           #:booster-boosted-rounds
+           #:slice-model))
 
 ;;; This second form's dependency on `protocol' is already covered by the first form's own
 ;;; `:use-reexport' above -- package-inferred-system infers a file's dependencies from the

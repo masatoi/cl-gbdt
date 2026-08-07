@@ -17,8 +17,8 @@ file if you have it locally).
 `make-dataset`, `dataset-num-rows`, `dataset-num-features`, `train`,
 `update-one-iteration`, `predict`, `save-model`, `load-model`, `model-to-string`,
 `feature-importance`, `evaluation`, `free-dataset` and `free-booster` -- against the real
-LightGBM and XGBoost shared libraries, exercised by 190 functional assertions (design doc
-section 12, layer 2), in addition to 248 assertions that need no shared library at all
+LightGBM and XGBoost shared libraries, exercised by 205 functional assertions (design doc
+section 12, layer 2), in addition to 253 assertions that need no shared library at all
 (layer 1). See [Usage](#usage) below for a worked example.
 
 Loading `cl-gbdt` itself still does not require either `liblightgbm.so` or
@@ -141,11 +141,13 @@ Output:
  CL-GBDT/SRC/LIGHTGBM/PROTOCOL:LIGHTGBM-BACKEND)
 ```
 
-Today that is the entire published surface: the backend's own CLOS class -- useful for
-`typep` or for specializing your own methods on one specific backend rather than the
-shared `backend`; `open-backend` itself never needs it, since it looks classes up by the
-`:lightgbm`/`:xgboost` keyword internally, not by this symbol -- plus that backend's own
-evaluation entry points. `cl-gbdt/xgboost` publishes `xgboost-backend` and an
+Today that is `cl-gbdt/lightgbm`'s entire published surface: the backend's own CLOS class
+-- useful for `typep` or for specializing your own methods on one specific backend rather
+than the shared `backend`; `open-backend` itself never needs it, since it looks classes up
+by the `:lightgbm`/`:xgboost` keyword internally, not by this symbol -- plus that backend's
+own evaluation entry points. `cl-gbdt/xgboost` publishes `xgboost-backend`, `slice-model`
+and `booster-boosted-rounds` (see [the capability
+section](#asking-a-backend-what-it-can-do)), and an
 `evaluate-one-iteration` of its own, which takes different arguments and returns something
 different (see [the differences table](#where-the-two-backends-genuinely-differ)): the two
 operations were deliberately given different names -- `cl-gbdt/lightgbm:booster-eval` reads
@@ -160,10 +162,10 @@ Nothing else from either backend's `native.lisp` -- library discovery, the
 raw-status-code checker, the internal `%`-functions that turn a raw C call into something
 safe to call from Lisp -- is published: none of those is a reviewed, Lisp-level
 backend-specific operation, only infrastructure the two backend systems already use
-internally. Backend-specific safe API -- LightGBM's `rollback-one-iteration`, XGBoost's
-`booster-slice`, and the rest of policy section 3's Layer 1 examples -- is added here one
-contract at a time as it is designed and reviewed, not by widening today's re-export to
-cover `native` wholesale.
+internally. Backend-specific safe API -- LightGBM's `rollback-one-iteration`, `refit`, and
+the rest of policy section 3's Layer 1 examples -- is added here one contract at a time as
+it is designed and reviewed, not by widening today's re-export to cover `native` wholesale.
+XGBoost's `slice-model` is the most recent one added that way.
 
 ### Finding the shared library
 
@@ -215,6 +217,46 @@ Output:
 prints as a decimal, not `"1/3"`; a string value passes through unquoted -- see
 `:objective "binary:logistic"` below, whose colon survives intact.
 
+### Asking a backend what it can do
+
+Not every operation exists on both backends, and not every operation exists in every
+version of one backend's shared library. `backend-supports-p` is the question:
+
+```lisp
+(let ((backend (cl-gbdt:open-backend :xgboost)))
+  (cl-gbdt:backend-supports-p backend :model-slicing))   ; => T
+```
+
+Four things it promises, each of which is the point of it existing at all:
+
+- **A true answer means the foreign symbols that capability needs actually resolved in the
+  shared library that was loaded** -- probed once at `open-backend` and recorded in
+  `backend-capabilities` -- not that the headers cl-gbdt's bindings were generated from
+  declared them. An XGBoost too old to have `XGBoosterSlice` is a working XGBoost that
+  cannot slice, and it opens normally: policy section 8's *optional* symbol tier fails only
+  the capability, never `open-backend`, unlike a missing *required* symbol, which signals
+  `missing-foreign-symbols` immediately.
+- **A false answer never means cl-gbdt will substitute something else.** There is no silent
+  fallback and no emulation anywhere behind this API. The operation is simply unavailable.
+- **An unregistered name signals `unknown-capability` rather than answering `nil`**, so a
+  misspelling cannot be mistaken for "supported, but not here". The registered names live
+  in `*known-capabilities*`; a name is registered as soon as it is a question worth asking,
+  whether or not any backend answers true to it yet.
+- **Asking first is never required.** The operation re-checks for itself and signals
+  `capability-unavailable` -- a distinct condition from `unknown-capability`, since the
+  question was well formed and the answer is simply no. `backend-supports-p` is for a
+  caller who wants to branch *before* calling, not a precondition anything depends on:
+
+```lisp
+;; Signals capability-unavailable on a library without XGBoosterSlice, whether or not
+;; the caller asked backend-supports-p first. It never falls back to anything else.
+(cl-gbdt/xgboost:slice-model booster :begin 0 :end 5)
+```
+
+`backend-info` reports the whole probed plist, false capabilities included, so it shows
+what was asked as well as what was answered. Today `:model-slicing` is the one capability
+any backend answers true to -- see the model-slicing row in the table below.
+
 ### Where the two backends genuinely differ
 
 A caller moving code from one backend to the other needs this in one place -- checked
@@ -232,6 +274,7 @@ out first:
 | `feature-importance`'s result shape | Always one number per feature | Signals `unsupported-argument` instead of returning a result when the model reports a multi-dimensional score shape -- a `gblinear` booster's importance on a multi-class model, whose scores are a per-class matrix with no single-value reduction this backend will invent |
 | What `evaluation` evaluates | The datasets `train` attached, read back by index (`LGBM_BoosterGetEval`): the library computed these metrics during training and this reads them out | The booster's own retained training set and `:valid-sets` entries, which this backend hands to `XGBoosterEvalOneIter` explicitly -- that call evaluates whatever DMatrices it is given and consults nothing the booster was built with, so passing the retained ones is what makes the index mean the same thing on both backends |
 | `evaluation`'s values | `LGBM_BoosterGetEval`'s own doubles, returned unmodified -- the secondary value says `:value-source :library-doubles` | Parsed out of the single formatted line `XGBoosterEvalOneIter` produces -- `:value-source :parsed-text`, with that line itself kept verbatim under `:raw`, and a value XGBoost spelled `inf`/`nan` coming back as `nil` rather than a number. The same line is `cl-gbdt/xgboost:evaluate-one-iteration`'s own primary value at Layer 1, for a caller who wants it without going through the portable API |
+| Model slicing | No counterpart at all: LightGBM's C API has nothing that extracts a range of boosting rounds into a new model, so `(backend-supports-p backend :model-slicing)` is `nil` and there is no LightGBM function to call | `cl-gbdt/xgboost:slice-model` (Layer 1, XGBoost-only), over `XGBoosterSlice`. Returns a new booster holding a half-open `[begin, end)` range of the parent's layers, independent of it -- freeing the parent leaves the slice usable. Deliberately not part of the unified API: with no LightGBM counterpart a portable version could only signal for every caller of one backend, or emulate, and emulating is what [the capability model](#asking-a-backend-what-it-can-do) exists to rule out |
 | `backend-version` | Always `nil` -- LightGBM's C API has no version entry point | A `"MAJOR.MINOR.PATCH"` string, e.g. `"3.3.0"` |
 | Untested-version warning | Never signalled -- there is no version to compare, so `open-backend` never checks one | `open-backend` signals `untested-backend-version` (a warning, not an error) when the loaded version falls outside the recorded supported range |
 

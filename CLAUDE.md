@@ -36,8 +36,8 @@ over both backends.
 
 **Status: functional.** Both backends (`cl-gbdt/lightgbm`, `cl-gbdt/xgboost`) implement
 all 13 generic functions of the unified API -- `make-dataset`, `train`, `predict`, and
-the rest -- against the real shared libraries, exercised by 190 functional assertions in
-`cl-gbdt/tests/functional` (layer 2) on top of 248 assertions that need no shared
+the rest -- against the real shared libraries, exercised by 205 functional assertions in
+`cl-gbdt/tests/functional` (layer 2) on top of 253 assertions that need no shared
 library at all (layer 1). Core `cl-gbdt` still loads, and is still tested, without
 either `liblightgbm.so` or `libxgboost.so` present: a shared library is opened only by
 an explicit `open-backend` call, from whichever backend system you load on top of the
@@ -81,13 +81,15 @@ worth stating explicitly rather than leaving them to be rediscovered:
 **Every method in `src/lightgbm/protocol.lisp` and `src/xgboost/protocol.lisp` that
 calls into its shared library wraps its whole body in `with-foreign-float-traps-masked`**
 (`cl-gbdt/src/foreign`), not just the specific call this was first found through. The
-same rule binds a **`defun` in `src/lightgbm/native.lisp` or `src/xgboost/native.lisp`
-once that backend's public package exports it** (the second `uiop:define-package` form
-in the sibling `all.lisp`, per `tools/ci/check-float-traps.lisp`'s `:export`-clause
-check): such a `defun` is a library-reaching entry point with no `defmethod` left to
-inherit a mask from, so it must wrap its own whole body the same way -- LightGBM's
+same rule binds a **`defun` in either `native.lisp` or `protocol.lisp` of a backend once
+that backend's public package exports it** (the second `uiop:define-package` form in the
+sibling `all.lisp`, per `tools/ci/check-float-traps.lisp`'s `:export`-clause check): such
+a `defun` is a library-reaching entry point with no `defmethod` left to inherit a mask
+from, so it must wrap its own whole body the same way -- LightGBM's
 `booster-eval`/`booster-eval-names` and XGBoost's `evaluate-one-iteration` were the first
-functions this applied to.
+functions this applied to, all three in `native.lisp`; XGBoost's `slice-model` is the
+first in a `protocol.lisp`, where it lives because it builds a booster handle and so must
+name the concrete class defined there.
 SBCL enables the `:invalid`, `:divide-by-zero` and `:overflow` floating-point traps by
 default on x86-64 and none of them on aarch64; LightGBM and XGBoost are C code written
 and tested against the opposite (masked) convention, where an intermediate NaN or

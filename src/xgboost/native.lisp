@@ -24,6 +24,7 @@
                 #:xgd-matrix-num-col
                 #:xg-booster-create
                 #:xg-booster-free
+                #:xg-booster-slice
                 #:xg-booster-set-param
                 #:xg-booster-get-num-feature
                 #:xg-booster-boosted-rounds
@@ -103,7 +104,10 @@
            #:%check-feature-score-dim
            #:%feature-score
            #:%split-eval-label
-           #:evaluate-one-iteration))
+           #:%check-xgboost-booster
+           #:evaluate-one-iteration
+           #:booster-boosted-rounds
+           #:%slice))
 
 (in-package #:cl-gbdt/src/xgboost/native)
 
@@ -120,16 +124,20 @@
 ;;; `multi:softprob' prediction -- was written and tested against the C convention of
 ;;; those traps staying masked.
 ;;;
-;;; `evaluate-one-iteration', in the Evaluation section near the end of this file, is the exception:
-;;; Task 3 (policy section 3's Layer 1) exports it directly from `cl-gbdt/xgboost' -- see
-;;; `src/xgboost/all.lisp' -- so it is never reached through a `cl-gbdt/src/xgboost/protocol'
-;;; `defmethod'. There is no outer call site left to establish the mask for it, so it wraps
-;;; its own whole body instead, the same method-body granularity `protocol.lisp' uses, just
-;;; with the wrapping function living here rather than there -- mirrors
-;;; `cl-gbdt/src/lightgbm/native''s identical `booster-eval'/`booster-eval-names' exception.
+;;; The two public entry points near the end of this file are the exception:
+;;; `evaluate-one-iteration' in the Evaluation section and `booster-boosted-rounds' in the
+;;; Model slicing section after it. Both are exported directly from `cl-gbdt/xgboost' (policy
+;;; section 3's Layer 1) -- see `src/xgboost/all.lisp' -- so neither is ever reached through a
+;;; `cl-gbdt/src/xgboost/protocol' `defmethod'. There is no outer call site left to establish
+;;; the mask for them, so each wraps its own whole body instead, the same method-body
+;;; granularity `protocol.lisp' uses, just with the wrapping function living here rather than
+;;; there -- mirrors `cl-gbdt/src/lightgbm/native''s identical
+;;; `booster-eval'/`booster-eval-names' exception.
 ;;; `tools/ci/check-float-traps.lisp' checks this directly: it reads the sibling `all.lisp''s
 ;;; public `:export' clause and requires every `defun' named there to open with this macro,
-;;; the same rule it already applied to every `defmethod' in `protocol.lisp'.
+;;; the same rule it already applied to every `defmethod' in `protocol.lisp'. `slice-model',
+;;; the third such entry point, is covered by the identical rule but lives in `protocol.lisp'
+;;; rather than here -- see the Model slicing section below for why.
 
 ;;; ---------------------------------------------------------------------------
 ;;; Error checking
@@ -1044,3 +1052,81 @@ already-freed one, `backend-not-open' when its own backend has since been closed
            (raw (%eval-one-iter booster-pointer (%boosted-rounds booster-pointer)
                                  dataset-pointers names)))
       (values raw (%parse-eval-result raw)))))
+
+;;; ---------------------------------------------------------------------------
+;;; Model slicing
+;;;
+;;; `XGBoosterSlice' is this project's first OPTIONAL foreign symbol: policy section 8's
+;;; tier whose absence disables one capability rather than failing `open-backend'. It is
+;;; declared in `*optional-symbols*' above, probed into the backend's `backend-capabilities'
+;;; at `open-backend', and answered by `backend-supports-p' as `:model-slicing'. LightGBM has
+;;; no counterpart, which is exactly why section 4's criterion keeps this out of the unified
+;;; API: there is no operation both backends can mean the same thing by, and emulating one on
+;;; LightGBM is the silent fallback section 7 forbids.
+;;;
+;;; The public operation itself, `slice-model', is NOT here. `XGBoosterSlice' produces a new
+;;; `BoosterHandle', and wrapping a fresh foreign pointer in a handle means naming the
+;;; concrete class `xgboost-booster', which is defined in `cl-gbdt/src/xgboost/protocol' --
+;;; a file this one must not depend on (policy section 11, and this file's own header).
+;;; Every `make-handle' call in this project is in a `protocol.lisp' for that reason, so
+;;; `slice-model' is too, and calls `%slice' below for the foreign half, exactly as
+;;; `load-model' calls `%load-model'. `booster-boosted-rounds' has no such constraint -- it
+;;; returns an integer -- so it stays here beside the `%boosted-rounds' it wraps.
+
+(defun booster-boosted-rounds (booster)
+  "Return the number of boosting rounds BOOSTER holds, via `XGBoosterBoostedRounds'.
+
+This is the count `slice-model''s BEGIN and END are indices into, and the only way for a
+caller to learn the valid range before asking for a slice: `XGBoosterSlice' signals
+`foreign-call-error' rather than clamping when END exceeds this number. It is also the
+round index `update-one-iteration' boosts at, read from the same C function, so a booster
+`train' ran for N rounds reports N here.
+
+Takes a booster handle, not a pointer, and reads it through `%check-xgboost-booster' --
+policy section 10: a Layer 1 entry point a caller reaches directly must validate the handle
+it is given, since no `defmethod' specializer has ruled out a foreign one first.
+
+Signals `wrong-backend-reference' when BOOSTER was not built by the XGBoost backend,
+`released-handle-error' when it has been freed, `backend-not-open' when its backend has
+been closed, and `foreign-call-error' when the call itself fails."
+  (with-foreign-float-traps-masked
+    (%boosted-rounds
+     (%check-xgboost-booster booster "booster-boosted-rounds's booster argument"))))
+
+(defun %slice (booster-pointer begin end step)
+  "Return a fresh `BoosterHandle' holding BOOSTER-POINTER's layers from BEGIN to END taken
+STEP at a time, via `XGBoosterSlice'.
+
+BEGIN, END and STEP are passed to C unchanged; this function translates nothing. END is
+`XGBoosterSlice''s own `end_layer', where 0 means \"through the last layer\" -- see
+`slice-model', which owns turning a Lisp caller's NIL into that 0 and refusing to turn an
+explicit 0 into it.
+
+Returns a raw pointer the caller must wrap in a handle or free; `slice-model' is that
+caller. Shaped like `%create-booster' rather than `%load-model' for the same reason: the
+foreign object it returns does not exist until it succeeds, so there is nothing to clean up
+on the failure path.
+
+Signals `foreign-call-error' when `XGBoosterSlice' fails -- which is every out-of-range
+request, confirmed against the vendored library: END past the last layer, BEGIN below zero,
+STEP below one, an empty interval (\"Empty slice is not allowed\"), and a STEP that does not
+divide the interval evenly are all clean nonzero returns, never a crash -- or when it
+reports success while leaving a null handle behind, the same refusal to trust a
+success-with-null that `%create-booster' makes for `XGBoosterCreate'.
+
+That guard is a little stronger here than `%create-booster''s: the out slot is set to a
+null pointer before the call, so it also catches a `XGBoosterSlice' that returned success
+without writing the slot at all, which a bare `cffi:with-foreign-object' would leave holding
+whatever was on the stack and read back as a plausible-looking handle. Not retrofitted to
+`%create-booster' as part of this change -- that would be an unrelated edit to a function
+this work does not otherwise touch."
+  (cffi:with-foreign-object (out :pointer)
+    (setf (cffi:mem-ref out :pointer) (cffi:null-pointer))
+    (check-xgb (xg-booster-slice booster-pointer begin end step out) "XGBoosterSlice")
+    (let ((slice-pointer (cffi:mem-ref out :pointer)))
+      (when (cffi:null-pointer-p slice-pointer)
+        (error 'foreign-call-error
+               :function-name "XGBoosterSlice"
+               :code 0
+               :message "reported success but returned a null booster handle"))
+      slice-pointer)))
