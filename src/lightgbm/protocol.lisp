@@ -36,8 +36,7 @@
                 #:%feature-importance-type
                 #:%booster-num-features
                 #:%feature-importance
-                #:booster-eval-names
-                #:booster-eval
+                #:%read-evaluation
                 #:*library-env-var*
                 #:*vendor-library-directory*
                 #:*vendor-library-pattern*
@@ -521,9 +520,10 @@ unbound."
 ;;; Evaluation
 
 (defmethod evaluation ((booster lightgbm-booster))
-  "Return BOOSTER's evaluation metrics via `booster-eval-names' and `booster-eval', this
-backend's own Layer 1 evaluation functions -- see the `evaluation' generic function's
-docstring for the portable contract this satisfies.
+  "Return BOOSTER's evaluation metrics via `%read-evaluation', the pointer-level reader this
+backend shares between this method and `train''s per-iteration recording loop, so the two
+can never disagree -- see the `evaluation' generic function's docstring for the portable
+contract this satisfies.
 
 Reads one `LGBM_BoosterGetEval' result per dataset BOOSTER retains, in the order
 `train' attached them, and pairs entry N of each with entry N of the single metric-name
@@ -547,19 +547,16 @@ the secondary value's `:value-source :library-doubles' says; unlike XGBoost's, n
 here parses text, so there is no :RAW to keep and no VALUE is ever NIL.
 
 `%check-booster-datasets-live' runs before any foreign call this method makes, including
-`booster-eval-names': `LGBM_BoosterGetEval' evaluates each attached validation set
+inside `%read-evaluation': `LGBM_BoosterGetEval' evaluates each attached validation set
 through the metric objects built over that dataset's own label and weight arrays, none of
 which `LGBM_DatasetFree' clears from the booster, so evaluating after one of them was
 freed is a use-after-free rather than a catchable condition -- the identical hazard
 `update-one-iteration' guards against with the same call."
   (with-foreign-float-traps-masked
     (%check-booster-datasets-live booster)
-    (let ((names (booster-eval-names booster))
+    (let ((pointer (handle-live-pointer booster))
           (dataset-count (if (booster-training-set booster)
                              (1+ (length (booster-validation-sets booster)))
                              0)))
-      (values (loop :for index :below dataset-count
-                    :append (loop :for name :in names
-                                  :for value :across (booster-eval booster index)
-                                  :collect (list index name value)))
+      (values (%read-evaluation pointer dataset-count)
               (list :value-source :library-doubles)))))

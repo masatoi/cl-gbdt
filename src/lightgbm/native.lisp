@@ -103,6 +103,7 @@
            #:%feature-importance-type
            #:%booster-num-features
            #:%feature-importance
+           #:%read-evaluation
            #:booster-eval-names
            #:booster-eval))
 
@@ -787,6 +788,30 @@ past the allocated buffer going unnoticed -- the same check `predict' makes agai
     (let ((result (make-array count :element-type 'double-float)))
       (dotimes (index count result)
         (setf (aref result index) (cffi:mem-aref buffer :double index))))))
+
+(defun %read-evaluation (booster-pointer dataset-count)
+  "Return the booster at BOOSTER-POINTER's evaluation entries for datasets 0 through
+DATASET-COUNT - 1, as a fresh list of (INDEX METRIC-NAME VALUE) lists, via
+`%booster-eval-count', `%booster-eval-names' and `%booster-eval' -- one entry per (dataset,
+metric) pair, dataset-major, in the order `evaluation''s own generic function contract
+promises, pairing entry N of the single metric-name list `%booster-eval-names' reports for
+the whole booster with entry N of each dataset's own `%booster-eval' result.
+
+The caller owns every guard this needs before calling: BOOSTER-POINTER must already be a
+live handle's pointer, `%check-booster-datasets-live' must already have run for the booster
+these datasets belong to, and the whole call must already be inside
+`with-foreign-float-traps-masked''s dynamic extent -- like every other `%'-function in this
+file, this does not establish any of those itself. `cl-gbdt/src/lightgbm/protocol''s
+`evaluation' method and `train''s per-iteration recording loop both call this same function,
+on the pointer and dataset count each already has in hand, rather than each computing
+entries its own way -- that is what keeps the numbers `evaluation' reports after training and
+the numbers recorded during training from ever being able to disagree."
+  (let* ((count (%booster-eval-count booster-pointer))
+         (names (%booster-eval-names booster-pointer count)))
+    (loop :for index :below dataset-count
+          :append (loop :for name :in names
+                        :for value :across (%booster-eval booster-pointer index count)
+                        :collect (list index name value)))))
 
 (defun booster-eval-names (booster)
   "Return the names of BOOSTER's configured evaluation metrics, as a fresh list of

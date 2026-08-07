@@ -48,9 +48,8 @@
                 #:%feature-score-index
                 #:%check-feature-score-dim
                 #:%feature-score
-                #:%split-eval-label
                 #:%check-xgboost-booster
-                #:evaluate-one-iteration
+                #:%read-evaluation
                 #:%slice)
   (:import-from #:cl-gbdt/src/backend
                 #:backend
@@ -659,8 +658,9 @@ inventing a reduction XGBoost itself does not define."
 ;;; Evaluation
 
 (defmethod evaluation ((booster xgboost-booster))
-  "Return BOOSTER's evaluation metrics via `evaluate-one-iteration', this backend's own Layer 1
-evaluation function -- see the `evaluation' generic function's docstring for the portable
+  "Return BOOSTER's evaluation metrics via `%read-evaluation', the pointer-level reader this
+backend shares between this method and `train''s per-iteration recording loop, so the two
+can never disagree -- see the `evaluation' generic function's docstring for the portable
 contract this satisfies.
 
 `XGBoosterEvalOneIter' evaluates whatever DMatrices it is handed and consults nothing the
@@ -669,7 +669,7 @@ handles: its training set first, then each `train' :VALID-SETS entry in the orde
 caller supplied them. That is what makes DATASET-INDEX mean the same thing here as it
 does on LightGBM, which can only evaluate what training attached -- measured before this
 method was written: for one booster, one set of handles and one iteration,
-`XGBoosterEvalOneIter' called directly and this path through `evaluate-one-iteration' produce
+`XGBoosterEvalOneIter' called directly and this path through `%read-evaluation' produce
 byte-identical result strings, and both agree with the logloss and error rate computed
 independently from `predict' on the same data. A `load-model' booster retains no dataset
 at all, which is the case an empty result comes from.
@@ -689,26 +689,21 @@ the parse. A field whose value the parser could not read as a `double-float' -- 
 spells a non-finite one \"inf\" or \"nan\" -- keeps its entry with VALUE NIL rather than
 disappearing from the result.
 
-`evaluate-one-iteration' reads BOOSTER and every dataset handed to it through `handle-live-pointer'
-before any foreign call, so a freed booster or a freed retained dataset signals
-`released-handle-error' from there; unlike `cl-gbdt/src/lightgbm/protocol''s method, this
-one needs no separate `%check-booster-datasets-live', since every dataset it evaluates is
-one it passes to Layer 1 explicitly and is checked there by name."
+This method reads BOOSTER and every dataset it evaluates through `handle-live-pointer'
+itself, before calling `%read-evaluation', so a freed booster or a freed retained dataset
+signals `released-handle-error' right here; unlike `cl-gbdt/src/lightgbm/protocol''s
+method, this one needs no separate `%check-booster-datasets-live', since every dataset it
+evaluates is one it resolves and checks explicitly, by its own handle, before any foreign
+call."
   (with-foreign-float-traps-masked
-    (let* ((training-set (booster-training-set booster))
+    (let* ((booster-pointer (handle-live-pointer booster))
+           (training-set (booster-training-set booster))
            (datasets (if training-set
                          (cons training-set (booster-validation-sets booster))
                          '()))
-           ;; `~D', not `princ-to-string': `~D' binds `*print-base*' to 10 itself, so a
-           ;; caller who has bound it to something else gets the decimal names this
-           ;; method's docstring promises rather than that base's digits.
-           (names (loop :for index :below (length datasets) :collect (format nil "~D" index))))
-      (multiple-value-bind (raw parsed) (evaluate-one-iteration booster datasets names)
-        (values (loop :for (label . value) :in parsed
-                      :collect (multiple-value-bind (index metric-name)
-                                   (%split-eval-label label names)
-                                 (list index metric-name value)))
-                (list :value-source :parsed-text :raw raw))))))
+           (dataset-pointers (mapcar #'handle-live-pointer datasets)))
+      (multiple-value-bind (entries raw) (%read-evaluation booster-pointer dataset-pointers)
+        (values entries (list :value-source :parsed-text :raw raw))))))
 
 ;;; ---------------------------------------------------------------------------
 ;;; Model slicing
