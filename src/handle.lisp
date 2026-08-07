@@ -14,7 +14,8 @@
   (:import-from #:cl-gbdt/src/conditions
                 #:released-handle-error
                 #:backend-not-open
-                #:unfreed-handle-warning)
+                #:unfreed-handle-warning
+                #:wrong-backend-reference)
   (:export #:handle #:dataset #:booster
            #:handle-pointer #:handle-backend #:booster-training-set
            #:booster-validation-sets
@@ -133,3 +134,50 @@ happened, and this one just did."
       (setf (car released) t)
       (trivial-garbage:cancel-finalization handle)))
   (values))
+
+(defun %check-handle-kind (object kind backend-keyword argument-description)
+  "Return OBJECT's live foreign pointer, after confirming OBJECT is a KIND -- the symbol
+`dataset' or `booster' -- built by the backend named BACKEND-KEYWORD.
+ARGUMENT-DESCRIPTION names which caller-supplied argument OBJECT came from, for
+`wrong-backend-reference''s report.
+
+This is the check a backend needs where CLOS cannot make it: a `defmethod' specialized on
+`lightgbm-dataset' has already ruled out every other handle before its body runs, but a
+function taking a caller-supplied handle as a plain argument -- `cl-gbdt/lightgbm''s
+`booster-eval', `cl-gbdt/xgboost''s `evaluate-one-iteration' -- has not.
+`handle-live-pointer' alone is not enough there: it returns any handle's pointer regardless
+of which library allocated it, so a LightGBM `DatasetHandle' would reach
+`XGBoosterEvalOneIter' as a `DMatrixHandle' and be dereferenced as one. Both are
+`cffi:foreign-pointer' at the call, so nothing downstream can tell them apart, and the
+result is a memory fault rather than a condition -- reproduced deliberately, by removing
+this check, in `cl-gbdt/tests/functional/evaluation''s
+`evaluation-layer-1-entry-points-reject-the-other-backends-handles'.
+
+KIND is the backend-agnostic base class from this file, not either backend's concrete
+subclass, because neither backend's `native.lisp' may depend on its own `protocol.lisp'
+where those subclasses live -- see policy section 11. Together with BACKEND-KEYWORD it
+identifies exactly the same set of objects the concrete class would: only a
+`lightgbm-backend''s operations build a handle whose `handle-backend' has `backend-name'
+`:lightgbm', and that name is set once, at `open-backend'.
+
+Deliberately compares the backend's NAME rather than its identity, so two backend
+instances over the same shared library interoperate -- both read through the same C API,
+and the dangerous case, a handle whose own backend has been closed, is caught by
+`handle-live-pointer' below rather than here.
+
+The report's noun comes from KIND itself rather than a separate argument, so the two
+cannot disagree: a caller asking for a `booster' and getting the report \"must be a
+dataset\" would be the defect this exists to describe.
+
+Signals `wrong-backend-reference' when OBJECT is not a KIND at all -- the other kind of
+handle, or any non-handle value -- or is one built by a different backend, and whatever
+`handle-live-pointer' signals otherwise: `released-handle-error' for an already-freed
+OBJECT, `backend-not-open' when its own backend has since been closed."
+  (unless (and (typep object kind)
+               (eq (backend-name (handle-backend object)) backend-keyword))
+    (error 'wrong-backend-reference
+           :backend backend-keyword
+           :given (class-name (class-of object))
+           :argument argument-description
+           :expected (string-downcase (symbol-name kind))))
+  (handle-live-pointer object))

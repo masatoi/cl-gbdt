@@ -36,6 +36,12 @@
   ;; that runs the same assertions against both.
   (:import-from #:cl-gbdt/src/lightgbm/all)
   (:import-from #:cl-gbdt/src/xgboost/all)
+  ;; Zero symbols again: the cross-backend guard test at the end of this file calls each
+  ;; backend's Layer 1 entry point by its PUBLIC name -- `cl-gbdt/lightgbm:booster-eval',
+  ;; `cl-gbdt/xgboost:evaluate-one-iteration' -- because a caller who could hand one
+  ;; backend the other's handle is reaching them through exactly those packages.
+  (:import-from #:cl-gbdt/lightgbm)
+  (:import-from #:cl-gbdt/xgboost)
   (:import-from #:cl-gbdt/tests/functional/support
                 #:with-backend-library
                 #:make-separable-dataset))
@@ -401,3 +407,113 @@ the feature matrix, never labels, so reusing it while inverting labels is safe).
             (progn
               (cl-gbdt:free-booster booster)
               (cl-gbdt:free-dataset train-set))))))))
+
+;;; ---------------------------------------------------------------------------
+;;; Cross-backend handle guards
+;;;
+;;; Five functions guard against a handle from the other library reaching a foreign call
+;;; that will dereference it as its own kind: `%check-lightgbm-dataset',
+;;; `%check-lightgbm-booster', `%check-xgboost-dataset', `%check-xgboost-booster' and
+;;; `%check-xgboost-eval-dataset'. Every one of them was reachable only by its
+;;; wrong-KIND branch until now -- passing a dataset where a booster belongs, which the
+;;; two backend files each test on their own. The wrong-BACKEND branch, right kind and
+;;; foreign library, had no test at all, on either backend, because no file in the suite
+;;; held both libraries open at once. This one does.
+;;;
+;;; The consequence of getting that branch wrong is not a condition. `handle-live-pointer'
+;;; returns any handle's pointer regardless of which library allocated it, so a LightGBM
+;;; `DatasetHandle' would reach `XGBoosterEvalOneIter' as a `DMatrixHandle' and be
+;;; dereferenced as one -- policy section 10's segfault, in the one place the type system
+;;; cannot see it, since both are `cffi:foreign-pointer' at the call.
+
+(defun fixture-for (backend-name)
+  "Return the *FIXTURES* entry for BACKEND-NAME."
+  (find backend-name *fixtures* :key (lambda (fixture) (getf fixture :backend))))
+
+(defmacro with-both-backends ((lightgbm xgboost matrix label) &body body)
+  "Run BODY with both libraries loaded, both backends open, and LIGHTGBM and XGBOOST bound
+to them, or skip when either library is absent.
+
+Nested `with-backend-library', not one call with two arguments: `rove:skip' records a
+pending assertion and returns normally rather than unwinding, so a single macro taking both
+would have to decide what to do about the half-available case. Nesting lets each library
+answer for itself and skips the whole body if either is missing."
+  `(with-backend-library (:lightgbm)
+     (with-backend-library (:xgboost)
+       (multiple-value-bind (,matrix ,label) (make-separable-dataset)
+         (let ((,lightgbm (cl-gbdt:open-backend :lightgbm))
+               (,xgboost (cl-gbdt:open-backend :xgboost)))
+           (unwind-protect (progn ,@body)
+             (progn (cl-gbdt:close-backend ,lightgbm)
+                    (cl-gbdt:close-backend ,xgboost))))))))
+
+(deftest evaluation-layer-1-entry-points-reject-the-other-backends-handles
+  (with-both-backends (lightgbm xgboost matrix label)
+    (let ((lightgbm-set nil) (xgboost-set nil)
+          (lightgbm-booster nil) (xgboost-booster nil))
+      (unwind-protect
+           (let ((lightgbm-fixture (fixture-for :lightgbm))
+                 (xgboost-fixture (fixture-for :xgboost)))
+             (setf lightgbm-set (make-fixture-dataset lightgbm-fixture lightgbm matrix label)
+                   xgboost-set (make-fixture-dataset xgboost-fixture xgboost matrix label))
+             (setf lightgbm-booster
+                   (cl-gbdt:train lightgbm lightgbm-set :num-rounds 1
+                                   :parameters (getf lightgbm-fixture :booster-parameters))
+                   xgboost-booster
+                   (cl-gbdt:train xgboost xgboost-set :num-rounds 1
+                                   :parameters (getf xgboost-fixture :booster-parameters)))
+             ;; handler-case, not rove's `signals', throughout: `signals' does not reliably
+             ;; catch conditions raised inside `restart-case', a pitfall this repo's own
+             ;; prompts/repl-driven-development.md documents.
+             (testing "booster-eval rejects an XGBoost booster"
+               (ok (handler-case
+                       (progn (cl-gbdt/lightgbm:booster-eval xgboost-booster 0) nil)
+                     (cl-gbdt:wrong-backend-reference () t))
+                   "LightGBM's booster-eval accepted an XGBoost booster"))
+             (testing "booster-eval-names rejects an XGBoost booster"
+               (ok (handler-case
+                       (progn (cl-gbdt/lightgbm:booster-eval-names xgboost-booster) nil)
+                     (cl-gbdt:wrong-backend-reference () t))
+                   "LightGBM's booster-eval-names accepted an XGBoost booster"))
+             (testing "evaluate-one-iteration rejects a LightGBM booster"
+               (ok (handler-case
+                       (progn (cl-gbdt/xgboost:evaluate-one-iteration
+                               lightgbm-booster (list xgboost-set) '("train"))
+                              nil)
+                     (cl-gbdt:wrong-backend-reference () t))
+                   "XGBoost's evaluate-one-iteration accepted a LightGBM booster"))
+             (testing "evaluate-one-iteration rejects a LightGBM dataset"
+               (ok (handler-case
+                       (progn (cl-gbdt/xgboost:evaluate-one-iteration
+                               xgboost-booster (list lightgbm-set) '("train"))
+                              nil)
+                     (cl-gbdt:wrong-backend-reference () t))
+                   "XGBoost's evaluate-one-iteration accepted a LightGBM dataset")))
+        (progn
+          (when lightgbm-booster (cl-gbdt:free-booster lightgbm-booster))
+          (when xgboost-booster (cl-gbdt:free-booster xgboost-booster))
+          (when lightgbm-set (cl-gbdt:free-dataset lightgbm-set))
+          (when xgboost-set (cl-gbdt:free-dataset xgboost-set)))))))
+
+(deftest evaluation-train-rejects-the-other-backends-dataset
+  (with-both-backends (lightgbm xgboost matrix label)
+    (let ((lightgbm-set nil) (xgboost-set nil))
+      (unwind-protect
+           (progn
+             (setf lightgbm-set (make-fixture-dataset (fixture-for :lightgbm)
+                                                       lightgbm matrix label)
+                   xgboost-set (make-fixture-dataset (fixture-for :xgboost)
+                                                      xgboost matrix label))
+             (testing "LightGBM's train rejects an XGBoost dataset"
+               (ok (handler-case
+                       (progn (cl-gbdt:train lightgbm xgboost-set :num-rounds 1) nil)
+                     (cl-gbdt:wrong-backend-reference () t))
+                   "LightGBM's train accepted an XGBoost dataset"))
+             (testing "XGBoost's train rejects a LightGBM dataset"
+               (ok (handler-case
+                       (progn (cl-gbdt:train xgboost lightgbm-set :num-rounds 1) nil)
+                     (cl-gbdt:wrong-backend-reference () t))
+                   "XGBoost's train accepted a LightGBM dataset")))
+        (progn
+          (when lightgbm-set (cl-gbdt:free-dataset lightgbm-set))
+          (when xgboost-set (cl-gbdt:free-dataset xgboost-set)))))))

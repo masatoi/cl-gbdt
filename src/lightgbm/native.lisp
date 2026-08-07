@@ -47,9 +47,9 @@
                 #:backend-name
                 #:backend-open-p)
   (:import-from #:cl-gbdt/src/handle
+                #:%check-handle-kind
                 #:handle-live-pointer
                 #:handle-released-p
-                #:handle-backend
                 #:booster
                 #:booster-training-set
                 #:booster-validation-sets)
@@ -687,34 +687,15 @@ directly. `feature-importance' still owns sizing BUFFER from
   "Return BOOSTER's live foreign pointer, after confirming BOOSTER is a booster built by
 the `:lightgbm' backend.
 
-BOOSTER's own concrete class -- `cl-gbdt/src/lightgbm/protocol''s `lightgbm-booster' --
-cannot be named directly here: this file must not depend on
-`cl-gbdt/src/lightgbm/protocol', for the reason this file's own header gives, and unlike
-`%check-lightgbm-dataset' there is no `protocol.lisp' caller to hand this one the class as
-a parameter -- `booster-eval-names' and `booster-eval' below are called directly by end
-users, never by a `defmethod'. `(typep booster 'booster)' -- the backend-agnostic base
-class from `cl-gbdt/src/handle' -- combined with BOOSTER's own `handle-backend' reporting
-`:lightgbm' as its `backend-name' identifies exactly the set of objects
-`(typep booster 'lightgbm-booster)' would: only a `lightgbm-backend''s `train' or
-`load-model' ever builds a `lightgbm-booster', and every one of those stores that same
-`lightgbm-backend' -- whose `backend-name' is always `:lightgbm', set once at
-`open-backend' -- as the handle's `handle-backend'.
+Thin wrapper over `cl-gbdt/src/handle''s `%check-handle-kind', which carries the contract,
+the conditions and the reason the check cannot be spelled as `(typep booster
+'lightgbm-booster)' here. ARGUMENT-DESCRIPTION names which caller-supplied argument BOOSTER
+came from, for `wrong-backend-reference''s report.
 
-ARGUMENT-DESCRIPTION names which caller-supplied argument BOOSTER came from, for
-`wrong-backend-reference''s report.
-
-Signals `wrong-backend-reference' when BOOSTER is not a `booster' at all -- a dataset, or
-any other non-handle value -- or is one built by a different backend, and whatever
-`handle-live-pointer' signals otherwise: `released-handle-error' for an already-freed
-BOOSTER, `backend-not-open' when its own backend has since been closed."
-  (unless (and (typep booster 'booster)
-               (eq (backend-name (handle-backend booster)) :lightgbm))
-    (error 'wrong-backend-reference
-           :backend :lightgbm
-           :given (class-name (class-of booster))
-           :argument argument-description
-           :expected "booster"))
-  (handle-live-pointer booster))
+Kept as a named wrapper, rather than calling `%check-handle-kind' directly at each call
+site, so `booster-eval' and `booster-eval-names' name the backend once between them instead
+of once each."
+  (%check-handle-kind booster 'booster :lightgbm argument-description))
 
 (defun %booster-eval-count (pointer)
   "Return the number of evaluation metrics configured on the booster at POINTER, read via
