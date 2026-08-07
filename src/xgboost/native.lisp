@@ -40,9 +40,9 @@
                 #:backend-name
                 #:backend-open-p)
   (:import-from #:cl-gbdt/src/handle
+                #:%check-handle-kind
                 #:handle-live-pointer
                 #:handle-released-p
-                #:handle-backend
                 #:dataset
                 #:booster
                 #:booster-training-set
@@ -769,62 +769,27 @@ itself to this file instead of naming `xg-booster-feature-score' directly.
   "Return BOOSTER's live foreign pointer, after confirming BOOSTER is a booster built by
 the `:xgboost' backend.
 
-BOOSTER's own concrete class -- `cl-gbdt/src/xgboost/protocol''s `xgboost-booster' --
-cannot be named directly here: this file must not depend on
-`cl-gbdt/src/xgboost/protocol', for the reason this file's own header gives, and unlike
-`%check-xgboost-dataset' there is no `protocol.lisp' caller to hand this one the class as
-a parameter -- `evaluate-one-iteration' below is called directly by end users, never by a
-`defmethod'. `(typep booster 'booster)' -- the backend-agnostic base class from
-`cl-gbdt/src/handle' -- combined with BOOSTER's own `handle-backend' reporting `:xgboost'
-as its `backend-name' identifies exactly the set of objects `(typep booster
-'xgboost-booster)' would: only an `xgboost-backend''s `train' ever builds an
-`xgboost-booster', and every one of those stores that same `xgboost-backend' -- whose
-`backend-name' is always `:xgboost', set once at `open-backend' -- as the handle's
-`handle-backend'. Mirrors `cl-gbdt/src/lightgbm/native''s `%check-lightgbm-booster', which
-hit the identical constraint for the identical reason.
-
-ARGUMENT-DESCRIPTION names which caller-supplied argument BOOSTER came from, for
-`wrong-backend-reference''s report.
-
-Signals `wrong-backend-reference' when BOOSTER is not a `booster' at all -- a dataset, or
-any other non-handle value -- or is one built by a different backend, and whatever
-`handle-live-pointer' signals otherwise: `released-handle-error' for an already-freed
-BOOSTER, `backend-not-open' when its own backend has since been closed."
-  (unless (and (typep booster 'booster)
-               (eq (backend-name (handle-backend booster)) :xgboost))
-    (error 'wrong-backend-reference
-           :backend :xgboost
-           :given (class-name (class-of booster))
-           :argument argument-description
-           :expected "booster"))
-  (handle-live-pointer booster))
+Thin wrapper over `cl-gbdt/src/handle''s `%check-handle-kind', which carries the contract,
+the conditions and the reason the check cannot be spelled as `(typep booster
+'xgboost-booster)' here. ARGUMENT-DESCRIPTION names which caller-supplied argument BOOSTER
+came from, for `wrong-backend-reference''s report. Mirrors
+`cl-gbdt/src/lightgbm/native''s `%check-lightgbm-booster'."
+  (%check-handle-kind booster 'booster :xgboost argument-description))
 
 (defun %check-xgboost-eval-dataset (dataset argument-description)
   "Return DATASET's live foreign pointer, after confirming DATASET is a dataset built by
 the `:xgboost' backend.
 
-Mirrors `%check-xgboost-booster' immediately above, but for `dataset' -- needed for the
-same reason: `evaluate-one-iteration''s DATASETS argument is a list of caller-supplied handles this
-file must check before ever handing their pointers to `XGBoosterEvalOneIter', and the
-existing `%check-xgboost-dataset' cannot be reused as-is, since its only caller,
-`cl-gbdt/src/xgboost/protocol''s `train', already has the concrete `xgboost-dataset' class
-symbol to hand it as a parameter -- `evaluate-one-iteration' has no such caller to get it from, the
-identical gap `%check-xgboost-booster' fills for booster arguments.
+`evaluate-one-iteration''s DATASETS argument is a list of caller-supplied handles this file
+must check before handing their pointers to `XGBoosterEvalOneIter'. The existing
+`%check-xgboost-dataset' cannot be reused: its only caller, `cl-gbdt/src/xgboost/protocol''s
+`train', already holds the concrete `xgboost-dataset' class symbol to pass it, and
+`evaluate-one-iteration' has no such caller to get one from.
 
-ARGUMENT-DESCRIPTION names which caller-supplied argument DATASET came from, for
-`wrong-backend-reference''s report.
-
-Signals `wrong-backend-reference' when DATASET is not a `dataset' at all, or is one built
-by a different backend, and whatever `handle-live-pointer' signals otherwise:
-`released-handle-error' for an already-freed DATASET, `backend-not-open' when its own
-backend has since been closed."
-  (unless (and (typep dataset 'dataset)
-               (eq (backend-name (handle-backend dataset)) :xgboost))
-    (error 'wrong-backend-reference
-           :backend :xgboost
-           :given (class-name (class-of dataset))
-           :argument argument-description))
-  (handle-live-pointer dataset))
+Thin wrapper over `cl-gbdt/src/handle''s `%check-handle-kind', which carries the contract
+and the conditions. ARGUMENT-DESCRIPTION names which caller-supplied argument DATASET came
+from, for `wrong-backend-reference''s report."
+  (%check-handle-kind dataset 'dataset :xgboost argument-description))
 
 (defun %eval-one-iter (booster-pointer iteration dmatrix-pointers names)
   "Run `XGBoosterEvalOneIter' over the booster at BOOSTER-POINTER, at ITERATION, against

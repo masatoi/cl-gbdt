@@ -6,7 +6,7 @@
 (uiop:define-package #:cl-gbdt/tests/handle
   (:use #:cl #:rove)
   (:import-from #:cffi)
-  (:import-from #:cl-gbdt/src/handle #:%make-finalizer)
+  (:import-from #:cl-gbdt/src/handle #:%make-finalizer #:%check-handle-kind)
   (:import-from #:cl-gbdt))
 
 (in-package #:cl-gbdt/tests/handle)
@@ -104,3 +104,72 @@ increments the car of COUNT-CELL each time it is called."
            (booster (cl-gbdt:make-handle 'cl-gbdt:booster (cffi:make-pointer 2)
                                           :mock :booster :training-set dataset)))
       (ok (eq dataset (cl-gbdt:booster-training-set booster))))))
+
+;;; `%check-handle-kind' is the guard the two backends' Layer 1 entry points use where CLOS
+;;; cannot make the check for them, and getting it wrong means a handle allocated by one
+;;; shared library being dereferenced by the other -- a memory fault, not a condition. Until
+;;; this file, its wrong-BACKEND branch could only be reached with both real libraries
+;;; loaded; tests/functional/evaluation.lisp does that end to end. These cover the same
+;;; branch here, at layer 1, where two mock backends cost nothing and no library is needed.
+
+(defclass %other-mock-backend (cl-gbdt:backend) ()
+  (:documentation "A second backend stand-in, registered under a different name than
+`%mock-backend', so a handle built by one can be offered to a check expecting the other --
+the wrong-backend case, which needs two distinct `backend-name's and nothing else."))
+
+(defmethod cl-gbdt:initialize-backend ((backend %other-mock-backend) &key path)
+  (declare (ignore path))
+  backend)
+
+(defmethod cl-gbdt:shutdown-backend ((backend %other-mock-backend))
+  backend)
+
+(cl-gbdt:register-backend :other-handle-test '%other-mock-backend)
+
+(defun %handle-on (backend-name class)
+  "Return a live CLASS handle whose backend is a freshly opened BACKEND-NAME."
+  (cl-gbdt:make-handle class (cffi:make-pointer 1)
+                       (cl-gbdt:open-backend backend-name) :dataset))
+
+(deftest check-handle-kind-accepts-the-right-kind-from-the-right-backend
+  (testing "the live pointer comes back unchanged"
+    (let ((handle (%handle-on :handle-test 'cl-gbdt:dataset)))
+      (ok (cffi:pointer-eq (cffi:make-pointer 1)
+                           (%check-handle-kind
+                            handle 'cl-gbdt:dataset :handle-test "a dataset argument"))
+          "%check-handle-kind did not return the handle's pointer"))))
+
+(deftest check-handle-kind-rejects-the-right-kind-from-another-backend
+  ;; The branch with no coverage before this test: right class, wrong library. Weakening it
+  ;; is what reproduces the memory fault in tests/functional/evaluation.lisp.
+  (testing "a dataset from another backend signals wrong-backend-reference"
+    (let ((handle (%handle-on :other-handle-test 'cl-gbdt:dataset)))
+      (ok (handler-case
+              (progn (%check-handle-kind
+                      handle 'cl-gbdt:dataset :handle-test "a dataset argument")
+                     nil)
+            (cl-gbdt:wrong-backend-reference () t))
+          "%check-handle-kind accepted a dataset from another backend"))))
+
+(deftest check-handle-kind-rejects-the-wrong-kind-from-the-right-backend
+  (testing "a booster where a dataset belongs signals wrong-backend-reference"
+    (let ((handle (%handle-on :handle-test 'cl-gbdt:booster)))
+      (ok (handler-case
+              (progn (%check-handle-kind
+                      handle 'cl-gbdt:dataset :handle-test "a dataset argument")
+                     nil)
+            (cl-gbdt:wrong-backend-reference () t))
+          "%check-handle-kind accepted a booster as a dataset"))))
+
+(deftest check-handle-kind-reports-the-kind-it-expected
+  ;; The noun in the report is derived from KIND rather than passed separately, so that a
+  ;; caller asking for a booster can never be told it "must be a dataset".
+  (testing "the report names the kind the caller asked for"
+    (let ((handle (%handle-on :handle-test 'cl-gbdt:dataset)))
+      (ok (search "must be a booster"
+                  (handler-case
+                      (progn (%check-handle-kind
+                              handle 'cl-gbdt:booster :handle-test "a booster argument")
+                             "")
+                    (cl-gbdt:wrong-backend-reference (c) (princ-to-string c))))
+          "the report did not name booster as the expected kind"))))

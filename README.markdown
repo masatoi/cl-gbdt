@@ -17,8 +17,8 @@ file if you have it locally).
 `make-dataset`, `dataset-num-rows`, `dataset-num-features`, `train`,
 `update-one-iteration`, `predict`, `save-model`, `load-model`, `model-to-string`,
 `feature-importance`, `evaluation`, `free-dataset` and `free-booster` -- against the real
-LightGBM and XGBoost shared libraries, exercised by 184 functional assertions (design doc
-section 12, layer 2), in addition to 244 assertions that need no shared library at all
+LightGBM and XGBoost shared libraries, exercised by 190 functional assertions (design doc
+section 12, layer 2), in addition to 248 assertions that need no shared library at all
 (layer 1). See [Usage](#usage) below for a worked example.
 
 Loading `cl-gbdt` itself still does not require either `liblightgbm.so` or
