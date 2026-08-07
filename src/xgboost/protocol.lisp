@@ -122,7 +122,9 @@
 ;;; granularity, not per-call, so a call added later inside an already-wrapped method
 ;;; cannot reopen this gap by omission. Every actual C call a method below makes goes
 ;;; through `cl-gbdt/src/xgboost/native', but the mask is established here, around the
-;;; whole method body, not inside that file -- see its own header.
+;;; whole method body, not inside that file -- see its own header. `slice-model' near
+;;; the end of this file is this file's first non-`defmethod' entry point bound by the
+;;; identical rule -- it wraps its own whole body the same way; see its own section below.
 
 ;;; ---------------------------------------------------------------------------
 ;;; The backend class
@@ -776,9 +778,18 @@ the true-but-irrelevant news that the backend it came from cannot slice."
        (format nil "0 would be an empty slice, which XGBoost rejects outright, but ~
                     XGBoosterSlice's own end_layer 0 means the last layer -- pass NIL for ~
                     that rather than letting the two readings collide"))
-      ;; No `owned' unwind-protect dance here, unlike `load-model' and `train' above: those
-      ;; run further foreign calls between the handle appearing in C and `make-handle' taking
-      ;; ownership of it, and each of those can signal. `%slice' returns a booster that is
-      ;; already complete, and `make-handle' is the very next thing that runs.
-      (make-handle 'xgboost-booster (%slice pointer begin (or end 0) step)
-                   backend :booster))))
+      ;; Unlike `load-model' and `train' above, no further foreign call runs between the
+      ;; handle appearing in C and `make-handle' taking ownership of it -- `%slice' returns a
+      ;; booster that is already complete, and `make-handle' is the very next thing that runs.
+      ;; The `owned' unwind-protect dance is still needed, though: `make-handle' itself --
+      ;; `make-instance' or finalizer attachment -- can signal, e.g. on `storage-condition',
+      ;; and a signal there must not orphan the foreign booster `%slice' already returned.
+      (let ((slice-pointer (%slice pointer begin (or end 0) step))
+            (owned nil))
+        (unwind-protect
+             (prog1
+                 (make-handle 'xgboost-booster slice-pointer backend :booster)
+               (setf owned t))
+          (unless owned
+            (handler-case (%free-booster-unchecked slice-pointer)
+              (error () nil))))))))

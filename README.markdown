@@ -17,7 +17,7 @@ file if you have it locally).
 `make-dataset`, `dataset-num-rows`, `dataset-num-features`, `train`,
 `update-one-iteration`, `predict`, `save-model`, `load-model`, `model-to-string`,
 `feature-importance`, `evaluation`, `free-dataset` and `free-booster` -- against the real
-LightGBM and XGBoost shared libraries, exercised by 205 functional assertions (design doc
+LightGBM and XGBoost shared libraries, exercised by 207 functional assertions (design doc
 section 12, layer 2), in addition to 253 assertions that need no shared library at all
 (layer 1). See [Usage](#usage) below for a worked example.
 

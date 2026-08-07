@@ -1376,12 +1376,32 @@ closed [BEGIN, END] reading would make this 6.")
                        (cl-gbdt:unsupported-argument () t))
                      "slice-model accepted :END 0, which XGBoost would read as \"everything\""))
                (testing "an END past the last layer is XGBoost's error, not a clamp"
-                 (ok (handler-case
-                         (progn (cl-gbdt/xgboost:slice-model
-                                 booster :begin 0 :end (1+ +parent-rounds+))
-                                nil)
-                       (cl-gbdt:foreign-call-error () t))
-                     "slice-model did not surface XGBoost's refusal of an out-of-range END")))
+                 ;; `XGBoosterSlice' returns -2, not -1, for this path, and takes it before
+                 ;; upstream's usual exception-to-XGBGetLastError plumbing runs -- confirmed
+                 ;; against the vendored library, `XGBGetLastError' comes back empty in a fresh
+                 ;; process for this call, or holding an earlier, unrelated failure's message
+                 ;; verbatim in a process where one had already happened. Asserting only the
+                 ;; condition type, as this test used to, would stay green for either of those
+                 ;; broken messages; this checks the message itself instead.
+                 (let* ((out-of-range-end (1+ +parent-rounds+))
+                        (condition
+                          (handler-case
+                              (progn (cl-gbdt/xgboost:slice-model
+                                      booster :begin 0 :end out-of-range-end)
+                                     nil)
+                            (cl-gbdt:foreign-call-error (c) c))))
+                   (ok condition
+                       "slice-model did not surface XGBoost's refusal of an out-of-range END")
+                   (ok (and condition
+                            (plusp (length (or (cl-gbdt:foreign-call-error-message condition)
+                                                ""))))
+                       "slice-model's foreign-call-error carried no message -- either a bare ~
+                        colon (an empty XGBGetLastError) or the (no message) fallback")
+                   (ok (and condition
+                            (search (format nil "end ~D" out-of-range-end)
+                                    (or (cl-gbdt:foreign-call-error-message condition) "")))
+                       "slice-model's foreign-call-error message did not name the offending ~
+                        END, so it cannot be this call's own diagnostic"))))
           (progn
             (when booster (cl-gbdt:free-booster booster))
             (when train-set (cl-gbdt:free-dataset train-set))

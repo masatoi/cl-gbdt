@@ -144,10 +144,21 @@
 
 (defun %last-error-message ()
   "Return XGBoost's last error message as a Lisp string, or NIL when
-`XGBGetLastError' returns a null pointer."
+`XGBGetLastError' returns a null pointer or an empty string.
+
+An empty string is not a null pointer, but it means the same thing here: no message
+is available, most often because nothing in this process has failed yet, or because the
+call that just failed -- `XGBoosterSlice''s out-of-bounds path is the known case, see
+`%slice' -- never wrote one. Treating it as NIL lets `foreign-call-error''s own `(or
+message \"(no message)\")' fallback fire instead of printing a bare colon. This does NOT
+by itself fix a *stale*, non-empty message left over from an earlier, unrelated failure
+in the same process -- `%slice' guards against that separately, by never routing the
+out-of-bounds code through this function at all."
   (let ((pointer (xgb-get-last-error)))
     (unless (cffi:null-pointer-p pointer)
-      (cffi:foreign-string-to-lisp pointer))))
+      (let ((message (cffi:foreign-string-to-lisp pointer)))
+        (unless (zerop (length message))
+          message)))))
 
 (defun check-xgb (code function-name)
   "Signal `foreign-call-error' when CODE reports failure, otherwise return CODE.
@@ -1114,6 +1125,19 @@ divide the interval evenly are all clean nonzero returns, never a crash -- or wh
 reports success while leaving a null handle behind, the same refusal to trust a
 success-with-null that `%create-booster' makes for `XGBoosterCreate'.
 
+The vendored header (`ffi-spec/xgboost/include/xgboost/c_api.h') documents
+`XGBoosterSlice''s return value as \"0 when success, -1 when failure happens, -2 when
+index is out of bound\", and -2 gets special handling here: confirmed against the
+vendored library, that path is taken before upstream's usual exception-to-`XGBGetLastError'
+plumbing runs, so the last-error buffer is left holding whatever an earlier, unrelated
+failure wrote in this process, or empty when nothing has failed yet -- either way not a
+description of BEGIN/END/STEP actually being out of bounds. Every other nonzero code (-1)
+does go through that plumbing and gets `check-xgb''s ordinary handling, since upstream's
+own message is accurate there. Code -2 instead signals `foreign-call-error' with a message
+this function builds itself, naming BEGIN, END and STEP -- the most likely mistake a
+`slice-model' caller makes, per that function's own docstring, and, before this fix, the
+one this backend reported most misleadingly.
+
 That guard is a little stronger here than `%create-booster''s: the out slot is set to a
 null pointer before the call, so it also catches a `XGBoosterSlice' that returned success
 without writing the slot at all, which a bare `cffi:with-foreign-object' would leave holding
@@ -1122,7 +1146,18 @@ whatever was on the stack and read back as a plausible-looking handle. Not retro
 this work does not otherwise touch."
   (cffi:with-foreign-object (out :pointer)
     (setf (cffi:mem-ref out :pointer) (cffi:null-pointer))
-    (check-xgb (xg-booster-slice booster-pointer begin end step out) "XGBoosterSlice")
+    (let ((code (xg-booster-slice booster-pointer begin end step out)))
+      (if (= code -2)
+          (error 'foreign-call-error
+                 :function-name "XGBoosterSlice"
+                 :code code
+                 :message (format nil "begin ~D, end ~D, step ~D names a layer range out ~
+                                        of bounds for this booster -- XGBoosterSlice ~
+                                        reports this case (code -2) without setting ~
+                                        XGBGetLastError; see booster-boosted-rounds for ~
+                                        the valid range"
+                                   begin end step))
+          (check-xgb code "XGBoosterSlice")))
     (let ((slice-pointer (cffi:mem-ref out :pointer)))
       (when (cffi:null-pointer-p slice-pointer)
         (error 'foreign-call-error
