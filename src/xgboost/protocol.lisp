@@ -684,8 +684,11 @@ free and no `unwind-protect' around it. That saves a copy, and it is the entry p
 `XGBoosterPredictFromDMatrix', not a CSR spelling of it, and **it covers only `:normal' and
 `:raw'**. `:contrib' and `:leaf-index' on a `csr-matrix' signal `foreign-call-error'
 (\"Unsupported prediction type:2\" and \":6\" respectively), measured against the vendored
-library; both work on a dense matrix, and a caller who needs either for sparse rows builds
-the `csr-matrix' into a dataset with `make-dataset' and predicts on a dense matrix instead.
+library. Both work on a dense matrix, and materialising the rows as one -- a 2D
+`double-float' or `single-float' array, or a `foreign-matrix' -- is the only way to reach
+either KIND for rows a caller holds sparsely: those are the only other forms
+`call-with-foreign-matrix' has a method for, and a dataset is not among them, so routing the
+rows through `make-dataset' leads nowhere `predict' can be called on.
 That refusal is the library's own and is left to it, exactly as a `csr-matrix' whose
 NUM-COLUMNS is not BOOSTER's feature count is (\"Number of columns in data must equal to the
 trained model\"). NUM-ITERATION is honoured identically on both paths -- the same

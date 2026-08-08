@@ -230,9 +230,12 @@ for a dense MATRIX on both backends, and for a `csr-matrix' on LightGBM. On XGBo
 `XGBoosterPredictFromCSR', is that library's INPLACE prediction rather than a CSR spelling
 of the dense call, and it refuses the other two outright -- so `predict' signals
 `foreign-call-error' for them, the library's own refusal passed through rather than an
-emulation invented here. A caller who needs `:contrib' or `:leaf-index' for sparse rows on
-XGBoost builds the `csr-matrix' into a dataset with `make-dataset', which has no such
-restriction, and predicts on a dense matrix.
+emulation invented here. The only way to get `:contrib' or `:leaf-index' out of XGBoost for
+rows held as a `csr-matrix' is to materialise those rows as a dense matrix -- a 2D
+`double-float' or `single-float' array -- and predict on that. Note that this is a real cost,
+not a formality: MATRIX is the only thing `predict' takes, and a dataset is not one of its
+accepted forms, so building the rows into a dataset with `make-dataset' does not lead to a
+prediction at all.
 
 NUM-ITERATION limits
 how many trees are used: nil uses all of them, an integer uses that many, and `:best'

@@ -401,16 +401,25 @@ objective needs a label on the training set regardless of what this test is chec
 ;;; tests can fail on is `predict' alone. `sparse-and-dense-training-agree' above already
 ;;; covers the other direction.
 
+(defparameter *training-rounds* 5
+  "How many boosting rounds `train-dense-booster' runs.
+
+Named rather than written into that function, because
+`sparse-prediction-honours-num-iteration' needs a round count STRICTLY BELOW it to ask for,
+and a test asking for 2 rounds out of a booster that turned out to hold only 2 would be
+asserting an equality that holds for the wrong reason.")
+
 (defun train-dense-booster (fixture backend matrix label-vector)
-  "Train a booster on BACKEND from the dense MATRIX and LABEL-VECTOR, using FIXTURE's own
-parameters, and return it. The caller frees it -- `cl-gbdt:with-booster' is the usual way.
+  "Train a booster on BACKEND from the dense MATRIX and LABEL-VECTOR for *TRAINING-ROUNDS*
+rounds, using FIXTURE's own parameters, and return it. The caller frees it --
+`cl-gbdt:with-booster' is the usual way.
 
 The dataset is freed before this returns, since none of the prediction tests below needs it
 and every one of them would otherwise have to nest a `cl-gbdt:with-dataset' it never
 mentions again. A booster outlives the dataset it was trained on for prediction purposes on
 both backends -- `predict' consults neither backend's retained training-set handle."
   (cl-gbdt:with-dataset (train-set (make-fixture-dataset fixture backend matrix label-vector))
-    (cl-gbdt:train backend train-set :num-rounds 5
+    (cl-gbdt:train backend train-set :num-rounds *training-rounds*
                    :parameters (getf fixture :booster-parameters))))
 
 ;;; The assertion that proves the sparse prediction path carries the data rather than merely
@@ -480,6 +489,60 @@ both backends -- `predict' consults neither backend's retained training-set hand
                                     (getf fixture :backend))
                      (ok (not (predictions-agree-p sparse-raw sparse-normal))
                          (format nil ":raw ~S, :normal ~S" sparse-raw sparse-normal)))))
+            (cl-gbdt:close-backend backend)))))))
+
+;;; NUM-ITERATION reaches the library on the sparse path, and reaches it as the ROUND LIMIT
+;;; rather than as anything else.
+;;;
+;;; Nothing else in this file would catch that. Every other test here predicts with
+;;; NUM-ITERATION defaulted, which both backends resolve to the wire value 0 -- and 0 is also
+;;; what each passes as the start of the range. LightGBM's `%predict-for-csr' spells that pair
+;;; out positionally, as `predict_type, start_iteration, num_iteration', a hand-written
+;;; argument list unique to that function; XGBoost's reaches `"iteration_begin"' and
+;;; `"iteration_end"' in a config string. With both halves 0, transposing them is invisible.
+;;;
+;;; Measured against both vendored libraries before this test was written, so the equality
+;;; below is not vacuous and the transposition really is caught. On the eight-row fixture at
+;;; five rounds, row 0's prediction is:
+;;;
+;;;   LightGBM  0.40567521221114555 for (start 0, num 2), 0.38338210973810 for (start 2, num 0)
+;;;   XGBoost   0.29127201437950134 for (begin 0, end 2), 0.30579683 for (begin 2, end 0)
+;;;
+;;; Both gaps are seven orders of magnitude above *PREDICTION-TOLERANCE*. Neither fixture has
+;;; converged by round 2 either -- both backends' predictions still move at every round from 1
+;;; to *TRAINING-ROUNDS* -- which is what the second assertion pins, so a `predict' that
+;;; ignored NUM-ITERATION entirely and always used every round could not pass the first one by
+;;; the two answers happening to coincide.
+
+(deftest sparse-prediction-honours-num-iteration
+  (dolist (fixture *fixtures*)
+    (with-backend-library ((getf fixture :backend))
+      (multiple-value-bind (matrix label-vector) (make-separable-dataset)
+        (let ((backend (cl-gbdt:open-backend (getf fixture :backend)))
+              (rounds 2))
+          (unwind-protect
+               (cl-gbdt:with-booster
+                   (booster (train-dense-booster fixture backend matrix label-vector))
+                 (let* ((csr (dense-to-csr matrix))
+                        (dense-limited (cl-gbdt:predict booster matrix
+                                                        :num-iteration rounds))
+                        (sparse-limited (cl-gbdt:predict booster csr :num-iteration rounds))
+                        (sparse-all (cl-gbdt:predict booster csr)))
+                   (testing (format nil "~A: :num-iteration ~D on the csr-matrix answers ~
+                                         what it answers on the dense matrix"
+                                    (getf fixture :backend) rounds)
+                     (ok (predictions-agree-p dense-limited sparse-limited)
+                         (format nil "dense ~S, sparse ~S" dense-limited sparse-limited)))
+                   ;; The control. Without it the assertion above would still pass on a
+                   ;; sparse path that dropped NUM-ITERATION on the floor, since the dense
+                   ;; side would then be the only one honouring it -- and it would pass
+                   ;; vacuously on a fixture whose model stopped changing before round 2.
+                   (testing (format nil "~A: ~D rounds is a real limit -- it differs from ~
+                                         all ~D" (getf fixture :backend) rounds
+                                    *training-rounds*)
+                     (ok (not (predictions-agree-p sparse-limited sparse-all))
+                         (format nil "~D rounds ~S, all rounds ~S"
+                                 rounds sparse-limited sparse-all)))))
             (cl-gbdt:close-backend backend)))))))
 
 ;;; Policy section 7's central rule, applied to `predict' this time: the operation re-checks
