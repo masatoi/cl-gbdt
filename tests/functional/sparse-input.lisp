@@ -6,12 +6,14 @@
 ;;;; capability. Like tests/functional/evaluation.lisp and
 ;;;; tests/functional/training-report.lisp beside it, every test below runs the identical
 ;;;; assertions over that first file's *FIXTURES*, once per backend, so the two backends
-;;;; cannot drift apart in shape or meaning without one of them failing here. There are two
+;;;; cannot drift apart in shape or meaning without one of them failing here. There are three
 ;;;; exceptions, each with its own comment: `sparse-dataset-honours-reference-and-parameters'
-;;;; needs a backend that aligns bin mappers and so runs on LightGBM alone, and
+;;;; needs a backend that aligns bin mappers and so runs on LightGBM alone,
 ;;;; `sparse-prediction-kind-support-is-what-each-library-offers' asserts a DIFFERENT measured
 ;;;; fact per backend because the two libraries' sparse prediction entry points genuinely
-;;;; cover different KINDs.
+;;;; cover different KINDs, and `an-omitted-entry-is-zero-to-lightgbm-and-missing-to-xgboost'
+;;;; does the same for the one thing the two libraries read differently about a `csr-matrix'
+;;;; itself -- an entry it does not store.
 ;;;;
 ;;;; Numbers are never compared BETWEEN backends: policy section 13 asks for shape, order and
 ;;;; meaning, not numeric agreement, and the two libraries train different models from the
@@ -278,9 +280,15 @@ of corresponding elements differs by more than *PREDICTION-TOLERANCE*."
                  (testing (format nil "~A: make-dataset signals capability-unavailable, ~
                                        naming the capability and the backend"
                                   (getf fixture :backend))
+                   ;; `free-dataset' on the success branch, the same way the :parameters
+                   ;; assertion in `sparse-dataset-honours-reference-and-parameters' frees
+                   ;; the dataset it does not expect to get: this branch is only reached if
+                   ;; the gate has regressed, and a leaked handle is a poor second failure
+                   ;; to hand whoever is already reading the first one.
                    (let ((condition (handler-case
-                                        (progn (cl-gbdt:make-dataset backend
-                                                                     (dense-to-csr matrix))
+                                        (progn (cl-gbdt:free-dataset
+                                                (cl-gbdt:make-dataset backend
+                                                                      (dense-to-csr matrix)))
                                                nil)
                                       (cl-gbdt:capability-unavailable (c) c))))
                      (ok condition
@@ -374,11 +382,17 @@ objective needs a label on the training set regardless of what this test is chec
                ;; The control for the assertion above: these two sets really do bin
                ;; differently, so acceptance there was :REFERENCE doing its job.
                (testing "train refuses a sparse valid set with its own bin mapper"
+                 ;; `with-booster' on the success branch, as the assertion above already
+                 ;; uses inside its own `handler-case': this branch is only reached if the
+                 ;; refusal has regressed, and the booster `train' would then have returned
+                 ;; is the one handle in this file with nothing else to free it.
                  (ok (handler-case
-                         (progn (cl-gbdt:train backend train-set :num-rounds 1
-                                               :valid-sets (list independent)
-                                               :parameters booster-parameters)
-                                nil)
+                         (cl-gbdt:with-booster
+                             (booster (cl-gbdt:train backend train-set :num-rounds 1
+                                                     :valid-sets (list independent)
+                                                     :parameters booster-parameters))
+                           (declare (ignorable booster))
+                           nil)
                        (cl-gbdt:foreign-call-error () t))
                      "train refused the independently-binned sparse valid set")))
              (testing ":parameters reaches the library, which rejects max_bin=1"
@@ -619,8 +633,13 @@ both backends -- `predict' consults neither backend's retained training-set hand
   (dolist (fixture *fixtures*)
     (with-backend-library ((getf fixture :backend))
       (multiple-value-bind (matrix label-vector) (make-separable-dataset)
-        (let ((backend (cl-gbdt:open-backend (getf fixture :backend)))
-              (narrow (dense-to-csr (make-separable-dataset :cols 2))))
+        ;; NARROW is built BEFORE the backend is opened -- `let' evaluates its init forms
+        ;; left to right, so the order below is the guarantee. Bound after `open-backend' it
+        ;; would still be outside the `unwind-protect', so a `dense-to-csr' that signalled --
+        ;; which is what a regression in `make-csr-matrix''s validation would do -- would
+        ;; leak an open backend.
+        (let ((narrow (dense-to-csr (make-separable-dataset :cols 2)))
+              (backend (cl-gbdt:open-backend (getf fixture :backend))))
           (unwind-protect
                (cl-gbdt:with-booster
                    (booster (train-dense-booster fixture backend matrix label-vector))
@@ -704,3 +723,271 @@ both backends -- `predict' consults neither backend's retained training-set hand
                      (ok (arrayp (cl-gbdt:predict booster matrix :kind kind))
                          (format nil "dense :kind ~S returned an array" kind))))))
           (cl-gbdt:close-backend backend))))))
+
+;;; ---------------------------------------------------------------------------
+;;; A genuinely sparse matrix: entries omitted, and one row storing nothing at all
+;;;
+;;; Everything above this line converts through `dense-to-csr', which stores every element.
+;;; That is right for what those tests assert -- a matrix meaning the same thing on both
+;;; backends -- but it makes every fixture above STRUCTURALLY DENSE: INDPTR is an arithmetic
+;;; sequence and INDICES the cycle 0,1,...,NCOL-1 repeated once per row. Nothing above would
+;;; fail against an implementation that ignored both and read VALUES row-major, and nothing
+;;; above sends either library the one thing a sparse format exists for: an entry that is
+;;; not there.
+;;;
+;;; The fixture below does. It is the same shape of demonstration README.markdown's "An
+;;; absent entry is not a zero" section carries, run as assertions.
+
+(defparameter *omitted-entry-rows*
+  '((0 0 0) (0 1 0) (0 0 2) (0 3 3)
+    (5 0 0) (5 1 0) (5 0 2) (5 3 3))
+  "Eight rows of three integer columns, coerced to `double-float' where they are used.
+
+Purpose-built, and deliberately not `make-separable-dataset''s fixture, whose only zero is a
+single element. Here ROW 0 IS ENTIRELY ZERO, so a CSR that omits zeros stores nothing at all
+for it -- the empty row, a repeated INDPTR entry, that no other test in this suite sends to
+either library -- and every remaining row omits at least one entry, so INDPTR is not an
+arithmetic sequence and INDICES is not a repeating cycle.
+
+Column 0 is the one carrying the class: 0.0 for the four rows labelled 0 and 5.0 for the
+four labelled 1. Omitting zeros therefore takes column 0 away from exactly the negative-class
+rows, which is what makes the two libraries' readings of an absent entry produce visibly
+different numbers rather than the same ones by luck. Columns 1 and 2 carry no class
+information whatever, by construction: the two halves hold identical values there.")
+
+(defparameter *omitted-entry-labels*
+  (make-array 8 :element-type 'single-float
+                :initial-contents '(0.0 0.0 0.0 0.0 1.0 1.0 1.0 1.0))
+  "Labels for *OMITTED-ENTRY-ROWS*, row for row: the first four rows are the negative class
+and the last four the positive one, which is exactly what column 0 encodes.")
+
+(defun omitted-entry-dense ()
+  "Return *OMITTED-ENTRY-ROWS* as a `(simple-array double-float (8 3))'.
+
+The fixed reference both CSR forms below are compared against. It stores every element, so
+it means the same thing to both libraries and nothing about it depends on how either reads
+an entry that is absent."
+  (let* ((rows (length *omitted-entry-rows*))
+         (columns (length (first *omitted-entry-rows*)))
+         (matrix (make-array (list rows columns) :element-type 'double-float)))
+    (loop :for row :in *omitted-entry-rows*
+          :for i :from 0
+          :do (loop :for value :in row
+                    :for j :from 0
+                    :do (setf (aref matrix i j) (coerce value 'double-float))))
+    matrix))
+
+(defun omitted-entry-csr (&key (omit-zeros t))
+  "Return *OMITTED-ENTRY-ROWS* as a `cl-gbdt:csr-matrix'.
+
+With OMIT-ZEROS true, the default, only the non-zero elements are stored -- the conversion a
+sparse format normally performs, and the one that leaves row 0 storing nothing. With it
+false the same eight rows are stored element for element, zeros included, which is what
+`dense-to-csr' does for the rest of this file.
+
+The pair is the point: the two forms describe the same eight rows to a reader that takes an
+absent entry for 0.0, and two different matrices to one that takes it for missing."
+  (let ((indptr (list 0))
+        (indices '())
+        (values '())
+        (stored 0))
+    (dolist (row *omitted-entry-rows*)
+      (loop :for value :in row
+            :for column :from 0
+            :do (unless (and omit-zeros (zerop value))
+                  (push column indices)
+                  (push (coerce value 'double-float) values)
+                  (incf stored)))
+      (push stored indptr))
+    (cl-gbdt:make-csr-matrix :indptr (nreverse indptr) :indices (nreverse indices)
+                             :values (nreverse values)
+                             :num-columns (length (first *omitted-entry-rows*)))))
+
+(defun predictions-after-training-on (fixture backend matrix)
+  "Train a booster on BACKEND from MATRIX -- one of the three forms of the omitted-entry
+fixture -- for *TRAINING-ROUNDS* rounds with FIXTURE's own parameters, and return its
+predictions on the DENSE form of those same eight rows.
+
+Predicting on the dense form whatever MATRIX was is what makes two such results comparable:
+what then differs between them is the data each model was TRAINED on, not the data each was
+asked about."
+  (cl-gbdt:with-booster
+      (booster (cl-gbdt:with-dataset
+                   (dataset (make-fixture-dataset fixture backend matrix
+                                                  *omitted-entry-labels*))
+                 (cl-gbdt:train backend dataset :num-rounds *training-rounds*
+                                :parameters (getf fixture :booster-parameters))))
+    (cl-gbdt:predict booster (omitted-entry-dense))))
+
+(defun every-prediction-equals-p (predictions value)
+  "True when every element of PREDICTIONS is within *PREDICTION-TOLERANCE* of VALUE."
+  (loop :for index :below (array-total-size predictions)
+        :always (<= (abs (- (row-major-aref predictions index) value))
+                    *prediction-tolerance*)))
+
+;;; The shape half, and the only thing about an omitted entry both backends agree on: the row
+;;; count comes from INDPTR and the width from NUM-COLUMNS, neither from what is stored. Row 0
+;;; stores nothing and is still a row; column 0 is stored for only four of the eight rows and
+;;; the matrix is still three wide. An implementation that read the twelve stored VALUES
+;;; row-major would report four rows here and pass every other test in this file.
+
+(deftest omitted-entries-and-an-empty-row-keep-the-declared-shape
+  (dolist (fixture *fixtures*)
+    (with-backend-library ((getf fixture :backend))
+      ;; The csr-matrix is built before the backend is opened -- `let' evaluates its init
+      ;; forms left to right -- so a `make-csr-matrix' that signalled could not leak an open
+      ;; backend past the `unwind-protect' below.
+      (let ((sparse (omitted-entry-csr))
+            (rows (length *omitted-entry-rows*))
+            (columns (length (first *omitted-entry-rows*)))
+            (backend (cl-gbdt:open-backend (getf fixture :backend))))
+        (unwind-protect
+             (progn
+               (cl-gbdt:with-dataset
+                   (dataset (make-fixture-dataset fixture backend sparse
+                                                  *omitted-entry-labels*))
+                 (testing (format nil "~A: make-dataset reports INDPTR's row count even ~
+                                       though one row stores nothing"
+                                  (getf fixture :backend))
+                   (ok (= rows (cl-gbdt:dataset-num-rows dataset))
+                       (format nil "dataset-num-rows was ~S"
+                               (cl-gbdt:dataset-num-rows dataset))))
+                 (testing (format nil "~A: make-dataset reports the declared width even ~
+                                       though column 0 is stored for half the rows"
+                                  (getf fixture :backend))
+                   (ok (= columns (cl-gbdt:dataset-num-features dataset))
+                       (format nil "dataset-num-features was ~S"
+                               (cl-gbdt:dataset-num-features dataset)))))
+               (cl-gbdt:with-booster
+                   (booster (train-dense-booster fixture backend (omitted-entry-dense)
+                                                 *omitted-entry-labels*))
+                 (testing (format nil "~A: predict answers one row per INDPTR row, the ~
+                                       empty one included" (getf fixture :backend))
+                   (let ((predictions (cl-gbdt:predict booster sparse)))
+                     (ok (= rows (array-dimension predictions 0))
+                         (format nil "the predictions were ~S" predictions))))))
+          (cl-gbdt:close-backend backend))))))
+
+;;; What an omitted entry MEANS, asserted per backend because the two libraries genuinely
+;;; disagree -- the same reason `sparse-prediction-kind-support-is-what-each-library-offers'
+;;; above is written this way. Weakening it into something both could satisfy would assert
+;;; nothing on either, and this is the one difference between the backends that changes
+;;; numbers without signalling.
+;;;
+;;; Measured against both vendored libraries before either half was written, one booster
+;;; trained on the dense fixture and asked about all three forms of the same eight rows
+;;; (column 0 of each result, five rounds):
+;;;
+;;;   LightGBM  dense           0.297948 x4, 0.702052 x4
+;;;             every element   0.297948 x4, 0.702052 x4   (identical to dense)
+;;;             zeros omitted   0.297948 x4, 0.702052 x4   (identical to dense)
+;;;   XGBoost   dense           0.153286 x4, 0.846714 x4
+;;;             every element   0.153286 x4, 0.846714 x4   (identical to dense)
+;;;             zeros omitted   0.846714 x8                (all eight rows, not four)
+;;;
+;;; LightGBM reads an absent entry as 0.0 -- its own `zero_as_missing' is off by default --
+;;; so omitting the zeros described the same matrix and the numbers did not move at all.
+;;; XGBoost reads one as missing, so the four negative-class rows lost column 0 entirely and
+;;; followed the model's default direction, landing on the value a row whose column 0 is
+;;; PRESENT and positive gets. That last equality is within one booster, so it is exact
+;;; rather than approximate, and it is the positive statement of "missing" that a bare "the
+;;; two differ" would not make. No number here is compared with a number from the other
+;;; backend.
+
+(deftest an-omitted-entry-is-zero-to-lightgbm-and-missing-to-xgboost
+  (with-backend-library (:lightgbm)
+    ;; The three matrices are built before the backend is opened, for the reason
+    ;; `omitted-entries-and-an-empty-row-keep-the-declared-shape' above gives.
+    (let ((complete (omitted-entry-csr :omit-zeros nil))
+          (sparse (omitted-entry-csr))
+          (dense (omitted-entry-dense))
+          (fixture (fixture-for :lightgbm))
+          (backend (cl-gbdt:open-backend :lightgbm)))
+      (unwind-protect
+           (progn
+             (cl-gbdt:with-booster
+                 (booster (train-dense-booster fixture backend dense
+                                               *omitted-entry-labels*))
+               (let ((from-dense (cl-gbdt:predict booster dense))
+                     (from-complete (cl-gbdt:predict booster complete))
+                     (from-sparse (cl-gbdt:predict booster sparse)))
+                 (testing (format nil "lightgbm: predicting on the matrix with the zeros ~
+                                       omitted answers what the dense matrix does -- an ~
+                                       absent entry is 0.0")
+                   (ok (predictions-agree-p from-dense from-sparse)
+                       (format nil "dense ~S, omitted ~S" from-dense from-sparse)))
+                 ;; The control: the CSR path itself is faithful, so the agreement above is
+                 ;; about how absence is read and not about CSR having been read correctly.
+                 (testing "lightgbm: so does the matrix storing every element"
+                   (ok (predictions-agree-p from-dense from-complete)
+                       (format nil "dense ~S, complete ~S" from-dense from-complete)))))
+             (let ((from-complete (predictions-after-training-on fixture backend complete))
+                   (from-sparse (predictions-after-training-on fixture backend sparse)))
+               (testing (format nil "lightgbm: a booster TRAINED on the omitted-entry ~
+                                     matrix predicts what one trained on the complete ~
+                                     matrix does")
+                 (ok (predictions-agree-p from-complete from-sparse)
+                     (format nil "complete ~S, omitted ~S" from-complete from-sparse)))
+               ;; Without this the agreement above could be two models that both learned
+               ;; nothing and both answer a constant.
+               (testing "lightgbm: both of those models learned to order the two classes"
+                 (ok (and (predictions-separate-p (prediction-column from-complete 0)
+                                                  *omitted-entry-labels*)
+                          (predictions-separate-p (prediction-column from-sparse 0)
+                                                  *omitted-entry-labels*))
+                     (format nil "complete ~S, omitted ~S" from-complete from-sparse)))))
+        (cl-gbdt:close-backend backend))))
+  (with-backend-library (:xgboost)
+    (let ((complete (omitted-entry-csr :omit-zeros nil))
+          (sparse (omitted-entry-csr))
+          (dense (omitted-entry-dense))
+          (fixture (fixture-for :xgboost))
+          (backend (cl-gbdt:open-backend :xgboost)))
+      (unwind-protect
+           (progn
+             (cl-gbdt:with-booster
+                 (booster (train-dense-booster fixture backend dense
+                                               *omitted-entry-labels*))
+               (let ((from-dense (cl-gbdt:predict booster dense))
+                     (from-complete (cl-gbdt:predict booster complete))
+                     (from-sparse (cl-gbdt:predict booster sparse)))
+                 (testing (format nil "xgboost: predicting on the matrix with the zeros ~
+                                       omitted answers something else than the dense ~
+                                       matrix -- an absent entry is not 0.0")
+                   (ok (not (predictions-agree-p from-dense from-sparse))
+                       (format nil "dense ~S, omitted ~S" from-dense from-sparse)))
+                 ;; The control: the CSR path itself is faithful, so the difference above is
+                 ;; the omission and not CSR having been read wrong.
+                 (testing (format nil "xgboost: the matrix storing every element does ~
+                                       answer what the dense one does")
+                   (ok (predictions-agree-p from-dense from-complete)
+                       (format nil "dense ~S, complete ~S" from-dense from-complete)))
+                 ;; The positive half: absent is MISSING, so every row -- the four that lost
+                 ;; column 0 included -- follows the model's default direction, which lands
+                 ;; where a present, positive column 0 lands. Same booster on both sides.
+                 (testing (format nil "xgboost: with column 0 absent every row takes the ~
+                                       value a row whose column 0 is present and positive ~
+                                       gets")
+                   (ok (every-prediction-equals-p
+                        from-sparse
+                        (aref from-dense (1- (length *omitted-entry-rows*)) 0))
+                       (format nil "omitted ~S, dense ~S" from-sparse from-dense)))))
+             (let ((from-complete (predictions-after-training-on fixture backend complete))
+                   (from-sparse (predictions-after-training-on fixture backend sparse)))
+               (testing (format nil "xgboost: a booster TRAINED on the omitted-entry ~
+                                     matrix predicts something else than one trained on ~
+                                     the complete matrix")
+                 (ok (not (predictions-agree-p from-complete from-sparse))
+                     (format nil "complete ~S, omitted ~S" from-complete from-sparse)))
+               ;; What the difference IS, rather than merely that there is one: the model
+               ;; trained on the complete matrix orders the two classes on the dense rows and
+               ;; the one trained without those zeros does not, because the rows it was asked
+               ;; to learn the negative class from had no column 0 at all.
+               (testing (format nil "xgboost: the complete matrix's model orders the two ~
+                                     classes and the omitted-entry matrix's does not")
+                 (ok (and (predictions-separate-p (prediction-column from-complete 0)
+                                                  *omitted-entry-labels*)
+                          (not (predictions-separate-p (prediction-column from-sparse 0)
+                                                       *omitted-entry-labels*)))
+                     (format nil "complete ~S, omitted ~S" from-complete from-sparse)))))
+        (cl-gbdt:close-backend backend)))))

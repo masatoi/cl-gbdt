@@ -142,6 +142,27 @@
       (ok (typep (cl-gbdt:csr-matrix-indptr m) '(simple-array (signed-byte 32) (*)))
           "whether INDPTR was coerced to a specialized vector"))))
 
+(deftest csr-matrix-slots-are-read-only
+  ;; `make-csr-matrix' validates everything a backend later pins and hands to C, so a
+  ;; writable slot would make that validation defeatable after the fact: replacing INDPTR
+  ;; with a list, for instance, reaches the C API as a raw TYPE-ERROR out of the pinning
+  ;; code -- an implementation-defined condition -- rather than as one of this library's
+  ;; own. Every slot is `:read-only t', so there is no writer to reach.
+  ;;
+  ;; Asserted as the absence of the `(setf ACCESSOR)' function name rather than by running
+  ;; a `setf' form and catching something: with `:read-only t' that form no longer compiles
+  ;; at all, so there is nothing left to run. Each reader's own `fboundp' is asserted
+  ;; alongside it, so a NIL below cannot be a misspelled symbol rather than a missing
+  ;; writer.
+  (testing "none of the four accessors has a writer"
+    (dolist (reader '(cl-gbdt:csr-matrix-indptr cl-gbdt:csr-matrix-indices
+                      cl-gbdt:csr-matrix-values cl-gbdt:csr-matrix-num-columns))
+      (ok (fboundp reader)
+          (format nil "whether ~S names a reader at all" reader))
+      (ok (not (fboundp (list 'setf reader)))
+          (format nil "whether (setf ~S) is undefined, leaving the slot unwritable"
+                  reader)))))
+
 (deftest csr-matrix-accepts-any-sequence
   ;; The same convention :label, :weight and :group already follow.
   (testing "a vector argument is accepted as readily as a list"

@@ -843,7 +843,9 @@ nothing downstream, `train` included, can distinguish from a densely-built one.
 `INDPTR`, `INDICES` and `VALUES` may each be **any sequence**, and are validated and coerced
 once, at construction: `INDPTR` and `INDICES` to `(simple-array (signed-byte 32) (*))`,
 `VALUES` to `(simple-array double-float (*))`. A backend method therefore only has to pin
-what the struct already holds. **`NUM-COLUMNS` is required and never inferred** from the
+what the struct already holds. The four slots are **read-only**: `csr-matrix-indptr` and its
+three siblings are readers with no `setf` expander, so that construction-time validation
+cannot be undone afterwards. **`NUM-COLUMNS` is required and never inferred** from the
 largest index `INDICES` happens to hold: a matrix's declared width and its largest stored
 index are different facts -- the trailing columns can legitimately hold nothing at all, and
 the stored indices cannot tell that apart from a matrix that simply is not that wide. Only
@@ -1088,7 +1090,9 @@ element is stored -- as `*sparse*` above does, and as the functional suite's `de
 helper does for exactly this reason -- and it means two different things when entries are
 omitted. Omit them when *missing* is what you mean and you are on XGBoost, or when `0.0` is
 what you mean and you are on LightGBM; store them when the same matrix has to mean the same
-thing on both.
+thing on both. Both halves are asserted per backend by the functional suite's
+`an-omitted-entry-is-zero-to-lightgbm-and-missing-to-xgboost`, on a fixture that also sends
+each library a row storing nothing at all.
 
 #### Why CSR only, and not CSC
 

@@ -438,10 +438,15 @@ three vectors to exactly these element types, so there is nothing left for
 parameter's docstring, whose reasoning about XGBoost's other config keys applies here
 unchanged.
 
-Kept as its own parameter rather than sharing the dense one, because the two describe
-different C calls: the dense entry point documents `missing'/`nthread'/`data_split_mode' and
-the CSR one documents `missing'/`nthread', so a future key added for one of them would not
-belong in the other's string.
+Kept as its own parameter rather than shared with the dense one, because the two are
+arguments to two different C entry points -- not because the key sets differ today. They do
+not: the vendored header (`ffi-spec/xgboost/include/xgboost/c_api.h') documents
+`XGDMatrixCreateFromCSR''s CONFIG by cross-reference, \"See @ref XGDMatrixCreateFromDense
+for details\", so the recognized keys are `missing' plus the optional `nthread' and
+`data_split_mode' for both. What nothing binds is that they stay identical: they are
+separate parameters of separate functions, and one string per call means a future change to
+what this wrapper sends to one of them is a decision about that call rather than a silent
+change to the other's.
 
 An entry a `csr-matrix' does not store is absent, not NaN, and XGBoost treats an absent CSR
 entry as missing regardless of what this says -- that is what CSR means to the library and no

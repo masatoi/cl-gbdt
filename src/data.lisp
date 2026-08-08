@@ -171,13 +171,30 @@ of the same fact for validation to keep in sync.
 INDPTR and INDICES are `(simple-array (signed-byte 32) (*))'; VALUES is a `(simple-array
 double-float (*))'. All three are already coerced to what a backend hands to the C API, so
 a backend method only needs to pin them -- see `with-foreign-matrix' in this same file for
-the dense equivalent."
-  indptr
-  indices
+the dense equivalent.
+
+Every slot is `:read-only t', so there is no `setf' expander for any of the four
+accessors. `make-csr-matrix' is the only way to build one and it validates everything a
+backend later relies on; a writable slot would make that validation defeatable after the
+fact, and a matrix whose INDPTR had been replaced by a list would reach the C API as a raw
+`type-error' from inside the pinning code rather than as one of this file's own
+conditions. `foreign-matrix' above is reader-only for the same reason: a `csr-matrix' that
+exists is one both backends can be handed.
+
+An entry a row does not store is *absent*, not zero, and the two libraries read absence
+differently: LightGBM reads an absent entry as `0.0' (its own `zero_as_missing' is off by
+default) while XGBoost reads one as missing, and no config key on either changes that --
+it is what CSR means to each library. So a `csr-matrix' that omits entries describes
+different data to the two backends and changes trained numbers silently rather than
+signalling; store every element, zeros included, when the same matrix has to mean the same
+thing on both. See README.markdown's \"An absent entry is not a zero, and the two libraries
+disagree about it\" for the measured runs on each."
+  (indptr nil :read-only t)
+  (indices nil :read-only t)
   ;; Named VALUES for the same reason `training-series' is: it is the word for what the
   ;; slot holds. Shadows `cl:values' inside a `with-slots' over this struct.
-  values
-  num-columns)
+  (values nil :read-only t)
+  (num-columns nil :read-only t))
 
 (defun csr-matrix-num-rows (matrix)
   "Return MATRIX's row count, one less than the length of its INDPTR array.

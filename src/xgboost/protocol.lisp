@@ -272,6 +272,18 @@ library that has neither."
 ;;; ---------------------------------------------------------------------------
 ;;; Datasets
 
+(defun %creation-function-name (matrix)
+  "Return the name of the C entry point a DMatrix would be built from MATRIX with:
+`XGDMatrixCreateFromCSR' for a `csr-matrix', `XGDMatrixCreateFromDense' for anything
+`with-foreign-matrix' accepts.
+
+Separate from `%dataset-pointer', which returns the same string alongside the pointer it
+built, because `make-dataset' refuses :PARAMETERS before any pointer exists and its refusal
+has to name the call the caller's own arguments would have reached. Telling a caller who
+passed a `csr-matrix' about `XGDMatrixCreateFromDense''s config JSON names a function that
+call was never going to make."
+  (if (typep matrix 'csr-matrix) "XGDMatrixCreateFromCSR" "XGDMatrixCreateFromDense"))
+
 (defun %dataset-pointer (backend matrix)
   "Return two values: the raw DMatrix pointer built from MATRIX, and the name of the C
 function that produced it, for the null-handle check `make-dataset' makes afterward.
@@ -286,15 +298,16 @@ The `:sparse-input' capability is re-checked on the sparse branch rather than as
 A `defun', not a second `make-dataset' method specialized on `csr-matrix' -- see
 `cl-gbdt/src/lightgbm/protocol''s function of the same name and purpose, which this
 mirrors, for why."
-  (if (typep matrix 'csr-matrix)
-      (progn
-        (%check-sparse-input backend)
-        (values (%create-dmatrix-from-csr (csr-matrix-indptr matrix)
-                                          (csr-matrix-indices matrix)
-                                          (csr-matrix-values matrix)
-                                          (csr-matrix-num-columns matrix))
-                "XGDMatrixCreateFromCSR"))
-      (values (%create-dmatrix matrix) "XGDMatrixCreateFromDense")))
+  (let ((function-name (%creation-function-name matrix)))
+    (if (typep matrix 'csr-matrix)
+        (progn
+          (%check-sparse-input backend)
+          (values (%create-dmatrix-from-csr (csr-matrix-indptr matrix)
+                                            (csr-matrix-indices matrix)
+                                            (csr-matrix-values matrix)
+                                            (csr-matrix-num-columns matrix))
+                  function-name))
+        (values (%create-dmatrix matrix) function-name))))
 
 (defmethod make-dataset ((backend xgboost-backend) matrix
                           &key label weight group feature-names parameters reference)
@@ -323,10 +336,14 @@ from LightGBM actually means by dataset-level PARAMETERS there: binning knobs su
 config JSON regardless would not raise anything either: confirmed empirically against the
 vendored library, `XGDMatrixCreateFromDense' returns success and silently ignores an
 unrecognized config key rather than rejecting it, which would just move today's silent
-drop one layer deeper, into C, instead of fixing it. Either PARAMETERS or REFERENCE
-accepted and discarded here would let a caller move a working `make-dataset' call from
-LightGBM to XGBoost and get a dataset that looks fine but was not built the way the caller
-asked, which is exactly the failure mode this project keeps finding.
+drop one layer deeper, into C, instead of fixing it. The same holds for a `csr-matrix': that
+header documents `XGDMatrixCreateFromCSR''s config by cross-reference to
+`XGDMatrixCreateFromDense', so it is the same three keys either way, and the refusal below
+names whichever of the two the caller's own MATRIX would have reached -- see
+`%creation-function-name'. Either PARAMETERS or REFERENCE accepted and discarded here would
+let a caller move a working `make-dataset' call from LightGBM to XGBoost and get a dataset
+that looks fine but was not built the way the caller asked, which is exactly the failure
+mode this project keeps finding.
 
 Signals `foreign-call-error' when dataset creation reports success but writes a null
 handle -- a library-contract violation, but one every later call through this handle would
@@ -347,10 +364,10 @@ Signals `backend-not-open' before any of that when BACKEND is not open -- see
      "XGBoost has no bin-mapper alignment; :reference is a LightGBM-only concept")
     (%check-unsupported
      backend "make-dataset's :parameters" parameters
-     (format nil "XGDMatrixCreateFromDense's config JSON only recognizes missing/nthread/~
-                   data_split_mode, none of which are LightGBM's dataset-level binning ~
-                   parameters, and the library silently ignores any other key rather than ~
-                   rejecting it"))
+     (format nil "~A's config JSON only recognizes missing/nthread/data_split_mode, none ~
+                   of which are LightGBM's dataset-level binning parameters, and the ~
+                   library silently ignores any other key rather than rejecting it"
+             (%creation-function-name matrix)))
     (multiple-value-bind (dataset-pointer function-name) (%dataset-pointer backend matrix)
       (when (cffi:null-pointer-p dataset-pointer)
         (error 'foreign-call-error

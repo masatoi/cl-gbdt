@@ -52,6 +52,12 @@ not the largest column index it happens to store. The two are different facts, a
 the caller knows the first; see `make-csr-matrix''s docstring for why it is required rather
 than inferred.
 
+What a `csr-matrix' MEANS, however, is not the same on both backends when it omits entries:
+LightGBM reads an absent entry as `0.0' and XGBoost reads one as missing, so the dataset
+built here is only the same data on both when every element is stored. Nothing signals when
+it is not -- the trained numbers simply differ. See the `csr-matrix' struct's own docstring,
+where that divergence is stated as the property of the value it is.
+
 REFERENCE, when supplied, is an existing dataset from the same backend whose bin mapper
 the new dataset aligns to instead of computing its own. A validation dataset destined
 for `train''s :VALID-SETS must be built with the training dataset as its REFERENCE, or
@@ -222,6 +228,12 @@ requires the `:sparse-input' capability, which `predict' re-checks itself and si
 not, the failure is the backend library's to report -- `foreign-call-error', in each
 library's own words -- since neither this function nor the backends pre-empt a consistency
 check the library already makes.
+
+An entry the `csr-matrix' omits does not mean the same thing to the two libraries -- `0.0'
+to LightGBM, missing to XGBoost -- so the rows predicted on here are only the same rows on
+both backends when every element is stored. Nothing signals when they are not; the numbers
+returned simply differ. See the `csr-matrix' struct's own docstring, where that divergence
+is stated as the property of the value it is.
 
 KIND is `:normal' (default, transformed predictions), `:raw' (raw scores),
 `:leaf-index' (leaf indices) or `:contrib' (feature contributions). All four are available
