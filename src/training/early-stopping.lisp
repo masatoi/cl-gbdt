@@ -77,11 +77,18 @@ shared library, and a name is not a handle."
 NIL is the unreadable field Phase 3a records rather than drops. A NaN is worse than NIL: it
 arrives as an ordinary `double-float', so `realp' answers T for it, yet every comparison
 against it is false in both directions -- `(< x nan)' and `(< nan x)' alike -- so a NaN
-admitted as the best score could never be beaten by any later value. `(= value value)' is the
-standard test that separates a NaN from every other real, and it does not trap on a quiet one,
-which matters because this file is also called from layer-1 tests outside any
-`with-foreign-float-traps-masked' extent."
-  (and (realp value) (= value value)))
+admitted as the best score could never be beaten by any later value.
+
+`sb-ext:float-nan-p', not the textbook `(= value value)'. That idiom is an arithmetic
+comparison, and comparing a NaN raises `floating-point-invalid-operation' wherever SBCL leaves
+the `:invalid' trap enabled -- measured on x86-64 Linux and on aarch64 macOS, and NOT on
+aarch64 Linux, which is why a single machine cannot settle this question. `float-nan-p'
+inspects the bit pattern and cannot raise. It matters that this stays trap-free rather than
+relying on a caller's mask: `train' does call this inside
+`with-foreign-float-traps-masked', but the decision is pure Lisp and its layer-1 tests call it
+with no mask at all."
+  (and (realp value)
+       (not (and (floatp value) (sb-ext:float-nan-p value)))))
 
 (defun %signal-unsupported (backend-name argument-name reason)
   "Signal `unsupported-argument' naming BACKEND-NAME and ARGUMENT-NAME, with REASON.
