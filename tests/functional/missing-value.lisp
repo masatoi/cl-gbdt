@@ -174,6 +174,19 @@ corresponding elements differs by more than *PREDICTION-TOLERANCE*."
 ;;; feature works and the assertion that the backend admits to it lived in different tests and
 ;;; only the first was written. Tying them together means the capability cannot be forgotten
 ;;; without the working-feature assertion going with it.
+;;;
+;;; Tying them together is not by itself enough, and the DEMONSTRATED assertion after the loop
+;;; is what closes the remaining hole. Every per-backend assertion in this file -- here, in
+;;; `ingestion-sentinel-changes-what-was-learned', `a-sentinel-that-is-not-a-real-signals' and
+;;; `an-exponent-form-sentinel-reaches-the-library' -- is reached only on a backend that
+;;; answers `:missing-value' true. Drop the capability from every backend that has it and all
+;;; four of those simply stop asserting, while
+;;; `missing-value-without-the-capability-signals' starts passing natively on both backends:
+;;; five green tests and not one assertion about the feature, which is the same
+;;; shipped-a-false-capability failure in its third disguise. `backend-supports-p' returns
+;;; exactly T or NIL (`cl-gbdt/src/backend', `(and (getf ...) t)'), so the per-backend
+;;; capability `ok' below is reached only down a path that already proved its own subject and
+;;; cannot fail; DEMONSTRATED can, and is the assertion that actually holds the file up.
 
 (defun predictions-with-the-sentinel-honoured (fixture backend)
   "Train on the holed fixture with :MISSING *SENTINEL* and return the predictions, or NIL when
@@ -192,30 +205,48 @@ something unrelated had broken."
       nil)))
 
 (deftest missing-value-capability-is-true-where-it-is-demonstrated
-  (dolist (fixture *fixtures*)
-    (with-backend-library ((getf fixture :backend))
-      (let ((backend (cl-gbdt:open-backend (getf fixture :backend))))
-        (unwind-protect
-             ;; The demonstration runs FIRST and the capability assertion hangs off its
-             ;; result, rather than `backend-supports-p' gating the demonstration: a test that
-             ;; asked the capability and then asserted the answer it had just been given would
-             ;; assert nothing whatever, which is precisely the failure mode this test exists
-             ;; to close.
-             (let ((honoured (predictions-with-the-sentinel-honoured fixture backend)))
-               (when honoured
-                 (let ((literal (train-on fixture backend
-                                          (fixture-matrix :hole-value *sentinel*))))
-                   (testing (format nil "~A: a dataset built with :missing ~A trains a ~
-                                         different model than one built without it"
-                                    (getf fixture :backend) *sentinel*)
-                     (ok (not (predictions-agree-p honoured literal))
-                         (format nil "with :missing ~S, without ~S" honoured literal))))
-                 (testing (format nil "~A: and backend-supports-p admits to :missing-value"
-                                  (getf fixture :backend))
-                   (ok (eq t (cl-gbdt:backend-supports-p backend :missing-value))
-                       (format nil "the capabilities were ~S"
-                               (cl-gbdt:backend-capabilities backend))))))
-          (cl-gbdt:close-backend backend))))))
+  ;; ASKED is every backend whose shared library was actually present, DEMONSTRATED every one
+  ;; of those that honoured a sentinel. The two are collected across the loop so the assertion
+  ;; after it can be about the SET rather than about any one backend.
+  (let ((asked '())
+        (demonstrated '()))
+    (dolist (fixture *fixtures*)
+      (with-backend-library ((getf fixture :backend))
+        (push (getf fixture :backend) asked)
+        (let ((backend (cl-gbdt:open-backend (getf fixture :backend))))
+          (unwind-protect
+               ;; The demonstration runs FIRST and the capability assertion hangs off its
+               ;; result, rather than `backend-supports-p' gating the demonstration.
+               (let ((honoured (predictions-with-the-sentinel-honoured fixture backend)))
+                 (when honoured
+                   (push (getf fixture :backend) demonstrated)
+                   (let ((literal (train-on fixture backend
+                                            (fixture-matrix :hole-value *sentinel*))))
+                     (testing (format nil "~A: a dataset built with :missing ~A trains a ~
+                                           different model than one built without it"
+                                      (getf fixture :backend) *sentinel*)
+                       (ok (not (predictions-agree-p honoured literal))
+                           (format nil "with :missing ~S, without ~S" honoured literal))))
+                   (testing (format nil "~A: and backend-supports-p admits to :missing-value"
+                                    (getf fixture :backend))
+                     (ok (eq t (cl-gbdt:backend-supports-p backend :missing-value))
+                         (format nil "the capabilities were ~S"
+                                 (cl-gbdt:backend-capabilities backend))))))
+            (cl-gbdt:close-backend backend)))))
+    ;; The one assertion in this file that no capability answer can route around, and the
+    ;; reason the two lists above are collected at all -- see this section's header. It says
+    ;; the feature is demonstrated SOMEWHERE, which is the claim the four capability-gated
+    ;; tests silently stop making the moment no backend answers true.
+    ;;
+    ;; Guarded on ASKED, not on any capability: a fresh clone with no vendored library skips
+    ;; every backend through `with-backend-library' -- `rove:skip' records a pending assertion
+    ;; and returns rather than unwinding -- and demanding a demonstration from a suite that
+    ;; ran nothing would turn that documented skip into a failure. Library absence is the only
+    ;; thing this excuses.
+    (when asked
+      (testing "at least one backend with a library present demonstrates :missing-value"
+        (ok demonstrated
+            (format nil "asked ~S, demonstrated ~S" (reverse asked) (reverse demonstrated)))))))
 
 ;;; The load-bearing test: the sentinel is HONOURED, not merely accepted.
 ;;;
