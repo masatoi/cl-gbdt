@@ -51,13 +51,80 @@ Free the result with `free-dataset' or wrap it in `with-dataset'."))
 (defgeneric dataset-num-features (dataset)
   (:documentation "Return the number of features in DATASET."))
 
-(defgeneric train (backend dataset &key valid-sets num-rounds parameters)
-  (:documentation "Train a BACKEND model on DATASET and return a booster.
+(defgeneric train (backend dataset &key valid-sets num-rounds parameters record-history)
+  (:documentation "Train a BACKEND model on DATASET and return two values: a booster and
+a `training-report' of the run.
 
-VALID-SETS is a list of validation datasets, NUM-ROUNDS the number of boosting
-iterations, and PARAMETERS a plist passed through to the backend.
+VALID-SETS is a list of validation sets, NUM-ROUNDS the number of boosting iterations,
+and PARAMETERS a plist passed through to the backend. Each VALID-SETS element is either
+a dataset, whose validation set gets no name, or a (NAME . DATASET) cons, where NAME is
+a string that becomes that dataset's `training-series-name' in the report below; the two
+forms may be freely mixed in one list. Two entries may legitimately share one NAME --
+their index, not their name, is what tells them apart in the report, so this is accepted
+rather than rejected as a duplicate. A cons whose car is not a string signals
+`unsupported-argument' naming :VALID-SETS and the offending element; a cons whose cdr is
+not this backend's own kind of dataset signals `wrong-backend-reference', the same
+condition a bare wrong-backend dataset already signals. Both are checked before any
+foreign call.
 
-Free the result with `free-booster' or wrap it in `with-booster'."))
+Free the booster with `free-booster' or wrap it in `with-booster'. `with-booster' binds
+the primary value only, so a caller who wants the report has to use `multiple-value-bind'
+and free the booster itself.
+
+RECORD-HISTORY, T by default, decides whether the run is recorded at all. A caller who
+ignores the secondary value receives the same booster, and the same conditions, either
+way -- but not at the same price. With RECORD-HISTORY true, `train' reads the whole
+evaluation once per iteration, for every dataset the booster holds, and that read is not
+free: it measurably lengthens `train'. Measured over 500 rounds on 2000 rows x 20 columns
+with two metrics configured, recording roughly DOUBLED LightGBM's wall-clock `train' time,
+with and without a validation set, and added roughly 70-80% to XGBoost's with one
+validation set; XGBoost with none stayed inside the measurement noise, that backend
+evaluating every dataset in a single call rather than one call each. Those are orders of
+magnitude on one machine, not precise figures, and they grow with how many datasets and
+metrics there are to read.
+
+RECORD-HISTORY NIL performs no evaluation read at all, so `train' costs what it cost
+before it recorded anything. It still returns a `training-report' as its secondary value --
+never NIL, so a caller destructuring two values never has to handle two shapes -- whose
+`training-report-series' is empty and whose `training-report-num-rounds' is the run's
+length, exactly as a run with no metric configured reports.
+
+Recording also decides, on XGBoost, which :VALID-SETS entries `train' accepts at all. A
+dataset the backend's own evaluation path cannot evaluate -- an unlabelled DMatrix is the
+case this was found through, which `XGBoosterEvalOneIter' rejects while
+`XGBoosterUpdateOneIter' trains on it happily -- now fails `train' itself with
+`foreign-call-error', where before it trained normally and failed only a later `evaluation'
+call. This is general rather than specific to that one input: any configuration whose
+evaluation path errors while its update path does not now fails the whole run. Pass
+RECORD-HISTORY NIL to train such a configuration, which is the behaviour a caller had
+before `train' recorded anything.
+
+The secondary value is a `training-report'. Its `training-report-series' is a list of
+`training-series', one per metric per dataset -- the same (DATASET-INDEX, METRIC-NAME)
+pairs `evaluation' reports for the trained booster, in the same order, so a series can be
+found by the index and metric name a caller already knows. Each series carries
+`training-series-values', one element per completed iteration in order: a `double-float',
+or NIL where the backend reported a value that could not be read as a real. The last
+element of a series is what `evaluation' answers for that pair immediately after `train'
+returns; the earlier ones are what it would have answered at each earlier iteration, and
+are the only way to see them, since a trained booster no longer remembers them.
+
+`training-report-num-rounds' is how many iterations actually ran -- NUM-ROUNDS in this
+phase, since nothing stops a run early yet. `training-report-best-iteration',
+`-best-score' and `-early-stopped-p' are NIL: determining them needs to know whether a
+metric improves upward or downward, which this API does not infer from a metric's name.
+
+`training-report-series' is empty when the booster has no metric configured at all --
+LightGBM's `metric=none', XGBoost's `disable_default_eval_metric=1' -- and when
+RECORD-HISTORY is NIL. An empty series list is not an error and says nothing about whether
+training succeeded; NUM-ROUNDS iterations still ran, and `training-report-num-rounds' still
+says so.
+
+Every series carries `training-series-index'; a series carries a non-NIL
+`training-series-name' only for a dataset named through :VALID-SETS. The training set is
+never a :VALID-SETS entry and so is always index 0 with a NIL name, and a :VALID-SETS
+entry passed bare is NIL too -- nothing here invents a name for either, the same way
+`evaluation' invents no name for the index it reports."))
 
 (defgeneric update-one-iteration (booster)
   (:documentation "Advance BOOSTER by one boosting iteration.

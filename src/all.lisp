@@ -21,7 +21,8 @@
                  #:cl-gbdt/src/parameters
                  #:cl-gbdt/src/library
                  #:cl-gbdt/src/foreign
-                 #:cl-gbdt/src/version))
+                 #:cl-gbdt/src/version
+                 #:cl-gbdt/src/training-report))
 
 ;;; Backend-specific files do not belong in the list above. `cl-gbdt' is the core system
 ;;; and loads without either shared library; `cl-gbdt/lightgbm' and `cl-gbdt/xgboost' are

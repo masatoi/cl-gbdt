@@ -20,6 +20,7 @@
                 #:*default-library-name*
                 #:*required-symbols*
                 #:*optional-symbols*
+                #:*provided-capabilities*
                 #:%create-dmatrix
                 #:%set-info-field
                 #:%set-group-field
@@ -48,9 +49,8 @@
                 #:%feature-score-index
                 #:%check-feature-score-dim
                 #:%feature-score
-                #:%split-eval-label
                 #:%check-xgboost-booster
-                #:evaluate-one-iteration
+                #:%read-evaluation
                 #:%slice)
   (:import-from #:cl-gbdt/src/backend
                 #:backend
@@ -96,6 +96,8 @@
                 #:capability-unavailable)
   (:import-from #:cl-gbdt/src/data
                 #:with-foreign-matrix)
+  (:import-from #:cl-gbdt/src/training/history
+                #:training-report-from-history)
   (:import-from #:cl-gbdt/src/library
                 #:resolve-and-load-library)
   (:import-from #:cl-gbdt/src/foreign
@@ -169,7 +171,10 @@ on this platform, cannot actually scope the symbol search to it -- or this signa
 Only once that required check has passed does this probe *optional-symbols* via
 `probe-capabilities' and record the result on `backend-capabilities' -- unlike a missing
 required symbol, a missing optional one never signals; it only makes `backend-supports-p'
-answer NIL for the capability that symbol backs.
+answer NIL for the capability that symbol backs. *provided-capabilities* goes to the same
+call as :PROVIDED, recording the capabilities this backend provides unconditionally --
+nothing is probed for them, because the C functions they need are in *required-symbols* and
+the probe above has already passed.
 
 Once `backend-version' is read, `check-backend-version' compares it against
 `*xgboost-version-range*' and signals `untested-backend-version' -- a warning, not an
@@ -200,7 +205,9 @@ to close it."
                    (error 'missing-foreign-symbols
                           :backend (backend-name backend) :names missing)))
                (setf (backend-capabilities backend)
-                     (probe-capabilities *optional-symbols* :library library))
+                     (probe-capabilities *optional-symbols*
+                                         :provided *provided-capabilities*
+                                         :library library))
                (setf (backend-version backend) (%read-version))
                (check-backend-version :xgboost (backend-version backend)
                                        *xgboost-version-range*)
@@ -334,25 +341,102 @@ genuinely unreclaimable at that point."
 ;;; ---------------------------------------------------------------------------
 ;;; Training
 
+(defun %valid-set-name (backend entry)
+  "Return the name half of ENTRY, one element of `train''s :VALID-SETS: NIL when ENTRY is
+a bare dataset, or ENTRY's car when ENTRY is a (NAME . DATASET) cons and NAME is a string.
+
+Signals `unsupported-argument' naming :VALID-SETS and ENTRY itself, via `%check-unsupported',
+when ENTRY is a cons whose car is not a string -- before any foreign call, and before the
+dataset half of ENTRY is checked against `xgboost-dataset' by `%check-xgboost-dataset',
+which runs afterward on `%valid-set-dataset''s result. That later check is what turns a
+cons whose cdr is not this backend's own kind of dataset into `wrong-backend-reference'
+instead -- a different mistake from this one, and so a different condition."
+  (if (consp entry)
+      (let ((name (car entry)))
+        (%check-unsupported
+         backend "train's :valid-sets" (not (stringp name))
+         (format nil "each element must be a dataset or a (string . dataset) cons; ~S's ~
+                      car is not a string" entry))
+        name)
+      nil))
+
+(defun %valid-set-dataset (entry)
+  "Return the dataset half of ENTRY, one element of `train''s :VALID-SETS: ENTRY itself
+when it is a bare dataset, or its cdr when it is a (NAME . DATASET) cons.
+
+Does not check that the result is an `xgboost-dataset' -- `%check-xgboost-dataset' does
+that afterward, on every element `%valid-set-name' has already let through."
+  (if (consp entry) (cdr entry) entry))
+
 (defmethod train ((backend xgboost-backend) dataset
-                   &key valid-sets (num-rounds 100) parameters)
-  "Train an XGBoost booster on DATASET for NUM-ROUNDS boosting iterations.
+                   &key valid-sets (num-rounds 100) parameters (record-history t))
+  "Train an XGBoost booster on DATASET for NUM-ROUNDS boosting iterations, and return it
+and a `training-report' of the run.
 
 Builds the booster with `XGBoosterCreate' over DATASET and every VALID-SETS entry's
 DMatrix handle together -- see `%create-booster' for why XGBoost takes the whole set up
 front rather than adding validation data afterward. Applies PARAMETERS one at a time via
 `XGBoosterSetParam', then drives `XGBoosterUpdateOneIter' NUM-ROUNDS times. See the
-`train' generic function's docstring for what each argument means; NUM-ROUNDS defaults
-to 100 when not supplied.
+`train' generic function's docstring for what each argument means, and for what the
+secondary value holds; NUM-ROUNDS defaults to 100 when not supplied.
 
-DATASET and every entry of VALID-SETS are each run through `%check-xgboost-dataset'
-before any foreign call. `train' dispatches on BACKEND, not on DATASET, so unlike
-`dataset-num-rows' or `free-dataset' there is no CLOS specializer here to rule out the
-wrong kind of handle first -- without this, `handle-live-pointer' would happily hand
-`XGBoosterCreate' a booster's own pointer to use as one of its DMatrix handles. Signals
-`wrong-backend-reference' when DATASET or a VALID-SETS entry is not an `xgboost-dataset',
-and `released-handle-error' or `backend-not-open' when one is but has already been freed
-or had its own backend closed.
+Each VALID-SETS element is either a dataset, whose series carry no name, or a
+(NAME . DATASET) cons, where NAME is a string that reaches `training-series-name' for
+every series recorded at that dataset's index -- see `%valid-set-name' and
+`%valid-set-dataset', which split VALID-SETS into two parallel lists, of datasets and of
+names, once at the top of this method; everything below reads the datasets list under
+the name VALID-SETS, exactly as before this method accepted names at all. Two entries
+may legitimately share one NAME: their index, not their name, is what a caller uses to
+tell them apart in the report, so this is accepted rather than rejected as a duplicate.
+The training set is never a VALID-SETS entry and is always index 0 with a NIL name.
+
+When RECORD-HISTORY is true -- the default -- this reads the whole evaluation after each
+iteration through `%read-evaluation': the same function the `evaluation' method calls, over
+the same DMatrix pointers in the same order, which is what keeps the history and what
+`evaluation' answers afterward from being able to disagree.
+`training-report-from-history' folds the run's worth of them into the report once the loop
+is done; that fold is backend-neutral and shared with `cl-gbdt/src/lightgbm/protocol''s
+`train', so what the two backends record cannot drift apart either. It orders series by the
+(DATASET-INDEX, METRIC-NAME) pair's first appearance, which for this backend is the order
+`XGBoosterEvalOneIter' formatted its own result in, so the report's series arrive in exactly
+the order `evaluation' reports its entries in without anything being sorted. A field the
+parse could not read as a `double-float' is recorded as NIL, keeping its place in the series
+rather than shortening it -- see `training-series-values'.
+
+RECORD-HISTORY NIL skips that read entirely -- one `XGBoosterEvalOneIter' call per
+iteration, plus the parse of the line it formats, which is what makes recording cost real
+wall-clock time (see the `train' generic's docstring for the measured figures). The loop is
+then exactly the `XGBoosterUpdateOneIter' loop this method ran before it recorded anything,
+and the report it still returns as its secondary value has an empty series list over the
+same NUM-ROUNDS -- `training-report-from-history' over an empty history, the same shape a
+run with `disable_default_eval_metric=1' produces.
+
+Skipping the read also widens what this method accepts, which matters here more than it
+does on LightGBM: `XGBoosterEvalOneIter' evaluates every DMatrix it is handed, and refuses
+one it cannot evaluate -- an unlabelled DMatrix passed in VALID-SETS is the case this was
+found through, which `XGBoosterUpdateOneIter' trains on without complaint while the
+evaluation call signals `foreign-call-error' (\"label and prediction size not match\"). With
+RECORD-HISTORY true that failure now propagates out of `train' itself, through the OWNED
+dance below, where before this backend recorded anything it surfaced only at a later
+`evaluation' call. RECORD-HISTORY NIL never reaches the evaluation path and so trains such a
+configuration exactly as before.
+
+A read that fails propagates, freeing the booster through the OWNED dance below rather
+than returning a report whose series are shorter than NUM-ROUNDS: a short series is
+indistinguishable from one a buggy loop recorded, and \"one value per iteration\" is the
+invariant a caller reading the report relies on.
+
+DATASET and every VALID-SETS entry's dataset half are each run through
+`%check-xgboost-dataset' before any foreign call. `train' dispatches on BACKEND, not on
+DATASET, so unlike `dataset-num-rows' or `free-dataset' there is no CLOS specializer here
+to rule out the wrong kind of handle first -- without this, `handle-live-pointer' would
+happily hand `XGBoosterCreate' a booster's own pointer to use as one of its DMatrix
+handles. Signals `wrong-backend-reference' when DATASET or a VALID-SETS entry's dataset
+half is not an `xgboost-dataset', and `released-handle-error' or `backend-not-open' when
+one is but has already been freed or had its own backend closed. A VALID-SETS entry that
+is a cons with a non-string car never reaches this check at all: `%valid-set-name' signals
+`unsupported-argument' for it first, which is the different mistake a malformed name is,
+kept distinct from a wrong dataset handle.
 
 The returned booster retains DATASET as its training set and a fresh copy of VALID-SETS
 as its validation sets, keeping all of them alive for the booster's lifetime and letting
@@ -376,27 +460,49 @@ Signals `backend-not-open' before any of that when BACKEND is not open -- see
 `%check-backend-open'."
   (with-foreign-float-traps-masked
     (%check-backend-open backend)
-    (let* ((valid-sets (copy-list valid-sets))
+    (let* ((valid-set-entries (copy-list valid-sets))
            (train-data-pointer
              (%check-xgboost-dataset backend dataset "train's dataset argument"
                                       'xgboost-dataset))
+           (valid-set-names
+             (mapcar (lambda (entry) (%valid-set-name backend entry)) valid-set-entries))
+           (valid-sets (mapcar #'%valid-set-dataset valid-set-entries))
            (valid-set-pointers
              (mapcar (lambda (valid-set)
                        (%check-xgboost-dataset backend valid-set "a train :valid-sets entry"
                                                 'xgboost-dataset))
-                     valid-sets)))
-      (let ((booster-pointer (%create-booster (cons train-data-pointer valid-set-pointers))))
+                     valid-sets))
+           (dataset-pointers (cons train-data-pointer valid-set-pointers))
+           (dataset-names (cons nil valid-set-names))
+           (history '())
+           ;; Counted rather than taken from NUM-ROUNDS: `dotimes' runs zero iterations for a
+           ;; negative count, so a caller passing :NUM-ROUNDS -1 gets an untrained booster --
+           ;; as it did before this branch -- and the report must say 0 ran, not -1.
+           ;; `training-report-num-rounds' promises how many iterations actually ran, and
+           ;; Phase 3b's early stopping needs this same count for the same reason.
+           (completed-rounds 0))
+      (let ((booster-pointer (%create-booster dataset-pointers)))
         (let ((owned nil))
           (unwind-protect
                (progn
                  (%set-parameters booster-pointer parameters)
                  (dotimes (round num-rounds)
                    (declare (ignorable round))
-                   (%update-one-iteration booster-pointer train-data-pointer))
-                 (prog1
-                     (make-handle 'xgboost-booster booster-pointer backend :booster
-                                  :training-set dataset :validation-sets valid-sets)
-                   (setf owned t)))
+                   (%update-one-iteration booster-pointer train-data-pointer)
+                   (incf completed-rounds)
+                   ;; Primary value only: `%read-evaluation''s RAW is `evaluation''s
+                   ;; provenance, and a report carries no per-iteration raw text.
+                   (when record-history
+                     (push (%read-evaluation booster-pointer dataset-pointers) history)))
+                 (let ((report (training-report-from-history (reverse history)
+                                                              completed-rounds
+                                                              dataset-names)))
+                   (multiple-value-prog1
+                       (values (make-handle 'xgboost-booster booster-pointer backend :booster
+                                            :training-set dataset
+                                            :validation-sets valid-sets)
+                               report)
+                     (setf owned t))))
             (unless owned
               (handler-case (%free-booster-unchecked booster-pointer)
                 (error () nil)))))))))
@@ -659,8 +765,9 @@ inventing a reduction XGBoost itself does not define."
 ;;; Evaluation
 
 (defmethod evaluation ((booster xgboost-booster))
-  "Return BOOSTER's evaluation metrics via `evaluate-one-iteration', this backend's own Layer 1
-evaluation function -- see the `evaluation' generic function's docstring for the portable
+  "Return BOOSTER's evaluation metrics via `%read-evaluation', the pointer-level reader this
+backend shares between this method and `train''s per-iteration recording loop, so the two
+can never disagree -- see the `evaluation' generic function's docstring for the portable
 contract this satisfies.
 
 `XGBoosterEvalOneIter' evaluates whatever DMatrices it is handed and consults nothing the
@@ -669,7 +776,7 @@ handles: its training set first, then each `train' :VALID-SETS entry in the orde
 caller supplied them. That is what makes DATASET-INDEX mean the same thing here as it
 does on LightGBM, which can only evaluate what training attached -- measured before this
 method was written: for one booster, one set of handles and one iteration,
-`XGBoosterEvalOneIter' called directly and this path through `evaluate-one-iteration' produce
+`XGBoosterEvalOneIter' called directly and this path through `%read-evaluation' produce
 byte-identical result strings, and both agree with the logloss and error rate computed
 independently from `predict' on the same data. A `load-model' booster retains no dataset
 at all, which is the case an empty result comes from.
@@ -689,26 +796,21 @@ the parse. A field whose value the parser could not read as a `double-float' -- 
 spells a non-finite one \"inf\" or \"nan\" -- keeps its entry with VALUE NIL rather than
 disappearing from the result.
 
-`evaluate-one-iteration' reads BOOSTER and every dataset handed to it through `handle-live-pointer'
-before any foreign call, so a freed booster or a freed retained dataset signals
-`released-handle-error' from there; unlike `cl-gbdt/src/lightgbm/protocol''s method, this
-one needs no separate `%check-booster-datasets-live', since every dataset it evaluates is
-one it passes to Layer 1 explicitly and is checked there by name."
+This method reads BOOSTER and every dataset it evaluates through `handle-live-pointer'
+itself, before calling `%read-evaluation', so a freed booster or a freed retained dataset
+signals `released-handle-error' right here; unlike `cl-gbdt/src/lightgbm/protocol''s
+method, this one needs no separate `%check-booster-datasets-live', since every dataset it
+evaluates is one it resolves and checks explicitly, by its own handle, before any foreign
+call."
   (with-foreign-float-traps-masked
-    (let* ((training-set (booster-training-set booster))
+    (let* ((booster-pointer (handle-live-pointer booster))
+           (training-set (booster-training-set booster))
            (datasets (if training-set
                          (cons training-set (booster-validation-sets booster))
                          '()))
-           ;; `~D', not `princ-to-string': `~D' binds `*print-base*' to 10 itself, so a
-           ;; caller who has bound it to something else gets the decimal names this
-           ;; method's docstring promises rather than that base's digits.
-           (names (loop :for index :below (length datasets) :collect (format nil "~D" index))))
-      (multiple-value-bind (raw parsed) (evaluate-one-iteration booster datasets names)
-        (values (loop :for (label . value) :in parsed
-                      :collect (multiple-value-bind (index metric-name)
-                                   (%split-eval-label label names)
-                                 (list index metric-name value)))
-                (list :value-source :parsed-text :raw raw))))))
+           (dataset-pointers (mapcar #'handle-live-pointer datasets)))
+      (multiple-value-bind (entries raw) (%read-evaluation booster-pointer dataset-pointers)
+        (values entries (list :value-source :parsed-text :raw raw))))))
 
 ;;; ---------------------------------------------------------------------------
 ;;; Model slicing

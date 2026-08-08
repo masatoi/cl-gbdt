@@ -44,7 +44,9 @@
                "cl-gbdt/tests/parameters"
                "cl-gbdt/tests/library"
                "cl-gbdt/tests/foreign"
-               "cl-gbdt/tests/version")
+               "cl-gbdt/tests/version"
+               "cl-gbdt/tests/training-report"
+               "cl-gbdt/tests/training-history")
   :perform (test-op (op c) (symbol-call :rove :run c)))
 
 ;;; Named for its path, like every other system here. That is not only for consistency:
@@ -67,5 +69,9 @@ guard, and have no portable fallback."
                ;; Backend-neutral: the same assertions against both backends, per policy
                ;; section 13's portable-contract split. See its own header for why it is
                ;; not part of either backend's file.
-               "cl-gbdt/tests/functional/evaluation")
+               "cl-gbdt/tests/functional/evaluation"
+               ;; Backend-neutral too, and built on the file above: it imports that file's
+               ;; *FIXTURES* rather than restating them. `train''s secondary value, the
+               ;; training report -- policy section 9, Phase 3a.
+               "cl-gbdt/tests/functional/training-report")
   :perform (test-op (op c) (symbol-call :rove :run c)))

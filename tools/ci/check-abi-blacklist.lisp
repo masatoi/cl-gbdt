@@ -54,7 +54,7 @@
 ;;;; REQUIRED (in `*required-symbols*'), OPTIONAL (named by some entry of
 ;;;; `*optional-symbols*'), or a failure -- and "imported but declared nowhere" is what fails.
 ;;;;
-;;;; CHECK C: no *optional-symbols* capability escapes the registry
+;;;; CHECK C: no declared capability escapes the registry
 ;;;;
 ;;;; The optional tier has a second way to go wrong that the required tier does not: its
 ;;;; entries are keyed by a capability name, and `backend-supports-p' answers only for names
@@ -63,6 +63,13 @@
 ;;;; does not list would probe it, record it in `backend-capabilities', and then have every
 ;;;; query for it signal instead of answering -- a declaration and a registry that have
 ;;;; drifted apart, silently, because nothing loads both together. CHECK C is that check.
+;;;;
+;;;; It covers a second declaration for the same reason: `*provided-capabilities*', the
+;;;; capabilities a backend provides unconditionally (`:evaluation-history' on both today),
+;;;; recorded true at `open-backend' without being probed because everything they need is
+;;;; already in `*required-symbols*'. Those names reach `backend-capabilities' by a different
+;;;; route and are exactly as unqueryable if the registry does not list them, so CHECK C
+;;;; reads both lists rather than only the one that existed when it was written.
 ;;;;
 ;;;; What the optional tier still TRUSTS, and this file cannot check: whether a symbol
 ;;;; belongs in `*required-symbols*' or `*optional-symbols*' at all. Moving a genuinely
@@ -89,7 +96,8 @@
 ;;;;    and reports any import whose C name is in neither. The two reports are independent:
 ;;;;    an import can fail either, both, or neither.
 ;;;; 4. CHECK C reads `*known-capabilities*' from +CAPABILITY-REGISTRY-PATH+ and reports any
-;;;;    capability an `*optional-symbols*' entry is keyed by that the registry does not list.
+;;;;    capability the backend declares -- keyed by an `*optional-symbols*' entry, or named
+;;;;    in `*provided-capabilities*' -- that the registry does not list.
 ;;;;
 ;;;; Like tools/ci/check-float-traps.lisp, every file here is read as data via `read',
 ;;;; never loaded or evaluated -- nothing in src/*/c-api.lisp or src/*/backend.lisp runs,
@@ -119,8 +127,11 @@
 ;;;;     A stale entry is over-cautious, not unsafe, so this does not flag it.
 ;;;;   - Whether the *right* symbols are optional versus required -- see the paragraph on
 ;;;;     what the optional tier trusts, above. CHECK B enforces that every import is declared
-;;;;     in one list or the other, and CHECK C that every optional entry's capability is a
-;;;;     registered one; neither can tell which list a name belongs in.
+;;;;     in one list or the other, and CHECK C that every declared capability is a registered
+;;;;     one; neither can tell which list a name belongs in. The same holds for the
+;;;;     capability lists: a capability that really does depend on an optional symbol but is
+;;;;     declared in `*provided-capabilities*' would be recorded true on a library that
+;;;;     cannot do it, and nothing here would notice.
 ;;;;   - Whether an optional symbol's capability is the one the operation guarding it
 ;;;;     actually checks. `cl-gbdt/xgboost:slice-model' asking `backend-supports-p' for the
 ;;;;     wrong capability keyword would be caught by its functional tests, not here: this
@@ -346,6 +357,21 @@ same shape rather than being silently exempted from CHECK B's optional half."
 `optional-symbol-entries' result."
   (loop :for entry :in entries :append (copy-list (cdr entry))))
 
+(defun provided-capability-names (backend-path)
+  "Return the capability keywords BACKEND-PATH's `*provided-capabilities*' declares -- the
+capabilities that backend provides unconditionally, recorded true at `open-backend' without
+being probed (see `probe-capabilities''s PROVIDED).
+
+Read for CHECK C exactly as `optional-symbol-entries' is, and for the same reason: these
+names reach `backend-capabilities' too, so one that the registry does not list would be
+recorded and then signal `unknown-capability' on every query. Empty is legal; the
+declaration itself is still required to be present, so a new backend takes the same shape
+rather than being silently exempted."
+  (let ((names (quoted-literal-value backend-path "*PROVIDED-CAPABILITIES*")))
+    (dolist (name names names)
+      (unless (keywordp name)
+        (error "non-keyword entry ~S in *provided-capabilities* in ~A" name backend-path)))))
+
 (defun known-capability-names (path)
   "Return the capability keywords PATH's `*known-capabilities*' registers -- every name
 `backend-supports-p' will answer for rather than signal `unknown-capability' on."
@@ -429,16 +455,21 @@ otherwise independent: a single import can fail either, both, or neither."
                       (enough-namestring backend-path (uiop:getcwd)) lisp-name c-name)))))))
     (values blacklist-violations coverage-violations)))
 
-(defun check-optional-capabilities (id backend-path known-capabilities)
-  "Return the list of (ID CAPABILITY) pairs BACKEND-PATH's `*optional-symbols*' is keyed by
-that KNOWN-CAPABILITIES does not register -- CHECK C in this file's header. Printing as it
-goes, like `check-backend'.
+(defun check-declared-capabilities (id backend-path known-capabilities)
+  "Return the list of (ID CAPABILITY) pairs BACKEND-PATH declares -- in `*optional-symbols*'
+or in `*provided-capabilities*' -- that KNOWN-CAPABILITIES does not register: CHECK C in this
+file's header. Printing as it goes, like `check-backend'.
+
+Both lists, not only the optional one: they are the two ways a capability keyword reaches
+`backend-capabilities' at `open-backend', and an unregistered name is equally unqueryable
+whichever of them it came from. Checking only one would leave the other free to drift, which
+is the whole failure CHECK C exists to prevent.
 
 Separate from `check-backend' because it shares none of that function's parsing: it reads
-`*optional-symbols*' against the registry, never the c-api map or the import list, so
+those two declarations against the registry, never the c-api map or the import list, so
 folding it in would only widen that function's argument list."
   (let ((violations '()))
-    (dolist (entry (optional-symbol-entries backend-path) violations)
+    (dolist (entry (optional-symbol-entries backend-path))
       (let ((capability (car entry)))
         (unless (member capability known-capabilities)
           (push (list id capability) violations)
@@ -448,7 +479,16 @@ folding it in would only widen that function's argument list."
                    unknown-capability for it rather than answering, so the probe at ~
                    open-backend would record a capability nothing can ever query.~%"
                   (enough-namestring backend-path (uiop:getcwd)) (cdr entry) capability
-                  +capability-registry-path+))))))
+                  +capability-registry-path+))))
+    (dolist (capability (provided-capability-names backend-path) violations)
+      (unless (member capability known-capabilities)
+        (push (list id capability) violations)
+        (format *error-output*
+                "~&FAIL ~A declares ~S in *provided-capabilities*, which ~A does not ~
+                 register. open-backend would record it as true and backend-supports-p ~
+                 would then signal unknown-capability for it rather than answering.~%"
+                (enough-namestring backend-path (uiop:getcwd)) capability
+                +capability-registry-path+)))))
 
 (let* ((root (uiop:getcwd))
        (blacklist-file (merge-pathnames +blacklist-path+ root))
@@ -491,12 +531,12 @@ folding it in would only widen that function's argument list."
                   (append coverage-violations backend-coverage-violations)))
           (setf capability-violations
                 (append capability-violations
-                        (check-optional-capabilities id full-backend-path
+                        (check-declared-capabilities id full-backend-path
                                                      known-capabilities))))))
     (format t "~&~D blacklisted import~:P found across ~D backend~:P~%"
             (length blacklist-violations) (length +backends+))
     (format t "~&~D symbol-declaration gap~:P found across ~D backend~:P~%"
             (length coverage-violations) (length +backends+))
-    (format t "~&~D unregistered optional capabilit~:@P found across ~D backend~:P~%"
+    (format t "~&~D unregistered declared capabilit~:@P found across ~D backend~:P~%"
             (length capability-violations) (length +backends+))
     (uiop:quit (if (or blacklist-violations coverage-violations capability-violations) 1 0))))

@@ -70,6 +70,7 @@
            #:*default-library-name*
            #:*required-symbols*
            #:*optional-symbols*
+           #:*provided-capabilities*
            #:%check-backend-open
            #:%check-xgboost-dataset
            #:%check-unsupported
@@ -106,6 +107,7 @@
            #:%split-eval-label
            #:%check-xgboost-booster
            #:evaluate-one-iteration
+           #:%read-evaluation
            #:booster-boosted-rounds
            #:%slice))
 
@@ -301,6 +303,23 @@ cannot slice, not a broken installation.
 
 `XGBoosterSlice' is bound in c-api.lisp and called only from `slice-model', which checks the
 capability before reaching it.")
+
+(defparameter *provided-capabilities*
+  '(:evaluation-history)
+  "Capabilities this backend provides unconditionally, recorded true at `open-backend'
+without being probed -- `probe-capabilities''s PROVIDED, which says why a probe cannot
+express this.
+
+`:evaluation-history' is here rather than in `*optional-symbols*' because the C function
+`train' records a history with -- `XGBoosterEvalOneIter', reached through `%read-evaluation'
+-- is in `*required-symbols*' above. A library missing it never opens at all, so there is no
+state in which this backend is open and cannot record a history, and nothing for a probe to
+answer differently from one open to the next.
+
+Every name here must be registered in `cl-gbdt/src/backend''s `*known-capabilities*', or
+`backend-supports-p' would signal `unknown-capability' for a capability the plist claims;
+`tools/ci/check-abi-blacklist.lisp''s CHECK C is what enforces that, for this list and
+`*optional-symbols*' alike.")
 
 (defun %read-version ()
   "Return XGBoost's version as a \"MAJOR.MINOR.PATCH\" string, read via `XGBoostVersion'.
@@ -1063,6 +1082,41 @@ already-freed one, `backend-not-open' when its own backend has since been closed
            (raw (%eval-one-iter booster-pointer (%boosted-rounds booster-pointer)
                                  dataset-pointers names)))
       (values raw (%parse-eval-result raw)))))
+
+(defun %read-evaluation (booster-pointer dataset-pointers)
+  "Return the booster at BOOSTER-POINTER's evaluation entries against DATASET-POINTERS, as a
+fresh list of (INDEX METRIC-NAME VALUE) lists, via `%eval-one-iter', `%parse-eval-result' and
+`%split-eval-label' -- INDEX is a DATASET-POINTERS entry's position, METRIC-NAME and VALUE
+are `%parse-eval-result''s own reading of `XGBoosterEvalOneIter''s formatted output for it.
+Names each entry of DATASET-POINTERS to `%eval-one-iter' by its own decimal index -- \"0\",
+\"1\", ... -- built from `(length dataset-pointers)' alone, exactly as
+`cl-gbdt/src/xgboost/protocol''s `evaluation' method does today; `%split-eval-label' takes
+each result label back apart against those same names.
+
+Also returns RAW, the exact string `%eval-one-iter' wrote, as a second value: `evaluation''s
+own `:value-source :parsed-text :raw' provenance needs it verbatim, and once this function
+returns, this is the only place that string still exists.
+
+The caller owns every guard this needs before calling: BOOSTER-POINTER and every entry of
+DATASET-POINTERS must already be live handles' pointers built by the `:xgboost' backend, and
+the whole call must already be inside `with-foreign-float-traps-masked''s dynamic extent --
+like every other `%'-function in this file, this does not establish any of those itself.
+`cl-gbdt/src/xgboost/protocol''s `evaluation' method and `train''s per-iteration recording
+loop both call this same function, on the pointers each already has in hand, rather than
+each computing entries its own way -- that is what keeps the numbers `evaluation' reports
+after training and the numbers recorded during training from ever being able to disagree."
+  (let* (;; `~D', not `princ-to-string': `~D' binds `*print-base*' to 10 itself, so a
+         ;; caller who has bound it to something else gets the decimal names this
+         ;; function's docstring promises rather than that base's digits.
+         (names (loop :for index :below (length dataset-pointers)
+                       :collect (format nil "~D" index)))
+         (raw (%eval-one-iter booster-pointer (%boosted-rounds booster-pointer)
+                               dataset-pointers names)))
+    (values (loop :for (label . value) :in (%parse-eval-result raw)
+                  :collect (multiple-value-bind (index metric-name)
+                               (%split-eval-label label names)
+                             (list index metric-name value)))
+            raw)))
 
 ;;; ---------------------------------------------------------------------------
 ;;; Model slicing

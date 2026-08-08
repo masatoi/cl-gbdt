@@ -158,7 +158,12 @@ to this function can detect it here."
 Policy section 7's five names. A name is registered here as soon as it is a question worth
 asking, whether or not any backend answers true to it yet -- `:early-stopping' is registered
 and false everywhere, which says \"not supported yet\" rather than \"never heard of it\".
-Registering the name is what makes a misspelling distinguishable from a real answer.")
+Registering the name is what makes a misspelling distinguishable from a real answer.
+
+`:evaluation-history' is true on both backends: `train' records one, and each backend names
+the capability in its own `*provided-capabilities*' rather than in `*optional-symbols*',
+because the C functions it needs are already in that backend's `*required-symbols*' and a
+probe therefore has nothing left to decide. See `probe-capabilities''s PROVIDED.")
 
 (defun backend-supports-p (backend capability)
   "Return true when BACKEND provides CAPABILITY, NIL when it does not.
@@ -169,19 +174,37 @@ supported-but-absent feature.
 
 A true answer means the shared library actually loaded resolved every foreign symbol the
 capability needs, as probed at `open-backend' -- not that the headers cl-gbdt was built
-against declared them. A false answer means the feature is unavailable here, and is never a
-licence to fall back to something else silently: the operation itself signals
-`capability-unavailable' (policy section 7)."
+against declared them -- or that the backend declared the capability unconditionally,
+having nothing left to probe because everything it needs is in `*required-symbols*' and the
+backend opened at all (see `probe-capabilities''s PROVIDED). A false answer means the
+feature is unavailable here, and is never a licence to fall back to something else silently:
+the operation itself signals `capability-unavailable' (policy section 7)."
   (unless (member capability *known-capabilities*)
     (error 'unknown-capability :capability capability :known *known-capabilities*))
   (and (getf (backend-capabilities backend) capability) t))
 
-(defun probe-capabilities (optional-symbols &key (library :default))
-  "Return the capability plist for OPTIONAL-SYMBOLS, probed against LIBRARY.
+(defun probe-capabilities (optional-symbols &key provided (library :default))
+  "Return the capability plist for OPTIONAL-SYMBOLS, probed against LIBRARY, with every
+capability in PROVIDED recorded true ahead of them.
 
 OPTIONAL-SYMBOLS is an alist of a capability keyword and the C function names that capability
 needs: ((:model-slicing \"XGBoosterSlice\") ...). A capability is true when every one of its
 names resolves.
+
+PROVIDED is a list of capability keywords the backend provides unconditionally, recorded as
+true without being probed. A probe cannot express \"always true\": it derives every answer
+from a symbol lookup, and a capability whose C functions are all in `*required-symbols*' has
+nothing left to look up -- `open-backend' has already refused to open a library missing any
+of them. `:evaluation-history' is the case this exists for; leaving it out of the plist
+entirely would make `backend-supports-p' answer NIL, which that function documents as the
+feature being unavailable and the operation signalling `capability-unavailable', and neither
+is true of a capability both backends ship.
+
+PROVIDED's entries come first, so a capability named in both PROVIDED and OPTIONAL-SYMBOLS
+reads true through `getf' whatever the probe found. That combination is a contradiction in
+the backend's own declarations rather than a case with a useful meaning: a capability is
+either unconditional or probed, and `tools/ci/check-abi-blacklist.lisp' checks both lists
+against `*known-capabilities*' but cannot tell which list a name belongs in.
 
 Every declared capability appears in the result, true and false alike, rather than only the
 true ones -- `backend-info' should be able to report what was asked as well as what was
@@ -195,6 +218,8 @@ themselves.
 
 LIBRARY is passed through to `probe-foreign-symbols'; see its docstring for the SBCL caveat
 about scoping a probe to one library."
-  (loop :for (capability . names) :in optional-symbols
-        :append (list capability
-                      (null (probe-foreign-symbols names :library library)))))
+  (append (loop :for capability :in provided
+                :append (list capability t))
+          (loop :for (capability . names) :in optional-symbols
+                :append (list capability
+                              (null (probe-foreign-symbols names :library library))))))

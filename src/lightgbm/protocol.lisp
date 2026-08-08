@@ -36,14 +36,14 @@
                 #:%feature-importance-type
                 #:%booster-num-features
                 #:%feature-importance
-                #:booster-eval-names
-                #:booster-eval
+                #:%read-evaluation
                 #:*library-env-var*
                 #:*vendor-library-directory*
                 #:*vendor-library-pattern*
                 #:*default-library-name*
                 #:*required-symbols*
-                #:*optional-symbols*)
+                #:*optional-symbols*
+                #:*provided-capabilities*)
   (:import-from #:cl-gbdt/src/backend
                 #:backend
                 #:backend-name
@@ -82,9 +82,12 @@
                 #:booster-validation-sets)
   (:import-from #:cl-gbdt/src/conditions
                 #:missing-foreign-symbols
-                #:foreign-call-error)
+                #:foreign-call-error
+                #:unsupported-argument)
   (:import-from #:cl-gbdt/src/data
                 #:with-foreign-matrix)
+  (:import-from #:cl-gbdt/src/training/history
+                #:training-report-from-history)
   (:import-from #:cl-gbdt/src/library
                 #:resolve-and-load-library)
   (:import-from #:cl-gbdt/src/foreign
@@ -154,6 +157,11 @@ has passed does this probe *optional-symbols* via `probe-capabilities' and
 record the result on `backend-capabilities' -- unlike a missing required
 symbol, a missing optional one never signals; it only makes
 `backend-supports-p' answer NIL for the capability that symbol backs.
+*provided-capabilities* goes to the same call as :PROVIDED, recording the
+capabilities this backend provides unconditionally -- nothing is probed for
+them, because the C functions they need are in *required-symbols* and the probe
+above has already passed.
+
 LightGBM's C API has no runtime version query, so `backend-version' is left
 NIL rather than guessed --
 and, unlike `cl-gbdt/src/xgboost/protocol''s `initialize-backend', this never
@@ -184,7 +192,9 @@ BACKEND dropped and nothing left able to close it."
                    (error 'missing-foreign-symbols
                           :backend (backend-name backend) :names missing)))
                (setf (backend-capabilities backend)
-                     (probe-capabilities *optional-symbols* :library library))
+                     (probe-capabilities *optional-symbols*
+                                         :provided *provided-capabilities*
+                                         :library library))
                (setf (backend-version backend) nil)
                (setf succeeded t))
           (unless succeeded
@@ -296,25 +306,94 @@ unreclaimable at that point."
 ;;; ---------------------------------------------------------------------------
 ;;; Training
 
+(defun %valid-set-name (backend entry)
+  "Return the name half of ENTRY, one element of `train''s :VALID-SETS: NIL when ENTRY is
+a bare dataset, or ENTRY's car when ENTRY is a (NAME . DATASET) cons and NAME is a string.
+
+Signals `unsupported-argument' naming :VALID-SETS and ENTRY itself when ENTRY is a cons
+whose car is not a string -- before any foreign call, and before the dataset half of
+ENTRY is checked against `lightgbm-dataset' by `%check-lightgbm-dataset', which runs
+afterward on `%valid-set-dataset''s result. That later check is what turns a cons whose
+cdr is not this backend's own kind of dataset into `wrong-backend-reference' instead --
+a different mistake from this one, and so a different condition."
+  (if (consp entry)
+      (let ((name (car entry)))
+        (unless (stringp name)
+          (error 'unsupported-argument
+                 :backend (backend-name backend)
+                 :argument "train's :valid-sets"
+                 :reason (format nil "each element must be a dataset or a ~
+                                      (string . dataset) cons; ~S's car is not a string"
+                                 entry)))
+        name)
+      nil))
+
+(defun %valid-set-dataset (entry)
+  "Return the dataset half of ENTRY, one element of `train''s :VALID-SETS: ENTRY itself
+when it is a bare dataset, or its cdr when it is a (NAME . DATASET) cons.
+
+Does not check that the result is a `lightgbm-dataset' -- `%check-lightgbm-dataset' does
+that afterward, on every element `%valid-set-name' has already let through."
+  (if (consp entry) (cdr entry) entry))
+
 (defmethod train ((backend lightgbm-backend) dataset
-                   &key valid-sets (num-rounds 100) parameters)
-  "Train a LightGBM booster on DATASET for NUM-ROUNDS boosting iterations.
+                   &key valid-sets (num-rounds 100) parameters (record-history t))
+  "Train a LightGBM booster on DATASET for NUM-ROUNDS boosting iterations, and return
+it and a `training-report' of the run.
 
 Builds the booster with `LGBM_BoosterCreate' from PARAMETERS, attaches each of
 VALID-SETS with `LGBM_BoosterAddValidData', then drives
 `LGBM_BoosterUpdateOneIter' NUM-ROUNDS times. See the `train' generic
-function's docstring for what each argument means; NUM-ROUNDS defaults to 100
-when not supplied.
+function's docstring for what each argument means, and for what the secondary
+value holds; NUM-ROUNDS defaults to 100 when not supplied.
 
-DATASET and every entry of VALID-SETS are each run through
+Each VALID-SETS element is either a dataset, whose series carry no name, or a
+(NAME . DATASET) cons, where NAME is a string that reaches `training-series-name' for
+every series recorded at that dataset's index -- see `%valid-set-name' and
+`%valid-set-dataset', which split VALID-SETS into two parallel lists, of datasets and of
+names, once at the top of this method; everything below reads the datasets list under
+the name VALID-SETS, exactly as before this method accepted names at all. Two entries
+may legitimately share one NAME: their index, not their name, is what a caller uses to
+tell them apart in the report, so this is accepted rather than rejected as a duplicate.
+The training set is never a VALID-SETS entry and is always index 0 with a NIL name.
+
+When RECORD-HISTORY is true -- the default -- this reads the whole evaluation after each
+iteration through `%read-evaluation': the same function the `evaluation' method calls, on
+the same booster pointer and the same dataset count, which is what keeps the history and
+what `evaluation' answers afterward from being able to disagree. `training-report-from-history'
+folds the run's worth of them into the report once the loop is done; that fold is backend-
+neutral and shared with `cl-gbdt/src/xgboost/protocol''s `train', so what the two backends
+record cannot drift apart either. It orders series by the (DATASET-INDEX, METRIC-NAME)
+pair's first appearance, which for this backend is `%read-evaluation''s own dataset-major
+order, so the report's series arrive in exactly the order `evaluation' reports its entries
+in without anything being sorted.
+
+RECORD-HISTORY NIL skips that read entirely -- one `LGBM_BoosterGetEval' call per dataset
+per iteration, which is what makes recording cost real wall-clock time (see the `train'
+generic's docstring for the measured figures). The loop is then exactly the
+`LGBM_BoosterUpdateOneIter' loop this method ran before it recorded anything, and the
+report it still returns as its secondary value has an empty series list over the same
+NUM-ROUNDS -- `training-report-from-history' over an empty history, the same shape a run
+with `metric=none' produces.
+
+A read that fails propagates, freeing the booster through the OWNED dance below rather
+than returning a report whose series are shorter than NUM-ROUNDS: a short series is
+indistinguishable from one a buggy loop recorded, and \"one value per iteration\" is the
+invariant a caller reading the report relies on.
+
+DATASET and every VALID-SETS entry's dataset half are each run through
 `%check-lightgbm-dataset' before any foreign call. `train' dispatches on
 BACKEND, not on DATASET, so unlike `dataset-num-rows' or `free-dataset' there
 is no CLOS specializer here to rule out the wrong kind of handle first --
 without this, `handle-live-pointer' would happily hand `LGBM_BoosterCreate' a
 booster's own pointer to use as its training-set `DatasetHandle'. Signals
-`wrong-backend-reference' when DATASET or a VALID-SETS entry is not a
-`lightgbm-dataset', and `released-handle-error' or `backend-not-open' when one
-is but has already been freed or had its own backend closed.
+`wrong-backend-reference' when DATASET or a VALID-SETS entry's dataset half is
+not a `lightgbm-dataset', and `released-handle-error' or `backend-not-open'
+when one is but has already been freed or had its own backend closed. A
+VALID-SETS entry that is a cons with a non-string car never reaches this check
+at all: `%valid-set-name' signals `unsupported-argument' for it first, which is
+the different mistake a malformed name is, kept distinct from a wrong dataset
+handle.
 
 The returned booster retains DATASET as its training set and a fresh copy of
 VALID-SETS as its validation sets, keeping all of them alive for the booster's
@@ -339,15 +418,27 @@ Signals `backend-not-open' before any of that when BACKEND is not open -- see
 `%check-backend-open'."
   (with-foreign-float-traps-masked
     (%check-backend-open backend)
-    (let* ((valid-sets (copy-list valid-sets))
+    (let* ((valid-set-entries (copy-list valid-sets))
            (train-data-pointer
              (%check-lightgbm-dataset backend dataset "train's dataset argument"
                                        'lightgbm-dataset))
+           (valid-set-names
+             (mapcar (lambda (entry) (%valid-set-name backend entry)) valid-set-entries))
+           (valid-sets (mapcar #'%valid-set-dataset valid-set-entries))
            (valid-set-pointers
              (mapcar (lambda (valid-set)
                        (%check-lightgbm-dataset
                         backend valid-set "a train :valid-sets entry" 'lightgbm-dataset))
-                     valid-sets)))
+                     valid-sets))
+           (dataset-count (1+ (length valid-set-pointers)))
+           (dataset-names (cons nil valid-set-names))
+           (history '())
+           ;; Counted rather than taken from NUM-ROUNDS: `dotimes' runs zero iterations for a
+           ;; negative count, so a caller passing :NUM-ROUNDS -1 gets an untrained booster --
+           ;; as it did before this branch -- and the report must say 0 ran, not -1.
+           ;; `training-report-num-rounds' promises how many iterations actually ran, and
+           ;; Phase 3b's early stopping needs this same count for the same reason.
+           (completed-rounds 0))
       (let ((booster-pointer
               (%create-booster train-data-pointer (%parameter-string parameters))))
         (let ((owned nil))
@@ -356,11 +447,19 @@ Signals `backend-not-open' before any of that when BACKEND is not open -- see
                  (%add-valid-data booster-pointer valid-set-pointers)
                  (dotimes (round num-rounds)
                    (declare (ignorable round))
-                   (%update-one-iteration booster-pointer))
-                 (prog1
-                     (make-handle 'lightgbm-booster booster-pointer backend :booster
-                                  :training-set dataset :validation-sets valid-sets)
-                   (setf owned t)))
+                   (%update-one-iteration booster-pointer)
+                   (incf completed-rounds)
+                   (when record-history
+                     (push (%read-evaluation booster-pointer dataset-count) history)))
+                 (let ((report (training-report-from-history (reverse history)
+                                                              completed-rounds
+                                                              dataset-names)))
+                   (multiple-value-prog1
+                       (values (make-handle 'lightgbm-booster booster-pointer backend :booster
+                                            :training-set dataset
+                                            :validation-sets valid-sets)
+                               report)
+                     (setf owned t))))
             (unless owned
               (handler-case (%free-booster-unchecked booster-pointer)
                 (error () nil)))))))))
@@ -521,9 +620,10 @@ unbound."
 ;;; Evaluation
 
 (defmethod evaluation ((booster lightgbm-booster))
-  "Return BOOSTER's evaluation metrics via `booster-eval-names' and `booster-eval', this
-backend's own Layer 1 evaluation functions -- see the `evaluation' generic function's
-docstring for the portable contract this satisfies.
+  "Return BOOSTER's evaluation metrics via `%read-evaluation', the pointer-level reader this
+backend shares between this method and `train''s per-iteration recording loop, so the two
+can never disagree -- see the `evaluation' generic function's docstring for the portable
+contract this satisfies.
 
 Reads one `LGBM_BoosterGetEval' result per dataset BOOSTER retains, in the order
 `train' attached them, and pairs entry N of each with entry N of the single metric-name
@@ -547,19 +647,16 @@ the secondary value's `:value-source :library-doubles' says; unlike XGBoost's, n
 here parses text, so there is no :RAW to keep and no VALUE is ever NIL.
 
 `%check-booster-datasets-live' runs before any foreign call this method makes, including
-`booster-eval-names': `LGBM_BoosterGetEval' evaluates each attached validation set
+inside `%read-evaluation': `LGBM_BoosterGetEval' evaluates each attached validation set
 through the metric objects built over that dataset's own label and weight arrays, none of
 which `LGBM_DatasetFree' clears from the booster, so evaluating after one of them was
 freed is a use-after-free rather than a catchable condition -- the identical hazard
 `update-one-iteration' guards against with the same call."
   (with-foreign-float-traps-masked
     (%check-booster-datasets-live booster)
-    (let ((names (booster-eval-names booster))
+    (let ((pointer (handle-live-pointer booster))
           (dataset-count (if (booster-training-set booster)
                              (1+ (length (booster-validation-sets booster)))
                              0)))
-      (values (loop :for index :below dataset-count
-                    :append (loop :for name :in names
-                                  :for value :across (booster-eval booster index)
-                                  :collect (list index name value)))
+      (values (%read-evaluation pointer dataset-count)
               (list :value-source :library-doubles)))))

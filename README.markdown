@@ -17,9 +17,10 @@ file if you have it locally).
 `make-dataset`, `dataset-num-rows`, `dataset-num-features`, `train`,
 `update-one-iteration`, `predict`, `save-model`, `load-model`, `model-to-string`,
 `feature-importance`, `evaluation`, `free-dataset` and `free-booster` -- against the real
-LightGBM and XGBoost shared libraries, exercised by 207 functional assertions (design doc
-section 12, layer 2), in addition to 253 assertions that need no shared library at all
-(layer 1). See [Usage](#usage) below for a worked example.
+LightGBM and XGBoost shared libraries, exercised by 253 functional assertions (design doc
+section 12, layer 2), in addition to 283 assertions that need no shared library at all
+(layer 1). `train` also returns a `training-report` as its secondary value -- see
+[Training report](#training-report) below. See [Usage](#usage) below for a worked example.
 
 Loading `cl-gbdt` itself still does not require either `liblightgbm.so` or
 `libxgboost.so` to be installed -- see [Systems](#systems): a shared library is opened
@@ -254,8 +255,18 @@ Four things it promises, each of which is the point of it existing at all:
 ```
 
 `backend-info` reports the whole probed plist, false capabilities included, so it shows
-what was asked as well as what was answered. Today `:model-slicing` is the one capability
-any backend answers true to -- see the model-slicing row in the table below.
+what was asked as well as what was answered. Two capabilities answer true today:
+`:model-slicing`, on XGBoost only -- see the model-slicing row in the table below -- and
+`:evaluation-history`, on both backends, since `train` records one (see
+[Training report](#training-report)).
+
+`:evaluation-history` is true unconditionally rather than probed. The C functions behind it
+are in each backend's `*required-symbols*`, so a library missing them never opens at all
+and there is no state in which an open backend cannot record a history; each backend names
+the capability in its own `*provided-capabilities*`, which `open-backend` records as true
+without a symbol lookup. A probe can only answer from a symbol that might be absent, which
+is the right shape for `:model-slicing` and the wrong one for a feature that is simply
+always there.
 
 ### Where the two backends genuinely differ
 
@@ -493,11 +504,147 @@ XGBoost  provenance: (:VALUE-SOURCE :PARSED-TEXT :RAW
 ```
 
 Dataset 0 and dataset 1 agree here because the validation set is built over the same rows
-as the training set. Nothing names those datasets: LightGBM knows a validation set by its
-index and by nothing else, so the portable API reports the position the caller supplied it
-in rather than inventing `"valid_0"`-style names. The `0-`/`1-` prefixes inside XGBoost's
-`:raw` line are the names this backend must pass `XGBoosterEvalOneIter` -- that call
-demands one per DMatrix -- and are the indices themselves for exactly that reason.
+as the training set. Nothing names those datasets in the call above: LightGBM knows a
+validation set by its index and by nothing else, so the portable API reports the position
+the caller supplied it in rather than inventing `"valid_0"`-style names on its own. The
+`0-`/`1-` prefixes inside XGBoost's `:raw` line are the names this backend must pass
+`XGBoosterEvalOneIter` -- that call demands one per DMatrix -- and are the indices
+themselves for exactly that reason.
+
+### Training report
+
+`train` returns two values: the booster, and a `training-report` of the run just
+completed. Its `training-report-series` is a list of `training-series`, one per metric per
+dataset -- the same (index, metric-name) pairs `evaluation` reports for the trained
+booster, in the same order. Each series carries `training-series-index` (0 for the training
+set, 1 for the first `:valid-sets` entry, 2 for the second, and so on),
+`training-series-metric` (the backend's own name for the metric) and
+`training-series-values` (one value per completed iteration, oldest first, `NIL` where a
+value could not be read as a real).
+
+`:valid-sets` accepts two element forms, freely mixed in one list: a bare dataset, whose
+series carry no name, or a `(name . dataset)` cons, where `name` is a string that becomes
+`training-series-name` for every series recorded at that dataset's index. A series always
+carries an index; it carries a non-`NIL` name only when the validation set it came from was
+given one. The training set is never a `:valid-sets` entry, so its own series are always
+index 0 with a `NIL` name -- nothing here invents a name for it, or for a validation set
+passed bare. Two validation sets may legitimately share one name; their index, not their
+name, is what tells the two apart in the report.
+
+```lisp
+(ql:quickload '(:cl-gbdt :cl-gbdt/lightgbm :cl-gbdt/xgboost) :silent t)
+
+(defun show-report (name backend dataset-parameters booster-parameters reference-p)
+  (cl-gbdt:with-dataset (train-set (apply #'cl-gbdt:make-dataset backend *eval-matrix*
+                                          :label *eval-label* dataset-parameters))
+    (cl-gbdt:with-dataset (valid-set (apply #'cl-gbdt:make-dataset backend *eval-matrix*
+                                            :label *eval-label*
+                                            (append (when reference-p
+                                                      (list :reference train-set))
+                                                    dataset-parameters)))
+      ;; NOT `with-booster': it binds the primary value only, so a caller who wants the
+      ;; report -- `train''s secondary value -- uses `multiple-value-bind' and frees the
+      ;; booster itself instead.
+      (multiple-value-bind (booster report)
+          (cl-gbdt:train backend train-set :num-rounds 5
+                          ;; A named :valid-sets entry: a bare dataset would leave
+                          ;; TRAINING-SERIES-NAME NIL, same as the training set's own.
+                          :valid-sets (list (cons "valid" valid-set))
+                          :parameters booster-parameters)
+        (unwind-protect
+             (progn
+               (dolist (series (cl-gbdt:training-report-series report))
+                 (format t "~A series: index=~S name=~S metric=~S last=~S~%"
+                         name (cl-gbdt:training-series-index series)
+                         (cl-gbdt:training-series-name series)
+                         (cl-gbdt:training-series-metric series)
+                         (aref (cl-gbdt:training-series-values series) 4)))
+               (format t "~A best-iteration: ~S~%" name
+                       (cl-gbdt:training-report-best-iteration report)))
+          (cl-gbdt:free-booster booster))))))
+
+(let ((lgbm (cl-gbdt:open-backend :lightgbm))
+      (xgb (cl-gbdt:open-backend :xgboost)))
+  (show-report "LightGBM" lgbm
+        '(:parameters (:min-data-in-leaf 1 :min-data-in-bin 1 :verbose -1))
+        '(:objective "binary" :num-leaves 2 :min-data-in-leaf 1 :min-data-in-bin 1
+          :verbose -1 :metric "binary_logloss,auc")
+        t)
+  (show-report "XGBoost " xgb '()
+        '(:objective "binary:logistic" :max-depth 2 :eta 0.5 :verbosity 0
+          :eval-metric "logloss" :eval-metric "error")
+        nil)
+  (cl-gbdt:close-backend lgbm)
+  (cl-gbdt:close-backend xgb))
+```
+
+Output:
+
+```
+LightGBM series: index=0 name=NIL metric="binary_logloss" last=0.35374722486733523d0
+LightGBM series: index=0 name=NIL metric="auc" last=1.0d0
+LightGBM series: index=1 name="valid" metric="binary_logloss" last=0.35374722486733523d0
+LightGBM series: index=1 name="valid" metric="auc" last=1.0d0
+LightGBM best-iteration: NIL
+XGBoost  series: index=0 name=NIL metric="logloss" last=0.4740770012140274d0
+XGBoost  series: index=0 name=NIL metric="error" last=0.0d0
+XGBoost  series: index=1 name="valid" metric="logloss" last=0.4740770012140274d0
+XGBoost  series: index=1 name="valid" metric="error" last=0.0d0
+XGBoost  best-iteration: NIL
+```
+
+Dataset 1's series carry the name `"valid"` on both backends; dataset 0's -- the training
+set -- stay `NIL` regardless, and so would dataset 1's if `valid-set` had been passed bare
+instead of as `(cons "valid" valid-set)`. `training-report-best-iteration`,
+`training-report-best-score` and `training-report-early-stopped-p` are all `NIL` in this
+phase (Phase 3a): finding them needs knowing whether a metric improves upward or downward,
+which this API does not infer from a metric's name, and no run can stop early yet either.
+Phase 3b is what fills them in.
+
+A malformed `:valid-sets` element signals one of two conditions, kept distinct because they
+are different mistakes: a `(name . dataset)` cons whose `name` is not a string signals
+`unsupported-argument`, naming `:valid-sets` and the offending element; a cons whose
+`dataset` half is not this backend's own kind of handle signals `wrong-backend-reference` --
+the same condition a bare wrong-backend dataset already signals elsewhere in this API. Both
+are checked before any foreign call. Duplicate names are not one of these mistakes: two
+validation sets sharing a name train and report normally, distinguished by index.
+
+#### Turning recording off: `:record-history`
+
+Recording is not free, and it is on by default. `train` reads the whole evaluation once per
+iteration, for every dataset the booster holds. Measured here over 500 rounds on 2000 rows ×
+20 columns with two metrics configured, that roughly **doubled** LightGBM's wall-clock
+`train` time -- with and without a validation set -- and added roughly **70-80%** to
+XGBoost's with one validation set attached. XGBoost with no validation set stayed inside the
+measurement noise, that backend evaluating every dataset in one call rather than one call
+each. Treat these as orders of magnitude on one machine: run-to-run variance on the same
+code is easily ±15%.
+
+`train` therefore takes `:record-history`, `t` by default:
+
+```lisp
+(multiple-value-bind (booster report)
+    (cl-gbdt:train backend train-set :num-rounds 500 :record-history nil)
+  ;; report is a training-report with no series, over 500 rounds.
+  (cl-gbdt:free-booster booster))
+```
+
+With `:record-history nil` no evaluation is read at all, and `train` costs what it cost
+before it recorded anything -- measured against the commit this branch started from, the two
+agree within the noise on both backends. The secondary value is still a `training-report`,
+never `nil`, so a caller destructuring two values never has to handle two shapes: its
+`training-report-series` is empty and its `training-report-num-rounds` is the run's length,
+exactly as a run with no metric configured reports.
+
+Recording also decides, on XGBoost, which `:valid-sets` entries `train` accepts at all. An
+unlabelled DMatrix is the case this was found through: `XGBoosterUpdateOneIter` trains on it
+happily, while `XGBoosterEvalOneIter` refuses it (`label and prediction size not match`). So
+with recording on -- the default -- such an entry now fails `train` itself with
+`foreign-call-error`, where before this branch it trained normally and failed only a later
+`evaluation` call. The general rule is that any configuration whose evaluation path errors
+while its update path does not now fails the whole run. `:record-history nil` never reaches
+the evaluation path and restores the older behaviour. LightGBM tolerates the same input,
+recording finite values, so this is XGBoost-specific in practice.
 
 ## Systems
 

@@ -232,3 +232,30 @@
                    t)
           (error () nil))
         "probe-capabilities signalled for a missing optional symbol")))
+
+(deftest probe-capabilities-records-a-provided-capability-as-true
+  ;; The path an always-true capability needs: `:evaluation-history' is backed entirely by
+  ;; C functions in each backend's *required-symbols*, so there is nothing to probe and no
+  ;; symbol lookup that could answer it. Without :PROVIDED it would be absent from the plist
+  ;; and read NIL through `backend-supports-p' -- documented there as the feature being
+  ;; unavailable and the operation signalling `capability-unavailable', neither of which is
+  ;; true of a capability both backends ship. No shared library is involved: the capability
+  ;; is recorded true without any name being looked up, which is exactly what this asserts.
+  (testing "a provided capability is true and needs no resolvable symbol"
+    (let ((probed (cl-gbdt:probe-capabilities
+                   '((:model-slicing "ThisSymbolDoesNotExistAnywhere"))
+                   :provided '(:evaluation-history))))
+      (ok (eq t (getf probed :evaluation-history))
+          (format nil "probe-capabilities did not record a provided capability as true: ~S"
+                  probed))
+      (ok (null (getf probed :model-slicing))
+          (format nil ":PROVIDED changed what the probe itself answered: ~S" probed))))
+  (testing "a provided capability reads back through backend-supports-p"
+    (let ((backend (cl-gbdt:open-backend :mock)))
+      (unwind-protect
+           (progn
+             (setf (cl-gbdt:backend-capabilities backend)
+                   (cl-gbdt:probe-capabilities '() :provided '(:evaluation-history)))
+             (ok (eq t (cl-gbdt:backend-supports-p backend :evaluation-history))
+                 "backend-supports-p did not report a provided capability as true"))
+        (cl-gbdt:close-backend backend)))))
