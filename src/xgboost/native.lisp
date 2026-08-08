@@ -16,6 +16,7 @@
                 #:xgb-get-last-error
                 #:xg-boost-version
                 #:xgd-matrix-create-from-dense
+                #:xgd-matrix-create-from-csr
                 #:xgd-matrix-set-info-from-interface
                 #:xgd-matrix-set-u-int-info
                 #:xgd-matrix-set-str-feature-info
@@ -76,6 +77,7 @@
            #:%check-unsupported
            #:%read-version
            #:%create-dmatrix
+           #:%create-dmatrix-from-csr
            #:%set-info-field
            #:%set-group-field
            #:%set-feature-names
@@ -293,7 +295,8 @@ included -- unlike LightGBM's, whose compiled basename genuinely omits it; see
 the library loads.")
 
 (defparameter *optional-symbols*
-  '((:model-slicing "XGBoosterSlice"))
+  '((:model-slicing "XGBoosterSlice")
+    (:sparse-input "XGDMatrixCreateFromCSR" "XGBoosterPredictFromCSR"))
   "Capability name to the C function names that capability needs.
 
 Unlike `*required-symbols*', whose absence makes `open-backend' signal
@@ -302,7 +305,13 @@ Unlike `*required-symbols*', whose absence makes `open-backend' signal
 cannot slice, not a broken installation.
 
 `XGBoosterSlice' is bound in c-api.lisp and called only from `slice-model', which checks the
-capability before reaching it.")
+capability before reaching it.
+
+`:sparse-input' names both the ingestion entry point and the prediction one, even though
+`make-dataset' reaches only the first. The capability is one answer about whether this
+backend can take a `csr-matrix' at all, and a caller told \"yes\" who could build a dataset
+but not predict from one would have been told a half-truth. Listing both from the start means
+the answer never changes meaning as the sparse path grows.")
 
 (defparameter *provided-capabilities*
   '(:evaluation-history :early-stopping)
@@ -375,6 +384,99 @@ before returning."
             (check-xgb (xgd-matrix-create-from-dense data config out)
                        "XGDMatrixCreateFromDense")
             (cffi:mem-ref out :pointer)))))))
+
+#+sbcl
+(defun %call-with-pinned-csr (indptr indices values function)
+  "Pin INDPTR, INDICES and VALUES and call FUNCTION with a foreign pointer to each, in that
+order.
+
+The three vectors come straight out of a `cl-gbdt/src/data' `csr-matrix', which already
+stores them as the specialized `(simple-array (signed-byte 32) (*))' and `(simple-array
+double-float (*))' the C API wants -- so there is nothing to convert here and nothing to
+check, only memory to hold still. Each is a rank-one simple-array, whose object and whose
+storage are one and the same, unlike the 2D case `cl-gbdt/src/data''s
+`%call-with-pinned-matrix' has to pin a separately-allocated `array-storage-vector' for.
+
+The pointers are valid only for the duration of FUNCTION, which is all the sparse ingestion
+path needs: `XGDMatrixCreateFromCSR' copies the rows into XGBoost's own representation before
+it returns, exactly the lifetime `%create-dmatrix' relies on for the dense path.
+
+Duplicated verbatim from `cl-gbdt/src/lightgbm/native', which needs the identical helper for
+`LGBM_DatasetCreateFromCSR'. The one file both could share it from -- `cl-gbdt/src/data' --
+is re-exported wholesale by `cl-gbdt', so putting it there would publish a raw pinning
+primitive as part of the unified API's surface. This backend pair is where the duplication
+belongs instead, alongside `%set-feature-names' and `%free-*-unchecked', which mirror each
+other across the two backends for the same reason."
+  (sb-sys:with-pinned-objects (indptr indices values)
+    (flet ((sap-pointer (vector)
+             (cffi:make-pointer (sb-sys:sap-int (sb-sys:vector-sap vector)))))
+      (funcall function (sap-pointer indptr) (sap-pointer indices) (sap-pointer values)))))
+
+#-sbcl
+(defun %call-with-pinned-csr (indptr indices values function)
+  "Copy INDPTR, INDICES and VALUES into foreign buffers and call FUNCTION with a pointer to
+each, in that order.
+
+The fallback for an implementation with no way to pin a Lisp array, mirroring
+`cl-gbdt/src/data''s `%call-with-copied-matrix' -- same contract as the SBCL version above,
+paid for with a copy. `#'identity' as every coercer: a `csr-matrix' has already coerced all
+three vectors to exactly these element types, so there is nothing left for
+`write-foreign-sequence' to convert."
+  (cffi:with-foreign-objects ((indptr-buffer :int32 (length indptr))
+                              (indices-buffer :int32 (length indices))
+                              (values-buffer :double (length values)))
+    (write-foreign-sequence indptr-buffer :int32 indptr #'identity)
+    (write-foreign-sequence indices-buffer :int32 indices #'identity)
+    (write-foreign-sequence values-buffer :double values #'identity)
+    (funcall function indptr-buffer indices-buffer values-buffer)))
+
+(defparameter *csr-matrix-config-json* "{\"missing\":NaN}"
+  "Config JSON passed to `XGDMatrixCreateFromCSR'. The same sentinel
+*dense-matrix-config-json* fixes for the dense path, and for the same reason -- see that
+parameter's docstring, whose reasoning about XGBoost's other config keys applies here
+unchanged.
+
+Kept as its own parameter rather than sharing the dense one, because the two describe
+different C calls: the dense entry point documents `missing'/`nthread'/`data_split_mode' and
+the CSR one documents `missing'/`nthread', so a future key added for one of them would not
+belong in the other's string.
+
+An entry a `csr-matrix' does not store is absent, not NaN, and XGBoost treats an absent CSR
+entry as missing regardless of what this says -- that is what CSR means to the library and no
+config key changes it. This sentinel decides only what a *stored* value of NaN means, which
+is exactly what it decides on the dense path.")
+
+(defun %create-dmatrix-from-csr (indptr indices values num-columns)
+  "Build a DMatrix from a `csr-matrix''s INDPTR, INDICES and VALUES via
+`XGDMatrixCreateFromCSR', returning its raw pointer. NUM-COLUMNS is the matrix's declared
+width, passed as `XGDMatrixCreateFromCSR''s own NCOL rather than left to the library to infer
+from the largest index present -- the two are different facts (see `make-csr-matrix''s
+docstring), and only the caller knows the first.
+
+Each of the three vectors is described to XGBoost with its own `array-interface-json', the
+same way `%create-dmatrix' describes a dense buffer: this entry point takes three separate
+array-interface descriptors where LightGBM's takes three raw pointers and a pair of dtype
+tags. The typestrs are fixed rather than derived -- `csr-matrix' stores INDPTR and INDICES as
+`(signed-byte 32)' and VALUES as `double-float' and nothing else, so there is no per-call
+element type to map the way `%array-interface-typestr' maps one for the dense path.
+
+The buffers only need to stay pinned for the duration of this call, since XGBoost copies
+them into its own representation before returning."
+  (%call-with-pinned-csr
+   indptr indices values
+   (lambda (indptr-pointer indices-pointer values-pointer)
+     (cffi:with-foreign-string
+         (indptr-json (array-interface-json indptr-pointer "<i4" (length indptr)))
+       (cffi:with-foreign-string
+           (indices-json (array-interface-json indices-pointer "<i4" (length indices)))
+         (cffi:with-foreign-string
+             (values-json (array-interface-json values-pointer "<f8" (length values)))
+           (cffi:with-foreign-string (config *csr-matrix-config-json*)
+             (cffi:with-foreign-object (out :pointer)
+               (check-xgb (xgd-matrix-create-from-csr indptr-json indices-json values-json
+                                                       num-columns config out)
+                          "XGDMatrixCreateFromCSR")
+               (cffi:mem-ref out :pointer)))))))))
 
 (defun %set-info-field (dataset-pointer field-name values)
   "Attach the sequence VALUES to DATASET-POINTER's FIELD-NAME via

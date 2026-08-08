@@ -32,9 +32,25 @@
                            &key label weight group feature-names parameters reference)
   (:documentation "Build a training dataset for BACKEND from MATRIX.
 
-MATRIX is anything `with-foreign-matrix' accepts. LABEL is the target vector, WEIGHT
-the per-sample weights, GROUP the group sizes for ranking, and FEATURE-NAMES a list
-of feature name strings. PARAMETERS is a plist passed through to the backend.
+MATRIX is either a dense matrix -- anything `with-foreign-matrix' accepts -- or a
+`csr-matrix', the sparse compressed-sparse-row form `make-csr-matrix' builds. LABEL is the
+target vector, WEIGHT the per-sample weights, GROUP the group sizes for ranking, and
+FEATURE-NAMES a list of feature name strings. PARAMETERS is a plist passed through to the
+backend.
+
+A `csr-matrix' needs BACKEND's `:sparse-input' capability, which `make-dataset' re-checks
+itself: a caller who never asked `backend-supports-p' gets `capability-unavailable' rather
+than a missing-symbol crash, and no backend ever falls back to converting the matrix to a
+dense one instead. Every other argument means exactly what it means for a dense matrix,
+including PARAMETERS and REFERENCE -- a backend that refuses one of them refuses it either
+way, and a backend that honours it honours it either way. The resulting dataset is an
+ordinary dataset: nothing downstream of here, `train' included, can tell which form built
+it.
+
+The dataset's feature count is the `csr-matrix''s own NUM-COLUMNS, its declared width --
+not the largest column index it happens to store. The two are different facts, and only
+the caller knows the first; see `make-csr-matrix''s docstring for why it is required rather
+than inferred.
 
 REFERENCE, when supplied, is an existing dataset from the same backend whose bin mapper
 the new dataset aligns to instead of computing its own. A validation dataset destined

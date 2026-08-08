@@ -12,6 +12,7 @@
                 #:%parameter-string
                 #:%data-type
                 #:%create-dataset
+                #:%create-dataset-from-csr
                 #:%set-info-field
                 #:%set-group-field
                 #:%set-feature-names
@@ -50,6 +51,7 @@
                 #:backend-library-path
                 #:backend-version
                 #:backend-capabilities
+                #:backend-supports-p
                 #:backend-open-p
                 #:probe-foreign-symbols
                 #:probe-capabilities
@@ -85,9 +87,15 @@
   (:import-from #:cl-gbdt/src/conditions
                 #:missing-foreign-symbols
                 #:foreign-call-error
-                #:unsupported-argument)
+                #:unsupported-argument
+                #:capability-unavailable)
   (:import-from #:cl-gbdt/src/data
-                #:with-foreign-matrix)
+                #:with-foreign-matrix
+                #:csr-matrix
+                #:csr-matrix-indptr
+                #:csr-matrix-indices
+                #:csr-matrix-values
+                #:csr-matrix-num-columns)
   (:import-from #:cl-gbdt/src/training/history
                 #:training-report-from-history)
   (:import-from #:cl-gbdt/src/training/early-stopping
@@ -229,12 +237,58 @@ longer holds it open."
 ;;; ---------------------------------------------------------------------------
 ;;; Datasets
 
+(defun %dataset-pointer (backend matrix parameter-string reference-pointer)
+  "Return two values: the raw LightGBM dataset pointer built from MATRIX, and the name
+of the C function that produced it, for the null-handle check `make-dataset' makes
+afterward.
+
+MATRIX is either a `csr-matrix' -- `LGBM_DatasetCreateFromCSR', through
+`%create-dataset-from-csr' -- or anything `with-foreign-matrix' accepts --
+`LGBM_DatasetCreateFromMat', through `%create-dataset'. PARAMETER-STRING and
+REFERENCE-POINTER reach both entry points identically: neither argument means anything
+different for a sparse matrix than for a dense one, which is exactly what `make-dataset''s
+own contract promises about them.
+
+The `:sparse-input' capability is re-checked here rather than assumed, and signals
+`capability-unavailable' when it reads false: policy section 7 requires the operation to
+signal for itself, so a caller who never asked `backend-supports-p' gets a typed condition
+instead of a missing-symbol crash. Only the sparse branch checks it -- a dense matrix does
+not need `LGBM_DatasetCreateFromCSR' to exist, and must keep working on a library that
+lacks it.
+
+A `defun', not a second `make-dataset' method specialized on `csr-matrix': `make-dataset'
+dispatches on BACKEND and MATRIX is its second required argument, so a method pair would
+split every one of the shared steps below -- the ownership dance, LABEL, WEIGHT, GROUP,
+FEATURE-NAMES -- across two bodies that must not drift, to vary one call. This keeps that
+whole method single and varies only the call that actually differs."
+  (if (typep matrix 'csr-matrix)
+      (progn
+        (unless (backend-supports-p backend :sparse-input)
+          (error 'capability-unavailable
+                 :backend (backend-name backend) :capability :sparse-input))
+        (values (%create-dataset-from-csr (csr-matrix-indptr matrix)
+                                          (csr-matrix-indices matrix)
+                                          (csr-matrix-values matrix)
+                                          (csr-matrix-num-columns matrix)
+                                          parameter-string reference-pointer)
+                "LGBM_DatasetCreateFromCSR"))
+      (values (%create-dataset matrix parameter-string reference-pointer)
+              "LGBM_DatasetCreateFromMat")))
+
 (defmethod make-dataset ((backend lightgbm-backend) matrix
                           &key label weight group feature-names parameters reference)
-  "Build a LightGBM dataset from MATRIX via `LGBM_DatasetCreateFromMat', attaching
-LABEL, WEIGHT and GROUP with `LGBM_DatasetSetField' and FEATURE-NAMES with
-`LGBM_DatasetSetFeatureNames' when supplied. See the `make-dataset' generic
-function's docstring for what each argument means, including REFERENCE.
+  "Build a LightGBM dataset from MATRIX -- a dense matrix via `LGBM_DatasetCreateFromMat',
+a `csr-matrix' via `LGBM_DatasetCreateFromCSR' -- attaching LABEL, WEIGHT and GROUP with
+`LGBM_DatasetSetField' and FEATURE-NAMES with `LGBM_DatasetSetFeatureNames' when supplied.
+See the `make-dataset' generic function's docstring for what each argument means,
+including REFERENCE, and for what a `csr-matrix' changes about none of them.
+
+Signals `capability-unavailable' when MATRIX is a `csr-matrix' and this backend's
+`:sparse-input' capability reads false -- see `%dataset-pointer', which checks it. Every
+other argument behaves identically either way: PARAMETERS and REFERENCE reach the sparse
+entry point as the same two C parameters they reach the dense one as, and LABEL, WEIGHT,
+GROUP and FEATURE-NAMES are attached to the finished dataset by the calls below, which
+never see which entry point built it.
 
 Signals `foreign-call-error' when dataset creation reports success but writes a
 null handle -- a library-contract violation, but one every later call through
@@ -243,41 +297,42 @@ when REFERENCE is supplied but is not a `lightgbm-dataset', `released-handle-err
 when it has already been freed, and `backend-not-open' when its backend has since
 been closed -- see `%reference-pointer'.
 
-The raw dataset handle exists in C from the moment `LGBM_DatasetCreateFromMat'
-returns, but `make-handle' does not take ownership of it until the very end --
-attaching LABEL, WEIGHT, GROUP or FEATURE-NAMES can each signal first (a
-wrong-length `:label' is the commonest way). OWNED tracks whether `make-handle'
-ran; when it did not, the raw dataset is freed here instead of orphaned.
+The raw dataset handle exists in C from the moment the creation call returns, but
+`make-handle' does not take ownership of it until the very end -- attaching LABEL,
+WEIGHT, GROUP or FEATURE-NAMES can each signal first (a wrong-length `:label' is the
+commonest way). OWNED tracks whether `make-handle' ran; when it did not, the raw dataset
+is freed here instead of orphaned.
 
 Signals `backend-not-open' before any of that when BACKEND is not open -- see
 `%check-backend-open'."
   (with-foreign-float-traps-masked
     (%check-backend-open backend)
-    (let* ((reference-pointer (%reference-pointer backend reference 'lightgbm-dataset))
-           (parameter-string (%parameter-string parameters))
-           (dataset-pointer (%create-dataset matrix parameter-string reference-pointer)))
-      (when (cffi:null-pointer-p dataset-pointer)
-        (error 'foreign-call-error
-               :function-name "LGBM_DatasetCreateFromMat"
-               :code 0
-               :message "reported success but returned a null dataset handle"))
-      (let ((owned nil))
-        (unwind-protect
-             (progn
-               (when label
-                 (%set-info-field dataset-pointer "label" label))
-               (when weight
-                 (%set-info-field dataset-pointer "weight" weight))
-               (when group
-                 (%set-group-field dataset-pointer group))
-               (when feature-names
-                 (%set-feature-names dataset-pointer feature-names))
-               (prog1
-                   (make-handle 'lightgbm-dataset dataset-pointer backend :dataset)
-                 (setf owned t)))
-          (unless owned
-            (handler-case (%free-dataset-unchecked dataset-pointer)
-              (error () nil))))))))
+    (let ((reference-pointer (%reference-pointer backend reference 'lightgbm-dataset))
+          (parameter-string (%parameter-string parameters)))
+      (multiple-value-bind (dataset-pointer function-name)
+          (%dataset-pointer backend matrix parameter-string reference-pointer)
+        (when (cffi:null-pointer-p dataset-pointer)
+          (error 'foreign-call-error
+                 :function-name function-name
+                 :code 0
+                 :message "reported success but returned a null dataset handle"))
+        (let ((owned nil))
+          (unwind-protect
+               (progn
+                 (when label
+                   (%set-info-field dataset-pointer "label" label))
+                 (when weight
+                   (%set-info-field dataset-pointer "weight" weight))
+                 (when group
+                   (%set-group-field dataset-pointer group))
+                 (when feature-names
+                   (%set-feature-names dataset-pointer feature-names))
+                 (prog1
+                     (make-handle 'lightgbm-dataset dataset-pointer backend :dataset)
+                   (setf owned t)))
+            (unless owned
+              (handler-case (%free-dataset-unchecked dataset-pointer)
+                (error () nil)))))))))
 
 (defmethod dataset-num-rows ((dataset lightgbm-dataset))
   "Return DATASET's row count, read via `LGBM_DatasetGetNumData'."

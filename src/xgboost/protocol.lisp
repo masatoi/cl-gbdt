@@ -22,6 +22,7 @@
                 #:*optional-symbols*
                 #:*provided-capabilities*
                 #:%create-dmatrix
+                #:%create-dmatrix-from-csr
                 #:%set-info-field
                 #:%set-group-field
                 #:%set-feature-names
@@ -97,7 +98,12 @@
                 #:missing-training-set
                 #:capability-unavailable)
   (:import-from #:cl-gbdt/src/data
-                #:with-foreign-matrix)
+                #:with-foreign-matrix
+                #:csr-matrix
+                #:csr-matrix-indptr
+                #:csr-matrix-indices
+                #:csr-matrix-values
+                #:csr-matrix-num-columns)
   (:import-from #:cl-gbdt/src/training/history
                 #:training-report-from-history)
   (:import-from #:cl-gbdt/src/training/early-stopping
@@ -243,13 +249,50 @@ from the process afterward -- only that cl-gbdt no longer holds it open."
 ;;; ---------------------------------------------------------------------------
 ;;; Datasets
 
+(defun %dataset-pointer (backend matrix)
+  "Return two values: the raw DMatrix pointer built from MATRIX, and the name of the C
+function that produced it, for the null-handle check `make-dataset' makes afterward.
+
+MATRIX is either a `csr-matrix' -- `XGDMatrixCreateFromCSR', through
+`%create-dmatrix-from-csr' -- or anything `with-foreign-matrix' accepts --
+`XGDMatrixCreateFromDense', through `%create-dmatrix'.
+
+The `:sparse-input' capability is re-checked here rather than assumed, and signals
+`capability-unavailable' when it reads false: policy section 7 requires the operation to
+signal for itself, so a caller who never asked `backend-supports-p' gets a typed condition
+instead of a missing-symbol crash -- the same rule `slice-model' at the end of this file
+follows for `:model-slicing'. Only the sparse branch checks it: a dense matrix does not need
+`XGDMatrixCreateFromCSR' to exist, and must keep working on a library that lacks it.
+
+A `defun', not a second `make-dataset' method specialized on `csr-matrix' -- see
+`cl-gbdt/src/lightgbm/protocol''s function of the same name and purpose, which this
+mirrors, for why."
+  (if (typep matrix 'csr-matrix)
+      (progn
+        (unless (backend-supports-p backend :sparse-input)
+          (error 'capability-unavailable
+                 :backend (backend-name backend) :capability :sparse-input))
+        (values (%create-dmatrix-from-csr (csr-matrix-indptr matrix)
+                                          (csr-matrix-indices matrix)
+                                          (csr-matrix-values matrix)
+                                          (csr-matrix-num-columns matrix))
+                "XGDMatrixCreateFromCSR"))
+      (values (%create-dmatrix matrix) "XGDMatrixCreateFromDense")))
+
 (defmethod make-dataset ((backend xgboost-backend) matrix
                           &key label weight group feature-names parameters reference)
-  "Build an XGBoost dataset (a DMatrix) from MATRIX via `XGDMatrixCreateFromDense',
-attaching LABEL and WEIGHT with `XGDMatrixSetInfoFromInterface', GROUP with
-`XGDMatrixSetUIntInfo', and FEATURE-NAMES with `XGDMatrixSetStrFeatureInfo' when
-supplied. See the `make-dataset' generic function's docstring for what each argument
-means.
+  "Build an XGBoost dataset (a DMatrix) from MATRIX -- a dense matrix via
+`XGDMatrixCreateFromDense', a `csr-matrix' via `XGDMatrixCreateFromCSR' -- attaching LABEL
+and WEIGHT with `XGDMatrixSetInfoFromInterface', GROUP with `XGDMatrixSetUIntInfo', and
+FEATURE-NAMES with `XGDMatrixSetStrFeatureInfo' when supplied. See the `make-dataset'
+generic function's docstring for what each argument means.
+
+Signals `capability-unavailable' when MATRIX is a `csr-matrix' and this backend's
+`:sparse-input' capability reads false -- see `%dataset-pointer', which checks it. LABEL,
+WEIGHT, GROUP and FEATURE-NAMES behave identically either way: they are attached to the
+finished DMatrix by the calls below, which never see which entry point built it. REFERENCE
+and PARAMETERS are refused for a `csr-matrix' exactly as they are for a dense matrix, and
+for the same reasons, spelled out below.
 
 REFERENCE and PARAMETERS both signal `unsupported-argument' rather than being silently
 dropped: REFERENCE is a LightGBM-only concept -- aligning a new dataset's bin mapper to an
@@ -272,7 +315,7 @@ Signals `foreign-call-error' when dataset creation reports success but writes a 
 handle -- a library-contract violation, but one every later call through this handle would
 otherwise dereference blindly.
 
-The raw DMatrix handle exists in C from the moment `XGDMatrixCreateFromDense' returns, but
+The raw DMatrix handle exists in C from the moment the creation call returns, but
 `make-handle' does not take ownership of it until the very end -- attaching LABEL, WEIGHT,
 GROUP or FEATURE-NAMES can each signal first (a wrong-length `:label' is the commonest
 way). OWNED tracks whether `make-handle' ran; when it did not, the raw DMatrix is freed
@@ -291,10 +334,10 @@ Signals `backend-not-open' before any of that when BACKEND is not open -- see
                    data_split_mode, none of which are LightGBM's dataset-level binning ~
                    parameters, and the library silently ignores any other key rather than ~
                    rejecting it"))
-    (let ((dataset-pointer (%create-dmatrix matrix)))
+    (multiple-value-bind (dataset-pointer function-name) (%dataset-pointer backend matrix)
       (when (cffi:null-pointer-p dataset-pointer)
         (error 'foreign-call-error
-               :function-name "XGDMatrixCreateFromDense"
+               :function-name function-name
                :code 0
                :message "reported success but returned a null dataset handle"))
       (let ((owned nil))
