@@ -487,7 +487,8 @@ Signals `backend-not-open' before any of that when BACKEND is not open -- see
                                  (reverse history) completed-rounds dataset-names
                                  :best-iteration best-iteration
                                  :best-score (and watcher (watcher-best-score watcher))
-                                 :early-stopped-p (and watcher (watcher-stopped-p watcher)))))
+                                 :early-stopped-p (and watcher (watcher-stopped-p watcher)
+                                                   (< completed-rounds num-rounds)))))
                    (multiple-value-prog1
                        (values (make-handle 'lightgbm-booster booster-pointer backend :booster
                                             :training-set dataset

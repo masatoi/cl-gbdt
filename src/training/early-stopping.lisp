@@ -52,11 +52,17 @@ BEST-ITERATION and BEST-SCORE record the best value seen so far and which iterat
 produced it, both NIL until the first real value arrives. SINCE-IMPROVEMENT counts
 consecutive iterations, including the current one, that did not improve on BEST-SCORE;
 STOPPED-P latches true the first time it reaches ROUNDS and stays true afterward, since a
-watcher that has already recommended stopping has nothing new to say on a later call."
+watcher that has already recommended stopping has nothing new to say on a later call.
+
+BACKEND-NAME is carried only so that `observe-iteration''s own `unsupported-argument'
+names the backend `train' was called on, exactly as the four construction-time validators
+do. It is a keyword, never a backend object: this file touches no handle, no pointer and no
+shared library, and a name is not a handle."
   (index 0)
   (metric "")
   (direction :lower-is-better)
   (rounds 1)
+  (backend-name nil)
   (best-iteration nil)
   (best-score nil)
   (since-improvement 0)
@@ -64,6 +70,18 @@ watcher that has already recommended stopping has nothing new to say on a later 
 
 ;;; ---------------------------------------------------------------------------
 ;;; Construction: parsing and validating SPEC
+
+(defun %comparable-p (value)
+  "Return true when VALUE can take part in a strict improvement comparison.
+
+NIL is the unreadable field Phase 3a records rather than drops. A NaN is worse than NIL: it
+arrives as an ordinary `double-float', so `realp' answers T for it, yet every comparison
+against it is false in both directions -- `(< x nan)' and `(< nan x)' alike -- so a NaN
+admitted as the best score could never be beaten by any later value. `(= value value)' is the
+standard test that separates a NaN from every other real, and it does not trap on a quiet one,
+which matters because this file is also called from layer-1 tests outside any
+`with-foreign-float-traps-masked' extent."
+  (and (realp value) (= value value)))
 
 (defun %signal-unsupported (backend-name argument-name reason)
   "Signal `unsupported-argument' naming BACKEND-NAME and ARGUMENT-NAME, with REASON.
@@ -185,7 +203,7 @@ alone cannot say what a booster will report before it runs a single iteration --
         (rounds (%require-rounds backend-name spec))
         (index (%resolve-dataset backend-name spec dataset-names)))
     (%make-early-stopping-watcher :index index :metric metric :direction direction
-                                   :rounds rounds)))
+                                   :rounds rounds :backend-name backend-name)))
 
 (defun train-early-stopping-watcher (backend-name early-stopping record-history dataset-names)
   "Return the watcher EARLY-STOPPING asks for, or NIL when EARLY-STOPPING is NIL and the
@@ -218,8 +236,10 @@ than the one asked for.
 
 The condition names :BACKEND BACKEND-NAME here exactly as `%require-metric' and the other
 three validators of the same spec do, so a caller reading that slot gets the backend it
-actually called `train' on whichever of the five checks fired -- never a placeholder like
-`:early-stopping', which names no backend `open-backend' ever returns.
+actually called `train' on whichever check fired -- the four that validate the spec, this
+one, and `observe-iteration''s own metric check, which carries BACKEND-NAME on the watcher
+for exactly this reason. Never a placeholder like `:early-stopping', which names no backend
+`open-backend' ever returns.
 
 Otherwise delegates to `make-early-stopping-watcher', which validates the spec's four
 required keys against DATASET-NAMES -- see its docstring. Both backends call this before
@@ -286,12 +306,20 @@ stopping has nothing new to say."
   (let ((entry (%find-watched-entry watcher entries)))
     (unless entry
       (error 'unsupported-argument
-             :backend :early-stopping
-             :argument "make-early-stopping-watcher's :metric"
+             :backend (watcher-backend-name watcher)
+             :argument "train's :early-stopping :metric"
              :reason (format nil "the booster never reported metric ~S for dataset index ~D"
                               (watcher-metric watcher) (watcher-index watcher))))
     (let ((value (third entry)))
-      (if (and value
+      ;; `%comparable-p', not merely non-NIL: LightGBM returns a NaN as an ordinary
+      ;; `double-float', which `realp' answers T for, and every comparison against a NaN is
+      ;; false in both directions. Admitting one as the best score would make it the best
+      ;; score forever -- no later finite value could ever beat it -- and the run would stop
+      ;; on patience with a NaN best-score and a wrong best-iteration. XGBoost's text parse
+      ;; already yields NIL for its own `nan' output, so admitting LightGBM's would also make
+      ;; one model state behave differently on the two backends, which is precisely what the
+      ;; portable contract exists to prevent.
+      (if (and (%comparable-p value)
                (or (null (watcher-best-score watcher))
                    (funcall (%comparator watcher) value (watcher-best-score watcher))))
           (setf (watcher-best-score watcher) value

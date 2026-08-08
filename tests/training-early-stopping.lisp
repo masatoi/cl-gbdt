@@ -207,3 +207,53 @@
          (lambda () (train-early-stopping-watcher
                      :test-backend '(:metric "logloss" :dataset "valid") t *names*)))
         "a spec missing :direction and :rounds was accepted")))
+
+;;; Reported by Codex on PR #16. LightGBM returns a NaN as an ordinary `double-float', which
+;;; `realp' answers T for, so a non-NIL guard admits it. Every comparison against a NaN is
+;;; false in both directions, so once one becomes the best score no later value can beat it:
+;;; the run stops on patience carrying a NaN best-score and a wrong best-iteration. XGBoost's
+;;; text parse already yields NIL for its own `nan', so admitting LightGBM's would make one
+;;; model state behave differently on the two backends.
+
+(defparameter *nan* (sb-kernel:make-double-float -524288 0)
+  "A quiet NaN, built without reading one out of a library. `(= *nan* *nan*)' is false and
+does not trap, which is what `%comparable-p' relies on.")
+
+(deftest watcher-treats-a-nan-as-no-improvement
+  (testing "a NaN never becomes the best score, even as the first value seen"
+    (let ((watcher (%watcher)))
+      (observe-iteration watcher (%entries *nan*) 1)
+      (ok (null (cl-gbdt/src/training/early-stopping::watcher-best-score watcher))
+          "the best score after one NaN")
+      (ok (null (watcher-best-iteration watcher))
+          "the best iteration after one NaN")))
+  (testing "a finite value after a NaN still becomes the best"
+    (let ((watcher (%watcher)))
+      (observe-iteration watcher (%entries *nan*) 1)
+      (observe-iteration watcher (%entries 0.5d0) 2)
+      (ok (eql 2 (watcher-best-iteration watcher))
+          "the iteration a finite value claimed after a NaN")))
+  (testing "a run of NaNs stops on patience, as a run of unreadable values does"
+    (let ((watcher (%watcher)))
+      (observe-iteration watcher (%entries 0.5d0) 1)
+      (observe-iteration watcher (%entries *nan*) 2)
+      (ok (observe-iteration watcher (%entries *nan*) 3)
+          "whether two NaNs exhaust a :rounds 2 patience"))))
+
+(deftest watcher-metric-error-names-train-and-the-real-backend
+  ;; The sixth of the six error sites. It reports at run time rather than at construction
+  ;; because :metric is the one required key that cannot be validated before the booster has
+  ;; reported its metric names -- which makes it the site most likely to fire in real use.
+  (testing "the condition names train's argument and the backend train was called on"
+    (let* ((watcher (%watcher :backend :test-backend))
+           (text (handler-case
+                     (progn (observe-iteration
+                             watcher (list (list 1 "other-metric" 0.5d0)) 1)
+                            "")
+                   (cl-gbdt:unsupported-argument (c) (princ-to-string c)))))
+      (ok (search "train's :early-stopping :metric" text)
+          "the argument the condition names")
+      (ok (search "TEST-BACKEND" text)
+          "the backend the condition names")
+      (ok (not (search "make-early-stopping-watcher" text))
+          "whether the internal constructor's name is absent"))))
