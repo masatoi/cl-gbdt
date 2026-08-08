@@ -63,28 +63,45 @@ the booster has no metrics configured -- LightGBM's `metric=none'.")
                :documentation "How many boosting iterations actually ran. Equal to `train''s
 :NUM-ROUNDS in this phase; Phase 3b's early stopping is what can make it smaller, which is why
 it is recorded rather than left for the caller to assume.")
-   (best-iteration :initform nil
+   (best-iteration :initarg :best-iteration
+                   :initform nil
                    :reader training-report-best-iteration
-                   :documentation "NIL in this phase. Filled by Phase 3b.
+                   :documentation "Which iteration produced `best-score', or NIL.
 
-Finding the best iteration means knowing whether a metric improves upward or downward, and
-policy section 9 forbids inferring that from the metric's name. NIL says \"not determined\",
-which is not the same as iteration 0.")
-   (best-score :initform nil
+Filled only when `train' was given :EARLY-STOPPING; every other run -- including one that
+completes normally with :EARLY-STOPPING never given at all -- leaves this NIL. Finding the
+best iteration means knowing whether a metric improves upward or downward, and policy
+section 9 forbids inferring that from the metric's name; :EARLY-STOPPING is what supplies
+that direction explicitly, which is what makes filling this slot possible at all. NIL means
+\"not determined\", never \"iteration 0\" -- a run's best iteration can genuinely be iteration
+0, and NIL must stay distinguishable from that answer.")
+   (best-score :initarg :best-score
+               :initform nil
                :reader training-report-best-score
-               :documentation "NIL in this phase. Filled by Phase 3b, alongside
-`training-report-best-iteration' and for the same reason.")
-   (early-stopped-p :initform nil
+               :documentation "The best value `best-iteration' achieved, or NIL.
+
+Filled under exactly the same condition as `training-report-best-iteration' and for the same
+reason: only when `train' was given :EARLY-STOPPING. NIL here means \"not determined\", the
+same as for `best-iteration' -- not \"no improvement was ever seen\", which would be a real,
+reportable outcome once :EARLY-STOPPING is in use.")
+   (early-stopped-p :initarg :early-stopped-p
+                    :initform nil
                     :reader training-report-early-stopped-p
-                    :documentation "NIL in this phase: no training run can stop early yet.
-Filled by Phase 3b."))
+                    :documentation "True when the run stopped before `num-rounds' iterations
+because :EARLY-STOPPING's patience was exhausted.
+
+NIL in two cases this slot does not distinguish: :EARLY-STOPPING was given but the run
+completed on its own before triggering it, and :EARLY-STOPPING was not given at all. Neither
+case stopped early for a reason this slot needs to report, which is why both read the same
+as \"not determined\" reads for `best-iteration' and `best-score'."))
   (:documentation "What a training run recorded, returned as `train''s secondary value.
 
 Policy section 9 asks a training report to express the dataset, the metric, the per-iteration
-values, the best iteration, the best score, and whether early stopping happened. The first
-three are here now; the last three are Phase 3b's and read NIL until then. A class rather than
-a plist so that Phase 3b filling them adds slots without breaking a caller, and so each field
-can say what it means."))
+values, the best iteration, the best score, and whether early stopping happened. All six are
+here; the last three read NIL unless `train' was given :EARLY-STOPPING -- see each slot's own
+documentation for why NIL is \"not determined\" rather than an invented default. A class rather
+than a plist so a caller can rely on each field saying what it means regardless of whether
+this run used early stopping."))
 
 (defun make-training-series (&key index name metric values)
   "Return a `training-series' for METRIC on the dataset at INDEX, optionally called NAME.
@@ -93,12 +110,17 @@ VALUES is one element per completed iteration; see the slot's own documentation 
 element is legal."
   (make-instance 'training-series :index index :name name :metric metric :values values))
 
-(defun make-training-report (&key series num-rounds)
+(defun make-training-report (&key series num-rounds best-iteration best-score
+                              early-stopped-p)
   "Return a `training-report' over SERIES, recorded across NUM-ROUNDS iterations.
 
-`training-report-best-iteration', `-best-score' and `-early-stopped-p' are NIL: Phase 3b fills
-them, and there is no honest value for them before it does."
-  (make-instance 'training-report :series series :num-rounds num-rounds))
+BEST-ITERATION, BEST-SCORE and EARLY-STOPPED-P default to NIL, which is the honest value for
+a run that was not given :EARLY-STOPPING; a caller that was given it passes what its watcher
+found. See `training-report-best-iteration', `-best-score' and `-early-stopped-p' for why NIL
+means \"not determined\" rather than an invented default."
+  (make-instance 'training-report :series series :num-rounds num-rounds
+                 :best-iteration best-iteration :best-score best-score
+                 :early-stopped-p early-stopped-p))
 
 (defmethod print-object ((series training-series) stream)
   (print-unreadable-object (series stream :type t)

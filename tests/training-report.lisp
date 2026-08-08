@@ -43,6 +43,18 @@
       (ok (eq series (cl-gbdt:training-report-series report)) "series")
       (ok (= 2 (cl-gbdt:training-report-num-rounds report)) "num-rounds"))))
 
+(deftest training-report-early-stopping-slots-round-trip
+  ;; This task (Phase 3b, task 2) only makes the three settable -- Task 3 is the one caller
+  ;; that will actually pass them, once `train' is given :early-stopping. Round-tripping them
+  ;; here is what proves the slots and their initargs exist before anything wires them up.
+  (testing "best-iteration, best-score and early-stopped-p read back their initargs"
+    (let ((report (cl-gbdt:make-training-report :series nil :num-rounds 5
+                                                  :best-iteration 3 :best-score 0.25d0
+                                                  :early-stopped-p t)))
+      (ok (= 3 (cl-gbdt:training-report-best-iteration report)) "best-iteration")
+      (ok (= 0.25d0 (cl-gbdt:training-report-best-score report)) "best-score")
+      (ok (eq t (cl-gbdt:training-report-early-stopped-p report)) "early-stopped-p"))))
+
 (deftest training-report-phase-3b-slots-are-nil
   ;; Best iteration cannot be computed without knowing whether a metric improves upward or
   ;; downward, and policy section 9 forbids inferring that from the metric's name. Phase 3b

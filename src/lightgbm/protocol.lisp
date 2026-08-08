@@ -79,7 +79,9 @@
                 #:handle-released-p
                 #:handle-backend
                 #:booster-training-set
-                #:booster-validation-sets)
+                #:booster-validation-sets
+                #:%resolve-best-num-iteration
+                #:%reject-best-num-iteration)
   (:import-from #:cl-gbdt/src/conditions
                 #:missing-foreign-symbols
                 #:foreign-call-error
@@ -88,6 +90,12 @@
                 #:with-foreign-matrix)
   (:import-from #:cl-gbdt/src/training/history
                 #:training-report-from-history)
+  (:import-from #:cl-gbdt/src/training/early-stopping
+                #:train-early-stopping-watcher
+                #:observe-iteration
+                #:watcher-best-iteration
+                #:watcher-best-score
+                #:watcher-stopped-p)
   (:import-from #:cl-gbdt/src/library
                 #:resolve-and-load-library)
   (:import-from #:cl-gbdt/src/foreign
@@ -337,15 +345,17 @@ that afterward, on every element `%valid-set-name' has already let through."
   (if (consp entry) (cdr entry) entry))
 
 (defmethod train ((backend lightgbm-backend) dataset
-                   &key valid-sets (num-rounds 100) parameters (record-history t))
-  "Train a LightGBM booster on DATASET for NUM-ROUNDS boosting iterations, and return
-it and a `training-report' of the run.
+                   &key valid-sets (num-rounds 100) parameters (record-history t)
+                        early-stopping)
+  "Train a LightGBM booster on DATASET for up to NUM-ROUNDS boosting iterations, and
+return it and a `training-report' of the run.
 
 Builds the booster with `LGBM_BoosterCreate' from PARAMETERS, attaches each of
 VALID-SETS with `LGBM_BoosterAddValidData', then drives
-`LGBM_BoosterUpdateOneIter' NUM-ROUNDS times. See the `train' generic
-function's docstring for what each argument means, and for what the secondary
-value holds; NUM-ROUNDS defaults to 100 when not supplied.
+`LGBM_BoosterUpdateOneIter' NUM-ROUNDS times -- or fewer, when EARLY-STOPPING
+ends the run first. See the `train' generic function's docstring for what each
+argument means, and for what the secondary value holds; NUM-ROUNDS defaults to
+100 when not supplied.
 
 Each VALID-SETS element is either a dataset, whose series carry no name, or a
 (NAME . DATASET) cons, where NAME is a string that reaches `training-series-name' for
@@ -377,9 +387,18 @@ NUM-ROUNDS -- `training-report-from-history' over an empty history, the same sha
 with `metric=none' produces.
 
 A read that fails propagates, freeing the booster through the OWNED dance below rather
-than returning a report whose series are shorter than NUM-ROUNDS: a short series is
+than returning a report whose series are shorter than the run: a short series is
 indistinguishable from one a buggy loop recorded, and \"one value per iteration\" is the
 invariant a caller reading the report relies on.
+
+EARLY-STOPPING watches one of those recorded series and ends the loop once it has stopped
+improving -- see the `train' generic function's docstring for the spec's four required
+keys, and `train-early-stopping-watcher' for why it cannot be combined with
+RECORD-HISTORY NIL.
+The watcher sees each iteration's entries exactly as the history records them, off the one
+`%read-evaluation' call this loop already makes, so what stopped the run and what the
+report shows can never be two different readings. `training-report-num-rounds' needs
+nothing extra to report the shortened run: it has counted actual iterations since Phase 3a.
 
 DATASET and every VALID-SETS entry's dataset half are each run through
 `%check-lightgbm-dataset' before any foreign call. `train' dispatches on
@@ -432,12 +451,19 @@ Signals `backend-not-open' before any of that when BACKEND is not open -- see
                      valid-sets))
            (dataset-count (1+ (length valid-set-pointers)))
            (dataset-names (cons nil valid-set-names))
+           ;; Built before `LGBM_BoosterCreate', so a malformed spec -- or one asking for
+           ;; early stopping with RECORD-HISTORY NIL -- signals with no raw booster handle
+           ;; in existence yet to unwind. NIL when EARLY-STOPPING is NIL, which is what the
+           ;; loop below tests to decide whether it can end early at all.
+           (watcher (train-early-stopping-watcher (backend-name backend) early-stopping
+                                                   record-history dataset-names))
            (history '())
-           ;; Counted rather than taken from NUM-ROUNDS: `dotimes' runs zero iterations for a
-           ;; negative count, so a caller passing :NUM-ROUNDS -1 gets an untrained booster --
-           ;; as it did before this branch -- and the report must say 0 ran, not -1.
-           ;; `training-report-num-rounds' promises how many iterations actually ran, and
-           ;; Phase 3b's early stopping needs this same count for the same reason.
+           ;; Counted rather than taken from NUM-ROUNDS: the loop below runs zero iterations
+           ;; for a negative count, so a caller passing :NUM-ROUNDS -1 gets an untrained
+           ;; booster -- as it did before this branch -- and the report must say 0 ran, not
+           ;; -1. `training-report-num-rounds' promises how many iterations actually ran, and
+           ;; it is also what makes an early-stopped run report its true, shortened length
+           ;; with nothing further to do here.
            (completed-rounds 0))
       (let ((booster-pointer
               (%create-booster train-data-pointer (%parameter-string parameters))))
@@ -445,19 +471,29 @@ Signals `backend-not-open' before any of that when BACKEND is not open -- see
           (unwind-protect
                (progn
                  (%add-valid-data booster-pointer valid-set-pointers)
-                 (dotimes (round num-rounds)
-                   (declare (ignorable round))
-                   (%update-one-iteration booster-pointer)
-                   (incf completed-rounds)
-                   (when record-history
-                     (push (%read-evaluation booster-pointer dataset-count) history)))
-                 (let ((report (training-report-from-history (reverse history)
-                                                              completed-rounds
-                                                              dataset-names)))
+                 ;; ROUND is 1-based, which is the numbering `observe-iteration' answers
+                 ;; `watcher-best-iteration' in and the report publishes.
+                 (loop :for round :from 1 :to num-rounds
+                       :do (%update-one-iteration booster-pointer)
+                           (incf completed-rounds)
+                           (let ((entries (when record-history
+                                            (%read-evaluation booster-pointer dataset-count))))
+                             (when record-history
+                               (push entries history))
+                             (when (and watcher (observe-iteration watcher entries round))
+                               (return))))
+                 (let* ((best-iteration (and watcher (watcher-best-iteration watcher)))
+                        (report (training-report-from-history
+                                 (reverse history) completed-rounds dataset-names
+                                 :best-iteration best-iteration
+                                 :best-score (and watcher (watcher-best-score watcher))
+                                 :early-stopped-p (and watcher (watcher-stopped-p watcher)
+                                                   (< completed-rounds num-rounds)))))
                    (multiple-value-prog1
                        (values (make-handle 'lightgbm-booster booster-pointer backend :booster
                                             :training-set dataset
-                                            :validation-sets valid-sets)
+                                            :validation-sets valid-sets
+                                            :best-iteration best-iteration)
                                report)
                      (setf owned t))))
             (unless owned
@@ -496,8 +532,9 @@ reasoning applies here."
 (defmethod predict ((booster lightgbm-booster) matrix &key (kind :normal) num-iteration)
   "Predict on MATRIX with BOOSTER via `LGBM_BoosterPredictForMat'.
 
-KIND and NUM-ITERATION are as the `predict' generic function documents.
-Predictions start from iteration 0 -- the protocol exposes no start-iteration
+KIND and NUM-ITERATION are as the `predict' generic function documents, NUM-ITERATION's
+:BEST resolved by `%resolve-best-num-iteration' before `%resolve-num-iteration' ever
+sees it. Predictions start from iteration 0 -- the protocol exposes no start-iteration
 override.
 
 The output buffer's element count comes from `LGBM_BoosterCalcNumPredict', not
@@ -517,7 +554,9 @@ counts as a valid model output."
   (with-foreign-float-traps-masked
     (let ((pointer (handle-live-pointer booster))
           (predict-type (%predict-type kind))
-          (iteration-count (%resolve-num-iteration num-iteration)))
+          (iteration-count
+            (%resolve-num-iteration
+             (%resolve-best-num-iteration booster num-iteration "predict's :num-iteration"))))
       (with-foreign-matrix (data-pointer nrow ncol element-type) matrix
         (let ((data-type (%data-type element-type))
               (element-count (%calc-num-predict pointer nrow predict-type 0 iteration-count)))
@@ -543,12 +582,15 @@ counts as a valid model output."
 (defmethod save-model ((booster lightgbm-booster) path &key num-iteration)
   "Save BOOSTER's model to PATH via `LGBM_BoosterSaveModel'.
 
-NUM-ITERATION limits how many trees are saved; nil saves all of them, which
-LightGBM spells as 0. Returns PATH."
+NUM-ITERATION limits how many trees are saved, :BEST resolved by
+`%resolve-best-num-iteration' first; nil saves all of them, which LightGBM spells as 0.
+Returns PATH."
   (with-foreign-float-traps-masked
-    (let ((pointer (handle-live-pointer booster)))
+    (let ((pointer (handle-live-pointer booster))
+          (resolved (%resolve-best-num-iteration booster num-iteration
+                                                  "save-model's :num-iteration")))
       (cffi:with-foreign-string (filename (namestring path))
-        (%save-model pointer (%resolve-num-iteration num-iteration) filename)))
+        (%save-model pointer (%resolve-num-iteration resolved) filename)))
     path))
 
 (defmethod load-model ((backend lightgbm-backend) path)
@@ -589,10 +631,15 @@ see `%check-backend-open'."
               (error () nil))))))))
 
 (defmethod model-to-string ((booster lightgbm-booster) &key num-iteration)
-  "Return BOOSTER's model as a string via `LGBM_BoosterSaveModelToString'."
+  "Return BOOSTER's model as a string via `LGBM_BoosterSaveModelToString'.
+
+NUM-ITERATION's :BEST is resolved by `%resolve-best-num-iteration' before
+`%resolve-num-iteration' ever sees it, exactly as `predict' and `save-model' resolve it."
   (with-foreign-float-traps-masked
-    (%save-model-to-string (handle-live-pointer booster)
-                            (%resolve-num-iteration num-iteration))))
+    (%save-model-to-string
+     (handle-live-pointer booster)
+     (%resolve-num-iteration
+      (%resolve-best-num-iteration booster num-iteration "model-to-string's :num-iteration")))))
 
 ;;; ---------------------------------------------------------------------------
 ;;; Feature importance
@@ -603,14 +650,20 @@ see `%check-backend-open'."
 The result has one entry per feature. The width comes from
 `LGBM_BoosterGetNumFeature', which works whether BOOSTER came from `train' or
 `load-model' -- unlike a booster's training set, which `load-model' leaves
-unbound."
+unbound.
+
+NUM-ITERATION does not accept :BEST, unlike `predict', `save-model' and
+`model-to-string' -- `%reject-best-num-iteration' signals `unsupported-argument' for it
+rather than letting it reach `LGBM_BoosterFeatureImportance' as raw, uninterpreted data."
   (with-foreign-float-traps-masked
     (let* ((pointer (handle-live-pointer booster))
            (importance-type (%feature-importance-type kind))
            (count (%booster-num-features pointer))
-           (result (make-array count :element-type 'double-float)))
+           (result (make-array count :element-type 'double-float))
+           (resolved (%reject-best-num-iteration booster num-iteration
+                                                  "feature-importance's :num-iteration")))
       (cffi:with-foreign-object (buffer :double count)
-        (%feature-importance pointer (%resolve-num-iteration num-iteration) importance-type
+        (%feature-importance pointer (%resolve-num-iteration resolved) importance-type
                               buffer)
         (dotimes (index count)
           (setf (aref result index) (cffi:mem-aref buffer :double index))))
