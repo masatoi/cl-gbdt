@@ -80,7 +80,8 @@
                 #:handle-backend
                 #:booster-training-set
                 #:booster-validation-sets
-                #:booster-best-iteration)
+                #:%resolve-best-num-iteration
+                #:%reject-best-num-iteration)
   (:import-from #:cl-gbdt/src/conditions
                 #:missing-foreign-symbols
                 #:foreign-call-error
@@ -525,36 +526,6 @@ reasoning applies here."
                    booster was not freed and its memory is leaked."))))))
 
 ;;; ---------------------------------------------------------------------------
-;;; Selecting an iteration count
-;;;
-;;; Shared by `predict', `save-model' and `model-to-string' below -- the three methods
-;;; that accept NUM-ITERATION on this backend. `feature-importance' also accepts one but
-;;; is out of this function's scope: Phase 3b's `:best' resolves only where the brief
-;;; names it.
-
-(defun %resolve-best-num-iteration (booster num-iteration argument-name)
-  "Return NUM-ITERATION unchanged, except for the keyword :BEST, which resolves to
-BOOSTER's own `booster-best-iteration'.
-
-Runs before `%resolve-num-iteration', which knows only NIL and an integer -- :BEST must
-already be an integer by the time it gets there, so this is always called first, never
-the other way around. Signals `unsupported-argument' naming ARGUMENT-NAME when
-BOOSTER's `booster-best-iteration' is NIL: no `:early-stopping' run set it, or one did
-but never determined a best iteration at all -- `train''s docstring lists the two ways
-that happens even with `:early-stopping' supplied. Either way, :BEST asks a question
-this booster has no answer for, and this signals rather than substituting a default:
-NIL keeps meaning \"every round\" on every booster, this one included."
-  (if (eq num-iteration :best)
-      (or (booster-best-iteration booster)
-          (error 'unsupported-argument
-                 :backend (backend-name (handle-backend booster))
-                 :argument argument-name
-                 :reason "this booster has no best iteration to resolve :best against -- ~
-                          it was not trained with :early-stopping, or that run never ~
-                          determined one"))
-      num-iteration))
-
-;;; ---------------------------------------------------------------------------
 ;;; Inference
 
 (defmethod predict ((booster lightgbm-booster) matrix &key (kind :normal) num-iteration)
@@ -678,14 +649,20 @@ NUM-ITERATION's :BEST is resolved by `%resolve-best-num-iteration' before
 The result has one entry per feature. The width comes from
 `LGBM_BoosterGetNumFeature', which works whether BOOSTER came from `train' or
 `load-model' -- unlike a booster's training set, which `load-model' leaves
-unbound."
+unbound.
+
+NUM-ITERATION does not accept :BEST, unlike `predict', `save-model' and
+`model-to-string' -- `%reject-best-num-iteration' signals `unsupported-argument' for it
+rather than letting it reach `LGBM_BoosterFeatureImportance' as raw, uninterpreted data."
   (with-foreign-float-traps-masked
     (let* ((pointer (handle-live-pointer booster))
            (importance-type (%feature-importance-type kind))
            (count (%booster-num-features pointer))
-           (result (make-array count :element-type 'double-float)))
+           (result (make-array count :element-type 'double-float))
+           (resolved (%reject-best-num-iteration booster num-iteration
+                                                  "feature-importance's :num-iteration")))
       (cffi:with-foreign-object (buffer :double count)
-        (%feature-importance pointer (%resolve-num-iteration num-iteration) importance-type
+        (%feature-importance pointer (%resolve-num-iteration resolved) importance-type
                               buffer)
         (dotimes (index count)
           (setf (aref result index) (cffi:mem-aref buffer :double index))))

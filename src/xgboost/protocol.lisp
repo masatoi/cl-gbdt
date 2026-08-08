@@ -89,13 +89,13 @@
                 #:handle-backend
                 #:booster-training-set
                 #:booster-validation-sets
-                #:booster-best-iteration)
+                #:%resolve-best-num-iteration
+                #:%reject-best-num-iteration)
   (:import-from #:cl-gbdt/src/conditions
                 #:missing-foreign-symbols
                 #:foreign-call-error
                 #:missing-training-set
-                #:capability-unavailable
-                #:unsupported-argument)
+                #:capability-unavailable)
   (:import-from #:cl-gbdt/src/data
                 #:with-foreign-matrix)
   (:import-from #:cl-gbdt/src/training/history
@@ -591,39 +591,6 @@ reasoning applies here."
                    booster was not freed and its memory is leaked."))))))
 
 ;;; ---------------------------------------------------------------------------
-;;; Selecting an iteration count
-;;;
-;;; Shared by `predict', `save-model' and `model-to-string' below -- the three methods
-;;; that accept NUM-ITERATION on this backend. `feature-importance' also accepts one but
-;;; is out of this function's scope: Phase 3b's `:best' resolves only where the brief
-;;; names it.
-
-(defun %resolve-best-num-iteration (booster num-iteration argument-name)
-  "Return NUM-ITERATION unchanged, except for the keyword :BEST, which resolves to
-BOOSTER's own `booster-best-iteration'.
-
-Runs before `%resolve-num-iteration' and before `%check-unsupported', both of which know
-only NIL and an integer -- :BEST must already be an integer by the time either sees it.
-`%check-unsupported' is not special-cased for :BEST: `save-model' and `model-to-string'
-still reject the resolved integer exactly as they reject any other non-NIL
-NUM-ITERATION, which is the asymmetry this backend keeps rather than smooths over.
-Signals `unsupported-argument' naming ARGUMENT-NAME when BOOSTER's `booster-best-iteration'
-is NIL: no `:early-stopping' run set it, or one did but never determined a best iteration
-at all -- `train''s docstring lists the two ways that happens even with `:early-stopping'
-supplied. Either way, :BEST asks a question this booster has no answer for, and this
-signals rather than substituting a default: NIL keeps meaning \"every round\" on every
-booster, this one included."
-  (if (eq num-iteration :best)
-      (or (booster-best-iteration booster)
-          (error 'unsupported-argument
-                 :backend (backend-name (handle-backend booster))
-                 :argument argument-name
-                 :reason "this booster has no best iteration to resolve :best against -- ~
-                          it was not trained with :early-stopping, or that run never ~
-                          determined one"))
-      num-iteration))
-
-;;; ---------------------------------------------------------------------------
 ;;; Inference
 
 (defmethod predict ((booster xgboost-booster) matrix &key (kind :normal) num-iteration)
@@ -816,8 +783,14 @@ Signals `unsupported-argument' instead of returning a result at all when
 `%check-feature-score-dim'. In practice this is a linear (`gblinear') booster's `:split'
 importance on a multi-class model: its scores are a per-class matrix, not one number per
 feature, and there is no single value this backend can derive from that matrix without
-inventing a reduction XGBoost itself does not define."
+inventing a reduction XGBoost itself does not define.
+
+NUM-ITERATION does not accept :BEST, unlike `predict', `save-model' and
+`model-to-string' -- `%reject-best-num-iteration' signals `unsupported-argument' for it
+explicitly, ahead of the blanket rejection just below that would otherwise catch it only
+incidentally, as any other non-NIL value."
   (with-foreign-float-traps-masked
+    (%reject-best-num-iteration booster num-iteration "feature-importance's :num-iteration")
     (%check-unsupported (handle-backend booster) "feature-importance's :num-iteration"
                          num-iteration "XGBoosterFeatureScore has no iteration limit")
     (let ((pointer (handle-live-pointer booster))

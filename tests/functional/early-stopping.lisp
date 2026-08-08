@@ -465,9 +465,8 @@ log-loss metric on the validation set at index 1 -- or NIL when REPORT has no su
                               (ok (not (equalp (cl-gbdt:predict booster matrix)
                                                 (cl-gbdt:predict booster matrix
                                                                  :num-iteration :best)))
-                                  (format nil "predict :num-iteration :best matched predict ~
-                                               over every round; this fixture no longer ~
-                                               distinguishes them"))))
+                                  (format nil "predict :num-iteration :best differs from ~
+                                               predict over every round"))))
                        (cl-gbdt:free-booster booster)))))
             (cl-gbdt:close-backend backend)))))))
 
@@ -500,8 +499,59 @@ log-loss metric on the validation set at index 1 -- or NIL when REPORT has no su
                                     (progn (cl-gbdt:predict booster matrix :num-iteration :best)
                                            nil)
                                   (cl-gbdt:unsupported-argument () t))
-                                (format nil "predict :num-iteration :best did not signal on ~
-                                             a booster with no best iteration"))))
+                                (format nil "predict :num-iteration :best signals ~
+                                             unsupported-argument on a booster with no ~
+                                             best iteration"))))
+                     (cl-gbdt:free-booster booster))))
+            (cl-gbdt:close-backend backend)))))))
+
+;;; The other way `booster-best-iteration' can be NIL, and the one the test above cannot
+;;; tell apart from this one: a booster whose `train' call DID pass :early-stopping, but
+;;; whose watcher never got the chance to see an iteration at all. :num-rounds 0 is the
+;;; cheap, deterministic way to provoke it -- the loop `train' drives never runs, so
+;;; `observe-iteration' is never called -- documented in `src/protocol.lisp''s `train'
+;;; docstring and README.markdown's :num-iteration :best section as one of the two cases
+;;; where supplying :early-stopping does not by itself guarantee a best iteration. No
+;;; :valid-sets entry is needed: :dataset 0 -- the training set -- is always a valid
+;;; watcher target, and with no iteration ever observed, no entry is ever read from it.
+
+(deftest best-num-iteration-after-zero-rounds-with-early-stopping-signals
+  (dolist (fixture *fixtures*)
+    (with-backend-library ((getf fixture :backend))
+      (multiple-value-bind (matrix label-vector) (make-separable-dataset)
+        (let ((backend (cl-gbdt:open-backend (getf fixture :backend))))
+          (unwind-protect
+               (cl-gbdt:with-dataset
+                   (train-set (make-fixture-dataset fixture backend matrix label-vector))
+                 (multiple-value-bind (booster report)
+                     (cl-gbdt:train backend train-set :num-rounds 0
+                                    :early-stopping (watch-spec fixture :dataset 0)
+                                    :parameters (getf fixture :booster-parameters))
+                   (unwind-protect
+                        (progn
+                          (testing (format nil "~A: a zero-round run given ~
+                                                :early-stopping still has no best ~
+                                                iteration" (getf fixture :backend))
+                            (ok (and (eql 0 (cl-gbdt:training-report-num-rounds report))
+                                     (null (cl-gbdt:training-report-best-iteration report))
+                                     (null (cl-gbdt:booster-best-iteration booster)))
+                                (format nil "num-rounds ~S, report best-iteration ~S, ~
+                                             booster best-iteration ~S"
+                                        (cl-gbdt:training-report-num-rounds report)
+                                        (cl-gbdt:training-report-best-iteration report)
+                                        (cl-gbdt:booster-best-iteration booster))))
+                          (testing (format nil "~A: predict :num-iteration :best signals ~
+                                                unsupported-argument after a zero-round ~
+                                                early-stopped run"
+                                           (getf fixture :backend))
+                            (ok (handler-case
+                                    (progn (cl-gbdt:predict booster matrix
+                                                             :num-iteration :best)
+                                           nil)
+                                  (cl-gbdt:unsupported-argument () t))
+                                (format nil "predict :num-iteration :best signals ~
+                                             unsupported-argument on a zero-round ~
+                                             early-stopped booster"))))
                      (cl-gbdt:free-booster booster))))
             (cl-gbdt:close-backend backend)))))))
 
@@ -541,8 +591,8 @@ log-loss metric on the validation set at index 1 -- or NIL when REPORT has no su
                                  (ok (progn
                                        (cl-gbdt:save-model booster path :num-iteration :best)
                                        (probe-file path))
-                                     (format nil "save-model :num-iteration :best did not ~
-                                                  write a file"))))
+                                     (format nil "save-model :num-iteration :best writes ~
+                                                  a file"))))
                               (:xgboost
                                (testing (format nil "XGBoost: save-model :num-iteration ~
                                                      :best signals unsupported-argument, ~
@@ -553,8 +603,8 @@ log-loss metric on the validation set at index 1 -- or NIL when REPORT has no su
                                                                     :num-iteration :best)
                                                 nil)
                                        (cl-gbdt:unsupported-argument () t))
-                                     (format nil "save-model :num-iteration :best did not ~
-                                                  signal on XGBoost")))))
+                                     (format nil "save-model :num-iteration :best signals ~
+                                                  unsupported-argument on XGBoost")))))
                          (cl-gbdt:free-booster booster))))))
             (cl-gbdt:close-backend backend)))))))
 
@@ -596,6 +646,7 @@ log-loss metric on the validation set at index 1 -- or NIL when REPORT has no su
                                                    (cl-gbdt:model-to-string
                                                     booster :num-iteration :best)))
                                     (format nil "model-to-string :num-iteration :best ~
-                                                 matched model-to-string over every round")))
+                                                 differs from model-to-string over every ~
+                                                 round")))
                            (cl-gbdt:free-booster booster)))))
                 (cl-gbdt:close-backend backend))))))))

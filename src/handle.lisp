@@ -15,12 +15,16 @@
                 #:released-handle-error
                 #:backend-not-open
                 #:unfreed-handle-warning
-                #:wrong-backend-reference)
+                #:wrong-backend-reference
+                #:unsupported-argument)
   (:export #:handle #:dataset #:booster
            #:handle-pointer #:handle-backend #:booster-training-set
            #:booster-validation-sets #:booster-best-iteration
            #:handle-released-p #:handle-live-pointer
-           #:make-handle #:release-handle))
+           #:make-handle #:release-handle
+           #:%check-handle-kind
+           #:%resolve-best-num-iteration
+           #:%reject-best-num-iteration))
 
 (in-package #:cl-gbdt/src/handle)
 
@@ -197,3 +201,56 @@ OBJECT, `backend-not-open' when its own backend has since been closed."
            :argument argument-description
            :expected (string-downcase (symbol-name kind))))
   (handle-live-pointer object))
+
+(defun %resolve-best-num-iteration (booster num-iteration argument-name)
+  "Return NUM-ITERATION unchanged, except for the keyword :BEST, which resolves to
+BOOSTER's own `booster-best-iteration'.
+
+Shared by both backends' `predict', `save-model' and `model-to-string' -- lives here,
+not in either `protocol.lisp', because the logic is entirely backend-agnostic: it reads
+only `booster-best-iteration' and `handle-backend', both already defined in this file,
+and neither `lightgbm-booster' nor `xgboost-booster' changes what :BEST means. Each
+caller resolves :BEST here, into an integer, before running its own backend-specific
+NUM-ITERATION path -- LightGBM's `%resolve-num-iteration' and XGBoost's
+`%check-unsupported' each know only NIL and an integer, never the keyword itself.
+
+Signals `unsupported-argument' naming ARGUMENT-NAME when BOOSTER's
+`booster-best-iteration' is NIL: no `:early-stopping' run set it, or one did but never
+determined a best iteration at all -- `train''s docstring lists the two ways that
+happens even with `:early-stopping' supplied. Either way, :BEST asks a question this
+booster has no answer for, and this signals rather than substituting a default: NIL
+keeps meaning \"every round\" on every booster, this one included."
+  (if (eq num-iteration :best)
+      (or (booster-best-iteration booster)
+          (error 'unsupported-argument
+                 :backend (backend-name (handle-backend booster))
+                 :argument argument-name
+                 :reason (format nil "this booster has no best iteration to resolve ~
+                                      :best against -- it was not trained with ~
+                                      :early-stopping, or that run never determined ~
+                                      one")))
+      num-iteration))
+
+(defun %reject-best-num-iteration (booster num-iteration argument-name)
+  "Return NUM-ITERATION unchanged, unless it is the keyword :BEST, which signals
+`unsupported-argument' naming ARGUMENT-NAME instead.
+
+For an entry point that accepts NUM-ITERATION but does not resolve :BEST against
+BOOSTER's `booster-best-iteration' the way `predict', `save-model' and
+`model-to-string' do -- `feature-importance' is the one case today. Without this,
+:BEST reaches each backend's own NUM-ITERATION path as uninterpreted data: LightGBM's
+`%resolve-num-iteration' is `(or num-iteration 0)', so :BEST alone would pass straight
+through to a foreign call expecting an integer -- a raw CFFI type error, not a
+`cl-gbdt' condition; XGBoost's `%check-unsupported' happens to reject it today only
+because :BEST is non-NIL, the same as any other non-NIL value, not because it
+recognizes the keyword. This makes the refusal explicit and gives it the same
+condition type `%resolve-best-num-iteration' signals for the entry points that do
+resolve :BEST, rather than two different failure modes for the same keyword."
+  (when (eq num-iteration :best)
+    (error 'unsupported-argument
+           :backend (backend-name (handle-backend booster))
+           :argument argument-name
+           :reason (format nil "this operation does not resolve :best; pass NIL or an ~
+                                explicit integer, or use predict/save-model/~
+                                model-to-string's :best instead")))
+  num-iteration)

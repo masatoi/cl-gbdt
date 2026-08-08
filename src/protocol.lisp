@@ -245,9 +245,12 @@ split. LightGBM's own C call is already dense; XGBoost's reports only features a
 used, identified by name rather than column, so this backend's method reconstructs the
 dense, per-column result from that.
 
-NUM-ITERATION behaves as it does for `save-model': LightGBM limits the importance
-calculation to that many rounds, nil meaning all of them; XGBoost has no such limit and
-signals `unsupported-argument' when NUM-ITERATION is supplied.
+NUM-ITERATION behaves as it does for `save-model' for NIL and an explicit integer:
+LightGBM limits the importance calculation to that many rounds, nil meaning all of them;
+XGBoost has no such limit and signals `unsupported-argument' when NUM-ITERATION is
+supplied. Unlike `predict', `save-model' and `model-to-string', it does NOT accept
+`:best' -- both backends signal `unsupported-argument' naming NUM-ITERATION when `:best'
+is given, regardless of whether BOOSTER has a best iteration to resolve it against.
 
 Every result is one-dimensional -- one number per feature, full stop. XGBoost's
 `gblinear' booster reports a per-class matrix instead of a single score per feature for
