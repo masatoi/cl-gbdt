@@ -17,13 +17,16 @@ file if you have it locally).
 `make-dataset`, `dataset-num-rows`, `dataset-num-features`, `train`,
 `update-one-iteration`, `predict`, `save-model`, `load-model`, `model-to-string`,
 `feature-importance`, `evaluation`, `free-dataset` and `free-booster` -- against the real
-LightGBM and XGBoost shared libraries, exercised by 368 functional assertions (design doc
-section 12, layer 2), in addition to 361 assertions that need no shared library at all
+LightGBM and XGBoost shared libraries, exercised by 401 functional assertions (design doc
+section 12, layer 2), in addition to 374 assertions that need no shared library at all
 (layer 1). `train` also returns a `training-report` as its secondary value, and takes
 `:early-stopping` to end a run once a watched metric stops improving -- see
 [Training report](#training-report) below. `make-dataset` and `predict` also accept a
 `csr-matrix` wherever they accept a dense matrix -- see [Sparse
-input](#sparse-input-csr-matrices) below. See [Usage](#usage) below for a worked example.
+input](#sparse-input-csr-matrices) below -- and both also take `:missing`, the value in
+the caller's data that means missing, gated on the `:missing-value` capability that only
+XGBoost provides -- see [Missing values](#missing-values) below. See [Usage](#usage)
+below for a worked example.
 
 Loading `cl-gbdt` itself still does not require either `liblightgbm.so` or
 `libxgboost.so` to be installed -- see [Systems](#systems): a shared library is opened
@@ -1105,6 +1108,298 @@ would be a property of one backend rather than of the format. LightGBM does have
 (`LGBM_DatasetCreateFromCSC` and `LGBM_BoosterPredictForCSC`), which would make the gap
 backend-specific in a way nothing else in the unified API is. CSR is the format both libraries
 can do both halves of, so CSR is the format this API takes.
+
+### Missing values
+
+`make-dataset` and `predict` both take `:missing`, the value in the caller's own matrix that
+means *missing* -- the datum a caller wrote in place of one they do not have, such as the
+`-999.0` a CSV convention often uses. `:missing` is a `real` or `NIL`; anything else signals
+`unsupported-argument` naming `:missing` and the backend. `NIL`, the default on both
+operations, is exactly today's behaviour: the wrapper sends `"missing":NaN` unconditionally,
+the same as every call made before either operation took this argument at all. This applies
+identically whether MATRIX is dense or a `csr-matrix` -- `make-dataset`'s own `:missing`
+reaches the same creation-config key either way.
+
+A non-`NIL` `:missing` needs the `:missing-value` capability, answerable through
+`backend-supports-p`, and **both operations re-check it themselves** rather than trusting a
+caller who asked first. XGBoost declares it -- the sentinel is a key its creation and
+prediction config JSONs already read -- and LightGBM does not: its C API has no
+missing-value key at all, so `:missing` there signals `capability-unavailable` for *any*
+non-`NIL` value, a `NaN` included, even though a `NaN` is in fact what LightGBM's own
+ingestion path already treats as missing. A capability whose meaning depended on which value
+was passed could not be stated by `backend-supports-p` at all -- it answers about the
+backend, and never sees the argument. The capability gate also fires *first*, by design: a
+non-`real` `:missing` on LightGBM signals `capability-unavailable`, not
+`unsupported-argument` -- the renderer's own type check is never reached there, since only a
+backend that passed the gate has a renderer left to reach.
+
+```lisp
+(ql:quickload '(:cl-gbdt :cl-gbdt/lightgbm :cl-gbdt/xgboost) :silent t)
+
+(defparameter *mv-matrix*
+  (make-array '(8 3) :element-type 'double-float
+                      :initial-contents '((0.0d0 1.0d0 2.0d0) (0.0d0 2.0d0 1.0d0)
+                                           (0.0d0 1.0d0 2.0d0) (0.0d0 2.0d0 1.0d0)
+                                           (5.0d0 1.0d0 2.0d0) (5.0d0 2.0d0 1.0d0)
+                                           (5.0d0 1.0d0 2.0d0) (5.0d0 2.0d0 1.0d0))))
+(defparameter *mv-label*
+  (make-array 8 :element-type 'single-float
+                 :initial-contents '(0.0 0.0 0.0 0.0 1.0 1.0 1.0 1.0)))
+;; Column 0 alone carries the class -- 0.0 for the first four rows, 5.0 for the last four --
+;; while columns 1 and 2 repeat the same two values on both halves and carry nothing. Row 7 is
+;; positive-class, so punching its column-0 cell takes away the only signal that row has.
+(defparameter *mv-sentinel* -999.0d0)
+
+(defun mv-holed (&optional (value *mv-sentinel*) (row 7))
+  "*MV-MATRIX*, with ROW's column 0 replaced by VALUE."
+  (let ((matrix (make-array '(8 3) :element-type 'double-float)))
+    (dotimes (r 8) (dotimes (c 3) (setf (aref matrix r c) (aref *mv-matrix* r c))))
+    (setf (aref matrix row 0) value)
+    matrix))
+
+(defun mv-quiet-nan ()
+  "A quiet double-float NaN, built from its bits so no arithmetic can trap."
+  (sb-kernel:make-double-float -524288 0))
+
+(defun mv-train-predict (xgb matrix &key missing)
+  "Train an XGBoost booster on MATRIX/*MV-LABEL* and return its row-7 prediction on the
+clean *MV-MATRIX*."
+  (cl-gbdt:with-dataset (dataset (cl-gbdt:make-dataset xgb matrix :label *mv-label*
+                                                        :missing missing))
+    (cl-gbdt:with-booster (booster (cl-gbdt:train xgb dataset :num-rounds 5
+                                      :parameters '(:objective "binary:logistic" :max-depth 2
+                                                    :eta 0.5 :verbosity 0)))
+      (aref (cl-gbdt:predict booster *mv-matrix*) 7 0))))
+
+(let ((lgbm (cl-gbdt:open-backend :lightgbm))
+      (xgb (cl-gbdt:open-backend :xgboost)))
+  (format t "LightGBM backend-supports-p :missing-value => ~S~%"
+          (cl-gbdt:backend-supports-p lgbm :missing-value))
+  (format t "XGBoost  backend-supports-p :missing-value => ~S~%"
+          (cl-gbdt:backend-supports-p xgb :missing-value))
+
+  ;; LightGBM signals regardless of the value -- even a NaN, which is in fact what its own
+  ;; ingestion path already treats as missing -- because its C API has no missing-value key at
+  ;; all: the capability gate fires before the value is even looked at.
+  (dolist (value (list *mv-sentinel* (mv-quiet-nan)))
+    (handler-case (cl-gbdt:make-dataset lgbm (mv-holed value) :label *mv-label* :missing value
+                                         :parameters '(:min-data-in-leaf 1 :min-data-in-bin 1
+                                                        :verbose -1))
+      (error (c) (format t "LightGBM make-dataset :missing ~A SIGNALED ~A: ~A~%"
+                          (if (sb-ext:float-nan-p value) "<NaN>" value) (type-of c) c))))
+
+  ;; The gate fires first even for a non-real :missing: LightGBM never reaches the renderer's
+  ;; own type check at all, so this is CAPABILITY-UNAVAILABLE too, not UNSUPPORTED-ARGUMENT.
+  (handler-case (cl-gbdt:make-dataset lgbm (mv-holed) :label *mv-label* :missing "-999.0"
+                                       :parameters '(:min-data-in-leaf 1 :min-data-in-bin 1
+                                                      :verbose -1))
+    (error (c) (format t "LightGBM make-dataset :missing \"-999.0\" SIGNALED ~A: ~A~%"
+                        (type-of c) c)))
+
+  ;; XGBoost provides the capability, so a non-real :missing reaches the renderer's own check
+  ;; instead of the capability gate.
+  (handler-case (cl-gbdt:make-dataset xgb (mv-holed) :label *mv-label* :missing "-999.0")
+    (error (c) (format t "XGBoost  make-dataset :missing \"-999.0\" SIGNALED ~A: ~A~%"
+                        (type-of c) c)))
+
+  ;; :missing selects a sentinel VALUE, not a policy: it changes what the model learns.
+  (format t "XGBoost  row 7, trained with :missing ~S: ~S~%" *mv-sentinel*
+          (mv-train-predict xgb (mv-holed) :missing *mv-sentinel*))
+  (format t "XGBoost  row 7, trained with that same cell read literally: ~S~%"
+          (mv-train-predict xgb (mv-holed)))
+
+  ;; The wrapper renders the sentinel itself rather than letting the Lisp printer choose: a
+  ;; bare `princ' of a double would emit "1.0d-5", and XGBoost's JSON config parser rejects
+  ;; that exponent marker outright. A caller may still pass a `d0'-marked double; only what
+  ;; reaches the library is affected.
+  (cl-gbdt:with-dataset (dataset (cl-gbdt:make-dataset xgb *mv-matrix* :label *mv-label*
+                                                        :missing 1.0d-5))
+    (format t "XGBoost  make-dataset :missing 1.0d-5 (a Lisp exponent marker) works: rows=~S~%"
+            (cl-gbdt:dataset-num-rows dataset)))
+
+  (cl-gbdt:close-backend lgbm)
+  (cl-gbdt:close-backend xgb))
+```
+
+Output:
+
+```
+LightGBM backend-supports-p :missing-value => NIL
+XGBoost  backend-supports-p :missing-value => T
+LightGBM make-dataset :missing -999.0d0 SIGNALED CAPABILITY-UNAVAILABLE: LIGHTGBM does not provide :MISSING-VALUE in the library that is loaded.
+LightGBM make-dataset :missing <NaN> SIGNALED CAPABILITY-UNAVAILABLE: LIGHTGBM does not provide :MISSING-VALUE in the library that is loaded.
+LightGBM make-dataset :missing "-999.0" SIGNALED CAPABILITY-UNAVAILABLE: LIGHTGBM does not provide :MISSING-VALUE in the library that is loaded.
+XGBoost  make-dataset :missing "-999.0" SIGNALED UNSUPPORTED-ARGUMENT: :missing is not supported by XGBOOST: the value that means missing must be a real number, or NIL for
+the backend's own default.
+XGBoost  row 7, trained with :missing -999.0d0: 0.622459352016449d0
+XGBoost  row 7, trained with that same cell read literally: 0.5d0
+XGBoost  make-dataset :missing 1.0d-5 (a Lisp exponent marker) works: rows=8
+```
+
+`:missing` selects a sentinel *value*, not a policy. It does not turn missing-value handling
+on or off, and it does not make `0.0` mean missing -- LightGBM's `use_missing` and
+`zero_as_missing` flags are unchanged by any of this, and stay exactly where they were,
+reachable through `make-dataset`'s `:parameters`. The last line of the output above is a
+separate, JSON-rendering fact worth knowing on its own: XGBoost's config parser rejects a
+Lisp double's own exponent marker outright (`1.0d-5` fails with `json.cc:409: Expecting:
+","`, measured against the vendored library) but accepts `1.0e-5`. The wrapper renders
+`:missing` itself for exactly this reason, so a caller may still write `1.0d-5` and have it
+reach the library correctly.
+
+#### `predict`'s own `:missing`
+
+`predict` takes the identical argument, checked against the `:missing-value` capability
+**separately** from `make-dataset`'s own check -- the two operations reach two different
+config sites, and a backend could in principle gate one and not the other. A dense matrix's
+sentinel becomes a key in the transient DMatrix's own *creation* config, the same one
+`make-dataset` fills; a `csr-matrix`'s sentinel goes into `XGBoosterPredictFromCSR`'s
+*inplace predict* config instead, since that call builds no DMatrix at all -- shown below
+with `:kind :normal`, one of the two kinds XGBoost's sparse `predict` serves at all (see
+[Sparse input](#sparse-input-csr-matrices) above). Both config sites are demonstrated first,
+on one booster trained with no `:missing` anywhere, so nothing about how the model was
+trained can account for what changes; the single-precision measurement that follows trains a
+second booster, for a reason its own comment explains:
+
+```lisp
+(defparameter *mv-narrowing-sentinel* 16777217.0d0
+  "Not exactly representable in single-float: 16777217 is 2^24+1, and single-float spacing at
+2^24 is 2, so this narrows to 16777216.0.")
+(defparameter *mv-shared-float32* 16777216.0d0
+  "A different double-float from *MV-NARROWING-SENTINEL*, but the same value once both are
+narrowed to single-float.")
+(defparameter *mv-own-float32* 16777224.0d0
+  "2^24+8, a multiple of single-float's spacing there, so this is exactly representable and is
+therefore its own single-float, distinct from *MV-NARROWING-SENTINEL*'s.")
+
+(defun mv-csr (matrix)
+  "MATRIX as a `cl-gbdt:csr-matrix' with every element stored explicitly."
+  (let* ((rows (array-dimension matrix 0))
+         (cols (array-dimension matrix 1))
+         (indptr (make-array (1+ rows)))
+         (indices (make-array (* rows cols)))
+         (values (make-array (* rows cols)))
+         (pos 0))
+    (dotimes (r rows)
+      (setf (aref indptr r) pos)
+      (dotimes (c cols)
+        (setf (aref indices pos) c)
+        (setf (aref values pos) (aref matrix r c))
+        (incf pos)))
+    (setf (aref indptr rows) pos)
+    (cl-gbdt:make-csr-matrix :indptr indptr :indices indices :values values :num-columns cols)))
+
+(let ((xgb (cl-gbdt:open-backend :xgboost)))
+  ;; predict's own :missing, re-checked separately from make-dataset's -- trained on the CLEAN
+  ;; matrix, so nothing about how the model was trained can account for what follows.
+  (cl-gbdt:with-dataset (dataset (cl-gbdt:make-dataset xgb *mv-matrix* :label *mv-label*))
+    (cl-gbdt:with-booster (booster (cl-gbdt:train xgb dataset :num-rounds 5
+                                      :parameters '(:objective "binary:logistic" :max-depth 2
+                                                    :eta 0.5 :verbosity 0)))
+      (format t "predict row 7, :missing ~S on the holed matrix: ~S~%" *mv-sentinel*
+              (aref (cl-gbdt:predict booster (mv-holed) :missing *mv-sentinel*) 7 0))
+      (format t "predict row 7, that same holed matrix read literally: ~S~%"
+              (aref (cl-gbdt:predict booster (mv-holed)) 7 0))
+      ;; The other config site: a csr-matrix's :missing reaches XGBoosterPredictFromCSR's own
+      ;; inplace predict config rather than a transient DMatrix's creation config.
+      (format t "predict on a csr-matrix, :missing ~S: ~S~%" *mv-sentinel*
+              (aref (cl-gbdt:predict booster (mv-csr (mv-holed)) :kind :normal
+                                     :missing *mv-sentinel*) 7 0))
+      (format t "predict on that csr-matrix, the same cell read literally: ~S~%"
+              (aref (cl-gbdt:predict booster (mv-csr (mv-holed)) :kind :normal) 7 0))))
+
+  ;; Single precision: XGBoost gives every split a default direction for a value it reads as
+  ;; missing. A booster trained on the clean fixture sends both 2^24-sized values the same
+  ;; direction it already sends a genuine missing value, so it cannot tell the two readings
+  ;; apart below. Training instead with a NaN hole in a NEGATIVE-class row (row 3, unlike row
+  ;; 7's positive class) teaches a default direction the two readings do separate on.
+  (cl-gbdt:with-dataset (dataset (cl-gbdt:make-dataset xgb (mv-holed (mv-quiet-nan) 3)
+                                                        :label *mv-label*))
+    (cl-gbdt:with-booster (booster (cl-gbdt:train xgb dataset :num-rounds 5
+                                      :parameters '(:objective "binary:logistic" :max-depth 2
+                                                    :eta 0.5 :verbosity 0)))
+      (format t "predict row 7, :missing ~S vs a stored ~S (shares its float32): ~S~%"
+              *mv-narrowing-sentinel* *mv-shared-float32*
+              (aref (cl-gbdt:predict booster (mv-holed *mv-shared-float32*)
+                                     :missing *mv-narrowing-sentinel*) 7 0))
+      (format t "predict row 7, :missing ~S vs a stored ~S (its own float32): ~S~%"
+              *mv-narrowing-sentinel* *mv-own-float32*
+              (aref (cl-gbdt:predict booster (mv-holed *mv-own-float32*)
+                                     :missing *mv-narrowing-sentinel*) 7 0))
+      (format t "predict row 7, a stored NaN, for comparison: ~S~%"
+              (aref (cl-gbdt:predict booster (mv-holed (mv-quiet-nan))) 7 0))))
+
+  (cl-gbdt:close-backend xgb))
+```
+
+Output:
+
+```
+predict row 7, :missing -999.0d0 on the holed matrix: 0.622459352016449d0
+predict row 7, that same holed matrix read literally: 0.3775406777858734d0
+predict on a csr-matrix, :missing -999.0d0: 0.622459352016449d0
+predict on that csr-matrix, the same cell read literally: 0.3775406777858734d0
+predict row 7, :missing 1.6777217d7 vs a stored 1.6777216d7 (shares its float32): 0.3775406777858734d0
+predict row 7, :missing 1.6777217d7 vs a stored 1.6777224d7 (its own float32): 0.622459352016449d0
+predict row 7, a stored NaN, for comparison: 0.3775406777858734d0
+```
+
+The last three lines are the single-precision fact: XGBoost compares `:missing` against the
+data at **single precision**, whatever the matrix's own element type. `16777217.0d0` is
+2^24 + 1, one past single-float's spacing of 2 at that magnitude, so it narrows to
+`16777216.0`; a stored `16777216.0d0` -- a genuinely different `double-float` -- shares that
+narrowing and so reads as missing, while a stored `16777224.0d0` -- 2^24 + 8, itself exactly
+representable in `single-float` -- does not. Two `double-float`s that round to the same
+`single-float` therefore both count as missing against a sentinel that narrows to it.
+Measured directly at the raw XGBoost level too, over the identical 24-cell fixture, before
+either functional test in `tests/functional/missing-value.lisp` existed:
+`XGDMatrixNumNonMissing` keeps 22 of the 24 entries when the sentinel matches the
+shared-float32 datum, and all 24 when it does not -- the same distinction the predictions
+above show, at the level a caller actually observes it.
+
+#### Training and prediction sentinels are not tied together
+
+Nothing connects the `:missing` a dataset was built with to the `:missing` a later `predict`
+call names. XGBoost does not record a dataset's sentinel on the booster trained from it, and
+none is written into a saved model either, so predicting with a *different* sentinel than
+training used -- or with none at all -- is a call the library accepts and never reports.
+Keeping the two consistent is the caller's own responsibility; nothing here detects that they
+are not:
+
+```lisp
+;; Nothing ties predict's :missing to the sentinel :missing used at training time. XGBoost does
+;; not record a dataset's sentinel on the booster trained from it, and none is written into a
+;; saved model either -- so a caller who predicts with a DIFFERENT sentinel than training used,
+;; or with none at all, gets no error: just silently different numbers.
+(let ((xgb (cl-gbdt:open-backend :xgboost)))
+  (cl-gbdt:with-dataset (dataset (cl-gbdt:make-dataset xgb (mv-holed -999.0d0) :label *mv-label*
+                                                        :missing -999.0d0))
+    (cl-gbdt:with-booster (booster (cl-gbdt:train xgb dataset :num-rounds 5
+                                      :parameters '(:objective "binary:logistic" :max-depth 2
+                                                    :eta 0.5 :verbosity 0)))
+      (format t "trained with :missing -999.0d0; predict :missing -999.0d0 (matches): ~S~%"
+              (aref (cl-gbdt:predict booster (mv-holed -999.0d0) :missing -999.0d0) 7 0))
+      (format t "same booster; predict :missing -1.0d0 (a DIFFERENT sentinel; no error): ~S~%"
+              (aref (cl-gbdt:predict booster (mv-holed -999.0d0) :missing -1.0d0) 7 0))
+      (format t "same booster; predict with no :missing at all (no error either): ~S~%"
+              (aref (cl-gbdt:predict booster (mv-holed -999.0d0)) 7 0))))
+  (cl-gbdt:close-backend xgb))
+```
+
+Output:
+
+```
+trained with :missing -999.0d0; predict :missing -999.0d0 (matches): 0.622459352016449d0
+same booster; predict :missing -1.0d0 (a DIFFERENT sentinel; no error): 0.3775406777858734d0
+same booster; predict with no :missing at all (no error either): 0.3775406777858734d0
+```
+
+The booster above was trained with `:missing -999.0d0`. Asking `predict` for the matching
+sentinel reads row 7 as missing, exactly as training did. Asking for `-1.0d0` instead -- a
+sentinel training never used -- signals nothing at all; row 7 is simply read literally, the
+same result omitting `:missing` from `predict` entirely already gives. A caller who trains
+with one sentinel and predicts with another, or forgets `:missing` on one side, gets a
+booster and a prediction that both ran without complaint, and numbers that silently do not
+mean what the caller intended.
 
 ## Systems
 
