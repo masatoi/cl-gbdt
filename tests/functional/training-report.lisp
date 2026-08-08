@@ -663,3 +663,30 @@ one whose last field the backend could not read."
                                 provides; capabilities were ~S"
                            (cl-gbdt:backend-capabilities backend))))
           (cl-gbdt:close-backend backend))))))
+
+;;; Reported by Codex on PR #15. `dotimes' runs zero iterations for a negative count, so
+;;; `(train … :num-rounds -1)' returned an untrained booster before this branch and still
+;;; does. What the report must not do is repeat the caller's -1 back:
+;;; `training-report-num-rounds' promises how many iterations actually ran, and none did.
+;;; The count is now taken from the loop rather than from the argument.
+
+(deftest training-report-num-rounds-counts-what-ran-not-what-was-asked
+  (dolist (fixture *fixtures*)
+    (with-backend-library ((getf fixture :backend))
+      (multiple-value-bind (matrix label-vector) (make-separable-dataset)
+        (let ((backend (cl-gbdt:open-backend (getf fixture :backend))))
+          (unwind-protect
+               (cl-gbdt:with-dataset
+                   (train-set (make-fixture-dataset fixture backend matrix label-vector))
+                 (dolist (asked '(-1 0))
+                   (multiple-value-bind (booster report)
+                       (cl-gbdt:train backend train-set :num-rounds asked
+                                      :parameters (getf fixture :booster-parameters))
+                     (unwind-protect
+                          (testing (format nil "~A: :num-rounds ~D reports 0 rounds"
+                                           (getf fixture :backend) asked)
+                            (ok (eql 0 (cl-gbdt:training-report-num-rounds report))
+                                (format nil "report said ~S rounds ran"
+                                        (cl-gbdt:training-report-num-rounds report))))
+                       (cl-gbdt:free-booster booster)))))
+            (cl-gbdt:close-backend backend)))))))

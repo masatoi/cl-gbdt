@@ -432,7 +432,13 @@ Signals `backend-not-open' before any of that when BACKEND is not open -- see
                      valid-sets))
            (dataset-count (1+ (length valid-set-pointers)))
            (dataset-names (cons nil valid-set-names))
-           (history '()))
+           (history '())
+           ;; Counted rather than taken from NUM-ROUNDS: `dotimes' runs zero iterations for a
+           ;; negative count, so a caller passing :NUM-ROUNDS -1 gets an untrained booster --
+           ;; as it did before this branch -- and the report must say 0 ran, not -1.
+           ;; `training-report-num-rounds' promises how many iterations actually ran, and
+           ;; Phase 3b's early stopping needs this same count for the same reason.
+           (completed-rounds 0))
       (let ((booster-pointer
               (%create-booster train-data-pointer (%parameter-string parameters))))
         (let ((owned nil))
@@ -442,9 +448,11 @@ Signals `backend-not-open' before any of that when BACKEND is not open -- see
                  (dotimes (round num-rounds)
                    (declare (ignorable round))
                    (%update-one-iteration booster-pointer)
+                   (incf completed-rounds)
                    (when record-history
                      (push (%read-evaluation booster-pointer dataset-count) history)))
-                 (let ((report (training-report-from-history (reverse history) num-rounds
+                 (let ((report (training-report-from-history (reverse history)
+                                                              completed-rounds
                                                               dataset-names)))
                    (multiple-value-prog1
                        (values (make-handle 'lightgbm-booster booster-pointer backend :booster
