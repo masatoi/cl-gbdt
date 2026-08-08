@@ -131,9 +131,10 @@ stopping needs the watched series, and reading the evaluation costs the same whe
 series is watched or every series is recorded, so there is no cheaper middle path to
 offer. Ask for early stopping and the history comes with it.
 
-A run given EARLY-STOPPING fills `training-report-best-iteration', `-best-score' and
-`-early-stopped-p', and the returned booster's `booster-best-iteration'. A run not given
-it leaves all four NIL -- see below.
+A run given EARLY-STOPPING usually fills `training-report-best-iteration', `-best-score'
+and `-early-stopped-p', and the returned booster's `booster-best-iteration' -- but not
+always; see below for the two cases where they stay NIL regardless. A run not given
+EARLY-STOPPING at all always leaves all four NIL.
 
 The secondary value is a `training-report'. Its `training-report-series' is a list of
 `training-series', one per metric per dataset -- the same (DATASET-INDEX, METRIC-NAME)
@@ -148,14 +149,30 @@ are the only way to see them, since a trained booster no longer remembers them.
 `training-report-num-rounds' is how many iterations actually ran, which is NUM-ROUNDS
 unless EARLY-STOPPING cut the run short, and every series is exactly that long.
 
-`training-report-best-iteration', `-best-score' and `-early-stopped-p' are filled only
-when EARLY-STOPPING was supplied, and are NIL otherwise -- NIL meaning \"not determined\",
-never \"iteration 0\". With it, BEST-ITERATION is the 1-based iteration at which the
-watched series reached its best value, BEST-SCORE is that value, and EARLY-STOPPED-P says
-whether the run ended because of the watcher rather than by reaching NUM-ROUNDS. All three
-are filled whether or not the run was actually stopped: a watcher that never fired still
-knows which iteration was best. The booster's own `booster-best-iteration' carries the
-same iteration as the report's.
+`training-report-best-iteration', `-best-score' and `-early-stopped-p' stay NIL when
+EARLY-STOPPING was not supplied at all -- NIL meaning \"not determined\", never \"iteration
+0\". When it was supplied, BEST-ITERATION is the 1-based iteration at which the watched
+series reached its best real value, BEST-SCORE is that value, and EARLY-STOPPED-P says
+whether the run ended because of the watcher rather than by reaching NUM-ROUNDS -- but
+supplying EARLY-STOPPING does not by itself guarantee BEST-ITERATION or BEST-SCORE comes
+back non-NIL:
+
+  - NUM-ROUNDS zero or negative runs no iteration at all, so the watcher is never
+    consulted and all three slots -- and the booster's `booster-best-iteration' -- stay
+    NIL exactly as if EARLY-STOPPING had not been given.
+  - A run every one of whose watched values was unreadable -- see EVALUATION's account of
+    a value the backend reported but this library could not parse as a real -- never has a
+    real value to call best, so BEST-ITERATION and BEST-SCORE stay NIL even though
+    EARLY-STOPPED-P can still become T once ROUNDS consecutive unreadable iterations pass:
+    an unreadable value counts toward ROUNDS the same as a non-improving real one, but
+    never sets a best.
+
+Outside those two cases, all three are filled whether or not the run was actually
+stopped: a watcher that never fired still knows which iteration was best. The booster's
+own `booster-best-iteration' carries the same iteration as the report's BEST-ITERATION,
+staying NIL together with it in both cases above too -- this is what `predict',
+`save-model' and `model-to-string''s NUM-ITERATION :BEST resolve against, and why they
+signal `unsupported-argument' rather than assume a default when it is NIL.
 
 `training-report-series' is empty when the booster has no metric configured at all --
 LightGBM's `metric=none', XGBoost's `disable_default_eval_metric=1' -- and when
@@ -182,18 +199,31 @@ happened, unless the backend is known to be LightGBM."))
   (:documentation "Predict on MATRIX using BOOSTER.
 
 KIND is `:normal' (default, transformed predictions), `:raw' (raw scores),
-`:leaf-index' (leaf indices) or `:contrib' (feature contributions). NUM-ITERATION
-limits how many trees are used; nil uses all of them.
+`:leaf-index' (leaf indices) or `:contrib' (feature contributions). NUM-ITERATION limits
+how many trees are used: nil uses all of them, an integer uses that many, and `:best'
+resolves to BOOSTER's own `booster-best-iteration' -- the iteration an `:early-stopping'
+`train' run judged best -- before either of those. Signals `unsupported-argument' naming
+NUM-ITERATION when `:best' is given and `booster-best-iteration' is NIL: BOOSTER was
+never trained with `:early-stopping', or that run never determined a best iteration at
+all -- see `train''s docstring for when that happens even with `:early-stopping'
+supplied. NIL keeps meaning \"every round\" on every booster, including one with a best
+iteration to resolve `:best' against; `:best' is an additional accepted value, never a
+new default.
 
 Returns a `(simple-array double-float (* *))'."))
 
 (defgeneric save-model (booster path &key num-iteration)
   (:documentation "Save BOOSTER's model to PATH.
 
-NUM-ITERATION limits how many boosted rounds are saved on LightGBM, nil meaning all of
-them. XGBoost has no such limit -- `XGBoosterSaveModel' always saves every round -- so
-supplying NUM-ITERATION there signals `unsupported-argument' instead of being silently
-ignored."))
+NUM-ITERATION limits how many boosted rounds are saved on LightGBM: nil means all of
+them, an integer that many, and `:best' resolves to BOOSTER's own `booster-best-iteration'
+first -- see `predict' for exactly when that resolution itself signals
+`unsupported-argument'. XGBoost has no such limit at all -- `XGBoosterSaveModel' always
+saves every round -- so supplying NUM-ITERATION there signals `unsupported-argument'
+whether it is an explicit integer or `:best' resolved to one; nothing about `:best' is
+special-cased around that check. A caller who wants an XGBoost model file that stops at
+the best iteration slices to it first with `cl-gbdt/xgboost:slice-model' and saves the
+slice instead."))
 
 (defgeneric load-model (backend path)
   (:documentation "Load a model from PATH and return a BACKEND booster."))
@@ -201,9 +231,10 @@ ignored."))
 (defgeneric model-to-string (booster &key num-iteration)
   (:documentation "Return BOOSTER's model as a string.
 
-NUM-ITERATION behaves as it does for `save-model': LightGBM honors it, nil meaning
-every round; XGBoost has no iteration-limited variant of this call and signals
-`unsupported-argument' when NUM-ITERATION is supplied."))
+NUM-ITERATION behaves as it does for `save-model', `:best' included: LightGBM honors it,
+nil meaning every round; XGBoost has no iteration-limited variant of this call and signals
+`unsupported-argument' when NUM-ITERATION is supplied, an explicit integer or `:best'
+resolved to one alike."))
 
 (defgeneric feature-importance (booster &key kind num-iteration)
   (:documentation "Return BOOSTER's feature importances as `(simple-array double-float (*))'.

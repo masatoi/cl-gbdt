@@ -414,3 +414,188 @@ log-loss metric on the validation set at index 1 -- or NIL when REPORT has no su
                                              report))))
                            (cl-gbdt:free-booster booster)))))))
             (cl-gbdt:close-backend backend)))))))
+
+;;; ---------------------------------------------------------------------------
+;;; `:num-iteration :best'
+;;;
+;;; Task 4: the four tests below exercise the booster's own `booster-best-iteration' as
+;;; `predict', `save-model' and `model-to-string''s `:num-iteration :best' resolves it --
+;;; see `src/protocol.lisp''s `predict' docstring for the contract each asserts against.
+;;; `feature-importance' also accepts `:num-iteration' but is out of this phase's scope --
+;;; the brief names only these three -- so it is left untouched and untested here.
+
+;;; The watched series under `INVERT-LABELS' worsens from its second iteration on (see this
+;;; file's header), so `watch-spec''s default -- `:rounds 3' -- reliably picks a
+;;; BEST-ITERATION well short of the run's own length, which `EARLY-STOPPING-ACTUALLY-STOPS-
+;;; THE-RUN' above already confirms lands under 100 of 1000. Predicting with that many fewer
+;;; trees than the run actually grew must produce different numbers -- not a mechanical
+;;; certainty for every possible model, which is why the "best-iteration is short of the run"
+;;; assertion runs first and is itself checked, but true for this fixture, confirmed by
+;;; actually running it rather than assumed. An implementation that resolved :BEST to the
+;;; same answer as NIL, or that never resolved it before `%resolve-num-iteration' at all,
+;;; passes every earlier test in this file and fails only here.
+
+(deftest best-num-iteration-differs-from-every-round
+  (dolist (fixture *fixtures*)
+    (with-backend-library ((getf fixture :backend))
+      (multiple-value-bind (matrix label-vector) (make-separable-dataset)
+        (let ((backend (cl-gbdt:open-backend (getf fixture :backend)))
+              (valid-label-vector (invert-labels label-vector)))
+          (unwind-protect
+               (cl-gbdt:with-dataset
+                   (train-set (make-fixture-dataset fixture backend matrix label-vector))
+                 (cl-gbdt:with-dataset
+                     (valid-set (make-fixture-dataset fixture backend matrix valid-label-vector
+                                                      :reference train-set))
+                   (multiple-value-bind (booster report)
+                       (cl-gbdt:train backend train-set :num-rounds 1000
+                                      :valid-sets (list (cons "valid" valid-set))
+                                      :early-stopping (watch-spec fixture)
+                                      :parameters (getf fixture :booster-parameters))
+                     (unwind-protect
+                          (let ((ran (cl-gbdt:training-report-num-rounds report))
+                                (best (cl-gbdt:training-report-best-iteration report)))
+                            (testing (format nil "~A: the best iteration is short of the run"
+                                             (getf fixture :backend))
+                              (ok (and (integerp best) (< best ran))
+                                  (format nil "best-iteration ~S, num-rounds ~S" best ran)))
+                            (testing (format nil "~A: predict :num-iteration :best differs ~
+                                                  from predict over every round"
+                                             (getf fixture :backend))
+                              (ok (not (equalp (cl-gbdt:predict booster matrix)
+                                                (cl-gbdt:predict booster matrix
+                                                                 :num-iteration :best)))
+                                  (format nil "predict :num-iteration :best matched predict ~
+                                               over every round; this fixture no longer ~
+                                               distinguishes them"))))
+                       (cl-gbdt:free-booster booster)))))
+            (cl-gbdt:close-backend backend)))))))
+
+;;; A booster nobody asked to early-stop has no best iteration for `:best' to resolve
+;;; against at all -- `booster-best-iteration' is NIL, and NIL means "no answer for this
+;;; booster", not "use every round", which is what plain NIL already means and stays meaning.
+
+(deftest best-num-iteration-without-early-stopping-signals
+  (dolist (fixture *fixtures*)
+    (with-backend-library ((getf fixture :backend))
+      (multiple-value-bind (matrix label-vector) (make-separable-dataset)
+        (let ((backend (cl-gbdt:open-backend (getf fixture :backend))))
+          (unwind-protect
+               (cl-gbdt:with-dataset
+                   (train-set (make-fixture-dataset fixture backend matrix label-vector))
+                 (multiple-value-bind (booster report)
+                     (cl-gbdt:train backend train-set :num-rounds 5
+                                    :parameters (getf fixture :booster-parameters))
+                   (declare (ignore report))
+                   (unwind-protect
+                        (progn
+                          (testing (format nil "~A: the booster has no best iteration"
+                                           (getf fixture :backend))
+                            (ok (null (cl-gbdt:booster-best-iteration booster))
+                                (format nil "booster-best-iteration was ~S"
+                                        (cl-gbdt:booster-best-iteration booster))))
+                          (testing (format nil "~A: predict :num-iteration :best signals ~
+                                                unsupported-argument" (getf fixture :backend))
+                            (ok (handler-case
+                                    (progn (cl-gbdt:predict booster matrix :num-iteration :best)
+                                           nil)
+                                  (cl-gbdt:unsupported-argument () t))
+                                (format nil "predict :num-iteration :best did not signal on ~
+                                             a booster with no best iteration"))))
+                     (cl-gbdt:free-booster booster))))
+            (cl-gbdt:close-backend backend)))))))
+
+;;; The asymmetry itself, asserted rather than smoothed over. LightGBM honours
+;;; `:num-iteration' -- `:best' included -- so `save-model' writes a file that stops at the
+;;; best iteration. XGBoost's `XGBoosterSaveModel' has no iteration limit at all, so `:best'
+;;; resolves to an integer and then meets the very `unsupported-argument' check an explicit
+;;; `:num-iteration 50' already does -- there is no special case for `:best' in that check,
+;;; and none is added here. One test, branching on the fixture's own backend: the branch is
+;;; the point, not an accident of how the two halves happen to be organised.
+
+(deftest save-model-with-best-works-on-lightgbm-and-signals-on-xgboost
+  (dolist (fixture *fixtures*)
+    (with-backend-library ((getf fixture :backend))
+      (multiple-value-bind (matrix label-vector) (make-separable-dataset)
+        (let ((backend (cl-gbdt:open-backend (getf fixture :backend)))
+              (valid-label-vector (invert-labels label-vector)))
+          (unwind-protect
+               (cl-gbdt:with-dataset
+                   (train-set (make-fixture-dataset fixture backend matrix label-vector))
+                 (cl-gbdt:with-dataset
+                     (valid-set (make-fixture-dataset fixture backend matrix valid-label-vector
+                                                      :reference train-set))
+                   (uiop:with-temporary-file (:pathname path
+                                              :type (getf fixture :model-file-type))
+                     (multiple-value-bind (booster report)
+                         (cl-gbdt:train backend train-set :num-rounds 1000
+                                        :valid-sets (list (cons "valid" valid-set))
+                                        :early-stopping (watch-spec fixture)
+                                        :parameters (getf fixture :booster-parameters))
+                       (declare (ignore report))
+                       (unwind-protect
+                            (ecase (getf fixture :backend)
+                              (:lightgbm
+                               (testing (format nil "LightGBM: save-model :num-iteration ~
+                                                     :best writes a file")
+                                 (ok (progn
+                                       (cl-gbdt:save-model booster path :num-iteration :best)
+                                       (probe-file path))
+                                     (format nil "save-model :num-iteration :best did not ~
+                                                  write a file"))))
+                              (:xgboost
+                               (testing (format nil "XGBoost: save-model :num-iteration ~
+                                                     :best signals unsupported-argument, ~
+                                                     the same asymmetry an explicit integer ~
+                                                     already does")
+                                 (ok (handler-case
+                                         (progn (cl-gbdt:save-model booster path
+                                                                    :num-iteration :best)
+                                                nil)
+                                       (cl-gbdt:unsupported-argument () t))
+                                     (format nil "save-model :num-iteration :best did not ~
+                                                  signal on XGBoost")))))
+                         (cl-gbdt:free-booster booster))))))
+            (cl-gbdt:close-backend backend)))))))
+
+;;; `model-to-string' behaves like `save-model' for `:num-iteration': LightGBM honours it,
+;;; XGBoost's `XGBoosterSaveModelToBuffer' has no iteration-limited variant and already
+;;; signals `unsupported-argument' for any non-NIL value -- that half of the asymmetry is
+;;; SAVE-MODEL-WITH-BEST-WORKS-ON-LIGHTGBM-AND-SIGNALS-ON-XGBOOST above, so this test
+;;; exercises only the backend where `:best' actually changes what comes back, rather than
+;;; repeating the same signal assertion under a different method name.
+
+(deftest model-to-string-with-best
+  (dolist (fixture *fixtures*)
+    (with-backend-library ((getf fixture :backend))
+      (if (not (eq (getf fixture :backend) :lightgbm))
+          (skip (format nil "~A: model-to-string does not accept :num-iteration at all -- ~
+                             see save-model-with-best-works-on-lightgbm-and-signals-on-xgboost"
+                        (getf fixture :backend)))
+          (multiple-value-bind (matrix label-vector) (make-separable-dataset)
+            (let ((backend (cl-gbdt:open-backend (getf fixture :backend)))
+                  (valid-label-vector (invert-labels label-vector)))
+              (unwind-protect
+                   (cl-gbdt:with-dataset
+                       (train-set (make-fixture-dataset fixture backend matrix label-vector))
+                     (cl-gbdt:with-dataset
+                         (valid-set (make-fixture-dataset fixture backend matrix
+                                                          valid-label-vector
+                                                          :reference train-set))
+                       (multiple-value-bind (booster report)
+                           (cl-gbdt:train backend train-set :num-rounds 1000
+                                          :valid-sets (list (cons "valid" valid-set))
+                                          :early-stopping (watch-spec fixture)
+                                          :parameters (getf fixture :booster-parameters))
+                         (declare (ignore report))
+                         (unwind-protect
+                              (testing (format nil "LightGBM: model-to-string ~
+                                                    :num-iteration :best differs from ~
+                                                    every round")
+                                (ok (not (string= (cl-gbdt:model-to-string booster)
+                                                   (cl-gbdt:model-to-string
+                                                    booster :num-iteration :best)))
+                                    (format nil "model-to-string :num-iteration :best ~
+                                                 matched model-to-string over every round")))
+                           (cl-gbdt:free-booster booster)))))
+                (cl-gbdt:close-backend backend))))))))

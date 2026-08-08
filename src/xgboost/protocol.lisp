@@ -88,12 +88,14 @@
                 #:handle-released-p
                 #:handle-backend
                 #:booster-training-set
-                #:booster-validation-sets)
+                #:booster-validation-sets
+                #:booster-best-iteration)
   (:import-from #:cl-gbdt/src/conditions
                 #:missing-foreign-symbols
                 #:foreign-call-error
                 #:missing-training-set
-                #:capability-unavailable)
+                #:capability-unavailable
+                #:unsupported-argument)
   (:import-from #:cl-gbdt/src/data
                 #:with-foreign-matrix)
   (:import-from #:cl-gbdt/src/training/history
@@ -589,13 +591,47 @@ reasoning applies here."
                    booster was not freed and its memory is leaked."))))))
 
 ;;; ---------------------------------------------------------------------------
+;;; Selecting an iteration count
+;;;
+;;; Shared by `predict', `save-model' and `model-to-string' below -- the three methods
+;;; that accept NUM-ITERATION on this backend. `feature-importance' also accepts one but
+;;; is out of this function's scope: Phase 3b's `:best' resolves only where the brief
+;;; names it.
+
+(defun %resolve-best-num-iteration (booster num-iteration argument-name)
+  "Return NUM-ITERATION unchanged, except for the keyword :BEST, which resolves to
+BOOSTER's own `booster-best-iteration'.
+
+Runs before `%resolve-num-iteration' and before `%check-unsupported', both of which know
+only NIL and an integer -- :BEST must already be an integer by the time either sees it.
+`%check-unsupported' is not special-cased for :BEST: `save-model' and `model-to-string'
+still reject the resolved integer exactly as they reject any other non-NIL
+NUM-ITERATION, which is the asymmetry this backend keeps rather than smooths over.
+Signals `unsupported-argument' naming ARGUMENT-NAME when BOOSTER's `booster-best-iteration'
+is NIL: no `:early-stopping' run set it, or one did but never determined a best iteration
+at all -- `train''s docstring lists the two ways that happens even with `:early-stopping'
+supplied. Either way, :BEST asks a question this booster has no answer for, and this
+signals rather than substituting a default: NIL keeps meaning \"every round\" on every
+booster, this one included."
+  (if (eq num-iteration :best)
+      (or (booster-best-iteration booster)
+          (error 'unsupported-argument
+                 :backend (backend-name (handle-backend booster))
+                 :argument argument-name
+                 :reason "this booster has no best iteration to resolve :best against -- ~
+                          it was not trained with :early-stopping, or that run never ~
+                          determined one"))
+      num-iteration))
+
+;;; ---------------------------------------------------------------------------
 ;;; Inference
 
 (defmethod predict ((booster xgboost-booster) matrix &key (kind :normal) num-iteration)
   "Predict on MATRIX with BOOSTER via `XGBoosterPredictFromDMatrix'.
 
-KIND and NUM-ITERATION are as the `predict' generic function documents. Predictions
-start from iteration 0 -- the protocol exposes no start-iteration override.
+KIND and NUM-ITERATION are as the `predict' generic function documents, NUM-ITERATION's
+:BEST resolved by `%resolve-best-num-iteration' before `%resolve-num-iteration' ever sees
+it. Predictions start from iteration 0 -- the protocol exposes no start-iteration override.
 
 MATRIX is built into a transient DMatrix via `%create-dmatrix' first --
 `XGBoosterPredictFromDMatrix' takes a DMatrix handle, unlike LightGBM's
@@ -631,7 +667,9 @@ one itself."
   (with-foreign-float-traps-masked
     (let ((booster-pointer (handle-live-pointer booster))
           (predict-type (%predict-type kind))
-          (iteration-end (%resolve-num-iteration num-iteration)))
+          (iteration-end
+            (%resolve-num-iteration
+             (%resolve-best-num-iteration booster num-iteration "predict's :num-iteration"))))
       (with-foreign-matrix (data-pointer nrow ncol element-type) matrix
         (let ((dmatrix-pointer (%create-dmatrix matrix)))
           (when (cffi:null-pointer-p dmatrix-pointer)
@@ -674,13 +712,19 @@ one itself."
 Signals `unsupported-argument' when NUM-ITERATION is supplied: unlike LightGBM's
 `LGBM_BoosterSaveModel', `XGBoosterSaveModel' takes no iteration limit -- it always
 saves every boosted round -- and silently ignoring the argument would be exactly the
-failure mode `unsupported-argument' exists to prevent, per `%check-unsupported'.
+failure mode `unsupported-argument' exists to prevent, per `%check-unsupported'. :BEST is
+resolved by `%resolve-best-num-iteration' first, into an integer, which then meets this
+same check exactly as an explicit integer would -- not special-cased around it. A caller
+who wants a file that stops at the best iteration slices to it first with
+`cl-gbdt/xgboost:slice-model' and saves the slice instead.
 
 Returns PATH."
   (with-foreign-float-traps-masked
-    (%check-unsupported
-     (handle-backend booster) "save-model's :num-iteration" num-iteration
-     "XGBoosterSaveModel has no iteration limit; every boosted round is saved")
+    (let ((resolved (%resolve-best-num-iteration booster num-iteration
+                                                  "save-model's :num-iteration")))
+      (%check-unsupported
+       (handle-backend booster) "save-model's :num-iteration" resolved
+       "XGBoosterSaveModel has no iteration limit; every boosted round is saved"))
     (let ((pointer (handle-live-pointer booster)))
       (cffi:with-foreign-string (filename (namestring path))
         (%save-model pointer filename)))
@@ -725,13 +769,17 @@ Signals `backend-not-open' before any of that when BACKEND is not open -- see
 Signals `unsupported-argument' when NUM-ITERATION is supplied: `XGBoosterSaveModelToBuffer''s
 config JSON has no iteration-limiting key, only `\"format\"' -- see `save-model' for the
 same guard on the sibling entry point, and for why silently ignoring it is not an option.
+:BEST is resolved by `%resolve-best-num-iteration' first, into an integer, which then
+meets this same check exactly as an explicit integer would.
 
 `out_dptr' is XGBoost's own memory, copied out via `foreign-string-to-lisp' with an
 explicit `:count' from `out_len' rather than trusted to be null-terminated at the right
 place."
   (with-foreign-float-traps-masked
-    (%check-unsupported (handle-backend booster) "model-to-string's :num-iteration"
-                         num-iteration "XGBoosterSaveModelToBuffer has no iteration limit")
+    (let ((resolved (%resolve-best-num-iteration booster num-iteration
+                                                  "model-to-string's :num-iteration")))
+      (%check-unsupported (handle-backend booster) "model-to-string's :num-iteration"
+                           resolved "XGBoosterSaveModelToBuffer has no iteration limit"))
     (let ((pointer (handle-live-pointer booster)))
       (cffi:with-foreign-string (config "{\"format\":\"json\"}")
         (cffi:with-foreign-objects ((out-len :uint64) (out-dptr :pointer))

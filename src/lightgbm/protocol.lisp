@@ -79,7 +79,8 @@
                 #:handle-released-p
                 #:handle-backend
                 #:booster-training-set
-                #:booster-validation-sets)
+                #:booster-validation-sets
+                #:booster-best-iteration)
   (:import-from #:cl-gbdt/src/conditions
                 #:missing-foreign-symbols
                 #:foreign-call-error
@@ -524,13 +525,44 @@ reasoning applies here."
                    booster was not freed and its memory is leaked."))))))
 
 ;;; ---------------------------------------------------------------------------
+;;; Selecting an iteration count
+;;;
+;;; Shared by `predict', `save-model' and `model-to-string' below -- the three methods
+;;; that accept NUM-ITERATION on this backend. `feature-importance' also accepts one but
+;;; is out of this function's scope: Phase 3b's `:best' resolves only where the brief
+;;; names it.
+
+(defun %resolve-best-num-iteration (booster num-iteration argument-name)
+  "Return NUM-ITERATION unchanged, except for the keyword :BEST, which resolves to
+BOOSTER's own `booster-best-iteration'.
+
+Runs before `%resolve-num-iteration', which knows only NIL and an integer -- :BEST must
+already be an integer by the time it gets there, so this is always called first, never
+the other way around. Signals `unsupported-argument' naming ARGUMENT-NAME when
+BOOSTER's `booster-best-iteration' is NIL: no `:early-stopping' run set it, or one did
+but never determined a best iteration at all -- `train''s docstring lists the two ways
+that happens even with `:early-stopping' supplied. Either way, :BEST asks a question
+this booster has no answer for, and this signals rather than substituting a default:
+NIL keeps meaning \"every round\" on every booster, this one included."
+  (if (eq num-iteration :best)
+      (or (booster-best-iteration booster)
+          (error 'unsupported-argument
+                 :backend (backend-name (handle-backend booster))
+                 :argument argument-name
+                 :reason "this booster has no best iteration to resolve :best against -- ~
+                          it was not trained with :early-stopping, or that run never ~
+                          determined one"))
+      num-iteration))
+
+;;; ---------------------------------------------------------------------------
 ;;; Inference
 
 (defmethod predict ((booster lightgbm-booster) matrix &key (kind :normal) num-iteration)
   "Predict on MATRIX with BOOSTER via `LGBM_BoosterPredictForMat'.
 
-KIND and NUM-ITERATION are as the `predict' generic function documents.
-Predictions start from iteration 0 -- the protocol exposes no start-iteration
+KIND and NUM-ITERATION are as the `predict' generic function documents, NUM-ITERATION's
+:BEST resolved by `%resolve-best-num-iteration' before `%resolve-num-iteration' ever
+sees it. Predictions start from iteration 0 -- the protocol exposes no start-iteration
 override.
 
 The output buffer's element count comes from `LGBM_BoosterCalcNumPredict', not
@@ -550,7 +582,9 @@ counts as a valid model output."
   (with-foreign-float-traps-masked
     (let ((pointer (handle-live-pointer booster))
           (predict-type (%predict-type kind))
-          (iteration-count (%resolve-num-iteration num-iteration)))
+          (iteration-count
+            (%resolve-num-iteration
+             (%resolve-best-num-iteration booster num-iteration "predict's :num-iteration"))))
       (with-foreign-matrix (data-pointer nrow ncol element-type) matrix
         (let ((data-type (%data-type element-type))
               (element-count (%calc-num-predict pointer nrow predict-type 0 iteration-count)))
@@ -576,12 +610,15 @@ counts as a valid model output."
 (defmethod save-model ((booster lightgbm-booster) path &key num-iteration)
   "Save BOOSTER's model to PATH via `LGBM_BoosterSaveModel'.
 
-NUM-ITERATION limits how many trees are saved; nil saves all of them, which
-LightGBM spells as 0. Returns PATH."
+NUM-ITERATION limits how many trees are saved, :BEST resolved by
+`%resolve-best-num-iteration' first; nil saves all of them, which LightGBM spells as 0.
+Returns PATH."
   (with-foreign-float-traps-masked
-    (let ((pointer (handle-live-pointer booster)))
+    (let ((pointer (handle-live-pointer booster))
+          (resolved (%resolve-best-num-iteration booster num-iteration
+                                                  "save-model's :num-iteration")))
       (cffi:with-foreign-string (filename (namestring path))
-        (%save-model pointer (%resolve-num-iteration num-iteration) filename)))
+        (%save-model pointer (%resolve-num-iteration resolved) filename)))
     path))
 
 (defmethod load-model ((backend lightgbm-backend) path)
@@ -622,10 +659,15 @@ see `%check-backend-open'."
               (error () nil))))))))
 
 (defmethod model-to-string ((booster lightgbm-booster) &key num-iteration)
-  "Return BOOSTER's model as a string via `LGBM_BoosterSaveModelToString'."
+  "Return BOOSTER's model as a string via `LGBM_BoosterSaveModelToString'.
+
+NUM-ITERATION's :BEST is resolved by `%resolve-best-num-iteration' before
+`%resolve-num-iteration' ever sees it, exactly as `predict' and `save-model' resolve it."
   (with-foreign-float-traps-masked
-    (%save-model-to-string (handle-live-pointer booster)
-                            (%resolve-num-iteration num-iteration))))
+    (%save-model-to-string
+     (handle-live-pointer booster)
+     (%resolve-num-iteration
+      (%resolve-best-num-iteration booster num-iteration "model-to-string's :num-iteration")))))
 
 ;;; ---------------------------------------------------------------------------
 ;;; Feature importance

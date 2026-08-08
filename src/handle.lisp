@@ -71,9 +71,13 @@ as TRAINING-SET: freeing one out from under a live booster is the same hazard.")
                     :documentation "The iteration an early-stopped `train' run judged
 best, or NIL.
 
-Set only when `train' was given `:early-stopping'; NIL for a `load-model' booster and
-for one trained without it. `:num-iteration :best', added in a later task, resolves
-predictions against this slot."))
+Set only when `train' was given `:early-stopping', and only when its watcher actually
+determined a best iteration -- NIL for a `load-model' booster, for one trained without
+`:early-stopping', and for one trained with it whose watcher never got the chance to see
+one (see `train''s docstring for the two ways that happens even with `:early-stopping'
+supplied). `predict', `save-model' and `model-to-string''s `:num-iteration :best' resolve
+against this slot, signalling `unsupported-argument' rather than assuming a default when
+it is NIL."))
   (:documentation "A trained, or in-progress, backend model.
 
 Retains its training set strongly, which is what makes `with-booster''s docstring --
