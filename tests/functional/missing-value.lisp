@@ -1,11 +1,18 @@
-;;;; missing-value.lisp --- Portable contract tests for `make-dataset''s :MISSING.
+;;;; missing-value.lisp --- Portable contract tests for `make-dataset''s and `predict''s
+;;;; :MISSING.
 ;;;;
-;;;; `cl-gbdt:make-dataset' now takes a :MISSING keyword naming which datum in the caller's
-;;;; own data means *missing*, gated by the `:missing-value' capability. It is a VALUE, not a
-;;;; policy: it chooses which number means missing and does not turn missing handling on or
-;;;; off. Like tests/functional/evaluation.lisp and tests/functional/sparse-input.lisp beside
+;;;; `cl-gbdt:make-dataset' and `cl-gbdt:predict' both now take a :MISSING keyword naming which
+;;;; datum in the caller's own data means *missing*, gated by the `:missing-value' capability.
+;;;; It is a VALUE, not a policy: it chooses which number means missing and does not turn
+;;;; missing handling on or off. Like tests/functional/evaluation.lisp and
+;;;; tests/functional/sparse-input.lisp beside
 ;;;; it, every test below runs over that first file's *FIXTURES*, once per backend, so the two
 ;;;; backends cannot drift apart in shape or meaning without one of them failing here.
+;;;;
+;;;; The two arguments are checked and rendered separately -- `make-dataset' puts the sentinel
+;;;; in a DATASET's creation config, `predict' in a transient DMatrix's creation config for a
+;;;; dense matrix and in the inplace predict config for a `csr-matrix' -- so each has its own
+;;;; capability test below rather than one standing in for the other.
 ;;;;
 ;;;; Which backend takes which branch is read from `cl-gbdt:backend-supports-p', never
 ;;;; hardcoded. XGBoost answers true today and LightGBM false -- LightGBM's C API has no
@@ -37,8 +44,8 @@
   ;; restated here, for the reason that file's own export comment gives: a second table saying
   ;; the same thing in its own words is how two files that must agree stop agreeing.
   ;; `make-fixture-dataset' passes MATRIX and the backend's own parameters straight through to
-  ;; `cl-gbdt:make-dataset'; :MISSING is supplied on top of it by `train-on' below, since it is
-  ;; this file's subject and not part of any fixture.
+  ;; `cl-gbdt:make-dataset'; :MISSING is supplied on top of it by `booster-trained-on' below,
+  ;; since it is this file's subject and not part of any fixture.
   (:import-from #:cl-gbdt/tests/functional/evaluation
                 #:*fixtures*
                 #:make-fixture-dataset))
@@ -49,13 +56,14 @@
   "How far two `cl-gbdt:predict' results may differ, element for element, and still count as
 the same numbers below.
 
-Exact equality is what is actually expected of the one equality this file asserts: a sentinel
+Exact equality is what is actually expected of every equality this file asserts: a sentinel
 honoured and a stored NaN describe the same missing cell to the library, and both backends
-train deterministically from a fixed dataset, so the two boosters should be identical trees.
-The tolerance is here because that expectation rests on the two config strings reaching the
-same code path inside the library, which nothing documents. It is small enough that nothing
-this file exists to catch survives it: the measured gap the inequality assertion rests on is
-0.026 on XGBoost, seven orders of magnitude above this.")
+train and predict deterministically from fixed data, so the two answers should come off
+identical trees down identical paths. The tolerance is here because that expectation rests on
+two config strings reaching the same code path inside the library, which nothing documents.
+It is small enough that nothing this file exists to catch survives it: the measured gaps the
+inequality assertions rest on are 0.026 on XGBoost's ingestion path and 0.693 on its
+prediction path, seven and eight orders of magnitude above this.")
 
 (defparameter *training-rounds* 5
   "How many boosting rounds every booster below is trained for. Five, matching
@@ -102,8 +110,48 @@ every such split, so the two readings genuinely disagree -- see
 `ingestion-sentinel-changes-what-was-learned' for the numbers.")
 
 (defparameter *hole-column* 0
-  "Which column of *HOLE-ROW* holds the missing cell: the only one carrying any class
+  "Which column of the holed row holds the missing cell: the only one carrying any class
 information, per *FIXTURE-ROWS*.")
+
+(defparameter *default-direction-row* 3
+  "Which row `prediction-sentinel-resolution-is-single-precision' punches its TRAINING hole
+in -- a row of the NEGATIVE class, unlike *HOLE-ROW*.
+
+Measured, and the reason that one test trains a booster of its own rather than sharing the
+clean-fixture booster the two prediction tests before it use. XGBoost gives every split a
+DEFAULT DIRECTION for a value it finds missing, and a booster trained on the clean fixture
+sends a missing value RIGHT -- the same way it sends any value above the split threshold, and
+*DATUM-SHARING-ITS-FLOAT32* is far above it. Both readings of that datum would then land on
+the same leaf and the test would assert nothing: measured 0.8467140793800354 for the datum
+read literally and 0.8467140793800354 for a NaN in its place. Training with the hole in a
+negative-class row instead teaches the default direction LEFT, and the two readings separate
+-- measured 0.8467140793800354 read literally against 0.153285950422287 read as missing.
+
+*SENTINEL* needs none of this, being far BELOW the split threshold and so on the far side of
+it from the default direction already, which is why the tests that use it train on the clean
+fixture like everything else in this file.")
+
+(defparameter *narrowing-sentinel* 16777217.0d0
+  "A sentinel that is not exactly representable in `single-float': 16777217 is 2^24 + 1, and
+`single-float' spacing at 2^24 is 2, so it narrows to 16777216.0.
+
+XGBoost compares the sentinel against the datum at SINGLE precision, whatever the matrix's own
+element type, which `prediction-sentinel-resolution-is-single-precision' is the measurement
+of. Probed directly with `XGDMatrixNumNonMissing' over 24 entries before that test was
+written: this sentinel against *DATUM-SHARING-ITS-FLOAT32* keeps 22 of them, so it matched,
+and against *DATUM-WITH-ITS-OWN-FLOAT32* keeps all 24, so it did not.")
+
+(defparameter *datum-sharing-its-float32* 16777216.0d0
+  "A datum *NARROWING-SENTINEL* matches: a DIFFERENT `double-float' from that sentinel, so a
+comparison made at double precision would not match it, and the same `single-float' once
+narrowed, so the comparison XGBoost actually makes does.")
+
+(defparameter *datum-with-its-own-float32* 16777224.0d0
+  "A datum *NARROWING-SENTINEL* does not match: exactly representable in `single-float' --
+16777224 is 2^24 + 8, a multiple of the spacing there -- and therefore its own float32,
+distinct from the sentinel's. The control half of
+`prediction-sentinel-resolution-is-single-precision', without which the matching half would
+be a coincidence rather than a measurement.")
 
 (defun quiet-nan ()
   "Return a quiet NaN `double-float', built from its bits rather than by arithmetic.
@@ -113,13 +161,17 @@ information, per *FIXTURE-ROWS*.")
 the same value with no arithmetic at all and so needs no trap mask."
   (sb-kernel:make-double-float -524288 0))
 
-(defun fixture-matrix (&key hole-value)
+(defun fixture-matrix (&key hole-value (hole-row *hole-row*))
   "Return *FIXTURE-ROWS* as a `(simple-array double-float (8 3))'.
 
-HOLE-VALUE, when supplied, replaces the cell at (*HOLE-ROW*, *HOLE-COLUMN*); with it omitted
+HOLE-VALUE, when supplied, replaces the cell at (HOLE-ROW, *HOLE-COLUMN*); with it omitted
 the matrix is whole, which is the clean matrix every prediction below is made on. HOLE-VALUE
 is stored, never coerced or computed with, so a NaN passed here reaches the array without any
-arithmetic that could trap."
+arithmetic that could trap.
+
+HOLE-ROW defaults to *HOLE-ROW*, the positive-class row every test here punches. The one
+call that overrides it builds a TRAINING matrix holed at *DEFAULT-DIRECTION-ROW* instead --
+see that parameter for the measurement that makes it necessary."
   (let ((matrix (make-array (list (length *fixture-rows*)
                                    (length (first *fixture-rows*)))
                              :element-type 'double-float)))
@@ -129,28 +181,69 @@ arithmetic that could trap."
                     :for j :from 0
                     :do (setf (aref matrix i j) (coerce value 'double-float))))
     (when hole-value
-      (setf (aref matrix *hole-row* *hole-column*) hole-value))
+      (setf (aref matrix hole-row *hole-column*) hole-value))
     matrix))
 
-(defun train-on (fixture backend matrix &key missing)
+(defun booster-trained-on (fixture backend matrix &key missing)
   "Train a booster on BACKEND from MATRIX and *FIXTURE-LABELS* for *TRAINING-ROUNDS* rounds
-with FIXTURE's own parameters, and return its predictions on the WHOLE fixture matrix.
+with FIXTURE's own parameters, and return it.
 
 MISSING reaches `cl-gbdt:make-dataset' through `make-fixture-dataset', which passes it only
 when it is non-NIL -- and NIL is exactly what omitting :MISSING already means, the backend's
-own default, so nothing is lost by the two being the same call here.
+own default, so nothing is lost by the two being the same call here. Every PREDICTION test
+below leaves it NIL and names its sentinel to `cl-gbdt:predict' instead, which is what keeps
+those tests about the prediction path alone.
+
+The caller owns the booster: `train-on' below and every prediction test wrap this in
+`cl-gbdt:with-booster'. The dataset does not outlive this call, exactly as it did not when
+this was `train-on''s own body -- `cl-gbdt:predict' takes a matrix and never a dataset, so
+nothing below needs it to."
+  (cl-gbdt:with-dataset
+      (dataset (make-fixture-dataset fixture backend matrix *fixture-labels*
+                                     :missing missing))
+    (cl-gbdt:train backend dataset :num-rounds *training-rounds*
+                   :parameters (getf fixture :booster-parameters))))
+
+(defun train-on (fixture backend matrix &key missing)
+  "Train a booster on BACKEND from MATRIX with `booster-trained-on', and return its
+predictions on the WHOLE fixture matrix.
 
 Predicting on the whole matrix whatever MATRIX was is what makes two such results comparable:
 what then differs between them is the data each model was TRAINED on, not the data each was
-asked about. It also keeps every test in this file about the INGESTION path alone -- `predict'
-gains its own :MISSING in the next task, and nothing here depends on it."
-  (cl-gbdt:with-booster
-      (booster (cl-gbdt:with-dataset
-                   (dataset (make-fixture-dataset fixture backend matrix *fixture-labels*
-                                                  :missing missing))
-                 (cl-gbdt:train backend dataset :num-rounds *training-rounds*
-                                :parameters (getf fixture :booster-parameters))))
+asked about. It also keeps every test that uses this about the INGESTION path alone: the
+`cl-gbdt:predict' call below names no sentinel of its own, so nothing it returns depends on
+`predict''s own :MISSING."
+  (cl-gbdt:with-booster (booster (booster-trained-on fixture backend matrix :missing missing))
     (cl-gbdt:predict booster (fixture-matrix))))
+
+(defun fixture-csr (matrix)
+  "Return MATRIX, a `fixture-matrix' result, as a `cl-gbdt:csr-matrix' of the same width.
+
+Every element is stored explicitly, zeros included, rather than only the non-zero ones a CSR
+conversion usually keeps. An entry a `csr-matrix' does not store is MISSING to XGBoost
+whatever any config says -- see that struct's own docstring, where the divergence is stated
+-- so a conversion that dropped zeros would hand the library a second, unnamed missing cell
+and `prediction-sentinel-works-on-a-csr-matrix' would no longer be about its sentinel alone.
+
+tests/functional/sparse-input.lisp converts its own dense fixture the same way, but its
+`dense-to-csr' is that file's internal helper over that file's fixture; the reason for
+storing every element is a different one there, and stating this one here keeps it next to
+the test that depends on it."
+  (let* ((rows (array-dimension matrix 0))
+         (columns (array-dimension matrix 1))
+         (indptr (make-array (1+ rows)))
+         (indices (make-array (* rows columns)))
+         (values (make-array (* rows columns)))
+         (position 0))
+    (dotimes (row rows)
+      (setf (aref indptr row) position)
+      (dotimes (column columns)
+        (setf (aref indices position) column)
+        (setf (aref values position) (aref matrix row column))
+        (incf position)))
+    (setf (aref indptr rows) position)
+    (cl-gbdt:make-csr-matrix :indptr indptr :indices indices :values values
+                             :num-columns columns)))
 
 (defun predictions-agree-p (left right)
   "True when LEFT and RIGHT, two `cl-gbdt:predict' results, have the same shape and no pair of
@@ -434,4 +527,214 @@ something unrelated had broken."
                    (ok (= (length *fixture-rows*) (cl-gbdt:dataset-num-rows dataset))
                        (format nil "dataset-num-rows was ~S"
                                (cl-gbdt:dataset-num-rows dataset))))))
+          (cl-gbdt:close-backend backend))))))
+
+;;; ---------------------------------------------------------------------------
+;;; `predict''s own :MISSING
+;;;
+;;; The same discrimination `ingestion-sentinel-changes-what-was-learned' makes, moved to the
+;;; PREDICTION path and made against ONE fixed model. The booster below is trained on the
+;;; clean fixture with no :MISSING anywhere, then asked three times, differing only in what
+;;; the cell at (*HOLE-ROW*, *HOLE-COLUMN*) of the matrix it is asked about holds and whether
+;;; :MISSING names it:
+;;;
+;;;   (a) the cell holds *SENTINEL*, and :MISSING *SENTINEL* says so
+;;;   (b) the cell holds *SENTINEL*, and nothing says so -- it is an ordinary number
+;;;   (c) the cell holds a NaN, and no :MISSING is needed -- NaN is the wrapper's own default
+;;;
+;;; (a) EQUALS (c): the sentinel was honoured, the two matrices differing only in how the same
+;;; missing cell was spelled. (a) DIFFERS FROM (b): the sentinel was not dropped -- an
+;;; implementation that accepted :MISSING and threw it away would pass the equality alone.
+;;; Because the model is fixed, the three results differ only in the data `predict' was ASKED
+;;; about, so nothing about how the model was trained can account for the gap.
+;;;
+;;; Measured against the vendored XGBoost before either assertion was written, five rounds on
+;;; the clean eight rows -- the seven rows without a hole answer 0.153285950422287 or
+;;; 0.8467140793800354 identically in all three cases, and row *HOLE-ROW* is what moves:
+;;;
+;;;   (a) / (c)  0.8467140793800354
+;;;   (b)        0.153285950422287
+;;;
+;;; A gap of 0.693, more than eight orders of magnitude above *PREDICTION-TOLERANCE*.
+;;; LightGBM refuses :MISSING and so is never asked; no number here is compared with one of
+;;; its numbers.
+
+(deftest prediction-sentinel-changes-what-is-predicted
+  (dolist (fixture *fixtures*)
+    (with-backend-library ((getf fixture :backend))
+      (let ((backend (cl-gbdt:open-backend (getf fixture :backend))))
+        (unwind-protect
+             (when (cl-gbdt:backend-supports-p backend :missing-value)
+               (cl-gbdt:with-booster
+                   (booster (booster-trained-on fixture backend (fixture-matrix)))
+                 (let* ((holed (fixture-matrix :hole-value *sentinel*))
+                        (honoured (cl-gbdt:predict booster holed :missing *sentinel*))
+                        (literal (cl-gbdt:predict booster holed))
+                        (nan (cl-gbdt:predict booster
+                                              (fixture-matrix :hole-value (quiet-nan)))))
+                   (testing (format nil "~A: predict with :missing ~A answers what a stored ~
+                                         NaN answers -- the sentinel was honoured"
+                                    (getf fixture :backend) *sentinel*)
+                     (ok (predictions-agree-p honoured nan)
+                         (format nil "with :missing ~S, with a NaN ~S" honoured nan)))
+                   (testing (format nil "~A: and answers something else than the same matrix ~
+                                         read literally -- the sentinel was not dropped"
+                                    (getf fixture :backend))
+                     (ok (not (predictions-agree-p honoured literal))
+                         (format nil "with :missing ~S, read literally ~S"
+                                 honoured literal))))))
+          (cl-gbdt:close-backend backend))))))
+
+;;; The same three-way comparison over a `cl-gbdt:csr-matrix', which is the OTHER config site
+;;; and not covered by the test above.
+;;;
+;;; A dense matrix reaches XGBoost through a transient DMatrix, so its sentinel is a key in
+;;; that DMatrix's CREATION config -- the same config `make-dataset' fills. A `csr-matrix'
+;;; builds no DMatrix at all: `XGBoosterPredictFromCSR' is inplace prediction, and the
+;;; sentinel is a key in the PREDICT config instead. Two different strings built by two
+;;; different functions, so a fix to one leaves the other exactly as broken as it was.
+;;;
+;;; :KIND :NORMAL throughout, stated rather than left to the default: XGBoost's sparse
+;;; prediction entry point serves `:normal' and `:raw' only, measured during the sparse-input
+;;; feature and recorded in `cl-gbdt:predict''s own docstring, so this test has two KINDs to
+;;; choose between rather than four and picks the one every other prediction in this file
+;;; uses.
+;;;
+;;; Measured the same way as the test above, and the same three numbers: (a) and (c) answer
+;;; 0.8467140793800354 at row *HOLE-ROW* and (b) answers 0.153285950422287. Gated on
+;;; `:sparse-input' as well as `:missing-value', since a backend without the first has no
+;;; `csr-matrix' path to test the second on.
+
+(deftest prediction-sentinel-works-on-a-csr-matrix
+  (dolist (fixture *fixtures*)
+    (with-backend-library ((getf fixture :backend))
+      (let ((backend (cl-gbdt:open-backend (getf fixture :backend))))
+        (unwind-protect
+             (when (and (cl-gbdt:backend-supports-p backend :missing-value)
+                        (cl-gbdt:backend-supports-p backend :sparse-input))
+               (cl-gbdt:with-booster
+                   (booster (booster-trained-on fixture backend (fixture-matrix)))
+                 (let* ((holed (fixture-csr (fixture-matrix :hole-value *sentinel*)))
+                        (honoured (cl-gbdt:predict booster holed
+                                                   :kind :normal :missing *sentinel*))
+                        (literal (cl-gbdt:predict booster holed :kind :normal))
+                        (nan (cl-gbdt:predict
+                              booster
+                              (fixture-csr (fixture-matrix :hole-value (quiet-nan)))
+                              :kind :normal)))
+                   (testing (format nil "~A: predict on a csr-matrix with :missing ~A answers ~
+                                         what a stored NaN answers"
+                                    (getf fixture :backend) *sentinel*)
+                     (ok (predictions-agree-p honoured nan)
+                         (format nil "with :missing ~S, with a NaN ~S" honoured nan)))
+                   (testing (format nil "~A: and answers something else than the same ~
+                                         csr-matrix read literally"
+                                    (getf fixture :backend))
+                     (ok (not (predictions-agree-p honoured literal))
+                         (format nil "with :missing ~S, read literally ~S"
+                                 honoured literal))))))
+          (cl-gbdt:close-backend backend))))))
+
+;;; What resolution the sentinel is compared at, which is a property a caller has to know to
+;;; choose one: XGBoost narrows both sides to `single-float' first, so two `double-float's
+;;; that round to the same float32 are the same value to it.
+;;;
+;;; *NARROWING-SENTINEL* against *DATUM-SHARING-ITS-FLOAT32* -- a different double, the same
+;;; float32 -- predicts what a NaN in that cell predicts, so it matched. Against
+;;; *DATUM-WITH-ITS-OWN-FLOAT32* it does not, so it did not. The second half is the control
+;;; that makes the first a measurement rather than a coincidence: without it, an
+;;; implementation that treated EVERY value in the holed cell as missing would pass.
+;;;
+;;; This test trains its own booster, holed at *DEFAULT-DIRECTION-ROW*, and that parameter
+;;; carries the measurement forcing it: against a booster trained on the clean fixture, both
+;;; readings of a 2^24-sized datum answer 0.8467140793800354 and neither assertion would say
+;;; anything. Against this one they answer 0.153285950422287 read as missing and
+;;; 0.8467140793800354 read literally.
+
+(deftest prediction-sentinel-resolution-is-single-precision
+  (dolist (fixture *fixtures*)
+    (with-backend-library ((getf fixture :backend))
+      (let ((backend (cl-gbdt:open-backend (getf fixture :backend))))
+        (unwind-protect
+             (when (cl-gbdt:backend-supports-p backend :missing-value)
+               (cl-gbdt:with-booster
+                   (booster (booster-trained-on
+                             fixture backend
+                             (fixture-matrix :hole-value (quiet-nan)
+                                             :hole-row *default-direction-row*)))
+                 (let ((nan (cl-gbdt:predict booster
+                                             (fixture-matrix :hole-value (quiet-nan))))
+                       (matched (cl-gbdt:predict
+                                 booster
+                                 (fixture-matrix :hole-value *datum-sharing-its-float32*)
+                                 :missing *narrowing-sentinel*))
+                       (unmatched (cl-gbdt:predict
+                                   booster
+                                   (fixture-matrix :hole-value *datum-with-its-own-float32*)
+                                   :missing *narrowing-sentinel*)))
+                   (testing (format nil "~A: :missing ~A reads ~A as missing -- a different ~
+                                         double sharing its single-float"
+                                    (getf fixture :backend) *narrowing-sentinel*
+                                    *datum-sharing-its-float32*)
+                     (ok (predictions-agree-p matched nan)
+                         (format nil "with the sentinel ~S, with a NaN ~S" matched nan)))
+                   (testing (format nil "~A: and does not read ~A as missing -- its own ~
+                                         single-float"
+                                    (getf fixture :backend) *datum-with-its-own-float32*)
+                     (ok (not (predictions-agree-p unmatched nan))
+                         (format nil "with the sentinel ~S, with a NaN ~S"
+                                 unmatched nan))))))
+          (cl-gbdt:close-backend backend))))))
+
+;;; Policy section 7's central rule again, on `predict' this time: the operation re-checks the
+;;; capability itself rather than trusting the caller, and each operation checks it
+;;; SEPARATELY. `missing-value-without-the-capability-signals' above asserts the same rule for
+;;; `make-dataset'; neither test stands in for the other, since the two reach two different
+;;; per-backend calls and a backend could gate one and not the other.
+;;;
+;;; One sentinel value here, not the two the ingestion test uses: the rule that :MISSING
+;;; signals REGARDLESS OF THE VALUE is a property of each backend's own `%check-missing-value',
+;;; which the ingestion test already pins for both values, and `predict' reaches that same
+;;; function rather than a second copy of it. What is unpinned until here is that `predict'
+;;; reaches it AT ALL.
+;;;
+;;; The booster is trained before the capability plist is overwritten. `train' reads
+;;; capabilities of its own, and a backend stripped down to `(:missing-value nil)' could not
+;;; be asked for a booster to predict with in the first place.
+
+(deftest prediction-without-the-capability-signals
+  (dolist (fixture *fixtures*)
+    (with-backend-library ((getf fixture :backend))
+      (let ((backend (cl-gbdt:open-backend (getf fixture :backend))))
+        (unwind-protect
+             (cl-gbdt:with-booster
+                 (booster (booster-trained-on fixture backend (fixture-matrix)))
+               ;; A backend that already answers false is left exactly as it opened; one that
+               ;; answers true has its plist overwritten, which is the only way to reach the
+               ;; gate there.
+               (when (cl-gbdt:backend-supports-p backend :missing-value)
+                 (setf (cl-gbdt:backend-capabilities backend) '(:missing-value nil)))
+               (testing (format nil "~A: predict signals capability-unavailable for :missing ~
+                                     ~A, naming the capability and the backend"
+                                (getf fixture :backend) *sentinel*)
+                 (let ((condition
+                         (handler-case
+                             (progn (cl-gbdt:predict booster
+                                                     (fixture-matrix :hole-value *sentinel*)
+                                                     :missing *sentinel*)
+                                    nil)
+                           (cl-gbdt:capability-unavailable (c) c))))
+                   (ok condition "predict signalled instead of returning predictions")
+                   (ok (and condition
+                            (eq :missing-value
+                                (cl-gbdt:capability-unavailable-capability condition)))
+                       (format nil "the condition named capability ~S"
+                               (and condition
+                                    (cl-gbdt:capability-unavailable-capability condition))))
+                   (ok (and condition
+                            (eq (getf fixture :backend)
+                                (cl-gbdt:backend-error-backend condition)))
+                       (format nil "the condition named backend ~S"
+                               (and condition
+                                    (cl-gbdt:backend-error-backend condition)))))))
           (cl-gbdt:close-backend backend))))))

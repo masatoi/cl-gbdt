@@ -403,7 +403,10 @@ before returning.
 
 The config JSON is built BEFORE the matrix is pinned, so a MISSING that
 `%dense-matrix-config-json' refuses signals with nothing yet held: rejecting the argument
-never has to unwind out of a pin or a foreign allocation."
+never has to unwind out of a pin or a foreign allocation. That is a property of this
+function's own body and of where each caller puts the call: `predict' in
+`cl-gbdt/src/xgboost/protocol' builds its transient DMatrix outside the `with-foreign-matrix'
+it uses for the row count, rather than inside it, for exactly this reason."
   (let ((config-json (%dense-matrix-config-json missing)))
     (with-foreign-matrix (data-pointer nrow ncol element-type) matrix
       (let ((typestr (%array-interface-typestr element-type)))
@@ -749,7 +752,7 @@ something else."
 protocol."
   (or num-iteration 0))
 
-(defun %predict-config-json (predict-type iteration-end &key missing)
+(defun %predict-config-json (predict-type iteration-end &key (missing nil missing-supplied-p))
   "Return the JSON config `XGBoosterPredictFromDMatrix' expects for PREDICT-TYPE (already
 mapped by `%predict-type') and ITERATION-END (already resolved by
 `%resolve-num-iteration').
@@ -760,17 +763,26 @@ exactly the assumption `predict' exists to avoid making. With it, `out_shape' an
 `out_dim' report a shape this file can trust uniformly across every KIND and class
 count.
 
-MISSING true adds the `\"missing\"' key, fixed at IEEE NaN the way
-`%dense-matrix-config-json' and `%csr-matrix-config-json' render a NIL sentinel for the two
-ingestion entry points. It is off by default because `XGBoosterPredictFromDMatrix' has no
-use for it -- a DMatrix settled its own missing sentinel when it was built -- and on for
-`XGBoosterPredictFromCSR', which is INPLACE prediction with no DMatrix behind it and
-therefore nothing to have settled one: confirmed against the vendored library, that call
-refuses outright without the key (\"Argument `missing` is required\"), rather than assuming
-a default."
+MISSING, when SUPPLIED AT ALL, adds the `\"missing\"' key and is the value that means
+*missing*, rendered by `missing-value-json' the way `%dense-matrix-config-json' and
+`%csr-matrix-config-json' render the same argument for the two ingestion entry points -- NIL
+included, which renders as `NaN', the sentinel this wrapper sent unconditionally before
+`predict' took a :MISSING argument and therefore what a caller who names none keeps getting.
+What decides whether the key appears is the argument being SUPPLIED, not its value: NIL is a
+sentinel here rather than an absence, so it cannot also stand for one.
+
+Left out entirely by the dense path, because `XGBoosterPredictFromDMatrix' has no use for the
+key -- a DMatrix settled its own missing sentinel when it was built, out of the config
+`%create-dmatrix' builds -- and supplied by `XGBoosterPredictFromCSR', which is INPLACE
+prediction with no DMatrix behind it and therefore nothing to have settled one: confirmed
+against the vendored library, that call refuses outright without the key (\"Argument
+`missing` is required\"), rather than assuming a default."
   (format nil "{\"type\":~D,\"training\":false,\"iteration_begin\":0,~
 \"iteration_end\":~D,\"strict_shape\":true~A}"
-          predict-type iteration-end (if missing ",\"missing\":NaN" "")))
+          predict-type iteration-end
+          (if missing-supplied-p
+              (format nil ",\"missing\":~A" (missing-value-json missing :xgboost))
+              "")))
 
 (defun %total-element-count (shape-pointer dim)
   "Return the product of the DIM `:uint64' entries at SHAPE-POINTER -- the total element
@@ -814,13 +826,15 @@ OUT-RESULT's contents out before it returns."
              "XGBoosterPredictFromDMatrix"))
 
 (defun %predict-from-csr (booster-pointer indptr indices values num-columns predict-type
-                           iteration-end out-shape out-dim out-result)
+                           iteration-end missing out-shape out-dim out-result)
   "Run `XGBoosterPredictFromCSR' over the booster at BOOSTER-POINTER against the matrix a
 `csr-matrix''s INDPTR, INDICES and VALUES describes, NUM-COLUMNS wide, writing OUT-SHAPE,
 OUT-DIM and OUT-RESULT, and signal `foreign-call-error' when the library reports failure.
+MISSING is the value among VALUES that means *missing*, or NIL for this backend's own
+default.
 
 Unlike `%predict-from-dmatrix' above, which takes the config string its caller built, this
-builds its own -- `(%predict-config-json ... :missing t)' -- and its own three
+builds its own -- `(%predict-config-json ... :missing missing)' -- and its own three
 `array-interface-json' descriptors, the same way `%create-dmatrix-from-csr' does for
 ingestion where `%create-dmatrix' takes one. The three vectors are pinned for the duration
 of the call and no longer, which is all this needs: `XGBoosterPredictFromCSR' reads them and
@@ -839,8 +853,10 @@ consequences a caller sees, both measured against the vendored library:
     refusal with a check of its own, and does not route those two KINDs through a transient
     DMatrix to work around it: either would be this wrapper inventing a policy over the
     library's own, and the capability `:sparse-input' declares this very entry point for.
-  - `\"missing\"' is required in the config, which is why it is passed -- see
-    `%predict-config-json'.
+  - `\"missing\"' is required in the config, which is why MISSING is always passed -- and,
+    because it is required, this is also where a caller's own sentinel reaches XGBoost for a
+    `csr-matrix', where the dense path instead settles one on the transient DMatrix it
+    builds. See `%predict-config-json'.
 
 The `m' parameter, an optional proxy DMatrix carrying meta info, is a null pointer: nothing
 in this backend's prediction path has meta info to attach to a matrix it is only reading.
@@ -858,7 +874,7 @@ returns -- none of which differs between the two entry points."
          (cffi:with-foreign-string
              (values-json (array-interface-json values-pointer "<f8" (length values)))
            (cffi:with-foreign-string
-               (config (%predict-config-json predict-type iteration-end :missing t))
+               (config (%predict-config-json predict-type iteration-end :missing missing))
              (check-xgb (xg-booster-predict-from-csr
                          booster-pointer indptr-json indices-json values-json num-columns
                          config (cffi:null-pointer) out-shape out-dim out-result)

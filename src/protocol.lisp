@@ -244,7 +244,7 @@ has no equivalent signal, so its `update-one-iteration' always returns true afte
 successful call; treat a true return as \"the call succeeded\", not as proof a split
 happened, unless the backend is known to be LightGBM."))
 
-(defgeneric predict (booster matrix &key kind num-iteration)
+(defgeneric predict (booster matrix &key kind num-iteration missing)
   (:documentation "Predict on MATRIX using BOOSTER.
 
 MATRIX is either a dense matrix -- a 2D array of `double-float' or `single-float', one row
@@ -287,6 +287,23 @@ supplied. NIL keeps meaning \"every round\" on every booster, including one with
 iteration to resolve `:best' against; `:best' is an additional accepted value, never a
 new default. It means the same thing for a `csr-matrix' as for a dense matrix on both
 backends.
+
+MISSING names the value in MATRIX that means *missing*, exactly as `make-dataset''s own
+MISSING names it in a training matrix: a `real' or NIL, `unsupported-argument' naming
+`:missing' for anything else, and NIL -- the default -- the backend's own sentinel, so a
+caller who passes nothing gets the predictions they always got. A non-NIL MISSING needs
+BOOSTER's backend's `:missing-value' capability, which `predict' re-checks ITSELF rather
+than inheriting any check `make-dataset' made: the two operations check it separately, and
+a backend could provide it for one and not the other. It says the same thing about a
+`csr-matrix' as about a dense matrix -- a STORED value equal to it is missing -- and says
+nothing about an entry a `csr-matrix' omits, which each library goes on reading its own way
+as described above.
+
+Nothing ties MISSING here to the MISSING the dataset BOOSTER was trained from was built
+with. XGBoost, the backend that provides the capability, does not record a dataset's
+sentinel on the booster trained from it, so predicting with a different sentinel than
+training used -- or with none -- is a call the library accepts and never reports. Keeping
+the two consistent is the caller's responsibility; nothing here detects that they are not.
 
 Returns a `(simple-array double-float (* *))', with one row per input row either way -- a
 `csr-matrix''s row count is `csr-matrix-num-rows', one less than its INDPTR's length."))

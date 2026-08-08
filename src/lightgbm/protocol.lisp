@@ -643,7 +643,8 @@ reasoning applies here."
 ;;; ---------------------------------------------------------------------------
 ;;; Inference
 
-(defmethod predict ((booster lightgbm-booster) matrix &key (kind :normal) num-iteration)
+(defmethod predict ((booster lightgbm-booster) matrix
+                    &key (kind :normal) num-iteration missing)
   "Predict on MATRIX with BOOSTER -- a dense matrix via `LGBM_BoosterPredictForMat', a
 `csr-matrix' via `LGBM_BoosterPredictForCSR'.
 
@@ -651,6 +652,15 @@ KIND and NUM-ITERATION are as the `predict' generic function documents, NUM-ITER
 :BEST resolved by `%resolve-best-num-iteration' before `%resolve-num-iteration' ever
 sees it. Predictions start from iteration 0 -- the protocol exposes no start-iteration
 override.
+
+Signals `capability-unavailable' naming `:missing-value' for a non-NIL MISSING, whatever the
+value is and whatever form MATRIX takes -- this backend has no C-API route for a
+missing-value sentinel at all, on the prediction path any more than on the ingestion one. See
+`%check-missing-value' above, which carries the reasoning; `make-dataset' calls that same
+function, and this is a second call site rather than a copy of it, because policy section 7
+asks each operation to re-check the capability for itself. MISSING NIL, the default, reaches
+no check: every prediction that names no sentinel behaves exactly as it did before the
+argument existed.
 
 Signals `capability-unavailable' when MATRIX is a `csr-matrix' and this backend's
 `:sparse-input' capability reads false -- see `%check-sparse-input', which checks it before
@@ -686,6 +696,8 @@ counts as a valid model output."
           (iteration-count
             (%resolve-num-iteration
              (%resolve-best-num-iteration booster num-iteration "predict's :num-iteration"))))
+      (when missing
+        (%check-missing-value (handle-backend booster)))
       ;; The buffer sizing, the OUT-LEN check and the copy-out are identical for both entry
       ;; points and live here once; CALL is the only thing that differs between them, which
       ;; is exactly how much of this method a `csr-matrix' changes.

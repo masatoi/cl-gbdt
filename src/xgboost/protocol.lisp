@@ -712,7 +712,8 @@ reasoning applies here."
 ;;; ---------------------------------------------------------------------------
 ;;; Inference
 
-(defmethod predict ((booster xgboost-booster) matrix &key (kind :normal) num-iteration)
+(defmethod predict ((booster xgboost-booster) matrix
+                    &key (kind :normal) num-iteration missing)
   "Predict on MATRIX with BOOSTER -- a dense matrix via `XGBoosterPredictFromDMatrix', a
 `csr-matrix' via `XGBoosterPredictFromCSR'.
 
@@ -724,15 +725,41 @@ Signals `capability-unavailable' when MATRIX is a `csr-matrix' and this backend'
 `:sparse-input' capability reads false -- see `%check-sparse-input', which checks it before
 any foreign call.
 
+MISSING, the value in MATRIX that means *missing*, reaches the library through a DIFFERENT
+config for each of MATRIX's two forms, and neither is the one `make-dataset' fills. A dense
+MATRIX becomes a transient DMatrix, so its sentinel is a key in THAT DMatrix's creation
+config -- `%create-dmatrix' below, exactly as for a dataset that outlives the call. A
+`csr-matrix' builds no DMatrix at all, so its sentinel is a key in the INPLACE PREDICT config
+instead -- `%predict-from-csr', which needs the key anyway. Same argument, same meaning, two
+config strings built by two functions: see `%predict-config-json', whose own docstring says
+why the dense path leaves the key out of the predict config rather than sending the sentinel
+twice.
+
+MISSING needs this backend's `:missing-value' capability, which `%check-missing-value'
+re-checks below before any foreign call rather than inheriting the check `make-dataset' made
+on the dataset BOOSTER was trained from -- policy section 7 asks each operation to check for
+itself. It signals `unsupported-argument' for anything that is neither a `real' nor NIL, see
+`missing-value-json', and NIL -- the default -- sends the IEEE NaN this backend sent
+unconditionally before the argument existed, so a caller who passes nothing predicts exactly
+what they predicted before. The comparison the library then makes is at SINGLE precision,
+whatever MATRIX's own element type, as it is on the ingestion path.
+
+Nothing here relates MISSING to the sentinel BOOSTER's training dataset was built with:
+XGBoost does not record a DMatrix's sentinel on the booster, so the two are independent and
+their disagreement is undetectable. See the `predict' generic function's docstring, where
+that is stated as the caller's responsibility.
+
 A dense MATRIX is built into a transient DMatrix via `%create-dmatrix' first --
 `XGBoosterPredictFromDMatrix' takes a DMatrix handle, unlike LightGBM's
 `LGBM_BoosterPredictForMat', which predicts straight off a raw pointer and row/column
-counts. The transient DMatrix is freed before this returns, on every exit path, since
-nothing else retains it. Its free is checked with `check-xgb', not discarded outright:
-a failure there is reported with `warn' rather than an error, matching `free-dataset''s
-own reasoning for warning instead of signalling, since raising an error from cleanup
-would replace whatever condition is already propagating on an unwinding exit -- but on
-the ordinary success path, a failed free still leaks foreign memory and is worth
+counts. It is built before MATRIX is pinned for its row count rather than inside that pin,
+which is what keeps `%create-dmatrix''s claim that a refused MISSING signals with nothing
+held true of this call site too. The transient DMatrix is freed before this returns, on
+every exit path, since nothing else retains it. Its free is checked with `check-xgb', not
+discarded outright: a failure there is reported with `warn' rather than an error, matching
+`free-dataset''s own reasoning for warning instead of signalling, since raising an error
+from cleanup would replace whatever condition is already propagating on an unwinding exit
+-- but on the ordinary success path, a failed free still leaks foreign memory and is worth
 reporting rather than passing over in silence.
 
 A `csr-matrix' builds no DMatrix at all: `XGBoosterPredictFromCSR' is XGBoost's INPLACE
@@ -780,6 +807,8 @@ one itself."
           (iteration-end
             (%resolve-num-iteration
              (%resolve-best-num-iteration booster num-iteration "predict's :num-iteration"))))
+      (when missing
+        (%check-missing-value (handle-backend booster)))
       ;; Reading `out_shape'/`out_dim'/`out_result' back into the result array is identical
       ;; for both entry points and lives here once; CALL is the only thing that differs
       ;; between them, which is exactly how much of this method a `csr-matrix' changes.
@@ -811,31 +840,34 @@ one itself."
                                                  (csr-matrix-indices matrix)
                                                  (csr-matrix-values matrix)
                                                  (csr-matrix-num-columns matrix)
-                                                 predict-type iteration-end
+                                                 predict-type iteration-end missing
                                                  out-shape out-dim out-result))))
-            (with-foreign-matrix (data-pointer nrow ncol element-type) matrix
-              ;; NIL, this backend's own default sentinel -- `predict' gains a :MISSING of
-              ;; its own in the next task, and until then the transient DMatrix is built
-              ;; exactly as it always was.
-              (let ((dmatrix-pointer (%create-dmatrix matrix nil)))
-                (when (cffi:null-pointer-p dmatrix-pointer)
-                  (error 'foreign-call-error
-                         :function-name "XGDMatrixCreateFromDense"
-                         :code 0
-                         :message "reported success but returned a null dataset handle"))
-                (unwind-protect
+            ;; The transient DMatrix is built BEFORE `with-foreign-matrix' pins MATRIX,
+            ;; rather than inside it, so a MISSING that `%dense-matrix-config-json' refuses
+            ;; signals with nothing pinned and no foreign allocation held -- the property
+            ;; `%create-dmatrix''s own docstring claims, and one an enclosing pin here
+            ;; falsified the moment MISSING stopped being the constant NIL. The pin below is
+            ;; only for NROW; `%create-dmatrix' does its own for the buffer it describes.
+            (let ((dmatrix-pointer (%create-dmatrix matrix missing)))
+              (when (cffi:null-pointer-p dmatrix-pointer)
+                (error 'foreign-call-error
+                       :function-name "XGDMatrixCreateFromDense"
+                       :code 0
+                       :message "reported success but returned a null dataset handle"))
+              (unwind-protect
+                   (with-foreign-matrix (data-pointer nrow ncol element-type) matrix
                      (cffi:with-foreign-string
                          (config (%predict-config-json predict-type iteration-end))
                        (predict-into nrow
                                      (lambda (out-shape out-dim out-result)
                                        (%predict-from-dmatrix booster-pointer dmatrix-pointer
                                                               config out-shape out-dim
-                                                              out-result))))
-                  (handler-case (%free-dmatrix dmatrix-pointer)
-                    (error (condition)
-                      (warn "Freeing predict's temporary XGBoost dataset failed: the ~
-                             foreign dataset was not freed and its memory is leaked. ~A"
-                            condition)))))))))))
+                                                              out-result)))))
+                (handler-case (%free-dmatrix dmatrix-pointer)
+                  (error (condition)
+                    (warn "Freeing predict's temporary XGBoost dataset failed: the ~
+                           foreign dataset was not freed and its memory is leaked. ~A"
+                          condition))))))))))
 
 ;;; ---------------------------------------------------------------------------
 ;;; Persistence
