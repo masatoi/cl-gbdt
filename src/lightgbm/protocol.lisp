@@ -455,8 +455,8 @@ Signals `backend-not-open' before any of that when BACKEND is not open -- see
            ;; early stopping with RECORD-HISTORY NIL -- signals with no raw booster handle
            ;; in existence yet to unwind. NIL when EARLY-STOPPING is NIL, which is what the
            ;; loop below tests to decide whether it can end early at all.
-           (watcher (train-early-stopping-watcher early-stopping record-history
-                                                  dataset-names))
+           (watcher (train-early-stopping-watcher (backend-name backend) early-stopping
+                                                   record-history dataset-names))
            (history '())
            ;; Counted rather than taken from NUM-ROUNDS: the loop below runs zero iterations
            ;; for a negative count, so a caller passing :NUM-ROUNDS -1 gets an untrained

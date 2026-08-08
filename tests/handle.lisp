@@ -6,7 +6,9 @@
 (uiop:define-package #:cl-gbdt/tests/handle
   (:use #:cl #:rove)
   (:import-from #:cffi)
-  (:import-from #:cl-gbdt/src/handle #:%make-finalizer #:%check-handle-kind)
+  (:import-from #:cl-gbdt/src/handle
+                #:%make-finalizer #:%check-handle-kind
+                #:%resolve-best-num-iteration #:%reject-best-num-iteration)
   (:import-from #:cl-gbdt))
 
 (in-package #:cl-gbdt/tests/handle)
@@ -185,3 +187,85 @@ the wrong-backend case, which needs two distinct `backend-name's and nothing els
                              "")
                     (cl-gbdt:wrong-backend-reference (c) (princ-to-string c))))
           "the report did not name booster as the expected kind"))))
+
+;;; `%resolve-best-num-iteration' and `%reject-best-num-iteration' are the backend-agnostic
+;;; helpers `predict', `save-model', `model-to-string' and `feature-importance' share to
+;;; interpret `:num-iteration :best' against a booster's own `booster-best-iteration' -- see
+;;; each function's own docstring. Both read only slots already covered above, so they cost
+;;; nothing to test here at layer 1 rather than only through the functional suite.
+
+(deftest resolve-best-num-iteration-reads-the-boosters-best-iteration
+  (testing ":best resolves to the booster's own best-iteration"
+    (let* ((backend (cl-gbdt:open-backend :handle-test))
+           (booster (cl-gbdt:make-handle 'cl-gbdt:booster (cffi:make-pointer 2)
+                                          backend :booster :best-iteration 7)))
+      (unwind-protect
+           (ok (= 7 (%resolve-best-num-iteration booster :best "predict's :num-iteration"))
+               "%resolve-best-num-iteration did not read the booster's best-iteration")
+        (cl-gbdt:close-backend backend)))))
+
+(deftest resolve-best-num-iteration-signals-without-a-best-iteration
+  (testing ":best on a booster with no best-iteration signals unsupported-argument"
+    (let* ((backend (cl-gbdt:open-backend :handle-test))
+           (booster (cl-gbdt:make-handle 'cl-gbdt:booster (cffi:make-pointer 2)
+                                          backend :booster)))
+      (unwind-protect
+           (ok (handler-case
+                   (progn (%resolve-best-num-iteration
+                           booster :best "predict's :num-iteration")
+                          nil)
+                 (cl-gbdt:unsupported-argument () t))
+               "%resolve-best-num-iteration accepted :best with no best-iteration to resolve")
+        (cl-gbdt:close-backend backend)))))
+
+(deftest resolve-best-num-iteration-passes-non-best-values-through
+  (testing "an explicit integer passes through unchanged"
+    (let* ((backend (cl-gbdt:open-backend :handle-test))
+           (booster (cl-gbdt:make-handle 'cl-gbdt:booster (cffi:make-pointer 2)
+                                          backend :booster :best-iteration 7)))
+      (unwind-protect
+           (ok (= 5 (%resolve-best-num-iteration booster 5 "predict's :num-iteration"))
+               "%resolve-best-num-iteration changed a non-:best integer")
+        (cl-gbdt:close-backend backend))))
+  (testing "NIL passes through unchanged"
+    (let* ((backend (cl-gbdt:open-backend :handle-test))
+           (booster (cl-gbdt:make-handle 'cl-gbdt:booster (cffi:make-pointer 2)
+                                          backend :booster :best-iteration 7)))
+      (unwind-protect
+           (ok (null (%resolve-best-num-iteration booster nil "predict's :num-iteration"))
+               "%resolve-best-num-iteration changed NIL")
+        (cl-gbdt:close-backend backend)))))
+
+(deftest reject-best-num-iteration-signals-for-best
+  (testing ":best signals unsupported-argument"
+    (let* ((backend (cl-gbdt:open-backend :handle-test))
+           (booster (cl-gbdt:make-handle 'cl-gbdt:booster (cffi:make-pointer 2)
+                                          backend :booster :best-iteration 7)))
+      (unwind-protect
+           (ok (handler-case
+                   (progn (%reject-best-num-iteration
+                           booster :best "feature-importance's :num-iteration")
+                          nil)
+                 (cl-gbdt:unsupported-argument () t))
+               "%reject-best-num-iteration accepted :best")
+        (cl-gbdt:close-backend backend)))))
+
+(deftest reject-best-num-iteration-passes-everything-else-through
+  (testing "an explicit integer passes through unchanged"
+    (let* ((backend (cl-gbdt:open-backend :handle-test))
+           (booster (cl-gbdt:make-handle 'cl-gbdt:booster (cffi:make-pointer 2)
+                                          backend :booster)))
+      (unwind-protect
+           (ok (= 5 (%reject-best-num-iteration
+                     booster 5 "feature-importance's :num-iteration"))
+               "%reject-best-num-iteration changed a non-:best integer")
+        (cl-gbdt:close-backend backend))))
+  (testing "NIL passes through unchanged"
+    (let* ((backend (cl-gbdt:open-backend :handle-test))
+           (booster (cl-gbdt:make-handle 'cl-gbdt:booster (cffi:make-pointer 2)
+                                          backend :booster)))
+      (unwind-protect
+           (ok (null (%reject-best-num-iteration
+                      booster nil "feature-importance's :num-iteration"))
+               "%reject-best-num-iteration changed NIL")
+        (cl-gbdt:close-backend backend)))))

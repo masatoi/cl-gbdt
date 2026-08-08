@@ -422,7 +422,11 @@ log-loss metric on the validation set at index 1 -- or NIL when REPORT has no su
 ;;; `predict', `save-model' and `model-to-string''s `:num-iteration :best' resolves it --
 ;;; see `src/protocol.lisp''s `predict' docstring for the contract each asserts against.
 ;;; `feature-importance' also accepts `:num-iteration' but is out of this phase's scope --
-;;; the brief names only these three -- so it is left untouched and untested here.
+;;; the brief names only these three -- so it is left untested at this, functional, layer.
+;;; `%reject-best-num-iteration', the helper both backends' `feature-importance' call to
+;;; refuse `:num-iteration :best', does have layer-1 coverage -- see
+;;; `cl-gbdt/tests/handle''s `reject-best-num-iteration-signals-for-best' and
+;;; `reject-best-num-iteration-passes-everything-else-through'.
 
 ;;; The watched series under `INVERT-LABELS' worsens from its second iteration on (see this
 ;;; file's header), so `watch-spec''s default -- `:rounds 3' -- reliably picks a

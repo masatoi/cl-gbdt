@@ -18,7 +18,7 @@ file if you have it locally).
 `update-one-iteration`, `predict`, `save-model`, `load-model`, `model-to-string`,
 `feature-importance`, `evaluation`, `free-dataset` and `free-booster` -- against the real
 LightGBM and XGBoost shared libraries, exercised by 302 functional assertions (design doc
-section 12, layer 2), in addition to 320 assertions that need no shared library at all
+section 12, layer 2), in addition to 328 assertions that need no shared library at all
 (layer 1). `train` also returns a `training-report` as its secondary value, and takes
 `:early-stopping` to end a run once a watched metric stops improving -- see
 [Training report](#training-report) below. See [Usage](#usage) below for a worked example.
@@ -668,20 +668,25 @@ resolve against signals `unsupported-argument` -- see that section for the full 
   (map '(vector single-float) (lambda (x) (- 1.0 x)) *es-label*))
 
 (defun train-early-stopped (backend dataset-parameters booster-parameters metric reference-p)
-  (let ((train-set (apply #'cl-gbdt:make-dataset backend *es-matrix* :label *es-label*
-                           dataset-parameters)))
-    (let ((valid-set (apply #'cl-gbdt:make-dataset backend *es-matrix*
-                             :label *es-inverted-label*
-                             (append (when reference-p (list :reference train-set))
-                                     dataset-parameters))))
-      (cl-gbdt:train backend train-set :num-rounds 1000
-                      :valid-sets (list (cons "valid" valid-set))
-                      :early-stopping (list :metric metric :dataset "valid"
-                                             :direction :lower-is-better :rounds 3)
-                      :parameters booster-parameters))))
+  "Return (values BOOSTER REPORT TRAIN-SET VALID-SET). The caller frees all four -- the two
+datasets after BOOSTER, since BOOSTER retains both strongly for its own lifetime, exactly
+the order `with-booster' nested inside `with-dataset' would enforce above."
+  (let* ((train-set (apply #'cl-gbdt:make-dataset backend *es-matrix* :label *es-label*
+                            dataset-parameters))
+         (valid-set (apply #'cl-gbdt:make-dataset backend *es-matrix*
+                            :label *es-inverted-label*
+                            (append (when reference-p (list :reference train-set))
+                                    dataset-parameters))))
+    (multiple-value-bind (booster report)
+        (cl-gbdt:train backend train-set :num-rounds 1000
+                        :valid-sets (list (cons "valid" valid-set))
+                        :early-stopping (list :metric metric :dataset "valid"
+                                               :direction :lower-is-better :rounds 3)
+                        :parameters booster-parameters)
+      (values booster report train-set valid-set))))
 
 (let ((lgbm (cl-gbdt:open-backend :lightgbm)))
-  (multiple-value-bind (booster report)
+  (multiple-value-bind (booster report train-set valid-set)
       (train-early-stopped lgbm '(:parameters (:min-data-in-leaf 1 :min-data-in-bin 1
                                                  :verbose -1))
                             '(:objective "binary" :num-leaves 2 :min-data-in-leaf 1
@@ -699,11 +704,13 @@ resolve against signals `unsupported-argument` -- see that section for the full 
            (cl-gbdt:save-model booster "/tmp/lgbm-best.txt" :num-iteration :best)
            (format t "LightGBM save-model :num-iteration :best wrote /tmp/lgbm-best.txt: ~S~%"
                    (and (probe-file "/tmp/lgbm-best.txt") t)))
-      (cl-gbdt:free-booster booster)))
+      (cl-gbdt:free-booster booster)
+      (cl-gbdt:free-dataset valid-set)
+      (cl-gbdt:free-dataset train-set)))
   (cl-gbdt:close-backend lgbm))
 
 (let ((xgb (cl-gbdt:open-backend :xgboost)))
-  (multiple-value-bind (booster report)
+  (multiple-value-bind (booster report train-set valid-set)
       (train-early-stopped xgb '()
                             '(:objective "binary:logistic" :max-depth 2 :eta 0.5
                               :verbosity 0 :eval-metric "logloss")
@@ -734,7 +741,9 @@ resolve against signals `unsupported-argument` -- see that section for the full 
                                wrote /tmp/xgb-sliced.json: ~S~%"
                             (and (probe-file "/tmp/xgb-sliced.json") t)))
                (cl-gbdt:free-booster sliced))))
-      (cl-gbdt:free-booster booster)))
+      (cl-gbdt:free-booster booster)
+      (cl-gbdt:free-dataset valid-set)
+      (cl-gbdt:free-dataset train-set)))
   (cl-gbdt:close-backend xgb))
 ```
 

@@ -21,10 +21,7 @@
            #:handle-pointer #:handle-backend #:booster-training-set
            #:booster-validation-sets #:booster-best-iteration
            #:handle-released-p #:handle-live-pointer
-           #:make-handle #:release-handle
-           #:%check-handle-kind
-           #:%resolve-best-num-iteration
-           #:%reject-best-num-iteration))
+           #:make-handle #:release-handle))
 
 (in-package #:cl-gbdt/src/handle)
 
