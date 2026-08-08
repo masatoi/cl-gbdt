@@ -286,7 +286,7 @@ new mechanism. LightGBM having no counterpart to `XGBoosterSlice' is why
 capability model is tested against.")
 
 (defparameter *provided-capabilities*
-  '(:evaluation-history)
+  '(:evaluation-history :early-stopping)
   "Capabilities this backend provides unconditionally, recorded true at `open-backend'
 without being probed -- `probe-capabilities''s PROVIDED, which says why a probe cannot
 express this.
@@ -297,6 +297,10 @@ and `LGBM_BoosterGetEval', all reached through `%read-evaluation' -- are in
 `*required-symbols*' above. A library missing any of them never opens at all, so there is no
 state in which this backend is open and cannot record a history, and nothing for a probe to
 answer differently from one open to the next.
+`:early-stopping' is here for a different reason: it needs no C function at all. Both `train'
+loops run in Lisp, so the stop decision is `cl-gbdt/src/training/early-stopping''s pure code,
+which every open backend has by construction. A probe has nothing to look for, and the
+capability cannot vary between one open and the next.
 
 Every name here must be registered in `cl-gbdt/src/backend''s `*known-capabilities*', or
 `backend-supports-p' would signal `unknown-capability' for a capability the plist claims;
