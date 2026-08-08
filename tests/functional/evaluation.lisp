@@ -465,6 +465,14 @@ answer for itself and skips the whole body if either is missing."
   `(with-backend-library (:lightgbm)
      (with-backend-library (:xgboost)
        (multiple-value-bind (,matrix ,label) (make-separable-dataset)
+         ;; `ignorable', declared here where the variables are actually bound. A test that
+         ;; needs neither -- the capability test below wants only the two backends -- cannot
+         ;; declare them itself: a `declare' in BODY lands in an inner scope, where SBCL
+         ;; rejects it as "IGNORE declaration for a variable from outer scope" *and* still
+         ;; reports the outer binding unused. Two style-warnings, and `tools/ci/lint.lisp'
+         ;; does not catch either -- the lint workflow's separate "Compile every system
+         ;; without warnings" step is what does.
+         (declare (ignorable ,matrix ,label))
          (let ((,lightgbm (cl-gbdt:open-backend :lightgbm))
                (,xgboost (cl-gbdt:open-backend :xgboost)))
            (unwind-protect (progn ,@body)
@@ -551,16 +559,15 @@ answer for itself and skips the whole body if either is missing."
 
 (deftest capability-model-discriminates-between-the-backends
   (with-both-backends (lightgbm xgboost matrix label)
-    ;; `with-both-backends' splices this body into `(progn ,@body)', which does not accept a
-    ;; leading `declare' -- `locally' does, and neither requires touching the macro.
-    (locally (declare (ignore matrix label))
-      (testing "XGBoost reports :model-slicing"
-        (ok (cl-gbdt:backend-supports-p xgboost :model-slicing)
-            "XGBoost did not report :model-slicing"))
-      (testing "LightGBM does not report :model-slicing"
-        (ok (null (cl-gbdt:backend-supports-p lightgbm :model-slicing))
-            "LightGBM reported :model-slicing, which it has no C function for"))
-      (testing "a capability neither backend implements is false on both"
-        (ok (and (null (cl-gbdt:backend-supports-p xgboost :early-stopping))
-                 (null (cl-gbdt:backend-supports-p lightgbm :early-stopping)))
-            "a backend reported :early-stopping, which this phase does not implement")))))
+    ;; MATRIX and LABEL go unused here -- this test wants only the two backends. The macro
+    ;; declares them `ignorable' at their binding, so nothing is needed at this end.
+    (testing "XGBoost reports :model-slicing"
+      (ok (cl-gbdt:backend-supports-p xgboost :model-slicing)
+          "XGBoost did not report :model-slicing"))
+    (testing "LightGBM does not report :model-slicing"
+      (ok (null (cl-gbdt:backend-supports-p lightgbm :model-slicing))
+          "LightGBM reported :model-slicing, which it has no C function for"))
+    (testing "a capability neither backend implements is false on both"
+      (ok (and (null (cl-gbdt:backend-supports-p xgboost :early-stopping))
+               (null (cl-gbdt:backend-supports-p lightgbm :early-stopping)))
+          "a backend reported :early-stopping, which this phase does not implement"))))
