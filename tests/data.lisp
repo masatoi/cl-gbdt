@@ -120,3 +120,91 @@
   (testing "Lisp element types map to CFFI type keywords"
     (ok (eq :double (cl-gbdt:foreign-element-type 'double-float)))
     (ok (eq :float (cl-gbdt:foreign-element-type 'single-float)))))
+
+(defun %csr (&key (indptr '(0 2 3)) (indices '(0 2 1))
+                  (values '(1.0d0 2.0d0 3.0d0)) (num-columns 3))
+  (cl-gbdt:make-csr-matrix :indptr indptr :indices indices
+                           :values values :num-columns num-columns))
+
+(defun %signals-dimension-mismatch-p (thunk)
+  ;; handler-case, not rove's `signals' -- see prompts/repl-driven-development.md.
+  (handler-case (progn (funcall thunk) nil)
+    (cl-gbdt:dimension-mismatch () t)))
+
+(deftest csr-matrix-reports-its-shape
+  (testing "the readers return what was built, already coerced"
+    (let ((m (%csr)))
+      (ok (= 3 (cl-gbdt:csr-matrix-num-columns m)) "the column count")
+      (ok (= 2 (cl-gbdt:csr-matrix-num-rows m)) "the row count, from INDPTR's length")
+      (ok (equalp #(1.0d0 2.0d0 3.0d0) (cl-gbdt:csr-matrix-values m)) "the values")
+      (ok (typep (cl-gbdt:csr-matrix-values m) '(simple-array double-float (*)))
+          "whether VALUES was coerced to a specialized vector")
+      (ok (typep (cl-gbdt:csr-matrix-indptr m) '(simple-array (signed-byte 32) (*)))
+          "whether INDPTR was coerced to a specialized vector"))))
+
+(deftest csr-matrix-accepts-any-sequence
+  ;; The same convention :label, :weight and :group already follow.
+  (testing "a vector argument is accepted as readily as a list"
+    (let ((m (%csr :indptr #(0 2 3) :indices #(0 2 1) :values #(1.0d0 2.0d0 3.0d0))))
+      (ok (= 2 (cl-gbdt:csr-matrix-num-rows m)) "the row count from a vector INDPTR"))))
+
+(deftest csr-matrix-rejects-a-decreasing-indptr
+  (testing "an INDPTR that goes backwards signals"
+    (ok (%signals-dimension-mismatch-p (lambda () (%csr :indptr '(0 3 2))))
+        "whether a decreasing INDPTR was rejected")))
+
+(deftest csr-matrix-rejects-an-indptr-not-starting-at-zero
+  (testing "an INDPTR whose first element is not 0 signals"
+    (ok (%signals-dimension-mismatch-p (lambda () (%csr :indptr '(1 2 3))))
+        "whether an INDPTR not starting at 0 was rejected")))
+
+(deftest csr-matrix-rejects-an-indptr-disagreeing-with-the-element-count
+  ;; INDPTR's last element is the number of stored elements; if it disagrees with the two
+  ;; arrays' lengths, the matrix describes a different number of entries than it carries.
+  (testing "an INDPTR whose last element is not the element count signals"
+    (ok (%signals-dimension-mismatch-p (lambda () (%csr :indptr '(0 2 5))))
+        "whether a wrong final INDPTR element was rejected")))
+
+(deftest csr-matrix-rejects-mismatched-indices-and-values
+  (testing "INDICES and VALUES of different lengths signal"
+    (ok (%signals-dimension-mismatch-p
+         (lambda () (%csr :indices '(0 2) :values '(1.0d0 2.0d0 3.0d0))))
+        "whether mismatched INDICES and VALUES were rejected")))
+
+(deftest csr-matrix-rejects-a-column-index-outside-the-declared-width
+  ;; NUM-COLUMNS is the declared width, not a hint. An index at or above it addresses a
+  ;; column the matrix says it does not have.
+  (testing "an index equal to NUM-COLUMNS signals"
+    (ok (%signals-dimension-mismatch-p (lambda () (%csr :indices '(0 3 1))))
+        "whether an out-of-range column index was rejected"))
+  (testing "a negative index signals"
+    (ok (%signals-dimension-mismatch-p (lambda () (%csr :indices '(0 -1 1))))
+        "whether a negative column index was rejected")))
+
+(deftest csr-matrix-rejects-a-non-positive-num-columns
+  (testing "NUM-COLUMNS of 0 signals"
+    (ok (%signals-dimension-mismatch-p (lambda () (%csr :num-columns 0)))
+        "whether a zero NUM-COLUMNS was rejected")))
+
+(deftest csr-matrix-rejects-a-value-it-cannot-coerce
+  ;; Coercion happens here, so the failure is reported next to the mistake rather than from
+  ;; a `make-dataset' call somewhere else.
+  (testing "a non-real value signals unsupported-element-type"
+    (ok (handler-case (progn (%csr :values '(1.0d0 "two" 3.0d0)) nil)
+          (cl-gbdt:unsupported-element-type () t))
+        "whether a non-real VALUES element was rejected")))
+
+(deftest csr-matrix-allows-an-all-zero-trailing-column
+  ;; The case NUM-COLUMNS exists for: a matrix three columns wide whose third column is
+  ;; entirely empty is legal, and its width is 3 rather than 2.
+  (testing "a declared width wider than any index present is accepted"
+    (let ((m (%csr :indices '(0 1 1) :num-columns 3)))
+      (ok (= 3 (cl-gbdt:csr-matrix-num-columns m))
+          "whether the declared width survived having no index reach it"))))
+
+(deftest csr-matrix-allows-an-empty-row
+  ;; A repeated INDPTR entry is a row with no stored elements -- legal, and the reason the
+  ;; check is non-decreasing rather than strictly increasing.
+  (testing "a repeated INDPTR entry is accepted"
+    (let ((m (%csr :indptr '(0 2 2 3) :indices '(0 2 1) :values '(1.0d0 2.0d0 3.0d0))))
+      (ok (= 3 (cl-gbdt:csr-matrix-num-rows m)) "the row count with one empty row"))))
