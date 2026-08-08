@@ -78,5 +78,9 @@ guard, and have no portable fallback."
                ;; The same *FIXTURES* again, one phase further on: `train''s
                ;; :EARLY-STOPPING, which shortens the run itself rather than only
                ;; describing it -- policy section 9, Phase 3b.
-               "cl-gbdt/tests/functional/early-stopping")
+               "cl-gbdt/tests/functional/early-stopping"
+               ;; The same *FIXTURES* once more: `make-dataset' ingesting a
+               ;; `cl-gbdt:csr-matrix' on both backends, and the `:sparse-input'
+               ;; capability that gates it.
+               "cl-gbdt/tests/functional/sparse-input")
   :perform (test-op (op c) (symbol-call :rove :run c)))

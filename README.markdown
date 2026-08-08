@@ -17,11 +17,13 @@ file if you have it locally).
 `make-dataset`, `dataset-num-rows`, `dataset-num-features`, `train`,
 `update-one-iteration`, `predict`, `save-model`, `load-model`, `model-to-string`,
 `feature-importance`, `evaluation`, `free-dataset` and `free-booster` -- against the real
-LightGBM and XGBoost shared libraries, exercised by 304 functional assertions (design doc
-section 12, layer 2), in addition to 335 assertions that need no shared library at all
+LightGBM and XGBoost shared libraries, exercised by 368 functional assertions (design doc
+section 12, layer 2), in addition to 361 assertions that need no shared library at all
 (layer 1). `train` also returns a `training-report` as its secondary value, and takes
 `:early-stopping` to end a run once a watched metric stops improving -- see
-[Training report](#training-report) below. See [Usage](#usage) below for a worked example.
+[Training report](#training-report) below. `make-dataset` and `predict` also accept a
+`csr-matrix` wherever they accept a dense matrix -- see [Sparse
+input](#sparse-input-csr-matrices) below. See [Usage](#usage) below for a worked example.
 
 Loading `cl-gbdt` itself still does not require either `liblightgbm.so` or
 `libxgboost.so` to be installed -- see [Systems](#systems): a shared library is opened
@@ -256,10 +258,14 @@ Four things it promises, each of which is the point of it existing at all:
 ```
 
 `backend-info` reports the whole probed plist, false capabilities included, so it shows
-what was asked as well as what was answered. Two capabilities answer true today:
-`:model-slicing`, on XGBoost only -- see the model-slicing row in the table below -- and
-`:evaluation-history`, on both backends, since `train` records one (see
-[Training report](#training-report)).
+what was asked as well as what was answered. Four of the five registered capabilities answer
+true somewhere today: `:model-slicing`, on XGBoost only -- see the model-slicing row in the
+table below -- plus `:evaluation-history` and `:early-stopping` on both backends, since
+`train` records a history and takes `:early-stopping` (see
+[Training report](#training-report)), and `:sparse-input` on both, since both libraries
+export the CSR entry points it names (see [Sparse input](#sparse-input-csr-matrices)). The
+fifth, `:multidimensional-feature-score`, is registered and false everywhere, which says
+"not supported yet" rather than "never heard of it".
 
 `:evaluation-history` is true unconditionally rather than probed. The C functions behind it
 are in each backend's `*required-symbols*`, so a library missing them never opens at all
@@ -280,6 +286,7 @@ out first:
 | `make-dataset`'s `:reference` | Aligns the new dataset's bin mapper to an existing one's (required for a `train` `:valid-sets` entry) | Signals `unsupported-argument` -- no bin-mapper concept |
 | `make-dataset`'s `:parameters` | Configures the dataset's own binning (`max_bin` and friends) | Signals `unsupported-argument`: the vendored header (`ffi-spec/xgboost/include/xgboost/c_api.h`) documents only `missing`/`nthread`/`data_split_mode` for `XGDMatrixCreateFromDense`'s config JSON, none of which are LightGBM's dataset-level binning keys, and confirmed empirically, the library silently ignores any other key rather than rejecting it -- forwarding `:parameters` there regardless would just move today's silent drop one layer deeper instead of fixing it |
 | `update-one-iteration`'s return value | `nil` once an iteration produces no further split -- a real signal | Always `t` after a successful call; XGBoost's booster protocol has no equivalent signal |
+| `predict`'s `:kind` on a `csr-matrix` | All four kinds, `LGBM_BoosterPredictForCSR` serving each of them with the same values the dense path produces | `:normal` and `:raw` only. `XGBoosterPredictFromCSR` is that library's *inplace* prediction entry point, not a CSR spelling of the dense call, and it refuses `:contrib` and `:leaf-index` -- passed through as `foreign-call-error`. See [Sparse input](#sparse-input-csr-matrices) for the measured matrix and the workaround |
 | `save-model`'s `:num-iteration` | Limits how many trees are saved | Signals `unsupported-argument` -- `XGBoosterSaveModel` always saves every round |
 | `model-to-string`'s `:num-iteration` | Limits the rounds serialized | Signals `unsupported-argument` -- no iteration-limited variant exists |
 | `feature-importance`'s `:num-iteration` | Limits the importance calculation | Signals `unsupported-argument` -- no iteration-limited variant exists |
@@ -825,6 +832,279 @@ with recording on -- the default -- such an entry now fails `train` itself with
 while its update path does not now fails the whole run. `:record-history nil` never reaches
 the evaluation path and restores the older behaviour. LightGBM tolerates the same input,
 recording finite values, so this is XGBoost-specific in practice.
+
+### Sparse input: CSR matrices
+
+`make-csr-matrix` builds a `csr-matrix`, the one sparse form this API accepts. `make-dataset`
+and `predict` each take one wherever they take a dense matrix -- neither generic's lambda list
+changed to allow it -- and the dataset a `csr-matrix` builds is an ordinary dataset that
+nothing downstream, `train` included, can distinguish from a densely-built one.
+
+`INDPTR`, `INDICES` and `VALUES` may each be **any sequence**, and are validated and coerced
+once, at construction: `INDPTR` and `INDICES` to `(simple-array (signed-byte 32) (*))`,
+`VALUES` to `(simple-array double-float (*))`. A backend method therefore only has to pin
+what the struct already holds. The four slots are **read-only**: `csr-matrix-indptr` and its
+three siblings are readers with no `setf` expander, so that construction-time validation
+cannot be undone afterwards. **`NUM-COLUMNS` is required and never inferred** from the
+largest index `INDICES` happens to hold: a matrix's declared width and its largest stored
+index are different facts -- the trailing columns can legitimately hold nothing at all, and
+the stored indices cannot tell that apart from a matrix that simply is not that wide. Only
+the caller knows the first. `NUM-ROWS` is not a slot; it is `(1- (length indptr))`, which
+`csr-matrix-num-rows` returns, so there is no second copy of the row count to keep in sync.
+
+A malformed matrix signals `dimension-mismatch`, and a value that cannot be coerced signals
+`unsupported-element-type` -- both from `make-csr-matrix` itself, next to the mistake, rather
+than from a foreign call several frames later:
+
+```lisp
+(ql:quickload :cl-gbdt :silent t)
+
+;; Four rows, four columns. Row 2 stores nothing at all -- a repeated INDPTR entry is an
+;; empty row, which is legal. INDPTR, INDICES and VALUES may each be any sequence.
+(let ((csr (cl-gbdt:make-csr-matrix :indptr '(0 2 3 3 5)
+                                    :indices '(0 3 1 0 2)
+                                    :values '(1.0 2.0 3.0 4.0 5.0)
+                                    :num-columns 4)))
+  (format t "indptr:      ~S~%  ~S~%" (cl-gbdt:csr-matrix-indptr csr)
+          (type-of (cl-gbdt:csr-matrix-indptr csr)))
+  (format t "indices:     ~S~%" (cl-gbdt:csr-matrix-indices csr))
+  (format t "values:      ~S~%  ~S~%" (cl-gbdt:csr-matrix-values csr)
+          (type-of (cl-gbdt:csr-matrix-values csr)))
+  (format t "num-columns: ~S~%" (cl-gbdt:csr-matrix-num-columns csr))
+  (format t "num-rows:    ~S~%" (cl-gbdt:csr-matrix-num-rows csr)))
+
+(dolist (bad (list (list :indptr '(0 2) :indices '(0 3) :values '(1.0) :num-columns 4)
+                   (list :indptr '(0 1) :indices '(9) :values '(1.0) :num-columns 4)
+                   (list :indptr '(0 1) :indices '(0) :values '("x") :num-columns 4)))
+  (handler-case (apply #'cl-gbdt:make-csr-matrix bad)
+    (error (c) (format t "SIGNALED ~A~%  ~A~%" (type-of c) c))))
+```
+
+Output:
+
+```
+indptr:      #(0 2 3 3 5)
+  (SIMPLE-ARRAY (SIGNED-BYTE 32) (5))
+indices:     #(0 3 1 0 2)
+values:      #(1.0d0 2.0d0 3.0d0 4.0d0 5.0d0)
+  (SIMPLE-ARRAY DOUBLE-FLOAT (5))
+num-columns: 4
+num-rows:    4
+SIGNALED DIMENSION-MISMATCH
+  Dimension mismatch. Expected: INDICES and VALUES to have the same length, got: (2
+                                                                                  1)
+SIGNALED DIMENSION-MISMATCH
+  Dimension mismatch. Expected: a column index in [0, 4), got: 9
+SIGNALED UNSUPPORTED-ELEMENT-TYPE
+  Element type (SIMPLE-ARRAY CHARACTER (1)) is not supported. Use DOUBLE-FLOAT or SINGLE-FLOAT.
+```
+
+Sparse input is a capability, `:sparse-input`, true on both vendored backends. Both
+`make-dataset` and `predict` re-check it for themselves rather than trusting the caller to
+have asked first, and signal `capability-unavailable` when it is false -- never a silent
+conversion to a dense matrix, exactly as [the capability
+model](#asking-a-backend-what-it-can-do) requires everywhere else. The dataset's feature
+count is the declared `NUM-COLUMNS`; a `NUM-COLUMNS` that disagrees with the booster's own
+feature count at prediction time is the library's own refusal to report, reaching the caller
+as `foreign-call-error` in that library's words rather than as a check invented here.
+
+```lisp
+(ql:quickload '(:cl-gbdt :cl-gbdt/lightgbm :cl-gbdt/xgboost) :silent t)
+
+(defparameter *dense*
+  (make-array '(8 2) :element-type 'double-float
+                      :initial-contents '((0.0d0 0.0d0) (0.0d0 1.0d0)
+                                           (0.0d0 2.0d0) (0.0d0 3.0d0)
+                                           (5.0d0 0.0d0) (5.0d0 1.0d0)
+                                           (5.0d0 2.0d0) (5.0d0 3.0d0))))
+(defparameter *label*
+  (make-array 8 :element-type 'single-float
+                 :initial-contents '(0.0 0.0 0.0 0.0 1.0 1.0 1.0 1.0)))
+
+;; The same eight rows as CSR, every element stored explicitly -- zeros included. See
+;; "An absent entry is not a zero" below for why dropping them is not the same matrix.
+(defparameter *sparse*
+  (cl-gbdt:make-csr-matrix
+   :indptr '(0 2 4 6 8 10 12 14 16)
+   :indices '(0 1 0 1 0 1 0 1 0 1 0 1 0 1 0 1)
+   :values '(0 0 0 1 0 2 0 3 5 0 5 1 5 2 5 3)
+   :num-columns 2))
+
+(defun show-sparse (name backend dataset-parameters booster-parameters)
+  (format t "~A backend-supports-p :sparse-input => ~S~%"
+          name (cl-gbdt:backend-supports-p backend :sparse-input))
+  (cl-gbdt:with-dataset (dataset (apply #'cl-gbdt:make-dataset backend *sparse*
+                                        :label *label* dataset-parameters))
+    (format t "~A dataset from the csr-matrix: rows=~D features=~D~%"
+            name (cl-gbdt:dataset-num-rows dataset)
+            (cl-gbdt:dataset-num-features dataset))
+    (cl-gbdt:with-booster (booster (cl-gbdt:train backend dataset :num-rounds 10
+                                                   :parameters booster-parameters))
+      (dolist (kind '(:normal :raw :contrib :leaf-index))
+        ;; The dense call first, so its success is on the record before the sparse one
+        ;; is attempted -- materialising the rows densely is the documented workaround.
+        (let ((dense (cl-gbdt:predict booster *dense* :kind kind)))
+          (handler-case
+              (format t "~A ~S: dense ok; sparse equals dense => ~S~%" name kind
+                      (equalp (cl-gbdt:predict booster *sparse* :kind kind) dense))
+            ;; XGBoost's message carries a multi-line stack trace; line 1 is the refusal.
+            (error (c) (let ((text (princ-to-string c)))
+                         (format t "~A ~S: dense ok; sparse SIGNALED ~A~%  ~A~%" name kind
+                                 (type-of c)
+                                 (subseq text 0 (position #\Newline text)))))))))))
+
+(let ((lgbm (cl-gbdt:open-backend :lightgbm))
+      (xgb (cl-gbdt:open-backend :xgboost)))
+  (show-sparse "LightGBM" lgbm
+               '(:parameters (:min-data-in-leaf 1 :min-data-in-bin 1 :verbose -1))
+               '(:objective "binary" :num-leaves 2 :min-data-in-leaf 1 :min-data-in-bin 1
+                 :verbose -1))
+  (show-sparse "XGBoost " xgb '()
+               '(:objective "binary:logistic" :max-depth 2 :verbosity 0))
+  (cl-gbdt:close-backend lgbm)
+  (cl-gbdt:close-backend xgb))
+```
+
+Output:
+
+```
+LightGBM backend-supports-p :sparse-input => T
+LightGBM dataset from the csr-matrix: rows=8 features=2
+LightGBM :NORMAL: dense ok; sparse equals dense => T
+LightGBM :RAW: dense ok; sparse equals dense => T
+LightGBM :CONTRIB: dense ok; sparse equals dense => T
+LightGBM :LEAF-INDEX: dense ok; sparse equals dense => T
+XGBoost  backend-supports-p :sparse-input => T
+XGBoost  dataset from the csr-matrix: rows=8 features=2
+XGBoost  :NORMAL: dense ok; sparse equals dense => T
+XGBoost  :RAW: dense ok; sparse equals dense => T
+XGBoost  :CONTRIB: dense ok; sparse SIGNALED FOREIGN-CALL-ERROR
+  XGBoosterPredictFromCSR returned -1: [17:33:19] /__w/xgboost/xgboost/src/learner.cc:1264: Unsupported prediction type:2
+XGBoost  :LEAF-INDEX: dense ok; sparse SIGNALED FOREIGN-CALL-ERROR
+  XGBoosterPredictFromCSR returned -1: [17:33:19] /__w/xgboost/xgboost/src/learner.cc:1264: Unsupported prediction type:6
+```
+
+The bracketed time in XGBoost's two messages is XGBoost's own wall-clock stamp, so those two
+lines are the only part of this output that differs from one run to the next.
+
+#### `predict`'s KIND on a `csr-matrix`: XGBoost serves two of the four
+
+`make-dataset` takes a `csr-matrix` identically on both backends. `predict` does not:
+
+| `predict`'s KIND | dense, both backends | `csr-matrix`, LightGBM | `csr-matrix`, XGBoost |
+|---|---|---|---|
+| `:normal` | works | works | works |
+| `:raw` | works | works | works |
+| `:contrib` | works | works | **`foreign-call-error`** |
+| `:leaf-index` | works | works | **`foreign-call-error`** |
+
+`XGBoosterPredictFromCSR` is not the CSR spelling of `XGBoosterPredictFromDMatrix`: the
+vendored header (`ffi-spec/xgboost/include/xgboost/c_api.h`) documents it as *inplace
+prediction from CPU CSR matrix*, a different code path, and `learner.cc` refuses the prediction
+type codes `:contrib` and `:leaf-index` map to -- `2` and `6`, the two numbers the messages
+above name -- while accepting `:normal`'s `0` and `:raw`'s `1`. Those refusals reach the caller
+as `foreign-call-error` naming the call that failed. Nothing here emulates around it: routing
+those two KINDs through a transient DMatrix instead would mean this wrapper, not the library,
+deciding which C entry point a KIND gets, and would leave the very symbol `:sparse-input`
+declares for prediction unused. LightGBM's `LGBM_BoosterPredictForCSR` has no such restriction
+and serves all four, with the same values the dense path produces.
+
+**The workaround is to materialise the rows as a dense matrix** -- a 2D `double-float` or
+`single-float` array, or a `foreign-matrix` -- and predict on that, which is what the block
+above does for every KIND before trying the sparse call. Note what the workaround is *not*:
+`predict`'s MATRIX argument accepts a 2D array, a `foreign-matrix` or a `csr-matrix`, and
+**a dataset is not one of them**, so building the rows into a dataset with `make-dataset`
+leads to no prediction at all. Materialising is a real cost -- avoiding it is the reason to
+pass a `csr-matrix` in the first place -- and this API charges it rather than hiding it.
+
+#### An absent entry is not a zero, and the two libraries disagree about it
+
+An entry a `csr-matrix` does not store is *absent*, and the two libraries read absence
+differently: **LightGBM reads an absent entry as `0.0`** (its own `zero_as_missing` is off by
+default), while **XGBoost reads one as missing**. No config key changes either -- that is
+what CSR means to each library. This matters because dropping zeros is exactly what a CSR
+conversion normally does, and the disagreement changes results silently rather than erroring:
+
+```lisp
+(ql:quickload '(:cl-gbdt :cl-gbdt/lightgbm :cl-gbdt/xgboost) :silent t)
+
+;; *dense*, *label* and *sparse* as defined in the previous block.
+;; The same eight rows with the zeros dropped -- the conversion a sparse format normally
+;; performs. Row 0 is (0.0 0.0) and now stores nothing at all.
+(defparameter *zeros-dropped*
+  (cl-gbdt:make-csr-matrix
+   :indptr '(0 0 1 2 3 4 6 8 10)
+   :indices '(1 1 1 0 0 1 0 1 0 1)
+   :values '(1 2 3 5 5 1 5 2 5 3)
+   :num-columns 2))
+
+(defun first-column (predictions)
+  (loop :for row :below (array-dimension predictions 0)
+        :collect (aref predictions row 0)))
+
+(defun compare (name backend dataset-parameters booster-parameters)
+  (flet ((train-on (matrix)
+           (cl-gbdt:with-dataset (dataset (apply #'cl-gbdt:make-dataset backend matrix
+                                                 :label *label* dataset-parameters))
+             (cl-gbdt:with-booster (booster (cl-gbdt:train backend dataset :num-rounds 10
+                                                            :parameters booster-parameters))
+               (first-column (cl-gbdt:predict booster *dense*))))))
+    (let ((stored (train-on *sparse*))
+          (dropped (train-on *zeros-dropped*)))
+      (format t "~A every element stored: ~{~,4F~^ ~}~%" name stored)
+      (format t "~A zeros dropped:        ~{~,4F~^ ~}~%" name dropped)
+      (format t "~A the two agree: ~S~%" name (equal stored dropped)))))
+
+(let ((lgbm (cl-gbdt:open-backend :lightgbm))
+      (xgb (cl-gbdt:open-backend :xgboost)))
+  (compare "LightGBM" lgbm
+           '(:parameters (:min-data-in-leaf 1 :min-data-in-bin 1 :verbose -1))
+           '(:objective "binary" :num-leaves 2 :min-data-in-leaf 1 :min-data-in-bin 1
+             :verbose -1))
+  (compare "XGBoost " xgb '()
+           '(:objective "binary:logistic" :max-depth 2 :verbosity 0))
+  (cl-gbdt:close-backend lgbm)
+  (cl-gbdt:close-backend xgb))
+```
+
+Output:
+
+```
+LightGBM every element stored: 0.1793 0.1793 0.1793 0.1793 0.8207 0.8207 0.8207 0.8207
+LightGBM zeros dropped:        0.1793 0.1793 0.1793 0.1793 0.8207 0.8207 0.8207 0.8207
+LightGBM the two agree: T
+XGBoost  every element stored: 0.4256 0.4256 0.4256 0.4256 0.5744 0.5744 0.5744 0.5744
+XGBoost  zeros dropped:        0.5744 0.5744 0.5744 0.5744 0.5744 0.5744 0.5744 0.5744
+XGBoost  the two agree: NIL
+```
+
+Two matrices describing the same eight rows, differing only in whether the zeros are stored.
+LightGBM's two boosters agree to the last digit, which is the absent-entry-is-`0.0` reading
+demonstrated rather than asserted. XGBoost's do not: dropping the zeros took feature 0 away
+from all four class-0 rows, and the run that trained on what was left no longer separates the
+two classes at all -- every row comes back with the positive class's value. Nothing signalled;
+the numbers simply changed.
+
+So a `csr-matrix` is not a portable compression of a dense matrix. It is portable when every
+element is stored -- as `*sparse*` above does, and as the functional suite's `dense-to-csr`
+helper does for exactly this reason -- and it means two different things when entries are
+omitted. Omit them when *missing* is what you mean and you are on XGBoost, or when `0.0` is
+what you mean and you are on LightGBM; store them when the same matrix has to mean the same
+thing on both. Both halves are asserted per backend by the functional suite's
+`an-omitted-entry-is-zero-to-lightgbm-and-missing-to-xgboost`, on a fixture that also sends
+each library a row storing nothing at all.
+
+#### Why CSR only, and not CSC
+
+XGBoost has `XGDMatrixCreateFromCSC` -- it is bound in `src/xgboost/c-api.lisp` like every
+other emitted function -- but there is **no `XGBoosterPredictFromCSC`** anywhere in its C API;
+`XGBoosterPredictFromCSR` is the only sparse prediction entry point it offers. Supporting CSC
+would therefore put a format into this API that a caller could build a dataset from and then
+not predict with: `make-dataset` would take it, `predict` would refuse it, and the refusal
+would be a property of one backend rather than of the format. LightGBM does have both
+(`LGBM_DatasetCreateFromCSC` and `LGBM_BoosterPredictForCSC`), which would make the gap
+backend-specific in a way nothing else in the unified API is. CSR is the format both libraries
+can do both halves of, so CSR is the format this API takes.
 
 ## Systems
 

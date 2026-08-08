@@ -12,6 +12,7 @@
                 #:%parameter-string
                 #:%data-type
                 #:%create-dataset
+                #:%create-dataset-from-csr
                 #:%set-info-field
                 #:%set-group-field
                 #:%set-feature-names
@@ -30,6 +31,7 @@
                 #:%calc-num-predict
                 #:%predict-ncol
                 #:%predict-for-mat
+                #:%predict-for-csr
                 #:%save-model
                 #:%create-booster-from-modelfile
                 #:%save-model-to-string
@@ -50,6 +52,7 @@
                 #:backend-library-path
                 #:backend-version
                 #:backend-capabilities
+                #:backend-supports-p
                 #:backend-open-p
                 #:probe-foreign-symbols
                 #:probe-capabilities
@@ -85,9 +88,16 @@
   (:import-from #:cl-gbdt/src/conditions
                 #:missing-foreign-symbols
                 #:foreign-call-error
-                #:unsupported-argument)
+                #:unsupported-argument
+                #:capability-unavailable)
   (:import-from #:cl-gbdt/src/data
-                #:with-foreign-matrix)
+                #:with-foreign-matrix
+                #:csr-matrix
+                #:csr-matrix-indptr
+                #:csr-matrix-indices
+                #:csr-matrix-values
+                #:csr-matrix-num-columns
+                #:csr-matrix-num-rows)
   (:import-from #:cl-gbdt/src/training/history
                 #:training-report-from-history)
   (:import-from #:cl-gbdt/src/training/early-stopping
@@ -227,14 +237,74 @@ longer holds it open."
     backend))
 
 ;;; ---------------------------------------------------------------------------
+;;; The `:sparse-input' gate
+
+(defun %check-sparse-input (backend)
+  "Signal `capability-unavailable' when BACKEND's `:sparse-input' capability reads false.
+
+Policy section 7 requires the operation itself to re-check a capability rather than trusting
+the caller to have asked `backend-supports-p' first, so a caller who never asked gets a typed
+condition instead of a missing-symbol crash. Both operations this backend gates on
+`:sparse-input' call this -- `%dataset-pointer' below, on `make-dataset''s behalf, and
+`predict' -- so the two cannot come to disagree about which capability they name or which
+backend they blame.
+
+Only a `csr-matrix' argument ever reaches this. A dense matrix needs neither
+`LGBM_DatasetCreateFromCSR' nor `LGBM_BoosterPredictForCSR' to exist, and must keep working
+on a library that has neither."
+  (unless (backend-supports-p backend :sparse-input)
+    (error 'capability-unavailable
+           :backend (backend-name backend) :capability :sparse-input)))
+
+;;; ---------------------------------------------------------------------------
 ;;; Datasets
+
+(defun %dataset-pointer (backend matrix parameter-string reference-pointer)
+  "Return two values: the raw LightGBM dataset pointer built from MATRIX, and the name
+of the C function that produced it, for the null-handle check `make-dataset' makes
+afterward.
+
+MATRIX is either a `csr-matrix' -- `LGBM_DatasetCreateFromCSR', through
+`%create-dataset-from-csr' -- or anything `with-foreign-matrix' accepts --
+`LGBM_DatasetCreateFromMat', through `%create-dataset'. PARAMETER-STRING and
+REFERENCE-POINTER reach both entry points identically: neither argument means anything
+different for a sparse matrix than for a dense one, which is exactly what `make-dataset''s
+own contract promises about them.
+
+The `:sparse-input' capability is re-checked on the sparse branch rather than assumed --
+`%check-sparse-input' above, which carries the reasoning.
+
+A `defun', not a second `make-dataset' method specialized on `csr-matrix': `make-dataset'
+dispatches on BACKEND and MATRIX is its second required argument, so a method pair would
+split every one of the shared steps below -- the ownership dance, LABEL, WEIGHT, GROUP,
+FEATURE-NAMES -- across two bodies that must not drift, to vary one call. This keeps that
+whole method single and varies only the call that actually differs."
+  (if (typep matrix 'csr-matrix)
+      (progn
+        (%check-sparse-input backend)
+        (values (%create-dataset-from-csr (csr-matrix-indptr matrix)
+                                          (csr-matrix-indices matrix)
+                                          (csr-matrix-values matrix)
+                                          (csr-matrix-num-columns matrix)
+                                          parameter-string reference-pointer)
+                "LGBM_DatasetCreateFromCSR"))
+      (values (%create-dataset matrix parameter-string reference-pointer)
+              "LGBM_DatasetCreateFromMat")))
 
 (defmethod make-dataset ((backend lightgbm-backend) matrix
                           &key label weight group feature-names parameters reference)
-  "Build a LightGBM dataset from MATRIX via `LGBM_DatasetCreateFromMat', attaching
-LABEL, WEIGHT and GROUP with `LGBM_DatasetSetField' and FEATURE-NAMES with
-`LGBM_DatasetSetFeatureNames' when supplied. See the `make-dataset' generic
-function's docstring for what each argument means, including REFERENCE.
+  "Build a LightGBM dataset from MATRIX -- a dense matrix via `LGBM_DatasetCreateFromMat',
+a `csr-matrix' via `LGBM_DatasetCreateFromCSR' -- attaching LABEL, WEIGHT and GROUP with
+`LGBM_DatasetSetField' and FEATURE-NAMES with `LGBM_DatasetSetFeatureNames' when supplied.
+See the `make-dataset' generic function's docstring for what each argument means,
+including REFERENCE, and for what a `csr-matrix' changes about none of them.
+
+Signals `capability-unavailable' when MATRIX is a `csr-matrix' and this backend's
+`:sparse-input' capability reads false -- see `%dataset-pointer', which checks it. Every
+other argument behaves identically either way: PARAMETERS and REFERENCE reach the sparse
+entry point as the same two C parameters they reach the dense one as, and LABEL, WEIGHT,
+GROUP and FEATURE-NAMES are attached to the finished dataset by the calls below, which
+never see which entry point built it.
 
 Signals `foreign-call-error' when dataset creation reports success but writes a
 null handle -- a library-contract violation, but one every later call through
@@ -243,41 +313,42 @@ when REFERENCE is supplied but is not a `lightgbm-dataset', `released-handle-err
 when it has already been freed, and `backend-not-open' when its backend has since
 been closed -- see `%reference-pointer'.
 
-The raw dataset handle exists in C from the moment `LGBM_DatasetCreateFromMat'
-returns, but `make-handle' does not take ownership of it until the very end --
-attaching LABEL, WEIGHT, GROUP or FEATURE-NAMES can each signal first (a
-wrong-length `:label' is the commonest way). OWNED tracks whether `make-handle'
-ran; when it did not, the raw dataset is freed here instead of orphaned.
+The raw dataset handle exists in C from the moment the creation call returns, but
+`make-handle' does not take ownership of it until the very end -- attaching LABEL,
+WEIGHT, GROUP or FEATURE-NAMES can each signal first (a wrong-length `:label' is the
+commonest way). OWNED tracks whether `make-handle' ran; when it did not, the raw dataset
+is freed here instead of orphaned.
 
 Signals `backend-not-open' before any of that when BACKEND is not open -- see
 `%check-backend-open'."
   (with-foreign-float-traps-masked
     (%check-backend-open backend)
-    (let* ((reference-pointer (%reference-pointer backend reference 'lightgbm-dataset))
-           (parameter-string (%parameter-string parameters))
-           (dataset-pointer (%create-dataset matrix parameter-string reference-pointer)))
-      (when (cffi:null-pointer-p dataset-pointer)
-        (error 'foreign-call-error
-               :function-name "LGBM_DatasetCreateFromMat"
-               :code 0
-               :message "reported success but returned a null dataset handle"))
-      (let ((owned nil))
-        (unwind-protect
-             (progn
-               (when label
-                 (%set-info-field dataset-pointer "label" label))
-               (when weight
-                 (%set-info-field dataset-pointer "weight" weight))
-               (when group
-                 (%set-group-field dataset-pointer group))
-               (when feature-names
-                 (%set-feature-names dataset-pointer feature-names))
-               (prog1
-                   (make-handle 'lightgbm-dataset dataset-pointer backend :dataset)
-                 (setf owned t)))
-          (unless owned
-            (handler-case (%free-dataset-unchecked dataset-pointer)
-              (error () nil))))))))
+    (let ((reference-pointer (%reference-pointer backend reference 'lightgbm-dataset))
+          (parameter-string (%parameter-string parameters)))
+      (multiple-value-bind (dataset-pointer function-name)
+          (%dataset-pointer backend matrix parameter-string reference-pointer)
+        (when (cffi:null-pointer-p dataset-pointer)
+          (error 'foreign-call-error
+                 :function-name function-name
+                 :code 0
+                 :message "reported success but returned a null dataset handle"))
+        (let ((owned nil))
+          (unwind-protect
+               (progn
+                 (when label
+                   (%set-info-field dataset-pointer "label" label))
+                 (when weight
+                   (%set-info-field dataset-pointer "weight" weight))
+                 (when group
+                   (%set-group-field dataset-pointer group))
+                 (when feature-names
+                   (%set-feature-names dataset-pointer feature-names))
+                 (prog1
+                     (make-handle 'lightgbm-dataset dataset-pointer backend :dataset)
+                   (setf owned t)))
+            (unless owned
+              (handler-case (%free-dataset-unchecked dataset-pointer)
+                (error () nil)))))))))
 
 (defmethod dataset-num-rows ((dataset lightgbm-dataset))
   "Return DATASET's row count, read via `LGBM_DatasetGetNumData'."
@@ -530,17 +601,32 @@ reasoning applies here."
 ;;; Inference
 
 (defmethod predict ((booster lightgbm-booster) matrix &key (kind :normal) num-iteration)
-  "Predict on MATRIX with BOOSTER via `LGBM_BoosterPredictForMat'.
+  "Predict on MATRIX with BOOSTER -- a dense matrix via `LGBM_BoosterPredictForMat', a
+`csr-matrix' via `LGBM_BoosterPredictForCSR'.
 
 KIND and NUM-ITERATION are as the `predict' generic function documents, NUM-ITERATION's
 :BEST resolved by `%resolve-best-num-iteration' before `%resolve-num-iteration' ever
 sees it. Predictions start from iteration 0 -- the protocol exposes no start-iteration
 override.
 
+Signals `capability-unavailable' when MATRIX is a `csr-matrix' and this backend's
+`:sparse-input' capability reads false -- see `%check-sparse-input', which checks it before
+any foreign call. Everything else means exactly what it means for a dense matrix: both
+entry points take the same PREDICT-TYPE, the same START-ITERATION/NUM-ITERATION pair and
+the same parameter string, and both fill the same buffer in the same row-major order, so
+KIND and NUM-ITERATION are honoured identically on either path -- all four KINDs included,
+unlike `cl-gbdt/src/xgboost/protocol''s `predict', whose sparse entry point is XGBoost's
+inplace prediction and covers only two of them. A `csr-matrix' whose NUM-COLUMNS is not
+BOOSTER's own feature count is LightGBM's own mistake to catch, and it does, with a clean
+nonzero return this reports as `foreign-call-error' (\"The number of features in data (N) is
+not the same as it was in training data (M).\"); nothing here pre-empts that check.
+
 The output buffer's element count comes from `LGBM_BoosterCalcNumPredict', not
 from the row count alone: the row count is only correct for a single-class
-objective. The second array dimension is that count divided by the row count,
-guarded by `%predict-ncol'. `LGBM_BoosterPredictForMat' also writes its own
+objective. That count is read the same way for either matrix kind -- it depends on
+BOOSTER, the row count, KIND and NUM-ITERATION, and on nothing about how the rows are
+laid out. The second array dimension is that count divided by the row count,
+guarded by `%predict-ncol'. Whichever entry point ran also writes its own
 element count back through OUT-LEN; this is asserted equal to
 `LGBM_BoosterCalcNumPredict''s count rather than trusted silently, since the
 buffer was sized from the latter and a mismatch would mean either an
@@ -557,24 +643,48 @@ counts as a valid model output."
           (iteration-count
             (%resolve-num-iteration
              (%resolve-best-num-iteration booster num-iteration "predict's :num-iteration"))))
-      (with-foreign-matrix (data-pointer nrow ncol element-type) matrix
-        (let ((data-type (%data-type element-type))
-              (element-count (%calc-num-predict pointer nrow predict-type 0 iteration-count)))
-          (let* ((ncol-result (%predict-ncol element-count nrow))
-                 (result (make-array (list nrow ncol-result) :element-type 'double-float)))
-            (cffi:with-foreign-string (parameter-cstring "")
-              (cffi:with-foreign-objects ((out-len :int64) (buffer :double element-count))
-                (%predict-for-mat pointer data-pointer data-type nrow ncol predict-type
-                                   iteration-count parameter-cstring out-len buffer)
-                (assert (= element-count (cffi:mem-ref out-len :int64)) ()
-                        "LGBM_BoosterPredictForMat wrote ~D elements, expected ~D from ~
-                         LGBM_BoosterCalcNumPredict"
-                        (cffi:mem-ref out-len :int64) element-count)
-                (dotimes (row nrow)
-                  (dotimes (col ncol-result)
-                    (setf (aref result row col)
-                          (cffi:mem-aref buffer :double (+ (* row ncol-result) col)))))))
-            result))))))
+      ;; The buffer sizing, the OUT-LEN check and the copy-out are identical for both entry
+      ;; points and live here once; CALL is the only thing that differs between them, which
+      ;; is exactly how much of this method a `csr-matrix' changes.
+      (flet ((predict-into (nrow function-name call)
+               (let* ((element-count
+                        (%calc-num-predict pointer nrow predict-type 0 iteration-count))
+                      (ncol-result (%predict-ncol element-count nrow))
+                      (result (make-array (list nrow ncol-result)
+                                          :element-type 'double-float)))
+                 (cffi:with-foreign-string (parameter-cstring "")
+                   (cffi:with-foreign-objects ((out-len :int64)
+                                               (buffer :double element-count))
+                     (funcall call parameter-cstring out-len buffer)
+                     (assert (= element-count (cffi:mem-ref out-len :int64)) ()
+                             "~A wrote ~D elements, expected ~D from ~
+                              LGBM_BoosterCalcNumPredict"
+                             function-name (cffi:mem-ref out-len :int64) element-count)
+                     (dotimes (row nrow)
+                       (dotimes (col ncol-result)
+                         (setf (aref result row col)
+                               (cffi:mem-aref buffer :double
+                                              (+ (* row ncol-result) col)))))))
+                 result)))
+        (if (typep matrix 'csr-matrix)
+            (progn
+              (%check-sparse-input (handle-backend booster))
+              (predict-into (csr-matrix-num-rows matrix) "LGBM_BoosterPredictForCSR"
+                            (lambda (parameter-cstring out-len buffer)
+                              (%predict-for-csr pointer
+                                                (csr-matrix-indptr matrix)
+                                                (csr-matrix-indices matrix)
+                                                (csr-matrix-values matrix)
+                                                (csr-matrix-num-columns matrix)
+                                                predict-type iteration-count
+                                                parameter-cstring out-len buffer))))
+            (with-foreign-matrix (data-pointer nrow ncol element-type) matrix
+              (predict-into nrow "LGBM_BoosterPredictForMat"
+                            (lambda (parameter-cstring out-len buffer)
+                              (%predict-for-mat pointer data-pointer
+                                                (%data-type element-type) nrow ncol
+                                                predict-type iteration-count
+                                                parameter-cstring out-len buffer)))))))))
 
 ;;; ---------------------------------------------------------------------------
 ;;; Persistence

@@ -36,8 +36,8 @@ over both backends.
 
 **Status: functional.** Both backends (`cl-gbdt/lightgbm`, `cl-gbdt/xgboost`) implement
 all 13 generic functions of the unified API -- `make-dataset`, `train`, `predict`, and
-the rest -- against the real shared libraries, exercised by 304 functional assertions in
-`cl-gbdt/tests/functional` (layer 2) on top of 335 assertions that need no shared
+the rest -- against the real shared libraries, exercised by 368 functional assertions in
+`cl-gbdt/tests/functional` (layer 2) on top of 361 assertions that need no shared
 library at all (layer 1). `train` returns a `training-report` as its secondary value, and
 takes `:record-history` (default `t`) to turn the per-iteration recording that fills it
 off -- recording roughly doubles LightGBM's `train` time, and on XGBoost it also makes a
@@ -45,7 +45,12 @@ off -- recording roughly doubles LightGBM's `train` time, and on XGBoost it also
 `README.markdown`'s Training report section). `train` also takes `:early-stopping` to end
 a run once a watched metric stops improving, and `predict`, `save-model` and
 `model-to-string` accept `:num-iteration :best` to resolve against the iteration it
-picked -- see `README.markdown`'s Training report section for both. Core `cl-gbdt` still
+picked -- see `README.markdown`'s Training report section for both. `make-dataset` and
+`predict` also accept a `csr-matrix` (built by `make-csr-matrix`) wherever they accept a
+dense matrix, gated on the `:sparse-input` capability that both vendored backends answer
+true; XGBoost's sparse `predict` serves `:normal` and `:raw` only, and an absent CSR entry
+means `0.0` to LightGBM but *missing* to XGBoost -- see `README.markdown`'s Sparse input
+section. Core `cl-gbdt` still
 loads, and is still tested, without
 either `liblightgbm.so` or `libxgboost.so` present: a shared library is opened only by
 an explicit `open-backend` call, from whichever backend system you load on top of the
