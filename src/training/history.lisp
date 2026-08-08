@@ -31,7 +31,8 @@
 
 (in-package #:cl-gbdt/src/training/history)
 
-(defun training-report-from-history (history num-rounds dataset-names)
+(defun training-report-from-history (history num-rounds dataset-names
+                                      &key best-iteration best-score early-stopped-p)
   "Return a `training-report' over HISTORY, the record of a NUM-ROUNDS-iteration run.
 
 HISTORY has one element per completed iteration, in iteration order, and each element is
@@ -61,7 +62,12 @@ sorted, deliberately: what makes the report usable is that `training-report-seri
 the other, and imposing any ordering of this function's own would destroy that.
 
 NUM-ROUNDS is recorded as given rather than derived from HISTORY's length: a run with no
-metric configured records an empty evaluation every iteration, and it still ran."
+metric configured records an empty evaluation every iteration, and it still ran.
+
+BEST-ITERATION, BEST-SCORE and EARLY-STOPPED-P default to NIL and are passed straight
+through to `make-training-report'. A caller whose run was given :EARLY-STOPPING passes what
+its watcher found; every other caller passes none of the three, so its report reads NIL for
+all three exactly as it did before these keys existed."
   (let ((values-by-key (make-hash-table :test #'equal))
         (keys '()))
     (dolist (entries history)
@@ -76,6 +82,9 @@ metric configured records an empty evaluation every iteration, and it still ran.
     (setf keys (nreverse keys))
     (make-training-report
      :num-rounds num-rounds
+     :best-iteration best-iteration
+     :best-score best-score
+     :early-stopped-p early-stopped-p
      :series (loop :for key :in keys
                    :collect (make-training-series
                              :index (car key)

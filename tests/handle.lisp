@@ -105,6 +105,18 @@ increments the car of COUNT-CELL each time it is called."
                                           :mock :booster :training-set dataset)))
       (ok (eq dataset (cl-gbdt:booster-training-set booster))))))
 
+(deftest booster-retains-best-iteration
+  (testing "a booster's best-iteration reader returns what it was made with"
+    (let ((booster (cl-gbdt:make-handle 'cl-gbdt:booster (cffi:make-pointer 2)
+                                         :mock :booster :best-iteration 7)))
+      (ok (= 7 (cl-gbdt:booster-best-iteration booster))))))
+
+(deftest booster-best-iteration-defaults-to-nil
+  (testing "a booster built without :best-iteration reads NIL"
+    (let ((booster (cl-gbdt:make-handle 'cl-gbdt:booster (cffi:make-pointer 2)
+                                         :mock :booster)))
+      (ok (null (cl-gbdt:booster-best-iteration booster))))))
+
 ;;; `%check-handle-kind' is the guard the two backends' Layer 1 entry points use where CLOS
 ;;; cannot make the check for them, and getting it wrong means a handle allocated by one
 ;;; shared library being dereferenced by the other -- a memory fault, not a condition. Until

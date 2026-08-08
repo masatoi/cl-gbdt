@@ -18,7 +18,7 @@
                 #:wrong-backend-reference)
   (:export #:handle #:dataset #:booster
            #:handle-pointer #:handle-backend #:booster-training-set
-           #:booster-validation-sets
+           #:booster-validation-sets #:booster-best-iteration
            #:handle-released-p #:handle-live-pointer
            #:make-handle #:release-handle))
 
@@ -64,7 +64,16 @@ Build instances with `make-handle', never directly."))
 `:valid-sets', or NIL when none were given. `LGBM_BoosterAddValidData' stores each
 one's pointer inside the booster exactly as `LGBM_BoosterCreate' does for the
 training set, so these are retained strongly for the same liveness-checking reason
-as TRAINING-SET: freeing one out from under a live booster is the same hazard."))
+as TRAINING-SET: freeing one out from under a live booster is the same hazard.")
+   (best-iteration :initarg :best-iteration
+                    :initform nil
+                    :reader booster-best-iteration
+                    :documentation "The iteration an early-stopped `train' run judged
+best, or NIL.
+
+Set only when `train' was given `:early-stopping'; NIL for a `load-model' booster and
+for one trained without it. `:num-iteration :best', added in a later task, resolves
+predictions against this slot."))
   (:documentation "A trained, or in-progress, backend model.
 
 Retains its training set strongly, which is what makes `with-booster''s docstring --
@@ -81,20 +90,23 @@ cell it controls instead of depending on garbage collection timing to provoke it
     (unless (car released)
       (warn 'unfreed-handle-warning :kind kind))))
 
-(defun make-handle (class-name pointer backend kind &key training-set validation-sets)
+(defun make-handle (class-name pointer backend kind
+                     &key training-set validation-sets best-iteration)
   "Create an instance of CLASS-NAME wrapping POINTER for BACKEND, with a finalizer
 attached that warns `unfreed-handle-warning' (naming KIND) if the instance is
 garbage-collected before `release-handle' runs on it.
 
-TRAINING-SET and VALIDATION-SETS, when supplied, become the new instance's
-`training-set' and `validation-sets' initargs; only `booster' has slots for them.
-Free the result with `release-handle'."
+TRAINING-SET, VALIDATION-SETS and BEST-ITERATION, when supplied, become the new
+instance's `training-set', `validation-sets' and `best-iteration' initargs; only
+`booster' has slots for them. Free the result with `release-handle'."
   (let* ((released (list nil))
          (handle (apply #'make-instance class-name
                          :pointer pointer :released released :backend backend
                          (append (when training-set (list :training-set training-set))
                                  (when validation-sets
-                                   (list :validation-sets validation-sets))))))
+                                   (list :validation-sets validation-sets))
+                                 (when best-iteration
+                                   (list :best-iteration best-iteration))))))
     (finalize handle (%make-finalizer released kind))
     handle))
 
