@@ -567,13 +567,18 @@ answer for itself and skips the whole body if either is missing."
     (testing "LightGBM does not report :model-slicing"
       (ok (null (cl-gbdt:backend-supports-p lightgbm :model-slicing))
           "LightGBM reported :model-slicing, which it has no C function for"))
-    ;; `:sparse-input', not `:early-stopping'. This assertion used the latter when Phase 2b
-    ;; wrote it, and Phase 3b implemented early stopping without updating it -- so the
-    ;; capability stayed false in `backend-supports-p' for a whole phase while the feature
-    ;; worked, and this test was pinning the wrong answer rather than catching it. It fires
-    ;; now because `:early-stopping' has been declared; keeping a genuinely unimplemented
-    ;; name here is what leaves it able to fire again.
+    ;; `:multidimensional-feature-score', not `:early-stopping'. This assertion used the
+    ;; latter when Phase 2b wrote it, and Phase 3b implemented early stopping without
+    ;; updating it -- so the capability stayed false in `backend-supports-p' for a whole
+    ;; phase while the feature worked, and this test was recording the gap rather than
+    ;; catching it. It fires now because `:early-stopping' has been declared.
+    ;;
+    ;; Whichever name stands here has to be one no near-term phase implements, or this test
+    ;; goes stale again the moment it does. `:sparse-input' would not do: it is the next
+    ;; thing Phase 4 builds.
     (testing "a capability neither backend implements is false on both"
-      (ok (and (null (cl-gbdt:backend-supports-p xgboost :sparse-input))
-               (null (cl-gbdt:backend-supports-p lightgbm :sparse-input)))
+      (ok (and (null (cl-gbdt:backend-supports-p
+                      xgboost :multidimensional-feature-score))
+               (null (cl-gbdt:backend-supports-p
+                      lightgbm :multidimensional-feature-score)))
           "whether a registered but unimplemented capability reads false on both backends"))))
