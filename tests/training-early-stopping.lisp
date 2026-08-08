@@ -7,6 +7,7 @@
   (:use #:cl #:rove)
   (:import-from #:cl-gbdt/src/training/early-stopping
                 #:make-early-stopping-watcher
+                #:train-early-stopping-watcher
                 #:observe-iteration
                 #:watcher-best-iteration
                 #:watcher-best-score
@@ -137,3 +138,61 @@
                                      :direction :lower-is-better :rounds 2))))
       (ok (%signals-unsupported-p (lambda () (observe-iteration watcher (%entries 0.5d0) 1)))
           "an absent metric was accepted"))))
+
+;;; `train-early-stopping-watcher' is the entry point both backends' `train' calls, and the
+;;; one rule it holds that `make-early-stopping-watcher' does not -- the contradiction with
+;;; :RECORD-HISTORY NIL -- belongs to `train''s argument list rather than to a spec on its
+;;; own. It was duplicated in both backend files before it lived here, where the identical
+;;; error message was two files' problem to keep in sync; these assertions are what a layer-1
+;;; suite can say about it that the functional suite's condition-TYPE assertions cannot.
+
+(deftest train-watcher-passes-nil-through
+  ;; The overwhelmingly common case: no :EARLY-STOPPING, so no watcher and no error, whatever
+  ;; :RECORD-HISTORY says. A guard that checked RECORD-HISTORY first would reject the second
+  ;; of these, which is every pre-existing `(train … :record-history nil)' caller.
+  (testing "no :early-stopping means no watcher, either way round"
+    (ok (null (train-early-stopping-watcher nil t *names*))
+        "a NIL spec produced a watcher with recording on")
+    (ok (null (train-early-stopping-watcher nil nil *names*))
+        "a NIL spec produced a watcher with recording off")))
+
+(deftest train-watcher-rejects-early-stopping-without-recording
+  (testing ":early-stopping with :record-history NIL signals"
+    (ok (%signals-unsupported-p
+         (lambda () (train-early-stopping-watcher '(:metric "logloss" :dataset "valid"
+                                                    :direction :lower-is-better :rounds 2)
+                                                  nil *names*)))
+        "the contradictory combination was accepted"))
+  ;; The condition's :BACKEND slot reads :EARLY-STOPPING here exactly as it does for the four
+  ;; spec validators, so a caller reading that slot gets one kind of value whichever check
+  ;; fired -- the inconsistency this assertion exists to prevent coming back.
+  (testing "the condition names the same :backend the spec validators do"
+    (flet ((backend-of (thunk)
+             (handler-case (progn (funcall thunk) nil)
+               (cl-gbdt:unsupported-argument (condition)
+                 (cl-gbdt:unsupported-argument-backend condition)))))
+      (ok (eq (backend-of (lambda () (train-early-stopping-watcher
+                                      '(:metric "logloss" :dataset "valid"
+                                        :direction :lower-is-better :rounds 2)
+                                      nil *names*)))
+              (backend-of (lambda () (%watcher :spec '(:metric "logloss" :dataset "valid"
+                                                       :direction :lower-is-better)))))
+          "the two checks report different :backend values"))))
+
+(deftest train-watcher-builds-a-watcher-from-a-valid-spec
+  (testing "a valid spec with recording on yields a usable watcher"
+    (let ((watcher (train-early-stopping-watcher '(:metric "logloss" :dataset "valid"
+                                                   :direction :lower-is-better :rounds 2)
+                                                 t *names*)))
+      (ok (and watcher (null (watcher-stopped-p watcher)))
+          "no watcher, or one that had already stopped before seeing an iteration")
+      (observe-iteration watcher (%entries 0.5d0) 1)
+      (ok (eql 1 (watcher-best-iteration watcher))
+          "the watcher did not advance on its first iteration")))
+  ;; A malformed spec still reaches `make-early-stopping-watcher''s own validation rather
+  ;; than being waved through by the wrapper.
+  (testing "a malformed spec still signals through the wrapper"
+    (ok (%signals-unsupported-p
+         (lambda () (train-early-stopping-watcher '(:metric "logloss" :dataset "valid")
+                                                  t *names*)))
+        "a spec missing :direction and :rounds was accepted")))

@@ -93,20 +93,13 @@
                 #:missing-foreign-symbols
                 #:foreign-call-error
                 #:missing-training-set
-                #:capability-unavailable
-                ;; Every other `unsupported-argument' this file raises goes through
-                ;; `%check-unsupported', which owns the symbol in `cl-gbdt/src/xgboost/native'.
-                ;; `%early-stopping-watcher' signals on a two-argument contradiction rather
-                ;; than on one non-NIL value, so it does not fit that helper and names the
-                ;; condition here -- which needs the symbol imported, or `error' is handed a
-                ;; freshly interned one that designates no condition class at all.
-                #:unsupported-argument)
+                #:capability-unavailable)
   (:import-from #:cl-gbdt/src/data
                 #:with-foreign-matrix)
   (:import-from #:cl-gbdt/src/training/history
                 #:training-report-from-history)
   (:import-from #:cl-gbdt/src/training/early-stopping
-                #:make-early-stopping-watcher
+                #:train-early-stopping-watcher
                 #:observe-iteration
                 #:watcher-best-iteration
                 #:watcher-best-score
@@ -381,37 +374,6 @@ Does not check that the result is an `xgboost-dataset' -- `%check-xgboost-datase
 that afterward, on every element `%valid-set-name' has already let through."
   (if (consp entry) (cdr entry) entry))
 
-(defun %early-stopping-watcher (backend early-stopping record-history dataset-names)
-  "Return the `early-stopping-watcher' EARLY-STOPPING asks for, or NIL when EARLY-STOPPING
-is NIL and the run is therefore unwatched.
-
-Signals `unsupported-argument' naming :EARLY-STOPPING when it is supplied together with
-RECORD-HISTORY NIL. The two contradict each other: a watcher advances on the very
-per-iteration evaluation RECORD-HISTORY NIL exists to skip, and reading that evaluation
-costs the same whether one series is watched or every series is recorded, so there is no
-cheaper middle path to offer a caller who asked for both -- accepting the pair and quietly
-recording after all, or accepting it and never stopping, would each be a different answer
-than the one asked for.
-
-Otherwise delegates to `make-early-stopping-watcher', which validates the spec's four
-required keys against DATASET-NAMES and signals `unsupported-argument' itself for any that
-is missing or malformed -- see its docstring. Called before `XGBoosterCreate', so a
-rejected spec never leaves a raw booster handle behind to unwind.
-
-Duplicated in `cl-gbdt/src/lightgbm/protocol' -- its body verbatim, its docstring naming
-that backend's own booster constructor instead -- as `%valid-set-name' and
-`%valid-set-dataset' above it already are: what differs between the two backends is the
-loop this feeds, not this."
-  (when early-stopping
-    (unless record-history
-      (error 'unsupported-argument
-             :backend (backend-name backend)
-             :argument "train's :early-stopping"
-             :reason (format nil ":early-stopping needs the per-iteration evaluation ~
-                                  :record-history NIL skips; pass :record-history T, or ~
-                                  drop :early-stopping")))
-    (make-early-stopping-watcher early-stopping dataset-names)))
-
 (defmethod train ((backend xgboost-backend) dataset
                    &key valid-sets (num-rounds 100) parameters (record-history t)
                         early-stopping)
@@ -474,7 +436,8 @@ invariant a caller reading the report relies on.
 
 EARLY-STOPPING watches one of those recorded series and ends the loop once it has stopped
 improving -- see the `train' generic function's docstring for the spec's four required
-keys, and `%early-stopping-watcher' for why it cannot be combined with RECORD-HISTORY NIL.
+keys, and `train-early-stopping-watcher' for why it cannot be combined with
+RECORD-HISTORY NIL.
 The watcher sees each iteration's entries exactly as the history records them, off the one
 `%read-evaluation' call this loop already makes, so what stopped the run and what the
 report shows can never be two different readings. `training-report-num-rounds' needs
@@ -532,8 +495,8 @@ Signals `backend-not-open' before any of that when BACKEND is not open -- see
            ;; stopping with RECORD-HISTORY NIL -- signals with no raw booster handle in
            ;; existence yet to unwind. NIL when EARLY-STOPPING is NIL, which is what the
            ;; loop below tests to decide whether it can end early at all.
-           (watcher (%early-stopping-watcher backend early-stopping record-history
-                                              dataset-names))
+           (watcher (train-early-stopping-watcher early-stopping record-history
+                                                  dataset-names))
            (history '())
            ;; Counted rather than taken from NUM-ROUNDS: the loop below runs zero iterations
            ;; for a negative count, so a caller passing :NUM-ROUNDS -1 gets an untrained

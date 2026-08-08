@@ -24,6 +24,7 @@
   (:import-from #:cl-gbdt/src/conditions
                 #:unsupported-argument)
   (:export #:make-early-stopping-watcher
+           #:train-early-stopping-watcher
            #:observe-iteration
            #:watcher-best-iteration
            #:watcher-best-score
@@ -182,6 +183,47 @@ alone cannot say what a booster will report before it runs a single iteration --
         (index (%resolve-dataset spec dataset-names)))
     (%make-early-stopping-watcher :index index :metric metric :direction direction
                                    :rounds rounds)))
+
+(defun train-early-stopping-watcher (early-stopping record-history dataset-names)
+  "Return the watcher EARLY-STOPPING asks for, or NIL when EARLY-STOPPING is NIL and the
+run is therefore unwatched.
+
+The entry point both backends' `train' calls, rather than `make-early-stopping-watcher'
+directly: it holds the one rule that belongs to `train''s argument list rather than to a
+spec on its own, so that neither backend has to carry a copy of it. Lives here, beside the
+four validators it joins, because it is the same kind of work they do -- reject a
+malformed request before any iteration runs -- and needs nothing a backend has: NIL is
+passed through, RECORD-HISTORY is a boolean, and DATASET-NAMES is the list `train' already
+built. Nothing here touches a handle, a pointer or a shared library, so this file stays as
+testable at layer 1 as its header promises.
+
+Signals `unsupported-argument' when EARLY-STOPPING is supplied together with
+RECORD-HISTORY NIL. The two contradict each other: a watcher advances on the very
+per-iteration evaluation RECORD-HISTORY NIL exists to skip, and reading that evaluation
+costs the same whether one series is watched or every series is recorded, so there is no
+cheaper middle path to offer a caller who asked for both -- accepting the pair and quietly
+recording after all, or accepting it and never stopping, would each be a different answer
+than the one asked for.
+
+The condition names :BACKEND :EARLY-STOPPING, as `%require-metric' and the other three
+validators of the same spec already do, so a caller reading that slot gets one kind of
+value whichever of the five checks fired. Naming the calling backend instead would need a
+`backend' argument, which is the one thing that would make this file depend on the backend
+protocol and stop being layer-1 testable.
+
+Otherwise delegates to `make-early-stopping-watcher', which validates the spec's four
+required keys against DATASET-NAMES -- see its docstring. Both backends call this before
+their own booster constructor, so a rejected spec never leaves a raw booster handle behind
+to unwind."
+  (when early-stopping
+    (unless record-history
+      (error 'unsupported-argument
+             :backend :early-stopping
+             :argument "train's :early-stopping"
+             :reason (format nil ":early-stopping needs the per-iteration evaluation ~
+                                  :record-history NIL skips; pass :record-history T, or ~
+                                  drop :early-stopping")))
+    (make-early-stopping-watcher early-stopping dataset-names)))
 
 ;;; ---------------------------------------------------------------------------
 ;;; Advancing the watcher
