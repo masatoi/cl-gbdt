@@ -156,9 +156,10 @@ to this function can detect it here."
   "Every capability name `backend-supports-p' will answer for.
 
 Policy section 7's five names. A name is registered here as soon as it is a question worth
-asking, whether or not any backend answers true to it yet -- `:early-stopping' is registered
-and false everywhere, which says \"not supported yet\" rather than \"never heard of it\".
-Registering the name is what makes a misspelling distinguishable from a real answer.
+asking, whether or not any backend answers true to it yet --
+`:multidimensional-feature-score' is registered and false everywhere, which says \"not
+supported yet\" rather than \"never heard of it\". Registering the name is what makes a
+misspelling distinguishable from a real answer.
 
 `:evaluation-history' is true on both backends: `train' records one, and each backend names
 the capability in its own `*provided-capabilities*' rather than in `*optional-symbols*',
