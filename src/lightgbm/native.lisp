@@ -73,6 +73,7 @@
            #:*default-library-name*
            #:*required-symbols*
            #:*optional-symbols*
+           #:*provided-capabilities*
            #:%check-backend-open
            #:%check-lightgbm-dataset
            #:%reference-pointer
@@ -283,6 +284,24 @@ XGBoost's, and so the next optional capability is an entry in an existing list r
 new mechanism. LightGBM having no counterpart to `XGBoosterSlice' is why
 `(backend-supports-p backend :model-slicing)' is false here -- which is the case the whole
 capability model is tested against.")
+
+(defparameter *provided-capabilities*
+  '(:evaluation-history)
+  "Capabilities this backend provides unconditionally, recorded true at `open-backend'
+without being probed -- `probe-capabilities''s PROVIDED, which says why a probe cannot
+express this.
+
+`:evaluation-history' is here rather than in `*optional-symbols*' because the C functions
+`train' records a history with -- `LGBM_BoosterGetEvalCounts', `LGBM_BoosterGetEvalNames'
+and `LGBM_BoosterGetEval', all reached through `%read-evaluation' -- are in
+`*required-symbols*' above. A library missing any of them never opens at all, so there is no
+state in which this backend is open and cannot record a history, and nothing for a probe to
+answer differently from one open to the next.
+
+Every name here must be registered in `cl-gbdt/src/backend''s `*known-capabilities*', or
+`backend-supports-p' would signal `unknown-capability' for a capability the plist claims;
+`tools/ci/check-abi-blacklist.lisp''s CHECK C is what enforces that, for this list and
+`*optional-symbols*' alike.")
 
 ;;; ---------------------------------------------------------------------------
 ;;; Datasets

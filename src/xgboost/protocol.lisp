@@ -20,6 +20,7 @@
                 #:*default-library-name*
                 #:*required-symbols*
                 #:*optional-symbols*
+                #:*provided-capabilities*
                 #:%create-dmatrix
                 #:%set-info-field
                 #:%set-group-field
@@ -170,7 +171,10 @@ on this platform, cannot actually scope the symbol search to it -- or this signa
 Only once that required check has passed does this probe *optional-symbols* via
 `probe-capabilities' and record the result on `backend-capabilities' -- unlike a missing
 required symbol, a missing optional one never signals; it only makes `backend-supports-p'
-answer NIL for the capability that symbol backs.
+answer NIL for the capability that symbol backs. *provided-capabilities* goes to the same
+call as :PROVIDED, recording the capabilities this backend provides unconditionally --
+nothing is probed for them, because the C functions they need are in *required-symbols* and
+the probe above has already passed.
 
 Once `backend-version' is read, `check-backend-version' compares it against
 `*xgboost-version-range*' and signals `untested-backend-version' -- a warning, not an
@@ -201,7 +205,9 @@ to close it."
                    (error 'missing-foreign-symbols
                           :backend (backend-name backend) :names missing)))
                (setf (backend-capabilities backend)
-                     (probe-capabilities *optional-symbols* :library library))
+                     (probe-capabilities *optional-symbols*
+                                         :provided *provided-capabilities*
+                                         :library library))
                (setf (backend-version backend) (%read-version))
                (check-backend-version :xgboost (backend-version backend)
                                        *xgboost-version-range*)
@@ -363,7 +369,7 @@ that afterward, on every element `%valid-set-name' has already let through."
   (if (consp entry) (cdr entry) entry))
 
 (defmethod train ((backend xgboost-backend) dataset
-                   &key valid-sets (num-rounds 100) parameters)
+                   &key valid-sets (num-rounds 100) parameters (record-history t))
   "Train an XGBoost booster on DATASET for NUM-ROUNDS boosting iterations, and return it
 and a `training-report' of the run.
 
@@ -384,18 +390,36 @@ may legitimately share one NAME: their index, not their name, is what a caller u
 tell them apart in the report, so this is accepted rather than rejected as a duplicate.
 The training set is never a VALID-SETS entry and is always index 0 with a NIL name.
 
-After each iteration this reads the whole evaluation through `%read-evaluation' -- the
-same function the `evaluation' method calls, over the same DMatrix pointers in the same
-order, which is what keeps the history and what `evaluation' answers afterward from being
-able to disagree -- and keeps the result. `training-report-from-history' folds the run's
-worth of them into the report once the loop is done; that fold is backend-neutral and
-shared with `cl-gbdt/src/lightgbm/protocol''s `train', so what the two backends record
-cannot drift apart either. It orders series by the (DATASET-INDEX, METRIC-NAME) pair's
-first appearance, which for this backend is the order `XGBoosterEvalOneIter' formatted its
-own result in, so the report's series arrive in exactly the order `evaluation' reports its
-entries in without anything being sorted. A field the parse could not read as a
-`double-float' is recorded as NIL, keeping its place in the series rather than shortening
-it -- see `training-series-values'.
+When RECORD-HISTORY is true -- the default -- this reads the whole evaluation after each
+iteration through `%read-evaluation': the same function the `evaluation' method calls, over
+the same DMatrix pointers in the same order, which is what keeps the history and what
+`evaluation' answers afterward from being able to disagree.
+`training-report-from-history' folds the run's worth of them into the report once the loop
+is done; that fold is backend-neutral and shared with `cl-gbdt/src/lightgbm/protocol''s
+`train', so what the two backends record cannot drift apart either. It orders series by the
+(DATASET-INDEX, METRIC-NAME) pair's first appearance, which for this backend is the order
+`XGBoosterEvalOneIter' formatted its own result in, so the report's series arrive in exactly
+the order `evaluation' reports its entries in without anything being sorted. A field the
+parse could not read as a `double-float' is recorded as NIL, keeping its place in the series
+rather than shortening it -- see `training-series-values'.
+
+RECORD-HISTORY NIL skips that read entirely -- one `XGBoosterEvalOneIter' call per
+iteration, plus the parse of the line it formats, which is what makes recording cost real
+wall-clock time (see the `train' generic's docstring for the measured figures). The loop is
+then exactly the `XGBoosterUpdateOneIter' loop this method ran before it recorded anything,
+and the report it still returns as its secondary value has an empty series list over the
+same NUM-ROUNDS -- `training-report-from-history' over an empty history, the same shape a
+run with `disable_default_eval_metric=1' produces.
+
+Skipping the read also widens what this method accepts, which matters here more than it
+does on LightGBM: `XGBoosterEvalOneIter' evaluates every DMatrix it is handed, and refuses
+one it cannot evaluate -- an unlabelled DMatrix passed in VALID-SETS is the case this was
+found through, which `XGBoosterUpdateOneIter' trains on without complaint while the
+evaluation call signals `foreign-call-error' (\"label and prediction size not match\"). With
+RECORD-HISTORY true that failure now propagates out of `train' itself, through the OWNED
+dance below, where before this backend recorded anything it surfaced only at a later
+`evaluation' call. RECORD-HISTORY NIL never reaches the evaluation path and so trains such a
+configuration exactly as before.
 
 A read that fails propagates, freeing the booster through the OWNED dance below rather
 than returning a report whose series are shorter than NUM-ROUNDS: a short series is
@@ -461,7 +485,8 @@ Signals `backend-not-open' before any of that when BACKEND is not open -- see
                    (%update-one-iteration booster-pointer train-data-pointer)
                    ;; Primary value only: `%read-evaluation''s RAW is `evaluation''s
                    ;; provenance, and a report carries no per-iteration raw text.
-                   (push (%read-evaluation booster-pointer dataset-pointers) history))
+                   (when record-history
+                     (push (%read-evaluation booster-pointer dataset-pointers) history)))
                  (let ((report (training-report-from-history (reverse history) num-rounds
                                                               dataset-names)))
                    (multiple-value-prog1

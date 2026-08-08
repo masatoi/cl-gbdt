@@ -17,8 +17,8 @@ file if you have it locally).
 `make-dataset`, `dataset-num-rows`, `dataset-num-features`, `train`,
 `update-one-iteration`, `predict`, `save-model`, `load-model`, `model-to-string`,
 `feature-importance`, `evaluation`, `free-dataset` and `free-booster` -- against the real
-LightGBM and XGBoost shared libraries, exercised by 239 functional assertions (design doc
-section 12, layer 2), in addition to 280 assertions that need no shared library at all
+LightGBM and XGBoost shared libraries, exercised by 249 functional assertions (design doc
+section 12, layer 2), in addition to 283 assertions that need no shared library at all
 (layer 1). `train` also returns a `training-report` as its secondary value -- see
 [Training report](#training-report) below. See [Usage](#usage) below for a worked example.
 
@@ -255,8 +255,18 @@ Four things it promises, each of which is the point of it existing at all:
 ```
 
 `backend-info` reports the whole probed plist, false capabilities included, so it shows
-what was asked as well as what was answered. Today `:model-slicing` is the one capability
-any backend answers true to -- see the model-slicing row in the table below.
+what was asked as well as what was answered. Two capabilities answer true today:
+`:model-slicing`, on XGBoost only -- see the model-slicing row in the table below -- and
+`:evaluation-history`, on both backends, since `train` records one (see
+[Training report](#training-report)).
+
+`:evaluation-history` is true unconditionally rather than probed. The C functions behind it
+are in each backend's `*required-symbols*`, so a library missing them never opens at all
+and there is no state in which an open backend cannot record a history; each backend names
+the capability in its own `*provided-capabilities*`, which `open-backend` records as true
+without a symbol lookup. A probe can only answer from a symbol that might be absent, which
+is the right shape for `:model-slicing` and the wrong one for a feature that is simply
+always there.
 
 ### Where the two backends genuinely differ
 
@@ -598,6 +608,43 @@ are different mistakes: a `(name . dataset)` cons whose `name` is not a string s
 the same condition a bare wrong-backend dataset already signals elsewhere in this API. Both
 are checked before any foreign call. Duplicate names are not one of these mistakes: two
 validation sets sharing a name train and report normally, distinguished by index.
+
+#### Turning recording off: `:record-history`
+
+Recording is not free, and it is on by default. `train` reads the whole evaluation once per
+iteration, for every dataset the booster holds. Measured here over 500 rounds on 2000 rows ×
+20 columns with two metrics configured, that roughly **doubled** LightGBM's wall-clock
+`train` time -- with and without a validation set -- and added roughly **70-80%** to
+XGBoost's with one validation set attached. XGBoost with no validation set stayed inside the
+measurement noise, that backend evaluating every dataset in one call rather than one call
+each. Treat these as orders of magnitude on one machine: run-to-run variance on the same
+code is easily ±15%.
+
+`train` therefore takes `:record-history`, `t` by default:
+
+```lisp
+(multiple-value-bind (booster report)
+    (cl-gbdt:train backend train-set :num-rounds 500 :record-history nil)
+  ;; report is a training-report with no series, over 500 rounds.
+  (cl-gbdt:free-booster booster))
+```
+
+With `:record-history nil` no evaluation is read at all, and `train` costs what it cost
+before it recorded anything -- measured against the commit this branch started from, the two
+agree within the noise on both backends. The secondary value is still a `training-report`,
+never `nil`, so a caller destructuring two values never has to handle two shapes: its
+`training-report-series` is empty and its `training-report-num-rounds` is the run's length,
+exactly as a run with no metric configured reports.
+
+Recording also decides, on XGBoost, which `:valid-sets` entries `train` accepts at all. An
+unlabelled DMatrix is the case this was found through: `XGBoosterUpdateOneIter` trains on it
+happily, while `XGBoosterEvalOneIter` refuses it (`label and prediction size not match`). So
+with recording on -- the default -- such an entry now fails `train` itself with
+`foreign-call-error`, where before this branch it trained normally and failed only a later
+`evaluation` call. The general rule is that any configuration whose evaluation path errors
+while its update path does not now fails the whole run. `:record-history nil` never reaches
+the evaluation path and restores the older behaviour. LightGBM tolerates the same input,
+recording finite values, so this is XGBoost-specific in practice.
 
 ## Systems
 

@@ -17,9 +17,12 @@
 ;;;;
 ;;;; This file's first block of tests predates naming: :VALID-SETS holds only bare
 ;;;; datasets there, so every series' name is NIL, and nothing invents one. The block below
-;;;; it -- naming -- is this task's own: `train''s :VALID-SETS now also accepts a
-;;;; (NAME . DATASET) cons per element, mixed freely with bare datasets, and NAME reaches
-;;;; `training-series-name' for every series at that dataset's index.
+;;;; it -- naming -- covers `train''s :VALID-SETS also accepting a (NAME . DATASET) cons per
+;;;; element, mixed freely with bare datasets, where NAME reaches `training-series-name' for
+;;;; every series at that dataset's index. The last two blocks are the opt-out: recording
+;;;; costs real time and, on XGBoost, refuses inputs training itself accepts, so `train'
+;;;; takes :RECORD-HISTORY -- and `backend-supports-p' answers `:evaluation-history' true,
+;;;; recording being a capability both backends now genuinely provide.
 
 (uiop:define-package #:cl-gbdt/tests/functional/training-report
   (:use #:cl #:rove)
@@ -512,8 +515,13 @@ one whose last field the backend could not read."
                                                                    :booster-parameters))
                                   nil)
                          (cl-gbdt:wrong-backend-reference () t))
-                       "LightGBM's train did not signal wrong-backend-reference for a ~
-                        named XGBoost dataset"))
+                       ;; `format nil', not a bare string with a `~' continuation: this
+                       ;; string is `ok''s description, printed verbatim, so a `~<newline>'
+                       ;; inside it is stored as a tilde, a newline and the next line's
+                       ;; indentation rather than being folded away. Only `format' reads
+                       ;; that directive.
+                       (format nil "LightGBM's train did not signal ~
+                                    wrong-backend-reference for a named XGBoost dataset")))
                  (testing "XGBoost's train rejects a named LightGBM dataset in :valid-sets"
                    (ok (handler-case
                            (progn (cl-gbdt:train xgboost xgboost-train :num-rounds 1
@@ -523,10 +531,135 @@ one whose last field the backend could not read."
                                                                    :booster-parameters))
                                   nil)
                          (cl-gbdt:wrong-backend-reference () t))
-                       "XGBoost's train did not signal wrong-backend-reference for a ~
-                        named LightGBM dataset")))
+                       (format nil "XGBoost's train did not signal ~
+                                    wrong-backend-reference for a named LightGBM dataset"))))
             (progn
               (when lightgbm-train (cl-gbdt:free-dataset lightgbm-train))
               (when xgboost-train (cl-gbdt:free-dataset xgboost-train))
               (cl-gbdt:close-backend lightgbm)
               (cl-gbdt:close-backend xgboost))))))))
+
+;;; ---------------------------------------------------------------------------
+;;; Opting out of recording
+;;;
+;;; `train''s :RECORD-HISTORY is T by default -- every test above runs with it -- and NIL
+;;; skips the per-iteration evaluation read entirely. Two things must stay true of the NIL
+;;; case: the secondary value is still a `training-report', so a caller destructuring two
+;;; values never has to handle two shapes, and the booster is an ordinary trained booster
+;;; that `evaluation' answers for exactly as before.
+
+(deftest training-report-record-history-nil-still-reports-the-run
+  (dolist (fixture *fixtures*)
+    (with-backend-library ((getf fixture :backend))
+      (multiple-value-bind (matrix label-vector) (make-separable-dataset)
+        (let ((backend (cl-gbdt:open-backend (getf fixture :backend)))
+              (valid-label-vector (invert-labels label-vector)))
+          (unwind-protect
+               (cl-gbdt:with-dataset
+                   (train-set (make-fixture-dataset fixture backend matrix label-vector))
+                 (cl-gbdt:with-dataset
+                     (valid-set (make-fixture-dataset fixture backend matrix valid-label-vector
+                                                      :reference train-set))
+                   (multiple-value-bind (booster report)
+                       (cl-gbdt:train backend train-set :num-rounds 5
+                                      :valid-sets (list valid-set)
+                                      :record-history nil
+                                      :parameters (getf fixture :booster-parameters))
+                     (unwind-protect
+                          (progn
+                            (testing (format nil "~A: the secondary value is still a ~
+                                                  training-report, not NIL"
+                                             (getf fixture :backend))
+                              (ok (typep report 'cl-gbdt:training-report)
+                                  (format nil "report was ~S" report)))
+                            (testing (format nil "~A: nothing was recorded, but the run is ~
+                                                  still reported" (getf fixture :backend))
+                              (ok (and (null (cl-gbdt:training-report-series report))
+                                       (= 5 (cl-gbdt:training-report-num-rounds report)))
+                                  (format nil "series were ~S, num-rounds was ~S"
+                                          (cl-gbdt:training-report-series report)
+                                          (cl-gbdt:training-report-num-rounds report))))
+                            ;; The booster itself is untouched by the opt-out: `evaluation'
+                            ;; reads the same metrics on the same two datasets it would
+                            ;; have read with recording on. Only the history is missing.
+                            (testing (format nil "~A: the booster is an ordinary trained ~
+                                                  booster" (getf fixture :backend))
+                              (ok (= 4 (length (cl-gbdt:evaluation booster)))
+                                  (format nil "evaluation was ~S"
+                                          (cl-gbdt:evaluation booster)))))
+                       (cl-gbdt:free-booster booster)))))
+            (cl-gbdt:close-backend backend)))))))
+
+;;; The backward-compatibility regression :RECORD-HISTORY exists to give a caller an escape
+;;; from. XGBoost's `XGBoosterEvalOneIter' evaluates every DMatrix it is handed and refuses
+;;; one whose labels it cannot compare against predictions; `XGBoosterUpdateOneIter' trains
+;;; on that same DMatrix without complaint. So an unlabelled DMatrix in :VALID-SETS trained
+;;; fine before `train' recorded anything, and now fails the whole run -- the general class
+;;; being any configuration whose evaluation path errors while its update path does not.
+;;; This test pins both sides: that it fails with recording on, and that :RECORD-HISTORY NIL
+;;; is a real escape rather than a documented intention. XGBoost only: LightGBM's own
+;;; evaluation path tolerates the same input, recording finite values, so there is nothing
+;;; for the portable *FIXTURES* loop to assert here.
+
+(deftest xgboost-train-with-an-unevaluable-valid-set-needs-record-history-nil
+  (with-backend-library (:xgboost)
+    (multiple-value-bind (matrix label-vector) (make-separable-dataset)
+      (let ((fixture (fixture-for :xgboost))
+            (backend (cl-gbdt:open-backend :xgboost)))
+        (unwind-protect
+             (cl-gbdt:with-dataset
+                 (train-set (make-fixture-dataset fixture backend matrix label-vector))
+               ;; No :LABEL at all -- `make-fixture-dataset' always supplies one, so this
+               ;; calls `make-dataset' directly. XGBoost accepts the DMatrix and trains on
+               ;; it; only its evaluation path objects.
+               (cl-gbdt:with-dataset (unlabelled (cl-gbdt:make-dataset backend matrix))
+                 (testing "recording on, an unevaluable :valid-sets entry fails train itself"
+                   (ok (handler-case
+                           (multiple-value-bind (booster report)
+                               (cl-gbdt:train backend train-set :num-rounds 3
+                                              :valid-sets (list unlabelled)
+                                              :parameters (getf fixture :booster-parameters))
+                             (declare (ignore report))
+                             (cl-gbdt:free-booster booster)
+                             nil)
+                         (cl-gbdt:foreign-call-error () t))
+                       (format nil "train did not signal foreign-call-error for an ~
+                                    unlabelled :valid-sets entry")))
+                 (testing "record-history NIL trains that same configuration"
+                   (multiple-value-bind (booster report)
+                       (cl-gbdt:train backend train-set :num-rounds 3
+                                      :valid-sets (list unlabelled)
+                                      :record-history nil
+                                      :parameters (getf fixture :booster-parameters))
+                     (unwind-protect
+                          (ok (and booster
+                                   (typep report 'cl-gbdt:training-report)
+                                   (null (cl-gbdt:training-report-series report))
+                                   (= 3 (cl-gbdt:training-report-num-rounds report)))
+                              (format nil "booster was ~S, report was ~S" booster report))
+                       (cl-gbdt:free-booster booster))))))
+          (cl-gbdt:close-backend backend))))))
+
+;;; ---------------------------------------------------------------------------
+;;; The capability this branch ships
+;;;
+;;; Policy section 7 registers `:evaluation-history' as a question `backend-supports-p'
+;;; answers, and both backends now record one in `train'. A NIL answer would say, in that
+;;; function's own words, that the feature is unavailable here and the operation signals
+;;; `capability-unavailable' -- neither of which is true after this branch. Each backend
+;;; declares the capability in its own `*provided-capabilities*', which `open-backend'
+;;; records true without probing: there is nothing to probe, since every C function it needs
+;;; is already in that backend's `*required-symbols*'.
+
+(deftest evaluation-history-capability-is-true-on-both-backends
+  (dolist (fixture *fixtures*)
+    (with-backend-library ((getf fixture :backend))
+      (let ((backend (cl-gbdt:open-backend (getf fixture :backend))))
+        (unwind-protect
+             (testing (format nil "~A: backend-supports-p reports :evaluation-history"
+                              (getf fixture :backend))
+               (ok (eq t (cl-gbdt:backend-supports-p backend :evaluation-history))
+                   (format nil "backend-supports-p denied a capability this backend ~
+                                provides; capabilities were ~S"
+                           (cl-gbdt:backend-capabilities backend))))
+          (cl-gbdt:close-backend backend))))))

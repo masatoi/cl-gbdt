@@ -42,7 +42,8 @@
                 #:*vendor-library-pattern*
                 #:*default-library-name*
                 #:*required-symbols*
-                #:*optional-symbols*)
+                #:*optional-symbols*
+                #:*provided-capabilities*)
   (:import-from #:cl-gbdt/src/backend
                 #:backend
                 #:backend-name
@@ -156,6 +157,11 @@ has passed does this probe *optional-symbols* via `probe-capabilities' and
 record the result on `backend-capabilities' -- unlike a missing required
 symbol, a missing optional one never signals; it only makes
 `backend-supports-p' answer NIL for the capability that symbol backs.
+*provided-capabilities* goes to the same call as :PROVIDED, recording the
+capabilities this backend provides unconditionally -- nothing is probed for
+them, because the C functions they need are in *required-symbols* and the probe
+above has already passed.
+
 LightGBM's C API has no runtime version query, so `backend-version' is left
 NIL rather than guessed --
 and, unlike `cl-gbdt/src/xgboost/protocol''s `initialize-backend', this never
@@ -186,7 +192,9 @@ BACKEND dropped and nothing left able to close it."
                    (error 'missing-foreign-symbols
                           :backend (backend-name backend) :names missing)))
                (setf (backend-capabilities backend)
-                     (probe-capabilities *optional-symbols* :library library))
+                     (probe-capabilities *optional-symbols*
+                                         :provided *provided-capabilities*
+                                         :library library))
                (setf (backend-version backend) nil)
                (setf succeeded t))
           (unless succeeded
@@ -329,7 +337,7 @@ that afterward, on every element `%valid-set-name' has already let through."
   (if (consp entry) (cdr entry) entry))
 
 (defmethod train ((backend lightgbm-backend) dataset
-                   &key valid-sets (num-rounds 100) parameters)
+                   &key valid-sets (num-rounds 100) parameters (record-history t))
   "Train a LightGBM booster on DATASET for NUM-ROUNDS boosting iterations, and return
 it and a `training-report' of the run.
 
@@ -349,16 +357,24 @@ may legitimately share one NAME: their index, not their name, is what a caller u
 tell them apart in the report, so this is accepted rather than rejected as a duplicate.
 The training set is never a VALID-SETS entry and is always index 0 with a NIL name.
 
-After each iteration this reads the whole evaluation through `%read-evaluation' -- the
-same function the `evaluation' method calls, on the same booster pointer and the same
-dataset count, which is what keeps the history and what `evaluation' answers afterward
-from being able to disagree -- and keeps the result. `training-report-from-history' folds
-the run's worth of them into the report once the loop is done; that fold is backend-
+When RECORD-HISTORY is true -- the default -- this reads the whole evaluation after each
+iteration through `%read-evaluation': the same function the `evaluation' method calls, on
+the same booster pointer and the same dataset count, which is what keeps the history and
+what `evaluation' answers afterward from being able to disagree. `training-report-from-history'
+folds the run's worth of them into the report once the loop is done; that fold is backend-
 neutral and shared with `cl-gbdt/src/xgboost/protocol''s `train', so what the two backends
 record cannot drift apart either. It orders series by the (DATASET-INDEX, METRIC-NAME)
 pair's first appearance, which for this backend is `%read-evaluation''s own dataset-major
 order, so the report's series arrive in exactly the order `evaluation' reports its entries
 in without anything being sorted.
+
+RECORD-HISTORY NIL skips that read entirely -- one `LGBM_BoosterGetEval' call per dataset
+per iteration, which is what makes recording cost real wall-clock time (see the `train'
+generic's docstring for the measured figures). The loop is then exactly the
+`LGBM_BoosterUpdateOneIter' loop this method ran before it recorded anything, and the
+report it still returns as its secondary value has an empty series list over the same
+NUM-ROUNDS -- `training-report-from-history' over an empty history, the same shape a run
+with `metric=none' produces.
 
 A read that fails propagates, freeing the booster through the OWNED dance below rather
 than returning a report whose series are shorter than NUM-ROUNDS: a short series is
@@ -426,7 +442,8 @@ Signals `backend-not-open' before any of that when BACKEND is not open -- see
                  (dotimes (round num-rounds)
                    (declare (ignorable round))
                    (%update-one-iteration booster-pointer)
-                   (push (%read-evaluation booster-pointer dataset-count) history))
+                   (when record-history
+                     (push (%read-evaluation booster-pointer dataset-count) history)))
                  (let ((report (training-report-from-history (reverse history) num-rounds
                                                               dataset-names)))
                    (multiple-value-prog1

@@ -51,7 +51,7 @@ Free the result with `free-dataset' or wrap it in `with-dataset'."))
 (defgeneric dataset-num-features (dataset)
   (:documentation "Return the number of features in DATASET."))
 
-(defgeneric train (backend dataset &key valid-sets num-rounds parameters)
+(defgeneric train (backend dataset &key valid-sets num-rounds parameters record-history)
   (:documentation "Train a BACKEND model on DATASET and return two values: a booster and
 a `training-report' of the run.
 
@@ -68,9 +68,36 @@ condition a bare wrong-backend dataset already signals. Both are checked before 
 foreign call.
 
 Free the booster with `free-booster' or wrap it in `with-booster'. `with-booster' binds
-the primary value only, so a caller who wants the report has to use
-`multiple-value-bind' and free the booster itself; a caller who ignores the second value
-is unaffected by its existence.
+the primary value only, so a caller who wants the report has to use `multiple-value-bind'
+and free the booster itself.
+
+RECORD-HISTORY, T by default, decides whether the run is recorded at all. A caller who
+ignores the secondary value receives the same booster, and the same conditions, either
+way -- but not at the same price. With RECORD-HISTORY true, `train' reads the whole
+evaluation once per iteration, for every dataset the booster holds, and that read is not
+free: it measurably lengthens `train'. Measured over 500 rounds on 2000 rows x 20 columns
+with two metrics configured, recording roughly DOUBLED LightGBM's wall-clock `train' time,
+with and without a validation set, and added roughly 70-80% to XGBoost's with one
+validation set; XGBoost with none stayed inside the measurement noise, that backend
+evaluating every dataset in a single call rather than one call each. Those are orders of
+magnitude on one machine, not precise figures, and they grow with how many datasets and
+metrics there are to read.
+
+RECORD-HISTORY NIL performs no evaluation read at all, so `train' costs what it cost
+before it recorded anything. It still returns a `training-report' as its secondary value --
+never NIL, so a caller destructuring two values never has to handle two shapes -- whose
+`training-report-series' is empty and whose `training-report-num-rounds' is the run's
+length, exactly as a run with no metric configured reports.
+
+Recording also decides, on XGBoost, which :VALID-SETS entries `train' accepts at all. A
+dataset the backend's own evaluation path cannot evaluate -- an unlabelled DMatrix is the
+case this was found through, which `XGBoosterEvalOneIter' rejects while
+`XGBoosterUpdateOneIter' trains on it happily -- now fails `train' itself with
+`foreign-call-error', where before it trained normally and failed only a later `evaluation'
+call. This is general rather than specific to that one input: any configuration whose
+evaluation path errors while its update path does not now fails the whole run. Pass
+RECORD-HISTORY NIL to train such a configuration, which is the behaviour a caller had
+before `train' recorded anything.
 
 The secondary value is a `training-report'. Its `training-report-series' is a list of
 `training-series', one per metric per dataset -- the same (DATASET-INDEX, METRIC-NAME)
@@ -88,9 +115,10 @@ phase, since nothing stops a run early yet. `training-report-best-iteration',
 metric improves upward or downward, which this API does not infer from a metric's name.
 
 `training-report-series' is empty when the booster has no metric configured at all --
-LightGBM's `metric=none', XGBoost's `disable_default_eval_metric=1'. An empty series list
-is not an error and says nothing about whether training succeeded; NUM-ROUNDS iterations
-still ran, and `training-report-num-rounds' still says so.
+LightGBM's `metric=none', XGBoost's `disable_default_eval_metric=1' -- and when
+RECORD-HISTORY is NIL. An empty series list is not an error and says nothing about whether
+training succeeded; NUM-ROUNDS iterations still ran, and `training-report-num-rounds' still
+says so.
 
 Every series carries `training-series-index'; a series carries a non-NIL
 `training-series-name' only for a dataset named through :VALID-SETS. The training set is

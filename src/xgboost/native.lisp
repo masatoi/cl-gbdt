@@ -70,6 +70,7 @@
            #:*default-library-name*
            #:*required-symbols*
            #:*optional-symbols*
+           #:*provided-capabilities*
            #:%check-backend-open
            #:%check-xgboost-dataset
            #:%check-unsupported
@@ -302,6 +303,23 @@ cannot slice, not a broken installation.
 
 `XGBoosterSlice' is bound in c-api.lisp and called only from `slice-model', which checks the
 capability before reaching it.")
+
+(defparameter *provided-capabilities*
+  '(:evaluation-history)
+  "Capabilities this backend provides unconditionally, recorded true at `open-backend'
+without being probed -- `probe-capabilities''s PROVIDED, which says why a probe cannot
+express this.
+
+`:evaluation-history' is here rather than in `*optional-symbols*' because the C function
+`train' records a history with -- `XGBoosterEvalOneIter', reached through `%read-evaluation'
+-- is in `*required-symbols*' above. A library missing it never opens at all, so there is no
+state in which this backend is open and cannot record a history, and nothing for a probe to
+answer differently from one open to the next.
+
+Every name here must be registered in `cl-gbdt/src/backend''s `*known-capabilities*', or
+`backend-supports-p' would signal `unknown-capability' for a capability the plist claims;
+`tools/ci/check-abi-blacklist.lisp''s CHECK C is what enforces that, for this list and
+`*optional-symbols*' alike.")
 
 (defun %read-version ()
   "Return XGBoost's version as a \"MAJOR.MINOR.PATCH\" string, read via `XGBoostVersion'.
