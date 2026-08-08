@@ -257,6 +257,40 @@ on a library that has neither."
            :backend (backend-name backend) :capability :sparse-input)))
 
 ;;; ---------------------------------------------------------------------------
+;;; The `:missing-value' gate
+
+(defun %check-missing-value (backend)
+  "Signal `capability-unavailable' when BACKEND's `:missing-value' capability reads false.
+
+Which, on this backend, is always: `LightGBM/include/LightGBM/c_api.h' contains no `missing'
+anywhere, so there is no argument, key or field through which a caller could name the value
+that means missing, and nothing for this backend to declare the capability from. LightGBM's
+`use_missing' and `zero_as_missing' are not that: they are policy flags in the parameter
+string -- whether missing values are handled at all, and whether a zero counts as one -- and
+they are already reachable through `make-dataset''s :PARAMETERS, which is policy section 6's
+documented escape hatch for exactly a backend's own vocabulary.
+
+So this signals regardless of the VALUE, a NaN included -- even though a NaN in the matrix is
+in fact what LightGBM's own ingestion path already treats as missing, so `:missing' naming
+one would be a request the library happens to honour. A capability whose answer depended on
+which value was passed could not be stated by `backend-supports-p' at all: it answers about
+the backend, not about an argument it has not seen. Accepting the one value that would work
+and refusing the rest would make `:missing' mean something different here than on a backend
+that takes any of them.
+
+Policy section 7 requires the operation itself to re-check the capability rather than trusting
+the caller to have asked `backend-supports-p' first -- the same rule `%check-sparse-input'
+above follows for `:sparse-input'. Mirrors `cl-gbdt/src/xgboost/protocol''s function of the
+same name, which is the same shape against an answer that is true.
+
+Only a non-NIL :MISSING ever reaches this. NIL means the backend's own default -- what every
+caller has always got -- so a caller who passes nothing needs no capability at all, and every
+existing call keeps working unchanged."
+  (unless (backend-supports-p backend :missing-value)
+    (error 'capability-unavailable
+           :backend (backend-name backend) :capability :missing-value)))
+
+;;; ---------------------------------------------------------------------------
 ;;; Datasets
 
 (defun %dataset-pointer (backend matrix parameter-string reference-pointer)
@@ -292,7 +326,7 @@ whole method single and varies only the call that actually differs."
               "LGBM_DatasetCreateFromMat")))
 
 (defmethod make-dataset ((backend lightgbm-backend) matrix
-                          &key label weight group feature-names parameters reference)
+                          &key label weight group feature-names parameters reference missing)
   "Build a LightGBM dataset from MATRIX -- a dense matrix via `LGBM_DatasetCreateFromMat',
 a `csr-matrix' via `LGBM_DatasetCreateFromCSR' -- attaching LABEL, WEIGHT and GROUP with
 `LGBM_DatasetSetField' and FEATURE-NAMES with `LGBM_DatasetSetFeatureNames' when supplied.
@@ -305,6 +339,13 @@ other argument behaves identically either way: PARAMETERS and REFERENCE reach th
 entry point as the same two C parameters they reach the dense one as, and LABEL, WEIGHT,
 GROUP and FEATURE-NAMES are attached to the finished dataset by the calls below, which
 never see which entry point built it.
+
+Signals `capability-unavailable' naming `:missing-value' for a non-NIL MISSING, whatever the
+value is and whatever form MATRIX takes -- this backend has no C-API route for a missing-value
+sentinel at all. See `%check-missing-value' above, which carries the reasoning, including why
+a NaN LightGBM would in fact honour is refused with the rest. MISSING NIL, the default, is
+this backend's own default and reaches no check: every call that does not name a sentinel
+behaves exactly as it did before the argument existed.
 
 Signals `foreign-call-error' when dataset creation reports success but writes a
 null handle -- a library-contract violation, but one every later call through
@@ -323,6 +364,8 @@ Signals `backend-not-open' before any of that when BACKEND is not open -- see
 `%check-backend-open'."
   (with-foreign-float-traps-masked
     (%check-backend-open backend)
+    (when missing
+      (%check-missing-value backend))
     (let ((reference-pointer (%reference-pointer backend reference 'lightgbm-dataset))
           (parameter-string (%parameter-string parameters)))
       (multiple-value-bind (dataset-pointer function-name)

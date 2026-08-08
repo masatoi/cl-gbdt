@@ -270,6 +270,27 @@ library that has neither."
            :backend (backend-name backend) :capability :sparse-input)))
 
 ;;; ---------------------------------------------------------------------------
+;;; The `:missing-value' gate
+
+(defun %check-missing-value (backend)
+  "Signal `capability-unavailable' when BACKEND's `:missing-value' capability reads false.
+
+Policy section 7 requires the operation itself to re-check a capability rather than trusting
+the caller to have asked `backend-supports-p' first -- the same rule `%check-sparse-input'
+above follows for `:sparse-input'. This backend answers true unconditionally, which does not
+make the check redundant: it is what keeps the two backends' code saying the same thing, so
+`make-dataset' here and `make-dataset' in `cl-gbdt/src/lightgbm/protocol' gate the argument
+identically and neither has to be read to know what the other does. Mirrors that file's
+function of the same name.
+
+Only a non-NIL :MISSING ever reaches this. NIL means the backend's own default sentinel --
+what every caller has always got -- so a caller who passes nothing needs no capability at
+all."
+  (unless (backend-supports-p backend :missing-value)
+    (error 'capability-unavailable
+           :backend (backend-name backend) :capability :missing-value)))
+
+;;; ---------------------------------------------------------------------------
 ;;; Datasets
 
 (defun %creation-function-name (matrix)
@@ -284,16 +305,21 @@ passed a `csr-matrix' about `XGDMatrixCreateFromDense''s config JSON names a fun
 call was never going to make."
   (if (typep matrix 'csr-matrix) "XGDMatrixCreateFromCSR" "XGDMatrixCreateFromDense"))
 
-(defun %dataset-pointer (backend matrix)
+(defun %dataset-pointer (backend matrix missing)
   "Return two values: the raw DMatrix pointer built from MATRIX, and the name of the C
 function that produced it, for the null-handle check `make-dataset' makes afterward.
 
 MATRIX is either a `csr-matrix' -- `XGDMatrixCreateFromCSR', through
 `%create-dmatrix-from-csr' -- or anything `with-foreign-matrix' accepts --
-`XGDMatrixCreateFromDense', through `%create-dmatrix'.
+`XGDMatrixCreateFromDense', through `%create-dmatrix'. MISSING, the value that means
+*missing*, or NIL for this backend's own default, reaches both entry points identically:
+it is a key in the creation config JSON either way, and means nothing different for a
+sparse matrix than for a dense one.
 
 The `:sparse-input' capability is re-checked on the sparse branch rather than assumed --
-`%check-sparse-input' above, which carries the reasoning.
+`%check-sparse-input' above, which carries the reasoning. `:missing-value' is checked by
+`make-dataset' itself rather than here, since MISSING reaches both branches alike and there
+is no branch for its check to belong to.
 
 A `defun', not a second `make-dataset' method specialized on `csr-matrix' -- see
 `cl-gbdt/src/lightgbm/protocol''s function of the same name and purpose, which this
@@ -305,12 +331,13 @@ mirrors, for why."
           (values (%create-dmatrix-from-csr (csr-matrix-indptr matrix)
                                             (csr-matrix-indices matrix)
                                             (csr-matrix-values matrix)
-                                            (csr-matrix-num-columns matrix))
+                                            (csr-matrix-num-columns matrix)
+                                            missing)
                   function-name))
-        (values (%create-dmatrix matrix) function-name))))
+        (values (%create-dmatrix matrix missing) function-name))))
 
 (defmethod make-dataset ((backend xgboost-backend) matrix
-                          &key label weight group feature-names parameters reference)
+                          &key label weight group feature-names parameters reference missing)
   "Build an XGBoost dataset (a DMatrix) from MATRIX -- a dense matrix via
 `XGDMatrixCreateFromDense', a `csr-matrix' via `XGDMatrixCreateFromCSR' -- attaching LABEL
 and WEIGHT with `XGDMatrixSetInfoFromInterface', GROUP with `XGDMatrixSetUIntInfo', and
@@ -324,14 +351,25 @@ finished DMatrix by the calls below, which never see which entry point built it.
 and PARAMETERS are refused for a `csr-matrix' exactly as they are for a dense matrix, and
 for the same reasons, spelled out below.
 
+MISSING, the value that means *missing*, becomes the `\"missing\"' key of whichever creation
+config JSON MATRIX's form reaches. It needs this backend's `:missing-value' capability, which
+`%check-missing-value' re-checks below rather than trusting the caller to have asked, and it
+signals `unsupported-argument' for anything that is neither a `real' nor NIL -- see
+`missing-value-json', which renders it. NIL, the default, sends the IEEE NaN this backend
+sent unconditionally before the argument existed, so a caller who passes nothing gets exactly
+what they got before. The comparison the library then makes is at SINGLE precision, whatever
+MATRIX's own element type: two `double-float's that share a `single-float' both count as
+missing against a sentinel that narrows to it.
+
 REFERENCE and PARAMETERS both signal `unsupported-argument' rather than being silently
 dropped: REFERENCE is a LightGBM-only concept -- aligning a new dataset's bin mapper to an
 existing one's, which XGBoost has nothing resembling. PARAMETERS is more subtle: the
 vendored header (`ffi-spec/xgboost/include/xgboost/c_api.h') documents exactly three keys
-for `XGDMatrixCreateFromDense''s config JSON -- `\"missing\"' (fixed by this backend at
-*dense-matrix-config-json*, not caller-configurable), `\"nthread\"' and
-`\"data_split_mode\"' -- none of which correspond to what a caller moving a working call
-from LightGBM actually means by dataset-level PARAMETERS there: binning knobs such as
+for `XGDMatrixCreateFromDense''s config JSON -- `\"missing\"', which now has its own
+:MISSING argument above and so is not what a caller reaches for PARAMETERS to set,
+`\"nthread\"' and `\"data_split_mode\"' -- none of which correspond to what a caller moving
+a working call from LightGBM actually means by dataset-level PARAMETERS there: binning knobs
+such as
 `max_bin' and `min_data_in_bin'. Forwarding `normalize-parameters''s output into that
 config JSON regardless would not raise anything either: confirmed empirically against the
 vendored library, `XGDMatrixCreateFromDense' returns success and silently ignores an
@@ -359,6 +397,8 @@ Signals `backend-not-open' before any of that when BACKEND is not open -- see
 `%check-backend-open'."
   (with-foreign-float-traps-masked
     (%check-backend-open backend)
+    (when missing
+      (%check-missing-value backend))
     (%check-unsupported
      backend "make-dataset's :reference" reference
      "XGBoost has no bin-mapper alignment; :reference is a LightGBM-only concept")
@@ -368,7 +408,8 @@ Signals `backend-not-open' before any of that when BACKEND is not open -- see
                    of which are LightGBM's dataset-level binning parameters, and the ~
                    library silently ignores any other key rather than rejecting it"
              (%creation-function-name matrix)))
-    (multiple-value-bind (dataset-pointer function-name) (%dataset-pointer backend matrix)
+    (multiple-value-bind (dataset-pointer function-name)
+        (%dataset-pointer backend matrix missing)
       (when (cffi:null-pointer-p dataset-pointer)
         (error 'foreign-call-error
                :function-name function-name
@@ -773,7 +814,10 @@ one itself."
                                                  predict-type iteration-end
                                                  out-shape out-dim out-result))))
             (with-foreign-matrix (data-pointer nrow ncol element-type) matrix
-              (let ((dmatrix-pointer (%create-dmatrix matrix)))
+              ;; NIL, this backend's own default sentinel -- `predict' gains a :MISSING of
+              ;; its own in the next task, and until then the transient DMatrix is built
+              ;; exactly as it always was.
+              (let ((dmatrix-pointer (%create-dmatrix matrix nil)))
                 (when (cffi:null-pointer-p dmatrix-pointer)
                   (error 'foreign-call-error
                          :function-name "XGDMatrixCreateFromDense"

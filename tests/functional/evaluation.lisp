@@ -124,16 +124,24 @@ parsed text, see `cl-gbdt:evaluation''s docstring. Pinning it here means a backe
 started reporting the other backend's provenance would fail the fixture-neutral test
 below rather than pass by construction.")
 
-(defun make-fixture-dataset (fixture backend matrix label &key reference)
+(defun make-fixture-dataset (fixture backend matrix label &key reference missing)
   "Build a dataset on BACKEND from MATRIX and LABEL, passing only the `make-dataset'
 keywords FIXTURE's backend accepts -- see *FIXTURES* for which those are and why the other
 backend refuses them. REFERENCE is honoured only by a backend that aligns bin mappers, and
-ignored by one that does not, so one call site works for both."
+ignored by one that does not, so one call site works for both.
+
+MISSING, the value in MATRIX that means *missing*, is passed through only when it is
+non-NIL, and unlike REFERENCE it is not filtered by any fixture key: NIL is exactly what
+omitting :MISSING already means to `make-dataset' -- the backend's own default -- so the two
+are one call, and a caller who does supply it has already decided the backend can take it.
+`cl-gbdt/tests/functional/missing-value' is the only caller that supplies it; that file gates
+every such call on `cl-gbdt:backend-supports-p'."
   (apply #'cl-gbdt:make-dataset backend matrix :label label
          (append (let ((parameters (getf fixture :dataset-parameters)))
                    (when parameters (list :parameters parameters)))
                  (when (and reference (getf fixture :aligns-bin-mappers))
-                   (list :reference reference)))))
+                   (list :reference reference))
+                 (when missing (list :missing missing)))))
 
 (defun metric-names (entries index)
   "Return the metric names ENTRIES -- a `cl-gbdt:evaluation' result -- carries for the

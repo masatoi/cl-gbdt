@@ -59,6 +59,8 @@
                 #:dimension-mismatch)
   (:import-from #:cl-gbdt/src/parameters
                 #:normalize-parameters)
+  (:import-from #:cl-gbdt/src/config/missing-value
+                #:missing-value-json)
   (:import-from #:cl-gbdt/src/data
                 #:with-foreign-matrix
                 #:write-foreign-sequence)
@@ -316,7 +318,7 @@ but not predict from one would have been told a half-truth. Listing both from th
 the answer never changes meaning as the sparse path grows.")
 
 (defparameter *provided-capabilities*
-  '(:evaluation-history :early-stopping)
+  '(:evaluation-history :early-stopping :missing-value)
   "Capabilities this backend provides unconditionally, recorded true at `open-backend'
 without being probed -- `probe-capabilities''s PROVIDED, which says why a probe cannot
 express this.
@@ -330,6 +332,13 @@ answer differently from one open to the next.
 loops run in Lisp, so the stop decision is `cl-gbdt/src/training/early-stopping''s pure code,
 which every open backend has by construction. A probe has nothing to look for, and the
 capability cannot vary between one open and the next.
+`:missing-value' is here for the first reason again, and more plainly than
+`:evaluation-history': the sentinel is a KEY IN A CONFIG JSON -- `\"missing\"', read by
+`XGDMatrixCreateFromDense', `XGDMatrixCreateFromCSR' and `XGBoosterPredictFromDMatrix' -- not
+a C function of its own. Every entry point that reads it is already in `*required-symbols*'
+or `*optional-symbols*' for another reason, so there is no symbol whose presence or absence
+could make this capability true or false, and a probe has nothing left to decide. A library
+that opens at all can be told which value means missing.
 
 Every name here must be registered in `cl-gbdt/src/backend''s `*known-capabilities*', or
 `backend-supports-p' would signal `unknown-capability' for a capability the plist claims;
@@ -352,12 +361,23 @@ between the libraries, not an inconsistency between the two Lisp backends."
 ;;; ---------------------------------------------------------------------------
 ;;; Datasets
 
-(defparameter *dense-matrix-config-json* "{\"missing\":NaN}"
-  "Config JSON passed to `XGDMatrixCreateFromDense'. Fixes the sentinel for a missing
-value at IEEE NaN -- the value `with-foreign-matrix' can actually produce for a
-`double-float' or `single-float' array element -- rather than exposing XGBoost's other
-config keys (`nthread', `data_split_mode') through the protocol; nothing in the unified
-API has a use for them yet.")
+(defun %dense-matrix-config-json (missing)
+  "Return the config JSON `XGDMatrixCreateFromDense' expects, with MISSING as its sentinel
+for a missing value.
+
+MISSING is rendered by `missing-value-json', which signals `unsupported-argument' against
+`:xgboost' for anything that is neither a `real' nor NIL, and renders NIL as `NaN' -- the
+value this wrapper fixed the sentinel at unconditionally before `make-dataset' took a
+:MISSING argument, and therefore what a caller who passes none keeps getting. NaN is also
+the only sentinel `with-foreign-matrix' can produce for a `double-float' or `single-float'
+array element without the caller choosing one, which is why it was the fixed choice.
+
+`nthread' and `data_split_mode' -- the other two keys the vendored header documents for this
+call -- stay unexposed, as they were when this was a constant string: nothing in the unified
+API has a use for either yet. Only the sentinel became a caller's decision, because only the
+sentinel is a property of the caller's own DATA rather than of how XGBoost should process
+it."
+  (format nil "{\"missing\":~A}" (missing-value-json missing :xgboost)))
 
 (defun %array-interface-typestr (element-type)
   "Map ELEMENT-TYPE, as `with-foreign-matrix' reports it, to the NumPy array-interface
@@ -370,22 +390,29 @@ a bug in this file, not a value XGBoost should silently be told the shape of."
     (double-float "<f8")
     (single-float "<f4")))
 
-(defun %create-dmatrix (matrix)
+(defun %create-dmatrix (matrix missing)
   "Build a DMatrix from MATRIX via `XGDMatrixCreateFromDense', returning its raw pointer.
+MISSING is the value in MATRIX that means *missing*, or NIL for this backend's own default;
+it reaches the library through `%dense-matrix-config-json'.
 
 MATRIX's foreign buffer is described to XGBoost with `array-interface-json' rather than
 handed over as a pointer and dimensions -- `XGDMatrixCreateFromDense' takes the array
 interface, unlike LightGBM's `LGBM_DatasetCreateFromMat'. The buffer only needs to stay
 pinned for the duration of this call, since XGBoost copies it into its own representation
-before returning."
-  (with-foreign-matrix (data-pointer nrow ncol element-type) matrix
-    (let ((typestr (%array-interface-typestr element-type)))
-      (cffi:with-foreign-string (data (array-interface-json data-pointer typestr nrow ncol))
-        (cffi:with-foreign-string (config *dense-matrix-config-json*)
-          (cffi:with-foreign-object (out :pointer)
-            (check-xgb (xgd-matrix-create-from-dense data config out)
-                       "XGDMatrixCreateFromDense")
-            (cffi:mem-ref out :pointer)))))))
+before returning.
+
+The config JSON is built BEFORE the matrix is pinned, so a MISSING that
+`%dense-matrix-config-json' refuses signals with nothing yet held: rejecting the argument
+never has to unwind out of a pin or a foreign allocation."
+  (let ((config-json (%dense-matrix-config-json missing)))
+    (with-foreign-matrix (data-pointer nrow ncol element-type) matrix
+      (let ((typestr (%array-interface-typestr element-type)))
+        (cffi:with-foreign-string (data (array-interface-json data-pointer typestr nrow ncol))
+          (cffi:with-foreign-string (config config-json)
+            (cffi:with-foreign-object (out :pointer)
+              (check-xgb (xgd-matrix-create-from-dense data config out)
+                         "XGDMatrixCreateFromDense")
+              (cffi:mem-ref out :pointer))))))))
 
 #+sbcl
 (defun %call-with-pinned-csr (indptr indices values function)
@@ -432,33 +459,36 @@ three vectors to exactly these element types, so there is nothing left for
     (write-foreign-sequence values-buffer :double values #'identity)
     (funcall function indptr-buffer indices-buffer values-buffer)))
 
-(defparameter *csr-matrix-config-json* "{\"missing\":NaN}"
-  "Config JSON passed to `XGDMatrixCreateFromCSR'. The same sentinel
-*dense-matrix-config-json* fixes for the dense path, and for the same reason -- see that
-parameter's docstring, whose reasoning about XGBoost's other config keys applies here
-unchanged.
+(defun %csr-matrix-config-json (missing)
+  "Return the config JSON `XGDMatrixCreateFromCSR' expects, with MISSING as its sentinel for
+a missing value. The same sentinel `%dense-matrix-config-json' renders for the dense path,
+and for the same reason -- see that function's docstring, whose reasoning about MISSING's
+rendering and about XGBoost's other config keys applies here unchanged.
 
-Kept as its own parameter rather than shared with the dense one, because the two are
+Kept as its own function rather than shared with the dense one, because the two are
 arguments to two different C entry points -- not because the key sets differ today. They do
 not: the vendored header (`ffi-spec/xgboost/include/xgboost/c_api.h') documents
 `XGDMatrixCreateFromCSR''s CONFIG by cross-reference, \"See @ref XGDMatrixCreateFromDense
 for details\", so the recognized keys are `missing' plus the optional `nthread' and
 `data_split_mode' for both. What nothing binds is that they stay identical: they are
-separate parameters of separate functions, and one string per call means a future change to
+separate parameters of separate functions, and one builder per call means a future change to
 what this wrapper sends to one of them is a decision about that call rather than a silent
 change to the other's.
 
-An entry a `csr-matrix' does not store is absent, not NaN, and XGBoost treats an absent CSR
-entry as missing regardless of what this says -- that is what CSR means to the library and no
-config key changes it. This sentinel decides only what a *stored* value of NaN means, which
-is exactly what it decides on the dense path.")
+An entry a `csr-matrix' does not store is absent, not equal to the sentinel, and XGBoost
+treats an absent CSR entry as missing regardless of what this says -- that is what CSR means
+to the library and no config key changes it. This sentinel decides only what a *stored* value
+means, which is exactly what it decides on the dense path."
+  (format nil "{\"missing\":~A}" (missing-value-json missing :xgboost)))
 
-(defun %create-dmatrix-from-csr (indptr indices values num-columns)
+(defun %create-dmatrix-from-csr (indptr indices values num-columns missing)
   "Build a DMatrix from a `csr-matrix''s INDPTR, INDICES and VALUES via
 `XGDMatrixCreateFromCSR', returning its raw pointer. NUM-COLUMNS is the matrix's declared
 width, passed as `XGDMatrixCreateFromCSR''s own NCOL rather than left to the library to infer
 from the largest index present -- the two are different facts (see `make-csr-matrix''s
-docstring), and only the caller knows the first.
+docstring), and only the caller knows the first. MISSING is the value among VALUES that means
+*missing*, or NIL for this backend's own default; it reaches the library through
+`%csr-matrix-config-json'.
 
 Each of the three vectors is described to XGBoost with its own `array-interface-json', the
 same way `%create-dmatrix' describes a dense buffer: this entry point takes three separate
@@ -468,22 +498,24 @@ tags. The typestrs are fixed rather than derived -- `csr-matrix' stores INDPTR a
 element type to map the way `%array-interface-typestr' maps one for the dense path.
 
 The buffers only need to stay pinned for the duration of this call, since XGBoost copies
-them into its own representation before returning."
-  (%call-with-pinned-csr
-   indptr indices values
-   (lambda (indptr-pointer indices-pointer values-pointer)
-     (cffi:with-foreign-string
-         (indptr-json (array-interface-json indptr-pointer "<i4" (length indptr)))
+them into its own representation before returning. The config JSON is built before any of
+them is pinned, for the reason `%create-dmatrix' gives."
+  (let ((config-json (%csr-matrix-config-json missing)))
+    (%call-with-pinned-csr
+     indptr indices values
+     (lambda (indptr-pointer indices-pointer values-pointer)
        (cffi:with-foreign-string
-           (indices-json (array-interface-json indices-pointer "<i4" (length indices)))
+           (indptr-json (array-interface-json indptr-pointer "<i4" (length indptr)))
          (cffi:with-foreign-string
-             (values-json (array-interface-json values-pointer "<f8" (length values)))
-           (cffi:with-foreign-string (config *csr-matrix-config-json*)
-             (cffi:with-foreign-object (out :pointer)
-               (check-xgb (xgd-matrix-create-from-csr indptr-json indices-json values-json
-                                                       num-columns config out)
-                          "XGDMatrixCreateFromCSR")
-               (cffi:mem-ref out :pointer)))))))))
+             (indices-json (array-interface-json indices-pointer "<i4" (length indices)))
+           (cffi:with-foreign-string
+               (values-json (array-interface-json values-pointer "<f8" (length values)))
+             (cffi:with-foreign-string (config config-json)
+               (cffi:with-foreign-object (out :pointer)
+                 (check-xgb (xgd-matrix-create-from-csr indptr-json indices-json values-json
+                                                        num-columns config out)
+                            "XGDMatrixCreateFromCSR")
+                 (cffi:mem-ref out :pointer))))))))))
 
 (defun %set-info-field (dataset-pointer field-name values)
   "Attach the sequence VALUES to DATASET-POINTER's FIELD-NAME via
@@ -729,9 +761,9 @@ exactly the assumption `predict' exists to avoid making. With it, `out_shape' an
 count.
 
 MISSING true adds the `\"missing\"' key, fixed at IEEE NaN the way
-*DENSE-MATRIX-CONFIG-JSON* and *CSR-MATRIX-CONFIG-JSON* fix it for the two ingestion entry
-points. It is off by default because `XGBoosterPredictFromDMatrix' has no use for it -- a
-DMatrix settled its own missing sentinel when it was built -- and on for
+`%dense-matrix-config-json' and `%csr-matrix-config-json' render a NIL sentinel for the two
+ingestion entry points. It is off by default because `XGBoosterPredictFromDMatrix' has no
+use for it -- a DMatrix settled its own missing sentinel when it was built -- and on for
 `XGBoosterPredictFromCSR', which is INPLACE prediction with no DMatrix behind it and
 therefore nothing to have settled one: confirmed against the vendored library, that call
 refuses outright without the key (\"Argument `missing` is required\"), rather than assuming

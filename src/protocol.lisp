@@ -29,7 +29,8 @@
 (in-package #:cl-gbdt/src/protocol)
 
 (defgeneric make-dataset (backend matrix
-                           &key label weight group feature-names parameters reference)
+                           &key label weight group feature-names parameters reference
+                             missing)
   (:documentation "Build a training dataset for BACKEND from MATRIX.
 
 MATRIX is either a dense matrix -- anything `with-foreign-matrix' accepts -- or a
@@ -57,6 +58,32 @@ LightGBM reads an absent entry as `0.0' and XGBoost reads one as missing, so the
 built here is only the same data on both when every element is stored. Nothing signals when
 it is not -- the trained numbers simply differ. See the `csr-matrix' struct's own docstring,
 where that divergence is stated as the property of the value it is.
+
+MISSING names the value in MATRIX that means *missing* -- the datum a caller wrote in place
+of one they do not have, such as the -999.0 a CSV convention often uses. It is a VALUE, not
+a policy: it says which number means missing and does not turn missing handling on or off,
+nor make zero mean missing. A backend's own flags for those -- LightGBM's `use_missing' and
+`zero_as_missing' -- stay where they are, reachable through PARAMETERS.
+
+MISSING is a `real' or NIL, and anything else signals `unsupported-argument' naming
+`:missing'. NIL, the default, is the backend's own default sentinel and is exactly what
+every call got before this argument existed: a caller who passes nothing gets the same
+dataset, and the same trained numbers, as before.
+
+A non-NIL MISSING needs BACKEND's `:missing-value' capability, which `make-dataset'
+re-checks itself: a caller who never asked `backend-supports-p' gets
+`capability-unavailable' rather than an argument silently ignored, and no backend ever falls
+back to its own sentinel instead. XGBoost provides the capability -- the sentinel is a key
+in the config JSON its dataset-creation entry points read. LightGBM does not, and signals for
+ANY non-NIL value including a NaN it would in fact honour: its C API has no missing-value key
+at all, and a capability whose answer depended on which value was passed could not be stated
+by `backend-supports-p'.
+
+Measured, and worth knowing before choosing a sentinel: XGBoost compares MISSING against the
+data at SINGLE precision, whatever MATRIX's own element type. Two `double-float's that round
+to the same `single-float' therefore both count as missing -- probed against the vendored
+library, the sentinel 16777217.0 matches the datum 16777216.0d0, a different double sharing
+its float32, and does not match 16777224.0d0, which is a different float32.
 
 REFERENCE, when supplied, is an existing dataset from the same backend whose bin mapper
 the new dataset aligns to instead of computing its own. A validation dataset destined

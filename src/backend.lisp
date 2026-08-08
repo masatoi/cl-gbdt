@@ -152,11 +152,16 @@ to this function can detect it here."
     :evaluation-history
     :early-stopping
     :model-slicing
-    :multidimensional-feature-score)
+    :multidimensional-feature-score
+    :missing-value)
   "Every capability name `backend-supports-p' will answer for.
 
-Policy section 7's five names. A name is registered here as soon as it is a question worth
-asking, whether or not any backend answers true to it yet --
+Policy section 7 named five as a MINIMUM -- it asks that at least those be answerable, not
+that they be the whole list -- so this grows as new questions become worth asking.
+`:missing-value' is the first name added past that floor: whether the backend lets a caller
+say which value in the data means *missing*, which XGBoost does through its creation and
+prediction config JSONs and LightGBM has no C-API key for at all. A name is registered here
+as soon as it is a question worth asking, whether or not any backend answers true to it yet --
 `:multidimensional-feature-score' is registered and false everywhere, which says \"not
 supported yet\" rather than \"never heard of it\". Registering the name is what makes a
 misspelling distinguishable from a real answer.
