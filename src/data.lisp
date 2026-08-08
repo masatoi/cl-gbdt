@@ -240,6 +240,19 @@ than as an opaque `coerce' error."
         :do (unless (realp value)
               (error 'unsupported-element-type :given (type-of value)))))
 
+(defun %require-int32-elements (vector)
+  "Signal `unsupported-element-type' unless every element of VECTOR is representable as
+`(signed-byte 32)' -- the integer type `%coerce-index-vector' stores INDPTR and INDICES
+elements as.
+
+Rejects a non-integer (e.g. a float that happens to satisfy every numeric comparison
+INDPTR's own shape checks use) and an integer outside that 32-bit range alike -- either
+would otherwise reach `make-array''s `:element-type' check inside `%coerce-index-vector'
+as a raw, undocumented `type-error', not one of this file's own conditions."
+  (loop :for value :across vector
+        :do (unless (typep value '(signed-byte 32))
+              (error 'unsupported-element-type :given (type-of value)))))
+
 (defun %coerce-index-vector (vector)
   "Return VECTOR as a `(simple-array (signed-byte 32) (*))'."
   (make-array (length vector) :element-type '(signed-byte 32) :initial-contents vector))
@@ -262,15 +275,19 @@ Signals `dimension-mismatch' when NUM-COLUMNS is not a positive integer; when IN
 and VALUES have different lengths; when INDPTR does not start at 0, decreases anywhere,
 or disagrees with INDICES/VALUES' shared length; or when an element of INDICES falls
 outside [0, NUM-COLUMNS). Signals `unsupported-element-type' when an element of VALUES
-is not a real number. Every check runs against INDPTR, INDICES and VALUES before any of
-the three is coerced, so a malformed matrix is rejected without paying for the copy a
-valid one needs."
+is not a real number, or when an element of INDPTR or INDICES is not representable as
+`(signed-byte 32)' -- the type both are stored as, so neither a non-integer nor an
+integer too large for it reaches `%coerce-index-vector' as a raw `type-error'. Every
+check runs against INDPTR, INDICES and VALUES before any of the three is coerced, so a
+malformed matrix is rejected without paying for the copy a valid one needs."
   (%require-positive-num-columns num-columns)
   (let ((indptr-vector (coerce indptr 'vector))
         (indices-vector (coerce indices 'vector))
         (values-vector (coerce values 'vector)))
     (%require-matching-lengths indices-vector values-vector)
+    (%require-int32-elements indptr-vector)
     (%require-non-decreasing-indptr-from-zero indptr-vector (length values-vector))
+    (%require-int32-elements indices-vector)
     (%require-indices-in-range indices-vector num-columns)
     (%require-real-values values-vector)
     (%make-csr-matrix :indptr (%coerce-index-vector indptr-vector)

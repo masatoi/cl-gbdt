@@ -208,3 +208,21 @@
   (testing "a repeated INDPTR entry is accepted"
     (let ((m (%csr :indptr '(0 2 2 3) :indices '(0 2 1) :values '(1.0d0 2.0d0 3.0d0))))
       (ok (= 3 (cl-gbdt:csr-matrix-num-rows m)) "the row count with one empty row"))))
+
+(deftest csr-matrix-rejects-an-indptr-element-it-cannot-coerce
+  ;; A float slips past the numeric comparisons INDPTR's shape checks use (zerop, <, =)
+  ;; but cannot become a (signed-byte 32) array element -- caught here, not as a raw
+  ;; TYPE-ERROR out of `make-array'.
+  (testing "a non-integer INDPTR element signals unsupported-element-type"
+    (ok (handler-case (progn (%csr :indptr (list 0 2.5d0 3)) nil)
+          (cl-gbdt:unsupported-element-type () t))
+        "whether a non-integer INDPTR element was rejected")))
+
+(deftest csr-matrix-rejects-an-indices-element-it-cannot-coerce
+  ;; NUM-COLUMNS has no upper bound of its own, so a column index within a very wide
+  ;; declared width can still overflow (signed-byte 32), the type INDICES is stored as.
+  (testing "an INDICES element outside (signed-byte 32) signals unsupported-element-type"
+    (ok (handler-case
+            (progn (%csr :indices (list 0 5000000000 1) :num-columns 5000000001) nil)
+          (cl-gbdt:unsupported-element-type () t))
+        "whether an out-of-range INDICES element was rejected")))
