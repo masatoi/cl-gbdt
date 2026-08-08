@@ -40,7 +40,7 @@
                    (loop :repeat 3
                          :collect (list (list 0 "logloss" 0.5d0) (list 0 "auc" 0.6d0)
                                         (list 1 "logloss" 0.7d0) (list 1 "auc" 0.8d0)))
-                   3)))
+                   3 '(nil nil))))
       (ok (= 4 (length (cl-gbdt:training-report-series report)))
           (format nil "series were ~S" (cl-gbdt:training-report-series report)))
       (ok (equal '((0 "logloss") (0 "auc") (1 "logloss") (1 "auc")) (keys-of report))
@@ -57,7 +57,7 @@
                    (loop :repeat 2
                          :collect (list (list 1 "zeta" 0.1d0) (list 0 "alpha" 0.2d0)
                                         (list 1 "alpha" 0.3d0) (list 0 "zeta" 0.4d0)))
-                   2)))
+                   2 '(nil nil))))
       (ok (equal '((1 "zeta") (0 "alpha") (1 "alpha") (0 "zeta")) (keys-of report))
           (format nil "keys were ~S" (keys-of report))))))
 
@@ -67,7 +67,7 @@
                     (list (list (list 0 "logloss" 0.9d0))
                           (list (list 0 "logloss" 0.5d0))
                           (list (list 0 "logloss" 0.2d0)))
-                    3))
+                    3 '(nil)))
            (series (series-of report 0 "logloss")))
       (ok series "no series was built for (0, logloss)")
       (ok (equalp #(0.9d0 0.5d0 0.2d0) (cl-gbdt:training-series-values series))
@@ -85,7 +85,7 @@
                     (list (list (list 0 "logloss" 0.9d0))
                           (list (list 0 "logloss" nil))
                           (list (list 0 "logloss" 0.2d0)))
-                    3))
+                    3 '(nil)))
            (series (series-of report 0 "logloss")))
       (ok (= 3 (length (cl-gbdt:training-series-values series)))
           (format nil "values were ~S" (cl-gbdt:training-series-values series)))
@@ -99,7 +99,7 @@
   ;; is an empty series list, not a report that forgot how many rounds ran, which is why
   ;; NUM-ROUNDS is taken as given rather than derived from what was recorded.
   (testing "no entries recorded, but the round count survives"
-    (let ((report (training-report-from-history (list '() '() '() '()) 4)))
+    (let ((report (training-report-from-history (list '() '() '() '()) 4 '())))
       (ok (null (cl-gbdt:training-report-series report))
           (format nil "series were ~S" (cl-gbdt:training-report-series report)))
       (ok (= 4 (cl-gbdt:training-report-num-rounds report))
@@ -109,6 +109,6 @@
   ;; `train' with :num-rounds 0 never enters its loop, so the history is empty. Nothing to
   ;; report, and no error either.
   (testing "an empty history yields an empty report"
-    (let ((report (training-report-from-history '() 0)))
+    (let ((report (training-report-from-history '() 0 '())))
       (ok (null (cl-gbdt:training-report-series report)) "series were not empty")
       (ok (= 0 (cl-gbdt:training-report-num-rounds report)) "num-rounds was not 0"))))

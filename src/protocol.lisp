@@ -55,8 +55,17 @@ Free the result with `free-dataset' or wrap it in `with-dataset'."))
   (:documentation "Train a BACKEND model on DATASET and return two values: a booster and
 a `training-report' of the run.
 
-VALID-SETS is a list of validation datasets, NUM-ROUNDS the number of boosting
-iterations, and PARAMETERS a plist passed through to the backend.
+VALID-SETS is a list of validation sets, NUM-ROUNDS the number of boosting iterations,
+and PARAMETERS a plist passed through to the backend. Each VALID-SETS element is either
+a dataset, whose validation set gets no name, or a (NAME . DATASET) cons, where NAME is
+a string that becomes that dataset's `training-series-name' in the report below; the two
+forms may be freely mixed in one list. Two entries may legitimately share one NAME --
+their index, not their name, is what tells them apart in the report, so this is accepted
+rather than rejected as a duplicate. A cons whose car is not a string signals
+`unsupported-argument' naming :VALID-SETS and the offending element; a cons whose cdr is
+not this backend's own kind of dataset signals `wrong-backend-reference', the same
+condition a bare wrong-backend dataset already signals. Both are checked before any
+foreign call.
 
 Free the booster with `free-booster' or wrap it in `with-booster'. `with-booster' binds
 the primary value only, so a caller who wants the report has to use
@@ -83,9 +92,11 @@ LightGBM's `metric=none', XGBoost's `disable_default_eval_metric=1'. An empty se
 is not an error and says nothing about whether training succeeded; NUM-ROUNDS iterations
 still ran, and `training-report-num-rounds' still says so.
 
-`training-series-name' is NIL for every series: this phase's :VALID-SETS holds bare
-datasets, and no name is invented for one -- see `evaluation' for why an index, not a
-name, is what identifies a dataset here."))
+Every series carries `training-series-index'; a series carries a non-NIL
+`training-series-name' only for a dataset named through :VALID-SETS. The training set is
+never a :VALID-SETS entry and so is always index 0 with a NIL name, and a :VALID-SETS
+entry passed bare is NIL too -- nothing here invents a name for either, the same way
+`evaluation' invents no name for the index it reports."))
 
 (defgeneric update-one-iteration (booster)
   (:documentation "Advance BOOSTER by one boosting iteration.

@@ -31,13 +31,22 @@
 
 (in-package #:cl-gbdt/src/training/history)
 
-(defun training-report-from-history (history num-rounds)
+(defun training-report-from-history (history num-rounds dataset-names)
   "Return a `training-report' over HISTORY, the record of a NUM-ROUNDS-iteration run.
 
 HISTORY has one element per completed iteration, in iteration order, and each element is
 that iteration's whole evaluation: a list of (DATASET-INDEX METRIC-NAME VALUE) lists, the
 shape both backends' `%read-evaluation' returns. VALUE may be NIL, which is how a backend
 reports a field it could not read as a real.
+
+DATASET-NAMES is a sequence whose element at position N is the name every series at
+dataset index N should carry -- this is the one place a name reaches the series it
+belongs to. Both `train' methods build it the same way: NIL consed onto the parallel list
+of names their own `:valid-sets' normalization produced, so position 0 -- the training
+set, which is never a `:valid-sets' entry -- is always NIL, and position N+1 is the Nth
+`:valid-sets' entry's name, itself NIL for an entry passed bare. Read with `elt', so an
+index this function never actually uses -- HISTORY empty, or a run with no metric
+configured -- never has to be covered by DATASET-NAMES at all.
 
 The result carries one `training-series' per distinct (DATASET-INDEX, METRIC-NAME) pair,
 holding that pair's values across the run as a `simple-vector' in iteration order. A NIL
@@ -70,6 +79,7 @@ metric configured records an empty evaluation every iteration, and it still ran.
      :series (loop :for key :in keys
                    :collect (make-training-series
                              :index (car key)
+                             :name (elt dataset-names (car key))
                              :metric (cdr key)
                              :values (coerce (reverse (gethash key values-by-key))
                                              'simple-vector))))))

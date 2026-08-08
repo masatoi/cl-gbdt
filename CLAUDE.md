@@ -36,9 +36,11 @@ over both backends.
 
 **Status: functional.** Both backends (`cl-gbdt/lightgbm`, `cl-gbdt/xgboost`) implement
 all 13 generic functions of the unified API -- `make-dataset`, `train`, `predict`, and
-the rest -- against the real shared libraries, exercised by 207 functional assertions in
-`cl-gbdt/tests/functional` (layer 2) on top of 253 assertions that need no shared
-library at all (layer 1). Core `cl-gbdt` still loads, and is still tested, without
+the rest -- against the real shared libraries, exercised by 239 functional assertions in
+`cl-gbdt/tests/functional` (layer 2) on top of 280 assertions that need no shared
+library at all (layer 1). `train` returns a `training-report` as its secondary value
+(see `README.markdown`'s Training report section). Core `cl-gbdt` still loads, and is
+still tested, without
 either `liblightgbm.so` or `libxgboost.so` present: a shared library is opened only by
 an explicit `open-backend` call, from whichever backend system you load on top of the
 core. See `README.markdown`'s Usage section for a worked example, its system table, and

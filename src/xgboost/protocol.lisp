@@ -335,6 +335,33 @@ genuinely unreclaimable at that point."
 ;;; ---------------------------------------------------------------------------
 ;;; Training
 
+(defun %valid-set-name (backend entry)
+  "Return the name half of ENTRY, one element of `train''s :VALID-SETS: NIL when ENTRY is
+a bare dataset, or ENTRY's car when ENTRY is a (NAME . DATASET) cons and NAME is a string.
+
+Signals `unsupported-argument' naming :VALID-SETS and ENTRY itself, via `%check-unsupported',
+when ENTRY is a cons whose car is not a string -- before any foreign call, and before the
+dataset half of ENTRY is checked against `xgboost-dataset' by `%check-xgboost-dataset',
+which runs afterward on `%valid-set-dataset''s result. That later check is what turns a
+cons whose cdr is not this backend's own kind of dataset into `wrong-backend-reference'
+instead -- a different mistake from this one, and so a different condition."
+  (if (consp entry)
+      (let ((name (car entry)))
+        (%check-unsupported
+         backend "train's :valid-sets" (not (stringp name))
+         (format nil "each element must be a dataset or a (string . dataset) cons; ~S's ~
+                      car is not a string" entry))
+        name)
+      nil))
+
+(defun %valid-set-dataset (entry)
+  "Return the dataset half of ENTRY, one element of `train''s :VALID-SETS: ENTRY itself
+when it is a bare dataset, or its cdr when it is a (NAME . DATASET) cons.
+
+Does not check that the result is an `xgboost-dataset' -- `%check-xgboost-dataset' does
+that afterward, on every element `%valid-set-name' has already let through."
+  (if (consp entry) (cdr entry) entry))
+
 (defmethod train ((backend xgboost-backend) dataset
                    &key valid-sets (num-rounds 100) parameters)
   "Train an XGBoost booster on DATASET for NUM-ROUNDS boosting iterations, and return it
@@ -346,6 +373,16 @@ front rather than adding validation data afterward. Applies PARAMETERS one at a 
 `XGBoosterSetParam', then drives `XGBoosterUpdateOneIter' NUM-ROUNDS times. See the
 `train' generic function's docstring for what each argument means, and for what the
 secondary value holds; NUM-ROUNDS defaults to 100 when not supplied.
+
+Each VALID-SETS element is either a dataset, whose series carry no name, or a
+(NAME . DATASET) cons, where NAME is a string that reaches `training-series-name' for
+every series recorded at that dataset's index -- see `%valid-set-name' and
+`%valid-set-dataset', which split VALID-SETS into two parallel lists, of datasets and of
+names, once at the top of this method; everything below reads the datasets list under
+the name VALID-SETS, exactly as before this method accepted names at all. Two entries
+may legitimately share one NAME: their index, not their name, is what a caller uses to
+tell them apart in the report, so this is accepted rather than rejected as a duplicate.
+The training set is never a VALID-SETS entry and is always index 0 with a NIL name.
 
 After each iteration this reads the whole evaluation through `%read-evaluation' -- the
 same function the `evaluation' method calls, over the same DMatrix pointers in the same
@@ -365,14 +402,17 @@ than returning a report whose series are shorter than NUM-ROUNDS: a short series
 indistinguishable from one a buggy loop recorded, and \"one value per iteration\" is the
 invariant a caller reading the report relies on.
 
-DATASET and every entry of VALID-SETS are each run through `%check-xgboost-dataset'
-before any foreign call. `train' dispatches on BACKEND, not on DATASET, so unlike
-`dataset-num-rows' or `free-dataset' there is no CLOS specializer here to rule out the
-wrong kind of handle first -- without this, `handle-live-pointer' would happily hand
-`XGBoosterCreate' a booster's own pointer to use as one of its DMatrix handles. Signals
-`wrong-backend-reference' when DATASET or a VALID-SETS entry is not an `xgboost-dataset',
-and `released-handle-error' or `backend-not-open' when one is but has already been freed
-or had its own backend closed.
+DATASET and every VALID-SETS entry's dataset half are each run through
+`%check-xgboost-dataset' before any foreign call. `train' dispatches on BACKEND, not on
+DATASET, so unlike `dataset-num-rows' or `free-dataset' there is no CLOS specializer here
+to rule out the wrong kind of handle first -- without this, `handle-live-pointer' would
+happily hand `XGBoosterCreate' a booster's own pointer to use as one of its DMatrix
+handles. Signals `wrong-backend-reference' when DATASET or a VALID-SETS entry's dataset
+half is not an `xgboost-dataset', and `released-handle-error' or `backend-not-open' when
+one is but has already been freed or had its own backend closed. A VALID-SETS entry that
+is a cons with a non-string car never reaches this check at all: `%valid-set-name' signals
+`unsupported-argument' for it first, which is the different mistake a malformed name is,
+kept distinct from a wrong dataset handle.
 
 The returned booster retains DATASET as its training set and a fresh copy of VALID-SETS
 as its validation sets, keeping all of them alive for the booster's lifetime and letting
@@ -396,16 +436,20 @@ Signals `backend-not-open' before any of that when BACKEND is not open -- see
 `%check-backend-open'."
   (with-foreign-float-traps-masked
     (%check-backend-open backend)
-    (let* ((valid-sets (copy-list valid-sets))
+    (let* ((valid-set-entries (copy-list valid-sets))
            (train-data-pointer
              (%check-xgboost-dataset backend dataset "train's dataset argument"
                                       'xgboost-dataset))
+           (valid-set-names
+             (mapcar (lambda (entry) (%valid-set-name backend entry)) valid-set-entries))
+           (valid-sets (mapcar #'%valid-set-dataset valid-set-entries))
            (valid-set-pointers
              (mapcar (lambda (valid-set)
                        (%check-xgboost-dataset backend valid-set "a train :valid-sets entry"
                                                 'xgboost-dataset))
                      valid-sets))
            (dataset-pointers (cons train-data-pointer valid-set-pointers))
+           (dataset-names (cons nil valid-set-names))
            (history '()))
       (let ((booster-pointer (%create-booster dataset-pointers)))
         (let ((owned nil))
@@ -418,7 +462,8 @@ Signals `backend-not-open' before any of that when BACKEND is not open -- see
                    ;; Primary value only: `%read-evaluation''s RAW is `evaluation''s
                    ;; provenance, and a report carries no per-iteration raw text.
                    (push (%read-evaluation booster-pointer dataset-pointers) history))
-                 (let ((report (training-report-from-history (reverse history) num-rounds)))
+                 (let ((report (training-report-from-history (reverse history) num-rounds
+                                                              dataset-names)))
                    (multiple-value-prog1
                        (values (make-handle 'xgboost-booster booster-pointer backend :booster
                                             :training-set dataset

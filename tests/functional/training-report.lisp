@@ -15,8 +15,11 @@
 ;;;; second value, so each uses `multiple-value-bind' and frees the booster in its own
 ;;;; `unwind-protect' instead.
 ;;;;
-;;;; Every series' name is NIL throughout: :VALID-SETS holds bare datasets in this phase,
-;;;; and nothing invents a name for one. Naming arrives in the next task.
+;;;; This file's first block of tests predates naming: :VALID-SETS holds only bare
+;;;; datasets there, so every series' name is NIL, and nothing invents one. The block below
+;;;; it -- naming -- is this task's own: `train''s :VALID-SETS now also accepts a
+;;;; (NAME . DATASET) cons per element, mixed freely with bare datasets, and NAME reaches
+;;;; `training-series-name' for every series at that dataset's index.
 
 (uiop:define-package #:cl-gbdt/tests/functional/training-report
   (:use #:cl #:rove)
@@ -298,3 +301,232 @@ one whose last field the backend could not read."
                                         (cl-gbdt:training-report-num-rounds report)))))
                      (cl-gbdt:free-booster booster))))
             (cl-gbdt:close-backend backend)))))))
+
+;;; ---------------------------------------------------------------------------
+;;; Naming
+;;;
+;;; `train''s :VALID-SETS now accepts a (NAME . DATASET) cons per element, alongside the
+;;; bare dataset the tests above already cover, mixed freely in one list. NAME reaches
+;;; `training-series-name' for every series recorded at that dataset's index, and nowhere
+;;; else -- the training set is never a :VALID-SETS entry, so its series stay NIL
+;;; regardless of what any validation set is named.
+
+(defun fixture-for (backend-name)
+  "Return the *FIXTURES* entry for BACKEND-NAME."
+  (find backend-name *fixtures* :key (lambda (fixture) (getf fixture :backend))))
+
+;;; A single named validation set: its series carry index 1 and the name given, and the
+;;; training set's series at index 0 stay unnamed regardless.
+
+(deftest training-report-named-valid-set-carries-its-name-and-index
+  (dolist (fixture *fixtures*)
+    (with-backend-library ((getf fixture :backend))
+      (multiple-value-bind (matrix label-vector) (make-separable-dataset)
+        (let ((backend (cl-gbdt:open-backend (getf fixture :backend)))
+              (valid-label-vector (invert-labels label-vector)))
+          (unwind-protect
+               (cl-gbdt:with-dataset
+                   (train-set (make-fixture-dataset fixture backend matrix label-vector))
+                 (cl-gbdt:with-dataset
+                     (valid-set (make-fixture-dataset fixture backend matrix valid-label-vector
+                                                      :reference train-set))
+                   (multiple-value-bind (booster report)
+                       (cl-gbdt:train backend train-set :num-rounds 3
+                                      :valid-sets (list (cons "valid" valid-set))
+                                      :parameters (getf fixture :booster-parameters))
+                     (unwind-protect
+                          (let ((all-series (cl-gbdt:training-report-series report)))
+                            (testing (format nil "~A: the training set's series (index 0) ~
+                                                  stay unnamed" (getf fixture :backend))
+                              (ok (every (lambda (series)
+                                           (or (/= 0 (cl-gbdt:training-series-index series))
+                                               (null (cl-gbdt:training-series-name series))))
+                                         all-series)
+                                  (format nil "series were ~S" all-series)))
+                            (testing (format nil "~A: the named validation set's series ~
+                                                  (index 1) carry name \"valid\""
+                                             (getf fixture :backend))
+                              (ok (and (some (lambda (series)
+                                               (= 1 (cl-gbdt:training-series-index series)))
+                                             all-series)
+                                       (every (lambda (series)
+                                                (or (/= 1 (cl-gbdt:training-series-index
+                                                           series))
+                                                    (string= "valid"
+                                                             (cl-gbdt:training-series-name
+                                                              series))))
+                                              all-series))
+                                  (format nil "series were ~S" all-series))))
+                       (cl-gbdt:free-booster booster)))))
+            (cl-gbdt:close-backend backend)))))))
+
+;;; A mixed list -- one bare entry, one named entry -- produces both a NIL and a non-NIL
+;;; name in the same report, at the two different indices the two entries occupy.
+
+(deftest training-report-mixed-valid-sets-carry-nil-and-string-names
+  (dolist (fixture *fixtures*)
+    (with-backend-library ((getf fixture :backend))
+      (multiple-value-bind (matrix label-vector) (make-separable-dataset)
+        (let ((backend (cl-gbdt:open-backend (getf fixture :backend)))
+              (bare-label-vector (invert-labels label-vector)))
+          (unwind-protect
+               (cl-gbdt:with-dataset
+                   (train-set (make-fixture-dataset fixture backend matrix label-vector))
+                 (cl-gbdt:with-dataset
+                     (bare-valid (make-fixture-dataset fixture backend matrix bare-label-vector
+                                                       :reference train-set))
+                   (cl-gbdt:with-dataset
+                       (named-valid (make-fixture-dataset fixture backend matrix label-vector
+                                                          :reference train-set))
+                     (multiple-value-bind (booster report)
+                         (cl-gbdt:train backend train-set :num-rounds 3
+                                        :valid-sets (list bare-valid (cons "named" named-valid))
+                                        :parameters (getf fixture :booster-parameters))
+                       (unwind-protect
+                            (let ((all-series (cl-gbdt:training-report-series report)))
+                              (testing (format nil "~A: the bare entry's series (index 1) ~
+                                                    are unnamed" (getf fixture :backend))
+                                (ok (some (lambda (series)
+                                            (and (= 1 (cl-gbdt:training-series-index series))
+                                                 (null (cl-gbdt:training-series-name series))))
+                                          all-series)
+                                    (format nil "series were ~S" all-series)))
+                              (testing (format nil "~A: the named entry's series (index 2) ~
+                                                    carry name \"named\""
+                                               (getf fixture :backend))
+                                (ok (some (lambda (series)
+                                            (and (= 2 (cl-gbdt:training-series-index series))
+                                                 (string= "named"
+                                                          (cl-gbdt:training-series-name
+                                                           series))))
+                                          all-series)
+                                    (format nil "series were ~S" all-series))))
+                         (cl-gbdt:free-booster booster))))))
+            (cl-gbdt:close-backend backend)))))))
+
+;;; Two validation sets sharing one name is accepted, not an error: the two libraries have
+;;; no uniqueness rule for a validation set's own name, and inventing one here would be a
+;;; rule neither backend has. The index -- 1 and 2 -- is what tells the two series apart.
+
+(deftest training-report-duplicate-valid-set-names-are-accepted
+  (dolist (fixture *fixtures*)
+    (with-backend-library ((getf fixture :backend))
+      (multiple-value-bind (matrix label-vector) (make-separable-dataset)
+        (let ((backend (cl-gbdt:open-backend (getf fixture :backend)))
+              (valid-label-vector (invert-labels label-vector)))
+          (unwind-protect
+               (cl-gbdt:with-dataset
+                   (train-set (make-fixture-dataset fixture backend matrix label-vector))
+                 (cl-gbdt:with-dataset
+                     (valid-1 (make-fixture-dataset fixture backend matrix valid-label-vector
+                                                    :reference train-set))
+                   (cl-gbdt:with-dataset
+                       (valid-2 (make-fixture-dataset fixture backend matrix label-vector
+                                                      :reference train-set))
+                     (multiple-value-bind (booster report)
+                         (cl-gbdt:train backend train-set :num-rounds 3
+                                        :valid-sets (list (cons "valid" valid-1)
+                                                          (cons "valid" valid-2))
+                                        :parameters (getf fixture :booster-parameters))
+                       (unwind-protect
+                            (let ((all-series (cl-gbdt:training-report-series report)))
+                              (testing (format nil "~A: two validation sets sharing one ~
+                                                    name are accepted, distinguished by ~
+                                                    index 1 and index 2"
+                                               (getf fixture :backend))
+                                (ok (and (some (lambda (series)
+                                                 (and (= 1 (cl-gbdt:training-series-index
+                                                            series))
+                                                      (string= "valid"
+                                                               (cl-gbdt:training-series-name
+                                                                series))))
+                                               all-series)
+                                         (some (lambda (series)
+                                                 (and (= 2 (cl-gbdt:training-series-index
+                                                            series))
+                                                      (string= "valid"
+                                                               (cl-gbdt:training-series-name
+                                                                series))))
+                                               all-series))
+                                    (format nil "series were ~S" all-series))))
+                         (cl-gbdt:free-booster booster))))))
+            (cl-gbdt:close-backend backend)))))))
+
+;;; The two ways one :VALID-SETS element can be malformed are two different mistakes and
+;;; must report as two different conditions: a cons whose car is not a string is an
+;;; argument-shape mistake, `unsupported-argument'; a cons whose cdr is not this backend's
+;;; own kind of dataset is a wrong handle, `wrong-backend-reference' -- the same condition
+;;; a bare wrong-backend dataset already signals elsewhere in this suite. `handler-case',
+;;; not rove's `signals', which does not reliably catch a condition raised inside
+;;; `restart-case'; the condition TYPE is asserted, not merely that something signalled.
+
+(deftest train-valid-sets-cons-with-non-string-car-signals-unsupported-argument
+  (dolist (fixture *fixtures*)
+    (with-backend-library ((getf fixture :backend))
+      (multiple-value-bind (matrix label-vector) (make-separable-dataset)
+        (let ((backend (cl-gbdt:open-backend (getf fixture :backend))))
+          (unwind-protect
+               (cl-gbdt:with-dataset
+                   (train-set (make-fixture-dataset fixture backend matrix label-vector))
+                 (cl-gbdt:with-dataset
+                     (valid-set (make-fixture-dataset fixture backend matrix label-vector
+                                                      :reference train-set))
+                   (testing (format nil "~A: a :valid-sets cons with a non-string car ~
+                                        signals unsupported-argument"
+                                    (getf fixture :backend))
+                     (ok (handler-case
+                             (progn (cl-gbdt:train backend train-set :num-rounds 1
+                                                   :valid-sets (list (cons :valid valid-set))
+                                                   :parameters (getf fixture
+                                                                     :booster-parameters))
+                                    nil)
+                           (cl-gbdt:unsupported-argument () t))
+                         "train did not signal unsupported-argument for a non-string name"))))
+            (cl-gbdt:close-backend backend)))))))
+
+;;; The other mistake needs a dataset from the OTHER backend as the cons' cdr, so this
+;;; opens both libraries at once, mirroring evaluation.lisp's own cross-backend guard
+;;; tests -- the only other place in this suite that needs both.
+
+(deftest train-valid-sets-cons-with-wrong-backend-dataset-signals-wrong-backend-reference
+  (with-backend-library (:lightgbm)
+    (with-backend-library (:xgboost)
+      (multiple-value-bind (matrix label-vector) (make-separable-dataset)
+        (let ((lightgbm-fixture (fixture-for :lightgbm))
+              (xgboost-fixture (fixture-for :xgboost))
+              (lightgbm (cl-gbdt:open-backend :lightgbm))
+              (xgboost (cl-gbdt:open-backend :xgboost))
+              (lightgbm-train nil)
+              (xgboost-train nil))
+          (unwind-protect
+               (progn
+                 (setf lightgbm-train
+                       (make-fixture-dataset lightgbm-fixture lightgbm matrix label-vector))
+                 (setf xgboost-train
+                       (make-fixture-dataset xgboost-fixture xgboost matrix label-vector))
+                 (testing "LightGBM's train rejects a named XGBoost dataset in :valid-sets"
+                   (ok (handler-case
+                           (progn (cl-gbdt:train lightgbm lightgbm-train :num-rounds 1
+                                                 :valid-sets (list (cons "valid" xgboost-train))
+                                                 :parameters (getf lightgbm-fixture
+                                                                   :booster-parameters))
+                                  nil)
+                         (cl-gbdt:wrong-backend-reference () t))
+                       "LightGBM's train did not signal wrong-backend-reference for a ~
+                        named XGBoost dataset"))
+                 (testing "XGBoost's train rejects a named LightGBM dataset in :valid-sets"
+                   (ok (handler-case
+                           (progn (cl-gbdt:train xgboost xgboost-train :num-rounds 1
+                                                 :valid-sets (list (cons "valid"
+                                                                        lightgbm-train))
+                                                 :parameters (getf xgboost-fixture
+                                                                   :booster-parameters))
+                                  nil)
+                         (cl-gbdt:wrong-backend-reference () t))
+                       "XGBoost's train did not signal wrong-backend-reference for a ~
+                        named LightGBM dataset")))
+            (progn
+              (when lightgbm-train (cl-gbdt:free-dataset lightgbm-train))
+              (when xgboost-train (cl-gbdt:free-dataset xgboost-train))
+              (cl-gbdt:close-backend lightgbm)
+              (cl-gbdt:close-backend xgboost))))))))
