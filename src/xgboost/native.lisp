@@ -16,6 +16,7 @@
                 #:xgb-get-last-error
                 #:xg-boost-version
                 #:xgd-matrix-create-from-dense
+                #:xgd-matrix-create-from-csr
                 #:xgd-matrix-set-info-from-interface
                 #:xgd-matrix-set-u-int-info
                 #:xgd-matrix-set-str-feature-info
@@ -31,6 +32,7 @@
                 #:xg-booster-update-one-iter
                 #:xg-booster-eval-one-iter
                 #:xg-booster-predict-from-d-matrix
+                #:xg-booster-predict-from-csr
                 #:xg-booster-save-model
                 #:xg-booster-load-model
                 #:xg-booster-save-model-to-buffer
@@ -76,6 +78,7 @@
            #:%check-unsupported
            #:%read-version
            #:%create-dmatrix
+           #:%create-dmatrix-from-csr
            #:%set-info-field
            #:%set-group-field
            #:%set-feature-names
@@ -96,6 +99,7 @@
            #:%total-element-count
            #:%predict-ncol
            #:%predict-from-dmatrix
+           #:%predict-from-csr
            #:%save-model
            #:%load-model
            #:%save-model-to-buffer
@@ -293,7 +297,8 @@ included -- unlike LightGBM's, whose compiled basename genuinely omits it; see
 the library loads.")
 
 (defparameter *optional-symbols*
-  '((:model-slicing "XGBoosterSlice"))
+  '((:model-slicing "XGBoosterSlice")
+    (:sparse-input "XGDMatrixCreateFromCSR" "XGBoosterPredictFromCSR"))
   "Capability name to the C function names that capability needs.
 
 Unlike `*required-symbols*', whose absence makes `open-backend' signal
@@ -302,10 +307,16 @@ Unlike `*required-symbols*', whose absence makes `open-backend' signal
 cannot slice, not a broken installation.
 
 `XGBoosterSlice' is bound in c-api.lisp and called only from `slice-model', which checks the
-capability before reaching it.")
+capability before reaching it.
+
+`:sparse-input' names both the ingestion entry point and the prediction one, even though
+`make-dataset' reaches only the first. The capability is one answer about whether this
+backend can take a `csr-matrix' at all, and a caller told \"yes\" who could build a dataset
+but not predict from one would have been told a half-truth. Listing both from the start means
+the answer never changes meaning as the sparse path grows.")
 
 (defparameter *provided-capabilities*
-  '(:evaluation-history)
+  '(:evaluation-history :early-stopping)
   "Capabilities this backend provides unconditionally, recorded true at `open-backend'
 without being probed -- `probe-capabilities''s PROVIDED, which says why a probe cannot
 express this.
@@ -315,6 +326,10 @@ express this.
 -- is in `*required-symbols*' above. A library missing it never opens at all, so there is no
 state in which this backend is open and cannot record a history, and nothing for a probe to
 answer differently from one open to the next.
+`:early-stopping' is here for a different reason: it needs no C function at all. Both `train'
+loops run in Lisp, so the stop decision is `cl-gbdt/src/training/early-stopping''s pure code,
+which every open backend has by construction. A probe has nothing to look for, and the
+capability cannot vary between one open and the next.
 
 Every name here must be registered in `cl-gbdt/src/backend''s `*known-capabilities*', or
 `backend-supports-p' would signal `unknown-capability' for a capability the plist claims;
@@ -371,6 +386,104 @@ before returning."
             (check-xgb (xgd-matrix-create-from-dense data config out)
                        "XGDMatrixCreateFromDense")
             (cffi:mem-ref out :pointer)))))))
+
+#+sbcl
+(defun %call-with-pinned-csr (indptr indices values function)
+  "Pin INDPTR, INDICES and VALUES and call FUNCTION with a foreign pointer to each, in that
+order.
+
+The three vectors come straight out of a `cl-gbdt/src/data' `csr-matrix', which already
+stores them as the specialized `(simple-array (signed-byte 32) (*))' and `(simple-array
+double-float (*))' the C API wants -- so there is nothing to convert here and nothing to
+check, only memory to hold still. Each is a rank-one simple-array, whose object and whose
+storage are one and the same, unlike the 2D case `cl-gbdt/src/data''s
+`%call-with-pinned-matrix' has to pin a separately-allocated `array-storage-vector' for.
+
+The pointers are valid only for the duration of FUNCTION, which is all the sparse ingestion
+path needs: `XGDMatrixCreateFromCSR' copies the rows into XGBoost's own representation before
+it returns, exactly the lifetime `%create-dmatrix' relies on for the dense path.
+
+Duplicated verbatim from `cl-gbdt/src/lightgbm/native', which needs the identical helper for
+`LGBM_DatasetCreateFromCSR'. The one file both could share it from -- `cl-gbdt/src/data' --
+is re-exported wholesale by `cl-gbdt', so putting it there would publish a raw pinning
+primitive as part of the unified API's surface. This backend pair is where the duplication
+belongs instead, alongside `%set-feature-names' and `%free-*-unchecked', which mirror each
+other across the two backends for the same reason."
+  (sb-sys:with-pinned-objects (indptr indices values)
+    (flet ((sap-pointer (vector)
+             (cffi:make-pointer (sb-sys:sap-int (sb-sys:vector-sap vector)))))
+      (funcall function (sap-pointer indptr) (sap-pointer indices) (sap-pointer values)))))
+
+#-sbcl
+(defun %call-with-pinned-csr (indptr indices values function)
+  "Copy INDPTR, INDICES and VALUES into foreign buffers and call FUNCTION with a pointer to
+each, in that order.
+
+The fallback for an implementation with no way to pin a Lisp array, mirroring
+`cl-gbdt/src/data''s `%call-with-copied-matrix' -- same contract as the SBCL version above,
+paid for with a copy. `#'identity' as every coercer: a `csr-matrix' has already coerced all
+three vectors to exactly these element types, so there is nothing left for
+`write-foreign-sequence' to convert."
+  (cffi:with-foreign-objects ((indptr-buffer :int32 (length indptr))
+                              (indices-buffer :int32 (length indices))
+                              (values-buffer :double (length values)))
+    (write-foreign-sequence indptr-buffer :int32 indptr #'identity)
+    (write-foreign-sequence indices-buffer :int32 indices #'identity)
+    (write-foreign-sequence values-buffer :double values #'identity)
+    (funcall function indptr-buffer indices-buffer values-buffer)))
+
+(defparameter *csr-matrix-config-json* "{\"missing\":NaN}"
+  "Config JSON passed to `XGDMatrixCreateFromCSR'. The same sentinel
+*dense-matrix-config-json* fixes for the dense path, and for the same reason -- see that
+parameter's docstring, whose reasoning about XGBoost's other config keys applies here
+unchanged.
+
+Kept as its own parameter rather than shared with the dense one, because the two are
+arguments to two different C entry points -- not because the key sets differ today. They do
+not: the vendored header (`ffi-spec/xgboost/include/xgboost/c_api.h') documents
+`XGDMatrixCreateFromCSR''s CONFIG by cross-reference, \"See @ref XGDMatrixCreateFromDense
+for details\", so the recognized keys are `missing' plus the optional `nthread' and
+`data_split_mode' for both. What nothing binds is that they stay identical: they are
+separate parameters of separate functions, and one string per call means a future change to
+what this wrapper sends to one of them is a decision about that call rather than a silent
+change to the other's.
+
+An entry a `csr-matrix' does not store is absent, not NaN, and XGBoost treats an absent CSR
+entry as missing regardless of what this says -- that is what CSR means to the library and no
+config key changes it. This sentinel decides only what a *stored* value of NaN means, which
+is exactly what it decides on the dense path.")
+
+(defun %create-dmatrix-from-csr (indptr indices values num-columns)
+  "Build a DMatrix from a `csr-matrix''s INDPTR, INDICES and VALUES via
+`XGDMatrixCreateFromCSR', returning its raw pointer. NUM-COLUMNS is the matrix's declared
+width, passed as `XGDMatrixCreateFromCSR''s own NCOL rather than left to the library to infer
+from the largest index present -- the two are different facts (see `make-csr-matrix''s
+docstring), and only the caller knows the first.
+
+Each of the three vectors is described to XGBoost with its own `array-interface-json', the
+same way `%create-dmatrix' describes a dense buffer: this entry point takes three separate
+array-interface descriptors where LightGBM's takes three raw pointers and a pair of dtype
+tags. The typestrs are fixed rather than derived -- `csr-matrix' stores INDPTR and INDICES as
+`(signed-byte 32)' and VALUES as `double-float' and nothing else, so there is no per-call
+element type to map the way `%array-interface-typestr' maps one for the dense path.
+
+The buffers only need to stay pinned for the duration of this call, since XGBoost copies
+them into its own representation before returning."
+  (%call-with-pinned-csr
+   indptr indices values
+   (lambda (indptr-pointer indices-pointer values-pointer)
+     (cffi:with-foreign-string
+         (indptr-json (array-interface-json indptr-pointer "<i4" (length indptr)))
+       (cffi:with-foreign-string
+           (indices-json (array-interface-json indices-pointer "<i4" (length indices)))
+         (cffi:with-foreign-string
+             (values-json (array-interface-json values-pointer "<f8" (length values)))
+           (cffi:with-foreign-string (config *csr-matrix-config-json*)
+             (cffi:with-foreign-object (out :pointer)
+               (check-xgb (xgd-matrix-create-from-csr indptr-json indices-json values-json
+                                                       num-columns config out)
+                          "XGDMatrixCreateFromCSR")
+               (cffi:mem-ref out :pointer)))))))))
 
 (defun %set-info-field (dataset-pointer field-name values)
   "Attach the sequence VALUES to DATASET-POINTER's FIELD-NAME via
@@ -604,7 +717,7 @@ something else."
 protocol."
   (or num-iteration 0))
 
-(defun %predict-config-json (predict-type iteration-end)
+(defun %predict-config-json (predict-type iteration-end &key missing)
   "Return the JSON config `XGBoosterPredictFromDMatrix' expects for PREDICT-TYPE (already
 mapped by `%predict-type') and ITERATION-END (already resolved by
 `%resolve-num-iteration').
@@ -613,10 +726,19 @@ mapped by `%predict-type') and ITERATION-END (already resolved by
 single-class model's trailing dimension inconsistently with a multi-class model's --
 exactly the assumption `predict' exists to avoid making. With it, `out_shape' and
 `out_dim' report a shape this file can trust uniformly across every KIND and class
-count."
+count.
+
+MISSING true adds the `\"missing\"' key, fixed at IEEE NaN the way
+*DENSE-MATRIX-CONFIG-JSON* and *CSR-MATRIX-CONFIG-JSON* fix it for the two ingestion entry
+points. It is off by default because `XGBoosterPredictFromDMatrix' has no use for it -- a
+DMatrix settled its own missing sentinel when it was built -- and on for
+`XGBoosterPredictFromCSR', which is INPLACE prediction with no DMatrix behind it and
+therefore nothing to have settled one: confirmed against the vendored library, that call
+refuses outright without the key (\"Argument `missing` is required\"), rather than assuming
+a default."
   (format nil "{\"type\":~D,\"training\":false,\"iteration_begin\":0,~
-\"iteration_end\":~D,\"strict_shape\":true}"
-          predict-type iteration-end))
+\"iteration_end\":~D,\"strict_shape\":true~A}"
+          predict-type iteration-end (if missing ",\"missing\":NaN" "")))
 
 (defun %total-element-count (shape-pointer dim)
   "Return the product of the DIM `:uint64' entries at SHAPE-POINTER -- the total element
@@ -658,6 +780,57 @@ OUT-RESULT's contents out before it returns."
   (check-xgb (xg-booster-predict-from-d-matrix
               booster-pointer dmatrix-pointer config out-shape out-dim out-result)
              "XGBoosterPredictFromDMatrix"))
+
+(defun %predict-from-csr (booster-pointer indptr indices values num-columns predict-type
+                           iteration-end out-shape out-dim out-result)
+  "Run `XGBoosterPredictFromCSR' over the booster at BOOSTER-POINTER against the matrix a
+`csr-matrix''s INDPTR, INDICES and VALUES describes, NUM-COLUMNS wide, writing OUT-SHAPE,
+OUT-DIM and OUT-RESULT, and signal `foreign-call-error' when the library reports failure.
+
+Unlike `%predict-from-dmatrix' above, which takes the config string its caller built, this
+builds its own -- `(%predict-config-json ... :missing t)' -- and its own three
+`array-interface-json' descriptors, the same way `%create-dmatrix-from-csr' does for
+ingestion where `%create-dmatrix' takes one. The three vectors are pinned for the duration
+of the call and no longer, which is all this needs: `XGBoosterPredictFromCSR' reads them and
+writes OUT-RESULT before it returns. The typestrs are fixed rather than derived, because
+`csr-matrix' fixes INDPTR/INDICES at `(signed-byte 32)' and VALUES at `double-float' and
+there is no per-call element type to map through `%array-interface-typestr'.
+
+`XGBoosterPredictFromCSR' is XGBoost's INPLACE prediction, not the CSR spelling of
+`XGBoosterPredictFromDMatrix' -- the vendored header
+(`ffi-spec/xgboost/include/xgboost/c_api.h') documents it as such -- and that has two
+consequences a caller sees, both measured against the vendored library:
+
+  - It covers only PREDICT-TYPE 0 (`:normal') and 1 (`:raw'). 2 (`:contrib') and 6
+    (`:leaf-index') come back as a clean nonzero return, \"Unsupported prediction type:N\",
+    which `check-xgb' reports as `foreign-call-error'. This file does not pre-empt that
+    refusal with a check of its own, and does not route those two KINDs through a transient
+    DMatrix to work around it: either would be this wrapper inventing a policy over the
+    library's own, and the capability `:sparse-input' declares this very entry point for.
+  - `\"missing\"' is required in the config, which is why it is passed -- see
+    `%predict-config-json'.
+
+The `m' parameter, an optional proxy DMatrix carrying meta info, is a null pointer: nothing
+in this backend's prediction path has meta info to attach to a matrix it is only reading.
+
+`predict' still owns interpreting OUT-SHAPE, OUT-DIM and OUT-RESULT afterward, via
+`%total-element-count' and `%predict-ncol', and copying OUT-RESULT's contents out before it
+returns -- none of which differs between the two entry points."
+  (%call-with-pinned-csr
+   indptr indices values
+   (lambda (indptr-pointer indices-pointer values-pointer)
+     (cffi:with-foreign-string
+         (indptr-json (array-interface-json indptr-pointer "<i4" (length indptr)))
+       (cffi:with-foreign-string
+           (indices-json (array-interface-json indices-pointer "<i4" (length indices)))
+         (cffi:with-foreign-string
+             (values-json (array-interface-json values-pointer "<f8" (length values)))
+           (cffi:with-foreign-string
+               (config (%predict-config-json predict-type iteration-end :missing t))
+             (check-xgb (xg-booster-predict-from-csr
+                         booster-pointer indptr-json indices-json values-json num-columns
+                         config (cffi:null-pointer) out-shape out-dim out-result)
+                        "XGBoosterPredictFromCSR"))))))))
 
 ;;; ---------------------------------------------------------------------------
 ;;; Persistence

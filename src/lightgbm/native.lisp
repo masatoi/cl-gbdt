@@ -15,6 +15,7 @@
   (:import-from #:cl-gbdt/src/lightgbm/c-api
                 #:lgbm-get-last-error
                 #:lgbm-dataset-create-from-mat
+                #:lgbm-dataset-create-from-csr
                 #:lgbm-dataset-set-field
                 #:lgbm-dataset-set-feature-names
                 #:lgbm-dataset-free
@@ -26,6 +27,7 @@
                 #:lgbm-booster-free
                 #:lgbm-booster-calc-num-predict
                 #:lgbm-booster-predict-for-mat
+                #:lgbm-booster-predict-for-csr
                 #:lgbm-booster-save-model
                 #:lgbm-booster-save-model-to-string
                 #:lgbm-booster-create-from-modelfile
@@ -80,6 +82,7 @@
            #:%parameter-string
            #:%data-type
            #:%create-dataset
+           #:%create-dataset-from-csr
            #:%set-info-field
            #:%set-group-field
            #:%set-feature-names
@@ -98,6 +101,7 @@
            #:%calc-num-predict
            #:%predict-ncol
            #:%predict-for-mat
+           #:%predict-for-csr
            #:%save-model
            #:%create-booster-from-modelfile
            #:%save-model-to-string
@@ -275,18 +279,23 @@ system search never finds it.")
 after the library loads.")
 
 (defparameter *optional-symbols*
-  '()
-  "Capability name to the C function names that capability needs. Empty: LightGBM has no
-optional capability yet.
+  '((:sparse-input "LGBM_DatasetCreateFromCSR" "LGBM_BoosterPredictForCSR"))
+  "Capability name to the C function names that capability needs.
 
-Declared rather than omitted so that `initialize-backend' below takes the same shape as
-XGBoost's, and so the next optional capability is an entry in an existing list rather than a
-new mechanism. LightGBM having no counterpart to `XGBoosterSlice' is why
+Unlike `*required-symbols*', whose absence makes `open-backend' signal
+`missing-foreign-symbols', a name missing from here disables one capability and nothing else
+-- policy section 8. LightGBM having no counterpart to `XGBoosterSlice' is why
 `(backend-supports-p backend :model-slicing)' is false here -- which is the case the whole
-capability model is tested against.")
+capability model is tested against; the entry above is what makes `:sparse-input' true.
+
+`:sparse-input' names both the ingestion entry point and the prediction one, even though
+`make-dataset' reaches only the first. The capability is one answer about whether this
+backend can take a `csr-matrix' at all, and a caller told \"yes\" who could build a dataset
+but not predict from one would have been told a half-truth. Listing both from the start means
+the answer never changes meaning as the sparse path grows.")
 
 (defparameter *provided-capabilities*
-  '(:evaluation-history)
+  '(:evaluation-history :early-stopping)
   "Capabilities this backend provides unconditionally, recorded true at `open-backend'
 without being probed -- `probe-capabilities''s PROVIDED, which says why a probe cannot
 express this.
@@ -297,6 +306,10 @@ and `LGBM_BoosterGetEval', all reached through `%read-evaluation' -- are in
 `*required-symbols*' above. A library missing any of them never opens at all, so there is no
 state in which this backend is open and cannot record a history, and nothing for a probe to
 answer differently from one open to the next.
+`:early-stopping' is here for a different reason: it needs no C function at all. Both `train'
+loops run in Lisp, so the stop decision is `cl-gbdt/src/training/early-stopping''s pure code,
+which every open backend has by construction. A probe has nothing to look for, and the
+capability cannot vary between one open and the next.
 
 Every name here must be registered in `cl-gbdt/src/backend''s `*known-capabilities*', or
 `backend-supports-p' would signal `unknown-capability' for a capability the plist claims;
@@ -356,6 +369,83 @@ decides XGBoost's array-interface typestr."
                        parameter-cstring reference-pointer out)
                       "LGBM_DatasetCreateFromMat")
           (cffi:mem-ref out :pointer))))))
+
+#+sbcl
+(defun %call-with-pinned-csr (indptr indices values function)
+  "Pin INDPTR, INDICES and VALUES and call FUNCTION with a foreign pointer to each, in that
+order.
+
+The three vectors come straight out of a `cl-gbdt/src/data' `csr-matrix', which already
+stores them as the specialized `(simple-array (signed-byte 32) (*))' and `(simple-array
+double-float (*))' the C API wants -- so there is nothing to convert here and nothing to
+check, only memory to hold still. Each is a rank-one simple-array, whose object and whose
+storage are one and the same, unlike the 2D case `cl-gbdt/src/data''s
+`%call-with-pinned-matrix' has to pin a separately-allocated `array-storage-vector' for.
+
+The pointers are valid only for the duration of FUNCTION, which is all the sparse ingestion
+path needs: `LGBM_DatasetCreateFromCSR' copies the rows into LightGBM's own representation
+before it returns, exactly the lifetime `with-foreign-matrix' gives the dense path.
+
+Duplicated verbatim in `cl-gbdt/src/xgboost/native', which needs the identical helper for
+`XGDMatrixCreateFromCSR'. The one file both could share it from -- `cl-gbdt/src/data' -- is
+re-exported wholesale by `cl-gbdt', so putting it there would publish a raw pinning primitive
+as part of the unified API's surface. This backend pair is where the duplication belongs
+instead, alongside `%set-feature-names' and `%free-*-unchecked', which mirror each other
+across the two backends for the same reason."
+  (sb-sys:with-pinned-objects (indptr indices values)
+    (flet ((sap-pointer (vector)
+             (cffi:make-pointer (sb-sys:sap-int (sb-sys:vector-sap vector)))))
+      (funcall function (sap-pointer indptr) (sap-pointer indices) (sap-pointer values)))))
+
+#-sbcl
+(defun %call-with-pinned-csr (indptr indices values function)
+  "Copy INDPTR, INDICES and VALUES into foreign buffers and call FUNCTION with a pointer to
+each, in that order.
+
+The fallback for an implementation with no way to pin a Lisp array, mirroring
+`cl-gbdt/src/data''s `%call-with-copied-matrix' -- same contract as the SBCL version above,
+paid for with a copy. `#'identity' as every coercer: a `csr-matrix' has already coerced all
+three vectors to exactly these element types, so there is nothing left for
+`write-foreign-sequence' to convert."
+  (cffi:with-foreign-objects ((indptr-buffer :int32 (length indptr))
+                              (indices-buffer :int32 (length indices))
+                              (values-buffer :double (length values)))
+    (write-foreign-sequence indptr-buffer :int32 indptr #'identity)
+    (write-foreign-sequence indices-buffer :int32 indices #'identity)
+    (write-foreign-sequence values-buffer :double values #'identity)
+    (funcall function indptr-buffer indices-buffer values-buffer)))
+
+(defun %create-dataset-from-csr (indptr indices values num-columns parameter-string
+                                  reference-pointer)
+  "Build a LightGBM dataset from a `csr-matrix''s INDPTR, INDICES and VALUES via
+`LGBM_DatasetCreateFromCSR', returning its raw pointer. NUM-COLUMNS is the matrix's declared
+width; PARAMETER-STRING and REFERENCE-POINTER mean exactly what they do for `%create-dataset'
+above, and reach the identical C parameters.
+
+The three vectors are passed to C as raw pointers -- `%call-with-pinned-csr' above -- rather
+than described by anything resembling XGBoost's array-interface JSON, matching
+`LGBM_DatasetCreateFromMat' taking a bare pointer and dimensions. Their element types are
+therefore declared to the library instead, as the `C_API_DTYPE_*' tags `INDPTR-TYPE' and
+`DATA-TYPE': `csr-matrix' fixes them at construction, so unlike `%create-dataset' there is
+nothing to map through `%data-type' here. `LGBM_DatasetCreateFromCSR''s INDICES parameter has
+no such tag at all -- it is a plain `const int32_t*' -- which is why only two are passed.
+
+NINDPTR is INDPTR's own length, one more than the row count, and NELEM the number of stored
+elements, which `csr-matrix' guarantees equals both VALUES' length and INDPTR's last entry.
+`make-dataset' still owns checking the returned pointer for null afterward, as it does for
+the dense path."
+  (%call-with-pinned-csr
+   indptr indices values
+   (lambda (indptr-pointer indices-pointer values-pointer)
+     (cffi:with-foreign-string (parameter-cstring parameter-string)
+       (cffi:with-foreign-object (out :pointer)
+         (check-lgbm (lgbm-dataset-create-from-csr
+                      indptr-pointer +c-api-dtype-int32+ indices-pointer
+                      values-pointer +c-api-dtype-float64+
+                      (length indptr) (length values) num-columns
+                      parameter-cstring reference-pointer out)
+                     "LGBM_DatasetCreateFromCSR")
+         (cffi:mem-ref out :pointer))))))
 
 (defun %set-dataset-field (dataset-pointer field-name values cffi-type dtype coercer)
   "Attach the sequence VALUES to DATASET-POINTER's FIELD-NAME via
@@ -619,6 +709,39 @@ copying BUFFER's contents out afterward."
                pointer data-pointer data-type nrow ncol 1 predict-type 0
                iteration-count parameter-cstring out-len buffer)
               "LGBM_BoosterPredictForMat"))
+
+(defun %predict-for-csr (pointer indptr indices values num-col predict-type iteration-count
+                          parameter-cstring out-len buffer)
+  "Run `LGBM_BoosterPredictForCSR' over the booster at POINTER against the matrix a
+`csr-matrix''s INDPTR, INDICES and VALUES describes, NUM-COL wide, writing OUT-LEN and
+BUFFER, and signal `foreign-call-error' when the library reports failure.
+
+The CSR counterpart of `%predict-for-mat' above, and the second of this file's two callers
+of `%call-with-pinned-csr' -- the three vectors are pinned for the duration of the call and
+no longer, which is all this needs: `LGBM_BoosterPredictForCSR' reads them and fills BUFFER
+before it returns, exactly the lifetime `%create-dataset-from-csr' relies on for ingestion.
+
+Their element types are declared to the library as the `C_API_DTYPE_*' tags INDPTR-TYPE and
+DATA-TYPE, fixed here rather than mapped through `%data-type': `csr-matrix' fixes both at
+construction, so unlike `%predict-for-mat' there is no per-call element type to map.
+`LGBM_BoosterPredictForCSR''s INDICES parameter carries no such tag at all -- it is a plain
+`const int32_t*' -- which is why only two are passed, the same asymmetry
+`%create-dataset-from-csr' documents for the ingestion entry point.
+
+NINDPTR is INDPTR's own length, one more than the row count, and NELEM the number of stored
+elements. START-ITERATION is 0, exactly as `%predict-for-mat' passes it: the protocol
+exposes no start-iteration override on either path. `predict' still owns sizing BUFFER from
+`%calc-num-predict', checking OUT-LEN against that size afterward, and copying BUFFER's
+contents out -- none of which differs between the two entry points."
+  (%call-with-pinned-csr
+   indptr indices values
+   (lambda (indptr-pointer indices-pointer values-pointer)
+     (check-lgbm (lgbm-booster-predict-for-csr
+                  pointer indptr-pointer +c-api-dtype-int32+ indices-pointer
+                  values-pointer +c-api-dtype-float64+
+                  (length indptr) (length values) num-col
+                  predict-type 0 iteration-count parameter-cstring out-len buffer)
+                 "LGBM_BoosterPredictForCSR"))))
 
 ;;; ---------------------------------------------------------------------------
 ;;; Persistence

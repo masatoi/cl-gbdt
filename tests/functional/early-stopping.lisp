@@ -98,6 +98,17 @@ log-loss metric on the validation set at index 1 -- or NIL when REPORT has no su
                      (unwind-protect
                           (let ((ran (cl-gbdt:training-report-num-rounds report))
                                 (all-series (cl-gbdt:training-report-series report)))
+                            ;; The capability asserted by the same test that proves the
+                            ;; feature works. `:evaluation-history' was once true in the code
+                            ;; and false in `backend-supports-p' for a whole phase, and
+                            ;; `:early-stopping' repeated it: the mechanism for declaring a
+                            ;; capability existed, but nothing tied declaring one to shipping
+                            ;; the feature. Asserting both here means a backend cannot stop a
+                            ;; run early while denying that it can.
+                            (testing (format nil "~A: reports the capability it just ~
+                                                  demonstrated" (getf fixture :backend))
+                              (ok (cl-gbdt:backend-supports-p backend :early-stopping)
+                                  "whether backend-supports-p agrees the run can stop early"))
                             (testing (format nil "~A: the run ended well short of its ~
                                                   1000-round limit" (getf fixture :backend))
                               (ok (and (integerp ran) (< 0 ran 100))

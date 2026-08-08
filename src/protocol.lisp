@@ -32,9 +32,31 @@
                            &key label weight group feature-names parameters reference)
   (:documentation "Build a training dataset for BACKEND from MATRIX.
 
-MATRIX is anything `with-foreign-matrix' accepts. LABEL is the target vector, WEIGHT
-the per-sample weights, GROUP the group sizes for ranking, and FEATURE-NAMES a list
-of feature name strings. PARAMETERS is a plist passed through to the backend.
+MATRIX is either a dense matrix -- anything `with-foreign-matrix' accepts -- or a
+`csr-matrix', the sparse compressed-sparse-row form `make-csr-matrix' builds. LABEL is the
+target vector, WEIGHT the per-sample weights, GROUP the group sizes for ranking, and
+FEATURE-NAMES a list of feature name strings. PARAMETERS is a plist passed through to the
+backend.
+
+A `csr-matrix' needs BACKEND's `:sparse-input' capability, which `make-dataset' re-checks
+itself: a caller who never asked `backend-supports-p' gets `capability-unavailable' rather
+than a missing-symbol crash, and no backend ever falls back to converting the matrix to a
+dense one instead. Every other argument means exactly what it means for a dense matrix,
+including PARAMETERS and REFERENCE -- a backend that refuses one of them refuses it either
+way, and a backend that honours it honours it either way. The resulting dataset is an
+ordinary dataset: nothing downstream of here, `train' included, can tell which form built
+it.
+
+The dataset's feature count is the `csr-matrix''s own NUM-COLUMNS, its declared width --
+not the largest column index it happens to store. The two are different facts, and only
+the caller knows the first; see `make-csr-matrix''s docstring for why it is required rather
+than inferred.
+
+What a `csr-matrix' MEANS, however, is not the same on both backends when it omits entries:
+LightGBM reads an absent entry as `0.0' and XGBoost reads one as missing, so the dataset
+built here is only the same data on both when every element is stored. Nothing signals when
+it is not -- the trained numbers simply differ. See the `csr-matrix' struct's own docstring,
+where that divergence is stated as the property of the value it is.
 
 REFERENCE, when supplied, is an existing dataset from the same backend whose bin mapper
 the new dataset aligns to instead of computing its own. A validation dataset destined
@@ -198,8 +220,36 @@ happened, unless the backend is known to be LightGBM."))
 (defgeneric predict (booster matrix &key kind num-iteration)
   (:documentation "Predict on MATRIX using BOOSTER.
 
+MATRIX is either a dense matrix -- a 2D array of `double-float' or `single-float', one row
+per observation -- or a `csr-matrix' describing the same rows sparsely. A `csr-matrix'
+requires the `:sparse-input' capability, which `predict' re-checks itself and signals
+`capability-unavailable' for rather than falling back to a dense conversion; see
+`backend-supports-p'. Its NUM-COLUMNS must be BOOSTER's own feature count, and when it is
+not, the failure is the backend library's to report -- `foreign-call-error', in each
+library's own words -- since neither this function nor the backends pre-empt a consistency
+check the library already makes.
+
+An entry the `csr-matrix' omits does not mean the same thing to the two libraries -- `0.0'
+to LightGBM, missing to XGBoost -- so the rows predicted on here are only the same rows on
+both backends when every element is stored. Nothing signals when they are not; the numbers
+returned simply differ. See the `csr-matrix' struct's own docstring, where that divergence
+is stated as the property of the value it is.
+
 KIND is `:normal' (default, transformed predictions), `:raw' (raw scores),
-`:leaf-index' (leaf indices) or `:contrib' (feature contributions). NUM-ITERATION limits
+`:leaf-index' (leaf indices) or `:contrib' (feature contributions). All four are available
+for a dense MATRIX on both backends, and for a `csr-matrix' on LightGBM. On XGBoost, a
+`csr-matrix' supports `:normal' and `:raw' only: its sparse entry point,
+`XGBoosterPredictFromCSR', is that library's INPLACE prediction rather than a CSR spelling
+of the dense call, and it refuses the other two outright -- so `predict' signals
+`foreign-call-error' for them, the library's own refusal passed through rather than an
+emulation invented here. The only way to get `:contrib' or `:leaf-index' out of XGBoost for
+rows held as a `csr-matrix' is to materialise those rows as a dense matrix -- a 2D
+`double-float' or `single-float' array -- and predict on that. Note that this is a real cost,
+not a formality: MATRIX is the only thing `predict' takes, and a dataset is not one of its
+accepted forms, so building the rows into a dataset with `make-dataset' does not lead to a
+prediction at all.
+
+NUM-ITERATION limits
 how many trees are used: nil uses all of them, an integer uses that many, and `:best'
 resolves to BOOSTER's own `booster-best-iteration' -- the iteration an `:early-stopping'
 `train' run judged best -- before either of those. Signals `unsupported-argument' naming
@@ -208,9 +258,11 @@ never trained with `:early-stopping', or that run never determined a best iterat
 all -- see `train''s docstring for when that happens even with `:early-stopping'
 supplied. NIL keeps meaning \"every round\" on every booster, including one with a best
 iteration to resolve `:best' against; `:best' is an additional accepted value, never a
-new default.
+new default. It means the same thing for a `csr-matrix' as for a dense matrix on both
+backends.
 
-Returns a `(simple-array double-float (* *))'."))
+Returns a `(simple-array double-float (* *))', with one row per input row either way -- a
+`csr-matrix''s row count is `csr-matrix-num-rows', one less than its INDPTR's length."))
 
 (defgeneric save-model (booster path &key num-iteration)
   (:documentation "Save BOOSTER's model to PATH.
