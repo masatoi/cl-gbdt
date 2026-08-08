@@ -84,9 +84,8 @@
                 #:foreign-call-error)
   (:import-from #:cl-gbdt/src/data
                 #:with-foreign-matrix)
-  (:import-from #:cl-gbdt/src/training-report
-                #:make-training-series
-                #:make-training-report)
+  (:import-from #:cl-gbdt/src/training/history
+                #:training-report-from-history)
   (:import-from #:cl-gbdt/src/library
                 #:resolve-and-load-library)
   (:import-from #:cl-gbdt/src/foreign
@@ -312,10 +311,13 @@ value holds; NUM-ROUNDS defaults to 100 when not supplied.
 After each iteration this reads the whole evaluation through `%read-evaluation' -- the
 same function the `evaluation' method calls, on the same booster pointer and the same
 dataset count, which is what keeps the history and what `evaluation' answers afterward
-from being able to disagree -- and appends each entry's value to the series for its
-(DATASET-INDEX, METRIC-NAME) pair. Series are keyed in first-seen order, which for this
-backend is `%read-evaluation''s own dataset-major order, so the report's series arrive in
-exactly the order `evaluation' reports its entries in without anything being sorted.
+from being able to disagree -- and keeps the result. `training-report-from-history' folds
+the run's worth of them into the report once the loop is done; that fold is backend-
+neutral and shared with `cl-gbdt/src/xgboost/protocol''s `train', so what the two backends
+record cannot drift apart either. It orders series by the (DATASET-INDEX, METRIC-NAME)
+pair's first appearance, which for this backend is `%read-evaluation''s own dataset-major
+order, so the report's series arrive in exactly the order `evaluation' reports its entries
+in without anything being sorted.
 
 A read that fails propagates, freeing the booster through the OWNED dance below rather
 than returning a report whose series are shorter than NUM-ROUNDS: a short series is
@@ -365,8 +367,7 @@ Signals `backend-not-open' before any of that when BACKEND is not open -- see
                         backend valid-set "a train :valid-sets entry" 'lightgbm-dataset))
                      valid-sets))
            (dataset-count (1+ (length valid-set-pointers)))
-           (history (make-hash-table :test #'equal))
-           (recorded-keys '()))
+           (history '()))
       (let ((booster-pointer
               (%create-booster train-data-pointer (%parameter-string parameters))))
         (let ((owned nil))
@@ -376,21 +377,8 @@ Signals `backend-not-open' before any of that when BACKEND is not open -- see
                  (dotimes (round num-rounds)
                    (declare (ignorable round))
                    (%update-one-iteration booster-pointer)
-                   (dolist (entry (%read-evaluation booster-pointer dataset-count))
-                     (destructuring-bind (index metric-name value) entry
-                       (let ((key (cons index metric-name)))
-                         (unless (nth-value 1 (gethash key history))
-                           (push key recorded-keys))
-                         (push value (gethash key history))))))
-                 (let* ((series
-                          (loop :for key :in (nreverse recorded-keys)
-                                :collect (make-training-series
-                                          :index (car key)
-                                          :metric (cdr key)
-                                          :values (coerce (reverse (gethash key history))
-                                                          'simple-vector))))
-                        (report (make-training-report :series series
-                                                      :num-rounds num-rounds)))
+                   (push (%read-evaluation booster-pointer dataset-count) history))
+                 (let ((report (training-report-from-history (reverse history) num-rounds)))
                    (multiple-value-prog1
                        (values (make-handle 'lightgbm-booster booster-pointer backend :booster
                                             :training-set dataset
