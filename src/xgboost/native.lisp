@@ -32,6 +32,7 @@
                 #:xg-booster-update-one-iter
                 #:xg-booster-eval-one-iter
                 #:xg-booster-predict-from-d-matrix
+                #:xg-booster-predict-from-csr
                 #:xg-booster-save-model
                 #:xg-booster-load-model
                 #:xg-booster-save-model-to-buffer
@@ -98,6 +99,7 @@
            #:%total-element-count
            #:%predict-ncol
            #:%predict-from-dmatrix
+           #:%predict-from-csr
            #:%save-model
            #:%load-model
            #:%save-model-to-buffer
@@ -710,7 +712,7 @@ something else."
 protocol."
   (or num-iteration 0))
 
-(defun %predict-config-json (predict-type iteration-end)
+(defun %predict-config-json (predict-type iteration-end &key missing)
   "Return the JSON config `XGBoosterPredictFromDMatrix' expects for PREDICT-TYPE (already
 mapped by `%predict-type') and ITERATION-END (already resolved by
 `%resolve-num-iteration').
@@ -719,10 +721,19 @@ mapped by `%predict-type') and ITERATION-END (already resolved by
 single-class model's trailing dimension inconsistently with a multi-class model's --
 exactly the assumption `predict' exists to avoid making. With it, `out_shape' and
 `out_dim' report a shape this file can trust uniformly across every KIND and class
-count."
+count.
+
+MISSING true adds the `\"missing\"' key, fixed at IEEE NaN the way
+*DENSE-MATRIX-CONFIG-JSON* and *CSR-MATRIX-CONFIG-JSON* fix it for the two ingestion entry
+points. It is off by default because `XGBoosterPredictFromDMatrix' has no use for it -- a
+DMatrix settled its own missing sentinel when it was built -- and on for
+`XGBoosterPredictFromCSR', which is INPLACE prediction with no DMatrix behind it and
+therefore nothing to have settled one: confirmed against the vendored library, that call
+refuses outright without the key (\"Argument `missing` is required\"), rather than assuming
+a default."
   (format nil "{\"type\":~D,\"training\":false,\"iteration_begin\":0,~
-\"iteration_end\":~D,\"strict_shape\":true}"
-          predict-type iteration-end))
+\"iteration_end\":~D,\"strict_shape\":true~A}"
+          predict-type iteration-end (if missing ",\"missing\":NaN" "")))
 
 (defun %total-element-count (shape-pointer dim)
   "Return the product of the DIM `:uint64' entries at SHAPE-POINTER -- the total element
@@ -764,6 +775,57 @@ OUT-RESULT's contents out before it returns."
   (check-xgb (xg-booster-predict-from-d-matrix
               booster-pointer dmatrix-pointer config out-shape out-dim out-result)
              "XGBoosterPredictFromDMatrix"))
+
+(defun %predict-from-csr (booster-pointer indptr indices values num-columns predict-type
+                           iteration-end out-shape out-dim out-result)
+  "Run `XGBoosterPredictFromCSR' over the booster at BOOSTER-POINTER against the matrix a
+`csr-matrix''s INDPTR, INDICES and VALUES describes, NUM-COLUMNS wide, writing OUT-SHAPE,
+OUT-DIM and OUT-RESULT, and signal `foreign-call-error' when the library reports failure.
+
+Unlike `%predict-from-dmatrix' above, which takes the config string its caller built, this
+builds its own -- `(%predict-config-json ... :missing t)' -- and its own three
+`array-interface-json' descriptors, the same way `%create-dmatrix-from-csr' does for
+ingestion where `%create-dmatrix' takes one. The three vectors are pinned for the duration
+of the call and no longer, which is all this needs: `XGBoosterPredictFromCSR' reads them and
+writes OUT-RESULT before it returns. The typestrs are fixed rather than derived, because
+`csr-matrix' fixes INDPTR/INDICES at `(signed-byte 32)' and VALUES at `double-float' and
+there is no per-call element type to map through `%array-interface-typestr'.
+
+`XGBoosterPredictFromCSR' is XGBoost's INPLACE prediction, not the CSR spelling of
+`XGBoosterPredictFromDMatrix' -- the vendored header
+(`ffi-spec/xgboost/include/xgboost/c_api.h') documents it as such -- and that has two
+consequences a caller sees, both measured against the vendored library:
+
+  - It covers only PREDICT-TYPE 0 (`:normal') and 1 (`:raw'). 2 (`:contrib') and 6
+    (`:leaf-index') come back as a clean nonzero return, \"Unsupported prediction type:N\",
+    which `check-xgb' reports as `foreign-call-error'. This file does not pre-empt that
+    refusal with a check of its own, and does not route those two KINDs through a transient
+    DMatrix to work around it: either would be this wrapper inventing a policy over the
+    library's own, and the capability `:sparse-input' declares this very entry point for.
+  - `\"missing\"' is required in the config, which is why it is passed -- see
+    `%predict-config-json'.
+
+The `m' parameter, an optional proxy DMatrix carrying meta info, is a null pointer: nothing
+in this backend's prediction path has meta info to attach to a matrix it is only reading.
+
+`predict' still owns interpreting OUT-SHAPE, OUT-DIM and OUT-RESULT afterward, via
+`%total-element-count' and `%predict-ncol', and copying OUT-RESULT's contents out before it
+returns -- none of which differs between the two entry points."
+  (%call-with-pinned-csr
+   indptr indices values
+   (lambda (indptr-pointer indices-pointer values-pointer)
+     (cffi:with-foreign-string
+         (indptr-json (array-interface-json indptr-pointer "<i4" (length indptr)))
+       (cffi:with-foreign-string
+           (indices-json (array-interface-json indices-pointer "<i4" (length indices)))
+         (cffi:with-foreign-string
+             (values-json (array-interface-json values-pointer "<f8" (length values)))
+           (cffi:with-foreign-string
+               (config (%predict-config-json predict-type iteration-end :missing t))
+             (check-xgb (xg-booster-predict-from-csr
+                         booster-pointer indptr-json indices-json values-json num-columns
+                         config (cffi:null-pointer) out-shape out-dim out-result)
+                        "XGBoosterPredictFromCSR"))))))))
 
 ;;; ---------------------------------------------------------------------------
 ;;; Persistence

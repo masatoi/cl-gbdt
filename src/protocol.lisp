@@ -214,8 +214,27 @@ happened, unless the backend is known to be LightGBM."))
 (defgeneric predict (booster matrix &key kind num-iteration)
   (:documentation "Predict on MATRIX using BOOSTER.
 
+MATRIX is either a dense matrix -- a 2D array of `double-float' or `single-float', one row
+per observation -- or a `csr-matrix' describing the same rows sparsely. A `csr-matrix'
+requires the `:sparse-input' capability, which `predict' re-checks itself and signals
+`capability-unavailable' for rather than falling back to a dense conversion; see
+`backend-supports-p'. Its NUM-COLUMNS must be BOOSTER's own feature count, and when it is
+not, the failure is the backend library's to report -- `foreign-call-error', in each
+library's own words -- since neither this function nor the backends pre-empt a consistency
+check the library already makes.
+
 KIND is `:normal' (default, transformed predictions), `:raw' (raw scores),
-`:leaf-index' (leaf indices) or `:contrib' (feature contributions). NUM-ITERATION limits
+`:leaf-index' (leaf indices) or `:contrib' (feature contributions). All four are available
+for a dense MATRIX on both backends, and for a `csr-matrix' on LightGBM. On XGBoost, a
+`csr-matrix' supports `:normal' and `:raw' only: its sparse entry point,
+`XGBoosterPredictFromCSR', is that library's INPLACE prediction rather than a CSR spelling
+of the dense call, and it refuses the other two outright -- so `predict' signals
+`foreign-call-error' for them, the library's own refusal passed through rather than an
+emulation invented here. A caller who needs `:contrib' or `:leaf-index' for sparse rows on
+XGBoost builds the `csr-matrix' into a dataset with `make-dataset', which has no such
+restriction, and predicts on a dense matrix.
+
+NUM-ITERATION limits
 how many trees are used: nil uses all of them, an integer uses that many, and `:best'
 resolves to BOOSTER's own `booster-best-iteration' -- the iteration an `:early-stopping'
 `train' run judged best -- before either of those. Signals `unsupported-argument' naming
@@ -224,9 +243,11 @@ never trained with `:early-stopping', or that run never determined a best iterat
 all -- see `train''s docstring for when that happens even with `:early-stopping'
 supplied. NIL keeps meaning \"every round\" on every booster, including one with a best
 iteration to resolve `:best' against; `:best' is an additional accepted value, never a
-new default.
+new default. It means the same thing for a `csr-matrix' as for a dense matrix on both
+backends.
 
-Returns a `(simple-array double-float (* *))'."))
+Returns a `(simple-array double-float (* *))', with one row per input row either way -- a
+`csr-matrix''s row count is `csr-matrix-num-rows', one less than its INDPTR's length."))
 
 (defgeneric save-model (booster path &key num-iteration)
   (:documentation "Save BOOSTER's model to PATH.

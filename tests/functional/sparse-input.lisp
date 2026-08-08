@@ -1,23 +1,29 @@
-;;;; sparse-input.lisp --- Portable contract tests for `make-dataset' on a `csr-matrix'.
+;;;; sparse-input.lisp --- Portable contract tests for `make-dataset' and `predict' on a
+;;;; `csr-matrix'.
 ;;;;
-;;;; `cl-gbdt:make-dataset' now accepts a `cl-gbdt:csr-matrix' wherever it accepted a dense
-;;;; matrix, on both backends, gated by the `:sparse-input' capability. Like
-;;;; tests/functional/evaluation.lisp and tests/functional/training-report.lisp beside it,
-;;;; every test below runs the identical assertions over that first file's *FIXTURES*, once
-;;;; per backend, so the two backends cannot drift apart in shape or meaning without one of
-;;;; them failing here. The one exception is the last test, which needs a backend that aligns
-;;;; bin mappers and so runs on LightGBM alone -- see its own comment.
+;;;; `cl-gbdt:make-dataset' and `cl-gbdt:predict' both now accept a `cl-gbdt:csr-matrix'
+;;;; wherever they accepted a dense matrix, on both backends, gated by the `:sparse-input'
+;;;; capability. Like tests/functional/evaluation.lisp and
+;;;; tests/functional/training-report.lisp beside it, every test below runs the identical
+;;;; assertions over that first file's *FIXTURES*, once per backend, so the two backends
+;;;; cannot drift apart in shape or meaning without one of them failing here. There are two
+;;;; exceptions, each with its own comment: `sparse-dataset-honours-reference-and-parameters'
+;;;; needs a backend that aligns bin mappers and so runs on LightGBM alone, and
+;;;; `sparse-prediction-kind-support-is-what-each-library-offers' asserts a DIFFERENT measured
+;;;; fact per backend because the two libraries' sparse prediction entry points genuinely
+;;;; cover different KINDs.
 ;;;;
 ;;;; Numbers are never compared BETWEEN backends: policy section 13 asks for shape, order and
 ;;;; meaning, not numeric agreement, and the two libraries train different models from the
-;;;; same rows by design. `sparse-and-dense-training-agree' does compare numbers, but only a
-;;;; backend's own sparse result against its own dense one -- the comparison is within one
-;;;; backend, never across the two.
+;;;; same rows by design. `sparse-and-dense-training-agree' and
+;;;; `sparse-and-dense-prediction-agree' do compare numbers, but only a backend's own sparse
+;;;; result against its own dense one -- the comparison is within one backend, never across
+;;;; the two.
 ;;;;
-;;;; Every prediction below is made on a DENSE matrix, including the ones read out of a
-;;;; sparsely-trained booster. `predict' does not take a `csr-matrix' yet; that is the next
-;;;; task. Predicting densely here keeps these tests about ingestion, which is what this task
-;;;; changed.
+;;;; The ingestion tests in the first half of this file predict on a DENSE matrix even when
+;;;; the booster was trained sparsely. That is deliberate and stays that way: it keeps each of
+;;;; those tests about the one path it is named for, so a prediction-side regression cannot
+;;;; make an ingestion test fail (or, worse, cancel out and let it pass).
 
 (uiop:define-package #:cl-gbdt/tests/functional/sparse-input
   ;; Zero symbols: every reference below is package-qualified. Declared so this file's
@@ -49,7 +55,7 @@
 
 (defparameter *prediction-tolerance* 1d-9
   "How far two `cl-gbdt:predict' results may differ, element for element, and still count as
-the same numbers in `sparse-and-dense-training-agree'.
+the same numbers in `sparse-and-dense-training-agree' and `sparse-and-dense-prediction-agree'.
 
 Exact equality is what is actually expected: the dense and CSR ingestion paths hand the
 library the same values, and both libraries train deterministically from a fixed dataset, so
@@ -385,3 +391,253 @@ objective needs a label on the training set regardless of what this test is chec
                      (cl-gbdt:foreign-call-error () t))
                    "make-dataset signalled foreign-call-error for max_bin=1")))
         (cl-gbdt:close-backend backend)))))
+
+;;; ---------------------------------------------------------------------------
+;;; Prediction from a `csr-matrix'
+;;;
+;;; Everything below trains DENSELY and predicts both ways, which is the opposite of the
+;;; ingestion tests above and is the point: a model built through a path this task did not
+;;; touch is the fixed reference the two prediction paths are compared against, so what these
+;;; tests can fail on is `predict' alone. `sparse-and-dense-training-agree' above already
+;;; covers the other direction.
+
+(defun train-dense-booster (fixture backend matrix label-vector)
+  "Train a booster on BACKEND from the dense MATRIX and LABEL-VECTOR, using FIXTURE's own
+parameters, and return it. The caller frees it -- `cl-gbdt:with-booster' is the usual way.
+
+The dataset is freed before this returns, since none of the prediction tests below needs it
+and every one of them would otherwise have to nest a `cl-gbdt:with-dataset' it never
+mentions again. A booster outlives the dataset it was trained on for prediction purposes on
+both backends -- `predict' consults neither backend's retained training-set handle."
+  (cl-gbdt:with-dataset (train-set (make-fixture-dataset fixture backend matrix label-vector))
+    (cl-gbdt:train backend train-set :num-rounds 5
+                   :parameters (getf fixture :booster-parameters))))
+
+;;; The assertion that proves the sparse prediction path carries the data rather than merely
+;;; accepting it. `dense-to-csr' describes exactly the same numbers as the dense fixture, and
+;;; the booster is one and the same object, so the two calls must produce one and the same
+;;; result. An implementation that transposed INDICES against INDPTR, passed the wrong NINDPTR
+;;; and dropped the last row, or handed the library a buffer of zeros would satisfy every
+;;; shape assertion in this file and fail here.
+;;;
+;;; Within one backend only, never across the two -- see this file's header.
+
+(deftest sparse-and-dense-prediction-agree
+  (dolist (fixture *fixtures*)
+    (with-backend-library ((getf fixture :backend))
+      (multiple-value-bind (matrix label-vector) (make-separable-dataset)
+        (let ((backend (cl-gbdt:open-backend (getf fixture :backend))))
+          (unwind-protect
+               (cl-gbdt:with-booster
+                   (booster (train-dense-booster fixture backend matrix label-vector))
+                 (let ((dense (cl-gbdt:predict booster matrix))
+                       (sparse (cl-gbdt:predict booster (dense-to-csr matrix))))
+                   (testing (format nil "~A: predict on the csr-matrix answers what predict ~
+                                         on the equivalent dense matrix does"
+                                    (getf fixture :backend))
+                     (ok (predictions-agree-p dense sparse)
+                         (format nil "dense ~S, sparse ~S" dense sparse)))
+                   ;; Without this, a `predict' that returned a constant either way would
+                   ;; agree perfectly and say nothing. The fixture is separable, so a model
+                   ;; that learned anything at all orders the two classes.
+                   (testing (format nil "~A: the sparse result orders the two classes, so ~
+                                         the agreement is about something"
+                                    (getf fixture :backend))
+                     (ok (predictions-separate-p (prediction-column sparse 0) label-vector)
+                         (format nil "the sparse predictions were ~S" sparse)))))
+            (cl-gbdt:close-backend backend)))))))
+
+;;; KIND reaches the library on the sparse path exactly as it does on the dense one, rather
+;;; than the sparse branch being special-cased to `predict''s default. `:raw' is the KIND both
+;;; backends' sparse entry points support (see
+;;; `sparse-prediction-kind-support-is-what-each-library-offers' below for the two they do not
+;;; agree on), and it is also the one whose result is unmistakably different from `:normal''s:
+;;; both fixtures' objectives are logistic, so a raw score is the log-odds behind the
+;;; probability `:normal' returns. The second assertion is the control -- without it, a sparse
+;;; path that ignored KIND and always predicted `:normal' would satisfy the first one, since
+;;; the dense side would then be compared against a matching mistake only if the dense path
+;;; broke too.
+
+(deftest sparse-prediction-honours-kind
+  (dolist (fixture *fixtures*)
+    (with-backend-library ((getf fixture :backend))
+      (multiple-value-bind (matrix label-vector) (make-separable-dataset)
+        (let ((backend (cl-gbdt:open-backend (getf fixture :backend))))
+          (unwind-protect
+               (cl-gbdt:with-booster
+                   (booster (train-dense-booster fixture backend matrix label-vector))
+                 (let* ((csr (dense-to-csr matrix))
+                        (dense-raw (cl-gbdt:predict booster matrix :kind :raw))
+                        (sparse-raw (cl-gbdt:predict booster csr :kind :raw))
+                        (sparse-normal (cl-gbdt:predict booster csr :kind :normal)))
+                   (testing (format nil "~A: :kind :raw on the csr-matrix answers what ~
+                                         :kind :raw on the dense matrix does"
+                                    (getf fixture :backend))
+                     (ok (predictions-agree-p dense-raw sparse-raw)
+                         (format nil "dense ~S, sparse ~S" dense-raw sparse-raw)))
+                   (testing (format nil "~A: :raw and :normal on the same csr-matrix are ~
+                                         different numbers, so KIND reached the library"
+                                    (getf fixture :backend))
+                     (ok (not (predictions-agree-p sparse-raw sparse-normal))
+                         (format nil ":raw ~S, :normal ~S" sparse-raw sparse-normal)))))
+            (cl-gbdt:close-backend backend)))))))
+
+;;; Policy section 7's central rule, applied to `predict' this time: the operation re-checks
+;;; the capability itself rather than trusting the caller to have asked `backend-supports-p'
+;;; first, and signals rather than falling back to a dense conversion or anything else. The
+;;; false answer is produced the same way `sparse-input-without-the-capability-signals' above
+;;; produces it -- by overwriting the probed plist, which is what a library too old to have
+;;; the symbol would have produced at `open-backend' -- for the same reason: both vendored
+;;; libraries do provide the CSR entry points, so this branch is otherwise one nobody has seen
+;;; taken.
+;;;
+;;; The plist is overwritten AFTER the booster is trained, so what this exercises is
+;;; `predict''s own gate and not `make-dataset''s: the training set was built from a dense
+;;; matrix and never needed the capability at all.
+;;;
+;;; `handler-case', not rove's `signals', which does not reliably catch a condition raised
+;;; inside `restart-case'; the condition TYPE is asserted, not merely that something signalled.
+
+(deftest sparse-prediction-without-the-capability-signals
+  (dolist (fixture *fixtures*)
+    (with-backend-library ((getf fixture :backend))
+      (multiple-value-bind (matrix label-vector) (make-separable-dataset)
+        (let ((backend (cl-gbdt:open-backend (getf fixture :backend))))
+          (unwind-protect
+               (cl-gbdt:with-booster
+                   (booster (train-dense-booster fixture backend matrix label-vector))
+                 (setf (cl-gbdt:backend-capabilities backend) '(:sparse-input nil))
+                 (testing (format nil "~A: predict signals capability-unavailable, naming ~
+                                       the capability and the backend"
+                                  (getf fixture :backend))
+                   (let ((condition (handler-case
+                                        (progn (cl-gbdt:predict booster (dense-to-csr matrix))
+                                               nil)
+                                      (cl-gbdt:capability-unavailable (c) c))))
+                     (ok condition
+                         "predict signalled instead of returning predictions")
+                     (ok (and condition
+                              (eq :sparse-input
+                                  (cl-gbdt:capability-unavailable-capability condition)))
+                         (format nil "the condition named capability ~S"
+                                 (and condition
+                                      (cl-gbdt:capability-unavailable-capability condition))))
+                     (ok (and condition
+                              (eq (getf fixture :backend)
+                                  (cl-gbdt:backend-error-backend condition)))
+                         (format nil "the condition named backend ~S"
+                                 (and condition
+                                      (cl-gbdt:backend-error-backend condition)))))))
+            (cl-gbdt:close-backend backend)))))))
+
+;;; A `csr-matrix' whose NUM-COLUMNS is not the model's own feature count is the library's
+;;; mistake to catch, not this wrapper's: nothing here pre-empts a consistency check the
+;;; library already makes, so the assertion is that the caller gets a typed `cl-gbdt'
+;;; condition rather than a crash or a silently wrong answer.
+;;;
+;;; Measured against both vendored libraries before this test was written, in both directions
+;;; and on both backends -- all four refuse with a clean nonzero return, which `check-lgbm' /
+;;; `check-xgb' turn into `foreign-call-error':
+;;;
+;;;   LightGBM  "The number of features in data (N) is not the same as it was in training
+;;;             data (3)."
+;;;   XGBoost   "Check failed: n_features_data == n_features_model (N vs. 3) : Number of
+;;;             columns in data must equal to the trained model."
+;;;
+;;; Both directions are asserted, not just one, because each library reports EQUALITY rather
+;;; than a bound: a path that only checked "at least as many features as the model" would pass
+;;; the too-wide half and fail the too-narrow one. The too-wide matrix declares four columns
+;;; over the three-column fixture with nothing stored in the last, which is the same shape
+;;; `sparse-dataset-reports-the-declared-width' builds -- so this also pins that a width both
+;;; backends happily INGEST is still refused at prediction time against a model of a different
+;;; width, rather than the two facts being confused for each other.
+
+(deftest sparse-prediction-with-the-wrong-width-is-refused-by-the-library
+  (dolist (fixture *fixtures*)
+    (with-backend-library ((getf fixture :backend))
+      (multiple-value-bind (matrix label-vector) (make-separable-dataset)
+        (let ((backend (cl-gbdt:open-backend (getf fixture :backend)))
+              (narrow (dense-to-csr (make-separable-dataset :cols 2))))
+          (unwind-protect
+               (cl-gbdt:with-booster
+                   (booster (train-dense-booster fixture backend matrix label-vector))
+                 (testing (format nil "~A: a csr-matrix wider than the model is refused"
+                                  (getf fixture :backend))
+                   (ok (handler-case
+                           (progn (cl-gbdt:predict booster (dense-to-csr matrix
+                                                                         :num-columns 4))
+                                  nil)
+                         (cl-gbdt:foreign-call-error () t))
+                       "predict signalled foreign-call-error for a four-column matrix"))
+                 (testing (format nil "~A: a csr-matrix narrower than the model is refused"
+                                  (getf fixture :backend))
+                   (ok (handler-case
+                           (progn (cl-gbdt:predict booster narrow) nil)
+                         (cl-gbdt:foreign-call-error () t))
+                       "predict signalled foreign-call-error for a two-column matrix")))
+            (cl-gbdt:close-backend backend)))))))
+
+;;; The one measured asymmetry this task introduces, asserted rather than papered over.
+;;;
+;;; `LGBM_BoosterPredictForCSR' is LightGBM's ordinary prediction entry point in its CSR
+;;; spelling and honours all four of the protocol's KINDs, exactly as
+;;; `LGBM_BoosterPredictForMat' does. `XGBoosterPredictFromCSR' is not the CSR spelling of
+;;; `XGBoosterPredictFromDMatrix': it is XGBoost's INPLACE prediction, a different code path
+;;; whose header documents it as such, and it supports only `:normal' and `:raw' -- measured
+;;; against the vendored library, which refuses the other two with "Unsupported prediction
+;;; type:2" (`:contrib') and "Unsupported prediction type:6" (`:leaf-index'), a clean nonzero
+;;; return that reaches the caller as `foreign-call-error'.
+;;;
+;;; This is asserted per backend rather than weakened into something both can satisfy, for the
+;;; same reason `sparse-dataset-honours-reference-and-parameters' above runs on one backend:
+;;; "each backend does whatever it does" would test nothing on either. It is also not a number
+;;; compared between backends -- each half asserts only what its own library did.
+;;;
+;;; The XGBoost half is a real contract, not a lament: what the caller must be able to rely on
+;;; is that an unsupported KIND on the sparse path is REFUSED, with a typed condition naming
+;;; the failed call, rather than silently answering with some other KIND's numbers. That is
+;;; what is asserted. If a future XGBoost lifts the restriction, this test failing is the
+;;; correct way to find out.
+
+(deftest sparse-prediction-kind-support-is-what-each-library-offers
+  (with-backend-library (:lightgbm)
+    (multiple-value-bind (matrix label-vector) (make-separable-dataset)
+      (let ((fixture (fixture-for :lightgbm))
+            (backend (cl-gbdt:open-backend :lightgbm)))
+        (unwind-protect
+             (cl-gbdt:with-booster
+                 (booster (train-dense-booster fixture backend matrix label-vector))
+               (let ((csr (dense-to-csr matrix)))
+                 (dolist (kind '(:contrib :leaf-index))
+                   (testing (format nil "lightgbm: :kind ~S on a csr-matrix answers what it ~
+                                         answers on the dense matrix" kind)
+                     (let ((dense (cl-gbdt:predict booster matrix :kind kind))
+                           (sparse (cl-gbdt:predict booster csr :kind kind)))
+                       (ok (predictions-agree-p dense sparse)
+                           (format nil "dense ~S, sparse ~S" dense sparse)))))))
+          (cl-gbdt:close-backend backend)))))
+  (with-backend-library (:xgboost)
+    (multiple-value-bind (matrix label-vector) (make-separable-dataset)
+      (let ((fixture (fixture-for :xgboost))
+            (backend (cl-gbdt:open-backend :xgboost)))
+        (unwind-protect
+             (cl-gbdt:with-booster
+                 (booster (train-dense-booster fixture backend matrix label-vector))
+               (let ((csr (dense-to-csr matrix)))
+                 (dolist (kind '(:contrib :leaf-index))
+                   (testing (format nil "xgboost: :kind ~S on a csr-matrix is refused by ~
+                                         inplace prediction, not silently answered" kind)
+                     (ok (handler-case
+                             (progn (cl-gbdt:predict booster csr :kind kind) nil)
+                           (cl-gbdt:foreign-call-error () t))
+                         (format nil "predict signalled foreign-call-error for :kind ~S"
+                                 kind))))
+                 ;; The control: the same two KINDs do work on the DENSE path, so what the
+                 ;; assertions above pin is the entry point's own coverage and not a KIND
+                 ;; this backend cannot serve at all.
+                 (dolist (kind '(:contrib :leaf-index))
+                   (testing (format nil "xgboost: :kind ~S still works on the dense path"
+                                    kind)
+                     (ok (arrayp (cl-gbdt:predict booster matrix :kind kind))
+                         (format nil "dense :kind ~S returned an array" kind))))))
+          (cl-gbdt:close-backend backend))))))

@@ -27,6 +27,7 @@
                 #:lgbm-booster-free
                 #:lgbm-booster-calc-num-predict
                 #:lgbm-booster-predict-for-mat
+                #:lgbm-booster-predict-for-csr
                 #:lgbm-booster-save-model
                 #:lgbm-booster-save-model-to-string
                 #:lgbm-booster-create-from-modelfile
@@ -100,6 +101,7 @@
            #:%calc-num-predict
            #:%predict-ncol
            #:%predict-for-mat
+           #:%predict-for-csr
            #:%save-model
            #:%create-booster-from-modelfile
            #:%save-model-to-string
@@ -707,6 +709,39 @@ copying BUFFER's contents out afterward."
                pointer data-pointer data-type nrow ncol 1 predict-type 0
                iteration-count parameter-cstring out-len buffer)
               "LGBM_BoosterPredictForMat"))
+
+(defun %predict-for-csr (pointer indptr indices values num-col predict-type iteration-count
+                          parameter-cstring out-len buffer)
+  "Run `LGBM_BoosterPredictForCSR' over the booster at POINTER against the matrix a
+`csr-matrix''s INDPTR, INDICES and VALUES describes, NUM-COL wide, writing OUT-LEN and
+BUFFER, and signal `foreign-call-error' when the library reports failure.
+
+The CSR counterpart of `%predict-for-mat' above, and the second of this file's two callers
+of `%call-with-pinned-csr' -- the three vectors are pinned for the duration of the call and
+no longer, which is all this needs: `LGBM_BoosterPredictForCSR' reads them and fills BUFFER
+before it returns, exactly the lifetime `%create-dataset-from-csr' relies on for ingestion.
+
+Their element types are declared to the library as the `C_API_DTYPE_*' tags INDPTR-TYPE and
+DATA-TYPE, fixed here rather than mapped through `%data-type': `csr-matrix' fixes both at
+construction, so unlike `%predict-for-mat' there is no per-call element type to map.
+`LGBM_BoosterPredictForCSR''s INDICES parameter carries no such tag at all -- it is a plain
+`const int32_t*' -- which is why only two are passed, the same asymmetry
+`%create-dataset-from-csr' documents for the ingestion entry point.
+
+NINDPTR is INDPTR's own length, one more than the row count, and NELEM the number of stored
+elements. START-ITERATION is 0, exactly as `%predict-for-mat' passes it: the protocol
+exposes no start-iteration override on either path. `predict' still owns sizing BUFFER from
+`%calc-num-predict', checking OUT-LEN against that size afterward, and copying BUFFER's
+contents out -- none of which differs between the two entry points."
+  (%call-with-pinned-csr
+   indptr indices values
+   (lambda (indptr-pointer indices-pointer values-pointer)
+     (check-lgbm (lgbm-booster-predict-for-csr
+                  pointer indptr-pointer +c-api-dtype-int32+ indices-pointer
+                  values-pointer +c-api-dtype-float64+
+                  (length indptr) (length values) num-col
+                  predict-type 0 iteration-count parameter-cstring out-len buffer)
+                 "LGBM_BoosterPredictForCSR"))))
 
 ;;; ---------------------------------------------------------------------------
 ;;; Persistence
