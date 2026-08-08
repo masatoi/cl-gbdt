@@ -74,5 +74,9 @@ guard, and have no portable fallback."
                ;; Backend-neutral too, and built on the file above: it imports that file's
                ;; *FIXTURES* rather than restating them. `train''s secondary value, the
                ;; training report -- policy section 9, Phase 3a.
-               "cl-gbdt/tests/functional/training-report")
+               "cl-gbdt/tests/functional/training-report"
+               ;; The same *FIXTURES* again, one phase further on: `train''s
+               ;; :EARLY-STOPPING, which shortens the run itself rather than only
+               ;; describing it -- policy section 9, Phase 3b.
+               "cl-gbdt/tests/functional/early-stopping")
   :perform (test-op (op c) (symbol-call :rove :run c)))

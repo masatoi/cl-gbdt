@@ -93,11 +93,24 @@
                 #:missing-foreign-symbols
                 #:foreign-call-error
                 #:missing-training-set
-                #:capability-unavailable)
+                #:capability-unavailable
+                ;; Every other `unsupported-argument' this file raises goes through
+                ;; `%check-unsupported', which owns the symbol in `cl-gbdt/src/xgboost/native'.
+                ;; `%early-stopping-watcher' signals on a two-argument contradiction rather
+                ;; than on one non-NIL value, so it does not fit that helper and names the
+                ;; condition here -- which needs the symbol imported, or `error' is handed a
+                ;; freshly interned one that designates no condition class at all.
+                #:unsupported-argument)
   (:import-from #:cl-gbdt/src/data
                 #:with-foreign-matrix)
   (:import-from #:cl-gbdt/src/training/history
                 #:training-report-from-history)
+  (:import-from #:cl-gbdt/src/training/early-stopping
+                #:make-early-stopping-watcher
+                #:observe-iteration
+                #:watcher-best-iteration
+                #:watcher-best-score
+                #:watcher-stopped-p)
   (:import-from #:cl-gbdt/src/library
                 #:resolve-and-load-library)
   (:import-from #:cl-gbdt/src/foreign
@@ -368,17 +381,50 @@ Does not check that the result is an `xgboost-dataset' -- `%check-xgboost-datase
 that afterward, on every element `%valid-set-name' has already let through."
   (if (consp entry) (cdr entry) entry))
 
+(defun %early-stopping-watcher (backend early-stopping record-history dataset-names)
+  "Return the `early-stopping-watcher' EARLY-STOPPING asks for, or NIL when EARLY-STOPPING
+is NIL and the run is therefore unwatched.
+
+Signals `unsupported-argument' naming :EARLY-STOPPING when it is supplied together with
+RECORD-HISTORY NIL. The two contradict each other: a watcher advances on the very
+per-iteration evaluation RECORD-HISTORY NIL exists to skip, and reading that evaluation
+costs the same whether one series is watched or every series is recorded, so there is no
+cheaper middle path to offer a caller who asked for both -- accepting the pair and quietly
+recording after all, or accepting it and never stopping, would each be a different answer
+than the one asked for.
+
+Otherwise delegates to `make-early-stopping-watcher', which validates the spec's four
+required keys against DATASET-NAMES and signals `unsupported-argument' itself for any that
+is missing or malformed -- see its docstring. Called before `XGBoosterCreate', so a
+rejected spec never leaves a raw booster handle behind to unwind.
+
+Duplicated in `cl-gbdt/src/lightgbm/protocol' -- its body verbatim, its docstring naming
+that backend's own booster constructor instead -- as `%valid-set-name' and
+`%valid-set-dataset' above it already are: what differs between the two backends is the
+loop this feeds, not this."
+  (when early-stopping
+    (unless record-history
+      (error 'unsupported-argument
+             :backend (backend-name backend)
+             :argument "train's :early-stopping"
+             :reason (format nil ":early-stopping needs the per-iteration evaluation ~
+                                  :record-history NIL skips; pass :record-history T, or ~
+                                  drop :early-stopping")))
+    (make-early-stopping-watcher early-stopping dataset-names)))
+
 (defmethod train ((backend xgboost-backend) dataset
-                   &key valid-sets (num-rounds 100) parameters (record-history t))
-  "Train an XGBoost booster on DATASET for NUM-ROUNDS boosting iterations, and return it
-and a `training-report' of the run.
+                   &key valid-sets (num-rounds 100) parameters (record-history t)
+                        early-stopping)
+  "Train an XGBoost booster on DATASET for up to NUM-ROUNDS boosting iterations, and
+return it and a `training-report' of the run.
 
 Builds the booster with `XGBoosterCreate' over DATASET and every VALID-SETS entry's
 DMatrix handle together -- see `%create-booster' for why XGBoost takes the whole set up
 front rather than adding validation data afterward. Applies PARAMETERS one at a time via
-`XGBoosterSetParam', then drives `XGBoosterUpdateOneIter' NUM-ROUNDS times. See the
-`train' generic function's docstring for what each argument means, and for what the
-secondary value holds; NUM-ROUNDS defaults to 100 when not supplied.
+`XGBoosterSetParam', then drives `XGBoosterUpdateOneIter' NUM-ROUNDS times -- or fewer,
+when EARLY-STOPPING ends the run first. See the `train' generic function's docstring for
+what each argument means, and for what the secondary value holds; NUM-ROUNDS defaults to
+100 when not supplied.
 
 Each VALID-SETS element is either a dataset, whose series carry no name, or a
 (NAME . DATASET) cons, where NAME is a string that reaches `training-series-name' for
@@ -422,9 +468,17 @@ dance below, where before this backend recorded anything it surfaced only at a l
 configuration exactly as before.
 
 A read that fails propagates, freeing the booster through the OWNED dance below rather
-than returning a report whose series are shorter than NUM-ROUNDS: a short series is
+than returning a report whose series are shorter than the run: a short series is
 indistinguishable from one a buggy loop recorded, and \"one value per iteration\" is the
 invariant a caller reading the report relies on.
+
+EARLY-STOPPING watches one of those recorded series and ends the loop once it has stopped
+improving -- see the `train' generic function's docstring for the spec's four required
+keys, and `%early-stopping-watcher' for why it cannot be combined with RECORD-HISTORY NIL.
+The watcher sees each iteration's entries exactly as the history records them, off the one
+`%read-evaluation' call this loop already makes, so what stopped the run and what the
+report shows can never be two different readings. `training-report-num-rounds' needs
+nothing extra to report the shortened run: it has counted actual iterations since Phase 3a.
 
 DATASET and every VALID-SETS entry's dataset half are each run through
 `%check-xgboost-dataset' before any foreign call. `train' dispatches on BACKEND, not on
@@ -474,33 +528,50 @@ Signals `backend-not-open' before any of that when BACKEND is not open -- see
                      valid-sets))
            (dataset-pointers (cons train-data-pointer valid-set-pointers))
            (dataset-names (cons nil valid-set-names))
+           ;; Built before `XGBoosterCreate', so a malformed spec -- or one asking for early
+           ;; stopping with RECORD-HISTORY NIL -- signals with no raw booster handle in
+           ;; existence yet to unwind. NIL when EARLY-STOPPING is NIL, which is what the
+           ;; loop below tests to decide whether it can end early at all.
+           (watcher (%early-stopping-watcher backend early-stopping record-history
+                                              dataset-names))
            (history '())
-           ;; Counted rather than taken from NUM-ROUNDS: `dotimes' runs zero iterations for a
-           ;; negative count, so a caller passing :NUM-ROUNDS -1 gets an untrained booster --
-           ;; as it did before this branch -- and the report must say 0 ran, not -1.
-           ;; `training-report-num-rounds' promises how many iterations actually ran, and
-           ;; Phase 3b's early stopping needs this same count for the same reason.
+           ;; Counted rather than taken from NUM-ROUNDS: the loop below runs zero iterations
+           ;; for a negative count, so a caller passing :NUM-ROUNDS -1 gets an untrained
+           ;; booster -- as it did before this branch -- and the report must say 0 ran, not
+           ;; -1. `training-report-num-rounds' promises how many iterations actually ran, and
+           ;; it is also what makes an early-stopped run report its true, shortened length
+           ;; with nothing further to do here.
            (completed-rounds 0))
       (let ((booster-pointer (%create-booster dataset-pointers)))
         (let ((owned nil))
           (unwind-protect
                (progn
                  (%set-parameters booster-pointer parameters)
-                 (dotimes (round num-rounds)
-                   (declare (ignorable round))
-                   (%update-one-iteration booster-pointer train-data-pointer)
-                   (incf completed-rounds)
-                   ;; Primary value only: `%read-evaluation''s RAW is `evaluation''s
-                   ;; provenance, and a report carries no per-iteration raw text.
-                   (when record-history
-                     (push (%read-evaluation booster-pointer dataset-pointers) history)))
-                 (let ((report (training-report-from-history (reverse history)
-                                                              completed-rounds
-                                                              dataset-names)))
+                 ;; ROUND is 1-based, which is the numbering `observe-iteration' answers
+                 ;; `watcher-best-iteration' in and the report publishes.
+                 (loop :for round :from 1 :to num-rounds
+                       :do (%update-one-iteration booster-pointer train-data-pointer)
+                           (incf completed-rounds)
+                           ;; Primary value only: `%read-evaluation''s RAW is `evaluation''s
+                           ;; provenance, and a report carries no per-iteration raw text.
+                           (let ((entries (when record-history
+                                            (%read-evaluation booster-pointer
+                                                              dataset-pointers))))
+                             (when record-history
+                               (push entries history))
+                             (when (and watcher (observe-iteration watcher entries round))
+                               (return))))
+                 (let* ((best-iteration (and watcher (watcher-best-iteration watcher)))
+                        (report (training-report-from-history
+                                 (reverse history) completed-rounds dataset-names
+                                 :best-iteration best-iteration
+                                 :best-score (and watcher (watcher-best-score watcher))
+                                 :early-stopped-p (and watcher (watcher-stopped-p watcher)))))
                    (multiple-value-prog1
                        (values (make-handle 'xgboost-booster booster-pointer backend :booster
                                             :training-set dataset
-                                            :validation-sets valid-sets)
+                                            :validation-sets valid-sets
+                                            :best-iteration best-iteration)
                                report)
                      (setf owned t))))
             (unless owned
