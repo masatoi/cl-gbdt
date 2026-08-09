@@ -277,18 +277,24 @@ parameters recorded, not an inventory of every gap in the suite.")
 Signals an error when they have different SHAPES rather than answering NIL. Every caller
 compares two results of the same row count and the same column count. Those comparisons take
 three shapes: two boosters' answers about one matrix; one booster's answers about two forms of
-one matrix -- a dense one against its `dense-to-csr' form, or a matrix holding a sentinel
-against one holding a NaN; and one booster's two answers about ONE matrix under different
-`cl-gbdt:predict' options -- :KIND :RAW against :NORMAL, a limited :NUM-ITERATION against an
-unlimited one, a :MISSING sentinel honoured against the same matrix read literally. In all of
-them a shape mismatch is a broken test rather than a disagreement about numbers, and answering
-NIL let `(not (predictions-agree-p ...))', which several tests assert, pass for the wrong
-reason.
+one matrix -- a dense one against its `dense-to-csr' form, a dense one against the
+`omitted-entry-csr' form tests/functional/sparse-input.lisp builds for itself, or a matrix
+holding a sentinel against one holding a NaN; and one booster's two answers about ONE matrix
+under different `cl-gbdt:predict' options -- :KIND :RAW against :NORMAL, a limited
+:NUM-ITERATION against an unlimited one, a :MISSING sentinel honoured against the same matrix
+read literally. In all of them a shape mismatch is a broken test rather than a disagreement
+about numbers, and answering NIL let `(not (predictions-agree-p ...))', which several tests
+assert, pass for the wrong reason.
 
 Measured rather than assumed, as far as a suite run can measure it: with the error branch in
 place the whole layer-2 suite is green, so no call the suite MAKES reached it. That is not
 every call site on both backends -- tests/functional/missing-value.lisp's calls run on XGBoost
-alone, each sitting behind the `:missing-value' capability, which LightGBM answers false."
+alone, each sitting behind the `:missing-value' capability, which LightGBM answers false.
+
+That the branch is REACHABLE, and by an error rather than a NIL, is pinned by
+`predictions-agree-p-signals-on-a-shape-mismatch' in tests/functional/sparse-input.lisp. It
+lives there rather than here because this file defines no test of its own, and moving it here
+would move rove's per-file test count with it."
   (unless (equal (array-dimensions left) (array-dimensions right))
     (error "predictions-agree-p was given results of different shapes: ~S and ~S"
            (array-dimensions left) (array-dimensions right)))
@@ -307,7 +313,9 @@ divergence is stated -- so a conversion that dropped zeros would describe differ
 the two backends. Storing every element leaves the `csr-matrix' and MATRIX describing the same
 numbers on both. WHY each caller needs that differs, so each file states its own reason twice:
 on the `:import-from' clause that adopts this function, where a reader first meets the name,
-and again in the comment above the test that depends on it.
+and again in a comment beside one of the tests that depend on it. That second statement is per
+FILE, not per test -- tests/functional/missing-value.lisp has two tests that call this function
+and one such comment, above the first of them.
 
 NUM-COLUMNS defaults to MATRIX's own width. A larger value declares trailing columns that hold
 nothing at all -- no entry of INDICES names them -- which is how a caller reaches the

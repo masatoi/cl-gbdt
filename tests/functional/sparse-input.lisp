@@ -91,6 +91,51 @@ input row and one column per class. Every fixture's objective is binary, so COLU
   (find backend-name *fixtures* :key (lambda (fixture) (getf fixture :backend))))
 
 ;;; ---------------------------------------------------------------------------
+;;; The shared helper every comparison below rests on
+;;;
+;;; `predictions-agree-p' SIGNALS on a shape mismatch rather than answering NIL -- see its own
+;;; docstring in tests/functional/support.lisp for why. Four assertions in this file read
+;;; `(not (predictions-agree-p ...))', and a NIL answer satisfies every one of them without
+;;; comparing a single number. Nothing pinned that branch, so deleting it -- a plausible
+;;; "simplification" back to `(and (equal dims) ...)' -- would restore that false pass. This is
+;;; the pin: measured with the `unless' deleted from `predictions-agree-p', the two mismatch
+;;; assertions below go red, the control below them stays green, and no other file in layer 2
+;;; changes.
+;;;
+;;; It lives here rather than in support.lisp because that file defines no test of its own,
+;;; and adding one there would move rove's per-file test count. This file was chosen among the
+;;; three that call the helper because its own comparisons are the shape-varied ones: :KIND
+;;; :RAW against :NORMAL, a limited :NUM-ITERATION against an unlimited one, a dense matrix
+;;; against two different CSR forms of it.
+;;;
+;;; No `with-backend-library', and no booster: the helper is pure Lisp over two arrays, so two
+;;; `double-float' arrays of different shapes are the whole input and no shared library is
+;;; reached. `handler-case', not rove's `signals', which does not reliably catch a condition
+;;; raised inside `restart-case'; the condition TYPE is asserted, not merely that something
+;;; signalled. That type is `simple-error', which is what the helper's bare `(error "...")'
+;;; signals -- measured.
+
+(deftest predictions-agree-p-signals-on-a-shape-mismatch
+  (let ((two-by-one (make-array '(2 1) :element-type 'double-float :initial-element 0d0))
+        (two-by-two (make-array '(2 2) :element-type 'double-float :initial-element 0d0))
+        (three-by-one (make-array '(3 1) :element-type 'double-float :initial-element 0d0)))
+    (testing "a differing column count signals rather than answering NIL"
+      (ok (handler-case (progn (predictions-agree-p two-by-one two-by-two) nil)
+            (simple-error () t))
+          "whether comparing a (2 1) result against a (2 2) one signalled"))
+    (testing "a differing row count signals too"
+      (ok (handler-case (progn (predictions-agree-p two-by-one three-by-one) nil)
+            (simple-error () t))
+          "whether comparing a (2 1) result against a (3 1) one signalled"))
+    ;; The control: the guard rejects mismatched shapes only, not every call. Without it, a
+    ;; helper that signalled unconditionally would pass both assertions above.
+    (testing "two results of the same shape still compare normally"
+      (ok (predictions-agree-p two-by-one
+                               (make-array '(2 1) :element-type 'double-float
+                                                  :initial-element 0d0))
+          "whether two identical (2 1) results still agree"))))
+
+;;; ---------------------------------------------------------------------------
 ;;; The capability this task ships
 ;;;
 ;;; Policy section 7 registers `:sparse-input' as a question `backend-supports-p' answers,

@@ -427,6 +427,47 @@ two groups.")
                    "make-dataset with a wrong-length label did not signal foreign-call-error"))
           (cl-gbdt:close-backend backend))))))
 
+;;; `make-dataset' reaches `cl-gbdt/src/config/feature-names''s `check-feature-names' only
+;;; through `%set-feature-names', and only through the `(when feature-names ...)' branch that
+;;; calls it. tests/feature-names.lisp pins the guard by calling it directly; nothing pinned
+;;; the WIRING. Measured with this test in place and the
+;;; `(check-feature-names feature-names :lightgbm)' line deleted from src/lightgbm/native.lisp:
+;;; layer 1 stayed green at 411 assertions over 16 files, and layer 2 failed exactly one file
+;;; -- this one -- with rove reporting "Raise an error while testing" and a `TYPE-ERROR' raised
+;;; by `(LENGTH (a . b))' inside the `%SET-FEATURE-NAMES' that `make-dataset' had just called.
+;;;
+;;; That raw `type-error' is the milder of the two things the guard heads off: `(length
+;;; circular)' does not return at all, measured on SBCL 2.6.7. `%set-feature-names' computes
+;;; that length one line under the call.
+;;;
+;;; `handler-case', not rove's `signals' -- see this file's other guard tests for why. The
+;;; condition TYPE is asserted and so is the argument it names, since several of
+;;; `make-dataset''s arguments signal this same type.
+
+(deftest lightgbm-api-make-dataset-improper-feature-names-signals
+  (with-backend-library (:lightgbm)
+    (multiple-value-bind (matrix label-vector) (make-separable-dataset)
+      (declare (ignore label-vector))
+      (let ((backend (cl-gbdt:open-backend :lightgbm)))
+        (unwind-protect
+             (let ((condition
+                     (handler-case
+                         (progn (cl-gbdt:make-dataset backend matrix
+                                                      :feature-names '("a" . "b")
+                                                      :parameters *dataset-parameters*)
+                                nil)
+                       (cl-gbdt:unsupported-argument (c) c))))
+               (testing "a dotted :feature-names signals unsupported-argument"
+                 (ok condition "whether make-dataset signalled unsupported-argument"))
+               (testing "and the condition names the argument the caller passed"
+                 (ok (and condition
+                          (equal ":feature-names"
+                                 (cl-gbdt:unsupported-argument-argument condition)))
+                     (format nil "the argument named by the condition: ~S"
+                             (and condition
+                                  (cl-gbdt:unsupported-argument-argument condition))))))
+          (cl-gbdt:close-backend backend))))))
+
 ;;; `close-backend' calls `cffi:close-foreign-library', which may unmap the shared
 ;;; library from the process; POSIX does not guarantee it, but does not forbid it
 ;;; either. Before this fix, a handle stored only its backend's keyword name, so

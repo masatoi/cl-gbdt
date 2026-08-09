@@ -1,3 +1,21 @@
+;;;; feature-names.lisp --- Validating a caller's feature-name list.
+;;;;
+;;;; Backend-neutral and pure: no handle, no pointer, no shared library, so every path here
+;;;; is layer-1 testable. What it catches is a list `listp' is happy with and `length' is
+;;;; not: on SBCL 2.6.7, `(length '("a" . "b"))' signals a raw `type-error' and `(length
+;;;; circular)' does not return -- both measured. See `check-feature-names''s docstring for
+;;;; why the test is `proper-list-p' and not `listp'.
+;;;;
+;;;; Under src/config/ rather than directly under src/, and so deliberately absent from
+;;;; src/all.lisp's `use-reexport' list, for the same reason `src/config/missing-value.lisp'
+;;;; is absent from it -- see that file's own header. Both backends' `%set-feature-names'
+;;;; are this file's only callers outside tests/; publishing this from `CL-GBDT' would put an
+;;;; internal shape check on the public surface, where `make-dataset''s own docstring already
+;;;; states the contract it enforces.
+;;;;
+;;;; Consumers: `cl-gbdt/src/lightgbm/native' and `cl-gbdt/src/xgboost/native', each from
+;;;; its own `%set-feature-names'.
+
 (uiop:define-package #:cl-gbdt/src/config/feature-names
   (:use #:cl)
   (:import-from #:alexandria

@@ -17,7 +17,7 @@ file if you have it locally).
 `make-dataset`, `dataset-num-rows`, `dataset-num-features`, `train`,
 `update-one-iteration`, `predict`, `save-model`, `load-model`, `model-to-string`,
 `feature-importance`, `evaluation`, `free-dataset` and `free-booster` -- against the real
-LightGBM and XGBoost shared libraries, exercised by 472 functional assertions (design doc
+LightGBM and XGBoost shared libraries, exercised by 480 functional assertions (design doc
 section 12, layer 2), in addition to 411 assertions that need no shared library at all
 (layer 1). `train` also returns a `training-report` as its secondary value, and takes
 `:early-stopping` to end a run once a watched metric stops improving -- see

@@ -59,6 +59,13 @@ built here is only the same data on both when every element is stored. Nothing s
 it is not -- the trained numbers simply differ. See the `csr-matrix' struct's own docstring,
 where that divergence is stated as the property of the value it is.
 
+FEATURE-NAMES must be a PROPER list of name strings, and anything else -- a dotted list, a
+circular one, or a value that is no list at all -- signals `unsupported-argument' naming
+`:feature-names'. `listp' is true of a dotted list, so the shape has to be checked before
+the list is traversed: on SBCL 2.6.7 `(length '(\"a\" . \"b\"))' signals a raw `type-error'
+and `(length circular)' does not return, both measured. NIL, the default, is a proper list
+and means no names.
+
 MISSING names the value in MATRIX that means *missing* -- the datum a caller wrote in place
 of one they do not have, such as the -999.0 a CSV convention often uses. It is a VALUE, not
 a policy: it says which number means missing and does not turn missing handling on or off,

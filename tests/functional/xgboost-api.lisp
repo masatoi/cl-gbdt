@@ -342,6 +342,45 @@ two groups.")
                    "make-dataset with a wrong-length label did not signal foreign-call-error"))
           (cl-gbdt:close-backend backend))))))
 
+;;; The same wiring test tests/functional/lightgbm-api.lisp carries against its own backend,
+;;; and for the same reason: `check-feature-names' has one call site in each backend's
+;;; `%set-feature-names', and tests/feature-names.lisp pins the guard itself rather than either
+;;; call. One test per backend, because one deleted line is one backend's regression and a test
+;;; on the other backend stays green through it.
+;;;
+;;; Measured with this test in place and the `(check-feature-names feature-names :xgboost)'
+;;; line deleted from src/xgboost/native.lisp: layer 2 failed exactly one file -- this one --
+;;; with the same `TYPE-ERROR' from `(LENGTH (a . b))', raised this time inside
+;;; `CL-GBDT/SRC/XGBOOST/NATIVE:%SET-FEATURE-NAMES'.
+;;;
+;;; No :PARAMETERS here, unlike the LightGBM twin: this backend refuses that argument outright
+;;; (see `xgboost-api-make-dataset-with-parameters-signals-unsupported-argument' below), and
+;;; refuses it BEFORE the DMatrix is built, so passing one would signal the same condition
+;;; type for an entirely different reason.
+
+(deftest xgboost-api-make-dataset-improper-feature-names-signals
+  (with-backend-library (:xgboost)
+    (multiple-value-bind (matrix label-vector) (make-separable-dataset)
+      (declare (ignore label-vector))
+      (let ((backend (cl-gbdt:open-backend :xgboost)))
+        (unwind-protect
+             (let ((condition
+                     (handler-case
+                         (progn (cl-gbdt:make-dataset backend matrix
+                                                      :feature-names '("a" . "b"))
+                                nil)
+                       (cl-gbdt:unsupported-argument (c) c))))
+               (testing "a dotted :feature-names signals unsupported-argument"
+                 (ok condition "whether make-dataset signalled unsupported-argument"))
+               (testing "and the condition names the argument the caller passed"
+                 (ok (and condition
+                          (equal ":feature-names"
+                                 (cl-gbdt:unsupported-argument-argument condition)))
+                     (format nil "the argument named by the condition: ~S"
+                             (and condition
+                                  (cl-gbdt:unsupported-argument-argument condition))))))
+          (cl-gbdt:close-backend backend))))))
+
 ;;; `XGBoosterUpdateOneIter' dereferences the DMatrix pointer handed to it directly --
 ;;; unlike LightGBM, which reads its training set through an internal pointer,
 ;;; XGBoost's version takes it as an explicit argument, read back from

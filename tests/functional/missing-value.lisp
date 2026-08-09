@@ -416,11 +416,16 @@ something unrelated had broken."
 ;;;
 ;;; LightGBM reaches this branch with no simulation at all -- its C API has no `missing' key,
 ;;; so the capability is false there and always will be. XGBoost's is true, so its plist is
-;;; overwritten the way tests/functional/sparse-input.lisp overwrites one for the same purpose,
-;;; which is what a library that could not provide the capability would have produced at
-;;; `open-backend'. Both are driven from the same `backend-supports-p' answer rather than a
-;;; hardcoded backend name, so this asserts the gate on EVERY backend, however each one came to
-;;; have it closed.
+;;; overwritten the way tests/functional/sparse-input.lisp overwrites one for the same purpose.
+;;; Unlike its model there, where `:sparse-input' really is probed from a C symbol and a library
+;;; too old to have that symbol would produce this same false answer on its own,
+;;; `:missing-value' sits in XGBoost's `*provided-capabilities*' -- recorded true
+;;; unconditionally, with nothing probed (see `probe-capabilities''s PROVIDED) -- so no XGBoost,
+;;; however incomplete, can produce a false answer here by itself, and the `setf' in the test
+;;; below is what puts THAT backend in this state. LightGBM, as the sentence above says, needs
+;;; no help. Both are driven from the same `backend-supports-p' answer rather than a hardcoded
+;;; backend name, so this asserts the gate on EVERY backend, however each one came to have it
+;;; closed.
 ;;;
 ;;; Two sentinel values, not one, because the rule is that :MISSING signals REGARDLESS OF THE
 ;;; VALUE. A NaN is the second: LightGBM would in fact honour a NaN, that being what its own
@@ -554,7 +559,7 @@ something unrelated had broken."
 ;;; XGBoost's serializer, which is exactly why the assertions below are about the text's
 ;;; CONTENT and not its length.
 ;;;
-;;; Two substrings, both checked against that real run before being asserted:
+;;; Three substrings, all checked against that real run before being asserted:
 ;;;
 ;;;   "missing" -- absent from the measured text entirely, confirming that the `"missing"'
 ;;;   key `make-dataset' writes into the dataset's own creation config (see this file's
@@ -567,6 +572,18 @@ something unrelated had broken."
 ;;;   "999" matches inside it. The leading sign rules that coincidence out -- "-999" occurs
 ;;;   nowhere in the same text, and nothing this small a fixture trains produces a split
 ;;;   threshold, gain or cover anywhere near -999 by chance.
+;;;
+;;;   "learner" -- the positive control, and the reason the two above mean anything. Both of
+;;;   them are ABSENCES, and every absence is true of the empty string: a regression that left
+;;;   `model-to-string' returning "" satisfies both and pins nothing. Measured by forcing
+;;;   exactly that -- `:count 0' in place of the `out_len' read in `model-to-string'
+;;;   (src/xgboost/protocol.lisp) -- the two assertions above stayed GREEN, reporting "model
+;;;   text length 0", and only this third one went red. This is also the only test in
+;;;   tests/functional/ that calls `model-to-string' on an XGBoost booster, so nothing else
+;;;   would have caught it. The measured text opens `{"learner":{"attributes":{},...' --
+;;;   "learner" at position 2, the model JSON's own top-level key -- so finding it says the
+;;;   text really is a serialised model. The same role the "both models learned something to
+;;;   agree about" assertion plays in tests/functional/sparse-input.lisp.
 ;;;
 ;;; Gated on `:missing-value' alone, the same shape `an-exponent-form-sentinel-reaches-the-
 ;;; library' above uses: no `csr-matrix' is built here, so `:sparse-input' plays no part.
@@ -581,19 +598,30 @@ something unrelated had broken."
                    (booster (booster-trained-on fixture backend
                                                 (fixture-matrix :hole-value *sentinel*)
                                                 :missing *sentinel*))
-                 (let ((text (cl-gbdt:model-to-string booster)))
+                 (let* ((text (cl-gbdt:model-to-string booster))
+                        (missing-at (search "missing" text))
+                        (sentinel-at (search "-999" text))
+                        (learner-at (search "learner" text)))
                    (testing (format nil "~A: model-to-string after training with :missing ~A ~
                                          writes no \"missing\" key into the saved model"
                                     (getf fixture :backend) *sentinel*)
-                     (ok (not (search "missing" text))
-                         (format nil "model text length ~S contained ~S at ~S"
-                                 (length text) "missing" (search "missing" text))))
+                     (ok (not missing-at)
+                         (format nil "model text length ~S, position of ~S: ~S"
+                                 (length text) "missing" missing-at)))
                    (testing (format nil "~A: and no trace of the sentinel's own sign and ~
                                          digits either"
                                     (getf fixture :backend))
-                     (ok (not (search "-999" text))
-                         (format nil "model text length ~S contained ~S at ~S"
-                                 (length text) "-999" (search "-999" text)))))))
+                     (ok (not sentinel-at)
+                         (format nil "model text length ~S, position of ~S: ~S"
+                                 (length text) "-999" sentinel-at)))
+                   ;; The positive control: both assertions above are absences, and an absence
+                   ;; is true of the empty string. This one says the text is a model.
+                   (testing (format nil "~A: and the text really is a serialised model, so ~
+                                         those two absences say something"
+                                    (getf fixture :backend))
+                     (ok learner-at
+                         (format nil "model text length ~S, position of ~S: ~S"
+                                 (length text) "learner" learner-at))))))
           (cl-gbdt:close-backend backend))))))
 
 ;;; ---------------------------------------------------------------------------
