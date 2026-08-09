@@ -100,7 +100,6 @@
                 #:missing-training-set
                 #:capability-unavailable)
   (:import-from #:cl-gbdt/src/data
-                #:with-foreign-matrix
                 #:csr-matrix
                 #:csr-matrix-indptr
                 #:csr-matrix-indices
@@ -901,12 +900,11 @@ one itself."
                                                  (csr-matrix-num-columns matrix)
                                                  predict-type iteration-end missing
                                                  out-shape out-dim out-result))))
-            ;; The transient DMatrix is built BEFORE `with-foreign-matrix' pins MATRIX,
-            ;; rather than inside it, so a MISSING that `%dense-matrix-config-json' refuses
-            ;; signals with nothing pinned and no foreign allocation held -- the property
-            ;; `%create-dmatrix''s own docstring claims, and one an enclosing pin here
-            ;; falsified the moment MISSING stopped being the constant NIL. The pin below is
-            ;; only for NROW; `%create-dmatrix' does its own for the buffer it describes.
+            ;; The transient DMatrix is built first, so a MISSING that
+            ;; `%dense-matrix-config-json' refuses signals with nothing pinned and no foreign
+            ;; allocation held -- the property `%create-dmatrix''s own docstring claims. NROW
+            ;; comes from the DMatrix `%create-dmatrix' already built, via `%dataset-num-rows',
+            ;; rather than a second pin of MATRIX just to read its row count back.
             (let ((dmatrix-pointer (%create-dmatrix matrix missing)))
               (when (cffi:null-pointer-p dmatrix-pointer)
                 (error 'foreign-call-error
@@ -914,7 +912,7 @@ one itself."
                        :code 0
                        :message "reported success but returned a null dataset handle"))
               (unwind-protect
-                   (with-foreign-matrix (data-pointer nrow ncol element-type) matrix
+                   (let ((nrow (%dataset-num-rows dmatrix-pointer)))
                      (cffi:with-foreign-string
                          (config (%predict-config-json predict-type iteration-end))
                        (predict-into nrow
