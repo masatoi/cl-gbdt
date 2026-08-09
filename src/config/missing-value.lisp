@@ -59,5 +59,5 @@ SBCL princs them as `\"#<DOUBLE-FLOAT quiet NaN>\"' and
       (t (error 'unsupported-argument
                 :backend backend-name
                 :argument ":missing"
-                :reason "the value that means missing must be a real number, or NIL for
-the backend's own default")))))
+                :reason (format nil "the value that means missing must be a real ~
+                                     number, or NIL for the backend's own default"))))))

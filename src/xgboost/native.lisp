@@ -334,7 +334,7 @@ which every open backend has by construction. A probe has nothing to look for, a
 capability cannot vary between one open and the next.
 `:missing-value' is here for the first reason again, and more plainly than
 `:evaluation-history': the sentinel is a KEY IN A CONFIG JSON -- `\"missing\"', read by
-`XGDMatrixCreateFromDense', `XGDMatrixCreateFromCSR' and `XGBoosterPredictFromDMatrix' -- not
+`XGDMatrixCreateFromDense', `XGDMatrixCreateFromCSR' and `XGBoosterPredictFromCSR' -- not
 a C function of its own. Every entry point that reads it is already in `*required-symbols*'
 or `*optional-symbols*' for another reason, so there is no symbol whose presence or absence
 could make this capability true or false, and a probe has nothing left to decide. A library
@@ -838,9 +838,10 @@ builds its own -- `(%predict-config-json ... :missing missing)' -- and its own t
 `array-interface-json' descriptors, the same way `%create-dmatrix-from-csr' does for
 ingestion where `%create-dmatrix' takes one. The three vectors are pinned for the duration
 of the call and no longer, which is all this needs: `XGBoosterPredictFromCSR' reads them and
-writes OUT-RESULT before it returns. The typestrs are fixed rather than derived, because
-`csr-matrix' fixes INDPTR/INDICES at `(signed-byte 32)' and VALUES at `double-float' and
-there is no per-call element type to map through `%array-interface-typestr'.
+writes OUT-RESULT before it returns, and the config JSON is built before any of them is
+pinned, for the reason `%create-dmatrix' gives. The typestrs are fixed rather than derived,
+because `csr-matrix' fixes INDPTR/INDICES at `(signed-byte 32)' and VALUES at `double-float'
+and there is no per-call element type to map through `%array-interface-typestr'.
 
 `XGBoosterPredictFromCSR' is XGBoost's INPLACE prediction, not the CSR spelling of
 `XGBoosterPredictFromDMatrix' -- the vendored header
@@ -864,21 +865,21 @@ in this backend's prediction path has meta info to attach to a matrix it is only
 `predict' still owns interpreting OUT-SHAPE, OUT-DIM and OUT-RESULT afterward, via
 `%total-element-count' and `%predict-ncol', and copying OUT-RESULT's contents out before it
 returns -- none of which differs between the two entry points."
-  (%call-with-pinned-csr
-   indptr indices values
-   (lambda (indptr-pointer indices-pointer values-pointer)
-     (cffi:with-foreign-string
-         (indptr-json (array-interface-json indptr-pointer "<i4" (length indptr)))
+  (let ((config-json (%predict-config-json predict-type iteration-end :missing missing)))
+    (%call-with-pinned-csr
+     indptr indices values
+     (lambda (indptr-pointer indices-pointer values-pointer)
        (cffi:with-foreign-string
-           (indices-json (array-interface-json indices-pointer "<i4" (length indices)))
+           (indptr-json (array-interface-json indptr-pointer "<i4" (length indptr)))
          (cffi:with-foreign-string
-             (values-json (array-interface-json values-pointer "<f8" (length values)))
+             (indices-json (array-interface-json indices-pointer "<i4" (length indices)))
            (cffi:with-foreign-string
-               (config (%predict-config-json predict-type iteration-end :missing missing))
-             (check-xgb (xg-booster-predict-from-csr
-                         booster-pointer indptr-json indices-json values-json num-columns
-                         config (cffi:null-pointer) out-shape out-dim out-result)
-                        "XGBoosterPredictFromCSR"))))))))
+               (values-json (array-interface-json values-pointer "<f8" (length values)))
+             (cffi:with-foreign-string (config config-json)
+               (check-xgb (xg-booster-predict-from-csr
+                           booster-pointer indptr-json indices-json values-json num-columns
+                           config (cffi:null-pointer) out-shape out-dim out-result)
+                          "XGBoosterPredictFromCSR")))))))))
 
 ;;; ---------------------------------------------------------------------------
 ;;; Persistence

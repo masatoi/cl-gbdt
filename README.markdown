@@ -17,7 +17,7 @@ file if you have it locally).
 `make-dataset`, `dataset-num-rows`, `dataset-num-features`, `train`,
 `update-one-iteration`, `predict`, `save-model`, `load-model`, `model-to-string`,
 `feature-importance`, `evaluation`, `free-dataset` and `free-booster` -- against the real
-LightGBM and XGBoost shared libraries, exercised by 401 functional assertions (design doc
+LightGBM and XGBoost shared libraries, exercised by 403 functional assertions (design doc
 section 12, layer 2), in addition to 374 assertions that need no shared library at all
 (layer 1). `train` also returns a `training-report` as its secondary value, and takes
 `:early-stopping` to end a run once a watched metric stops improving -- see
@@ -1229,8 +1229,7 @@ XGBoost  backend-supports-p :missing-value => T
 LightGBM make-dataset :missing -999.0d0 SIGNALED CAPABILITY-UNAVAILABLE: LIGHTGBM does not provide :MISSING-VALUE in the library that is loaded.
 LightGBM make-dataset :missing <NaN> SIGNALED CAPABILITY-UNAVAILABLE: LIGHTGBM does not provide :MISSING-VALUE in the library that is loaded.
 LightGBM make-dataset :missing "-999.0" SIGNALED CAPABILITY-UNAVAILABLE: LIGHTGBM does not provide :MISSING-VALUE in the library that is loaded.
-XGBoost  make-dataset :missing "-999.0" SIGNALED UNSUPPORTED-ARGUMENT: :missing is not supported by XGBOOST: the value that means missing must be a real number, or NIL for
-the backend's own default.
+XGBoost  make-dataset :missing "-999.0" SIGNALED UNSUPPORTED-ARGUMENT: :missing is not supported by XGBOOST: the value that means missing must be a real number, or NIL for the backend's own default.
 XGBoost  row 7, trained with :missing -999.0d0: 0.622459352016449d0
 XGBoost  row 7, trained with that same cell read literally: 0.5d0
 XGBoost  make-dataset :missing 1.0d-5 (a Lisp exponent marker) works: rows=8

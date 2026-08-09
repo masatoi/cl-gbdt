@@ -71,7 +71,7 @@ tests/functional/sparse-input.lisp's own default, which is enough for the two li
 predictions to have moved off their initial constant.")
 
 (defparameter *sentinel* -999.0d0
-  "The value that means *missing* in *HOLED-ROWS* -- an out-of-range number a caller would
+  "The value that means *missing* in *FIXTURE-ROWS* -- an out-of-range number a caller would
 plausibly have written into a CSV for a hole, which is exactly the case :MISSING exists for.
 
 Exactly representable in `single-float', which matters: XGBoost compares the sentinel against
@@ -390,6 +390,56 @@ something unrelated had broken."
                    (ok (predictions-agree-p honoured nan)
                        (format nil "with :missing ~S, with a NaN ~S" honoured nan)))
                  (testing (format nil "~A: and answers something else than the same matrix ~
+                                       read literally -- the sentinel was not dropped"
+                                  (getf fixture :backend))
+                   (ok (not (predictions-agree-p honoured literal))
+                       (format nil "with :missing ~S, read literally ~S" honoured literal)))))
+          (cl-gbdt:close-backend backend))))))
+
+;;; The same three-way comparison over a `cl-gbdt:csr-matrix', which is the OTHER INGESTION
+;;; config site and not covered by the test above.
+;;;
+;;; `make-dataset' renders its sentinel into a creation config whichever matrix it was handed,
+;;; but into two different strings built by two different functions --
+;;; `%dense-matrix-config-json' for a dense matrix, `%csr-matrix-config-json' for a
+;;; `csr-matrix' -- reaching two different C entry points, so a sentinel dropped on the sparse
+;;; branch alone leaves every other test in this file green. Measured that way round too:
+;;; handing `%create-dmatrix-from-csr' a NIL where `%dataset-pointer' passes MISSING -- the
+;;; backend's own default, which is what dropping the sentinel there amounts to -- fails both
+;;; assertions below and nothing else in either suite.
+;;;
+;;; Measured against the vendored XGBoost before either assertion was written, the same five
+;;; rounds on the same eight rows as the dense test above -- and, `fixture-csr' storing every
+;;; element explicitly, the same three numbers: the four negative rows answer 0.153285950422287
+;;; in every case, and the four positive rows are what move:
+;;;
+;;;   (a) / (c)  0.8467140793800354
+;;;   (b)        0.8203328251838684
+;;;
+;;; A gap of 0.0264, seven orders of magnitude above *PREDICTION-TOLERANCE*. Gated on
+;;; `:sparse-input' as well as `:missing-value', since a backend without the first has no
+;;; `csr-matrix' to build a dataset from at all.
+
+(deftest ingestion-sentinel-changes-what-was-learned-from-a-csr-matrix
+  (dolist (fixture *fixtures*)
+    (with-backend-library ((getf fixture :backend))
+      (let ((backend (cl-gbdt:open-backend (getf fixture :backend))))
+        (unwind-protect
+             (when (and (cl-gbdt:backend-supports-p backend :missing-value)
+                        (cl-gbdt:backend-supports-p backend :sparse-input))
+               (let ((honoured (train-on fixture backend
+                                         (fixture-csr (fixture-matrix :hole-value *sentinel*))
+                                         :missing *sentinel*))
+                     (literal (train-on fixture backend
+                                        (fixture-csr (fixture-matrix :hole-value *sentinel*))))
+                     (nan (train-on fixture backend
+                                    (fixture-csr (fixture-matrix :hole-value (quiet-nan))))))
+                 (testing (format nil "~A: a csr-matrix dataset built with :missing ~A answers ~
+                                       what a stored NaN answers -- the sentinel was honoured"
+                                  (getf fixture :backend) *sentinel*)
+                   (ok (predictions-agree-p honoured nan)
+                       (format nil "with :missing ~S, with a NaN ~S" honoured nan)))
+                 (testing (format nil "~A: and answers something else than the same csr-matrix ~
                                        read literally -- the sentinel was not dropped"
                                   (getf fixture :backend))
                    (ok (not (predictions-agree-p honoured literal))
