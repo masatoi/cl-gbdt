@@ -62,6 +62,8 @@
                 #:wrong-backend-reference)
   (:import-from #:cl-gbdt/src/parameters
                 #:normalize-parameters)
+  (:import-from #:cl-gbdt/src/config/feature-names
+                #:check-feature-names)
   (:import-from #:cl-gbdt/src/data
                 #:with-foreign-matrix
                 #:write-foreign-sequence)
@@ -499,10 +501,15 @@ the same field via XGBoost's differently-typed `unsigned' equivalent."
   "Attach FEATURE-NAMES, a list of strings, to DATASET-POINTER via
 `LGBM_DatasetSetFeatureNames'.
 
+Signals `unsupported-argument' against `:lightgbm' when FEATURE-NAMES is not a proper
+list, via `check-feature-names' -- checked before COUNT is computed, since `length' on a
+dotted list is exactly the raw `type-error' that check exists to head off.
+
 Every string successfully allocated is freed on any exit, including one signaled
 partway through the allocation loop itself -- ALLOCATED tracks exactly how many
 of the COUNT slots hold a real `foreign-string-alloc' result, so cleanup never
 calls `foreign-string-free' on an uninitialized foreign-object slot."
+  (check-feature-names feature-names :lightgbm)
   (let ((count (length feature-names))
         (allocated 0))
     (cffi:with-foreign-object (names :pointer count)
