@@ -36,8 +36,8 @@ over both backends.
 
 **Status: functional.** Both backends (`cl-gbdt/lightgbm`, `cl-gbdt/xgboost`) implement
 all 13 generic functions of the unified API -- `make-dataset`, `train`, `predict`, and
-the rest -- against the real shared libraries, exercised by 368 functional assertions in
-`cl-gbdt/tests/functional` (layer 2) on top of 361 assertions that need no shared
+the rest -- against the real shared libraries, exercised by 403 functional assertions in
+`cl-gbdt/tests/functional` (layer 2) on top of 378 assertions that need no shared
 library at all (layer 1). `train` returns a `training-report` as its secondary value, and
 takes `:record-history` (default `t`) to turn the per-iteration recording that fills it
 off -- recording roughly doubles LightGBM's `train` time, and on XGBoost it also makes a
@@ -50,6 +50,11 @@ picked -- see `README.markdown`'s Training report section for both. `make-datase
 dense matrix, gated on the `:sparse-input` capability that both vendored backends answer
 true; XGBoost's sparse `predict` serves `:normal` and `:raw` only, and an absent CSR entry
 means `0.0` to LightGBM but *missing* to XGBoost -- see `README.markdown`'s Sparse input
+section. `make-dataset` and `predict` also take `:missing`, the value in the caller's
+own data that means missing, gated on the `:missing-value` capability that only XGBoost
+provides -- LightGBM signals `capability-unavailable` for any non-`NIL` value, a `NaN`
+included, since its C API has no missing-value key at all, and XGBoost compares the
+sentinel against the data at single precision -- see `README.markdown`'s Missing values
 section. Core `cl-gbdt` still
 loads, and is still tested, without
 either `liblightgbm.so` or `libxgboost.so` present: a shared library is opened only by

@@ -29,7 +29,8 @@
 (in-package #:cl-gbdt/src/protocol)
 
 (defgeneric make-dataset (backend matrix
-                           &key label weight group feature-names parameters reference)
+                           &key label weight group feature-names parameters reference
+                             missing)
   (:documentation "Build a training dataset for BACKEND from MATRIX.
 
 MATRIX is either a dense matrix -- anything `with-foreign-matrix' accepts -- or a
@@ -57,6 +58,32 @@ LightGBM reads an absent entry as `0.0' and XGBoost reads one as missing, so the
 built here is only the same data on both when every element is stored. Nothing signals when
 it is not -- the trained numbers simply differ. See the `csr-matrix' struct's own docstring,
 where that divergence is stated as the property of the value it is.
+
+MISSING names the value in MATRIX that means *missing* -- the datum a caller wrote in place
+of one they do not have, such as the -999.0 a CSV convention often uses. It is a VALUE, not
+a policy: it says which number means missing and does not turn missing handling on or off,
+nor make zero mean missing. A backend's own flags for those -- LightGBM's `use_missing' and
+`zero_as_missing' -- stay where they are, reachable through PARAMETERS.
+
+MISSING is a `real' or NIL, and anything else signals `unsupported-argument' naming
+`:missing'. NIL, the default, is the backend's own default sentinel and is exactly what
+every call got before this argument existed: a caller who passes nothing gets the same
+dataset, and the same trained numbers, as before.
+
+A non-NIL MISSING needs BACKEND's `:missing-value' capability, which `make-dataset'
+re-checks itself: a caller who never asked `backend-supports-p' gets
+`capability-unavailable' rather than an argument silently ignored, and no backend ever falls
+back to its own sentinel instead. XGBoost provides the capability -- the sentinel is a key
+in the config JSON its dataset-creation entry points read. LightGBM does not, and signals for
+ANY non-NIL value including a NaN it would in fact honour: its C API has no missing-value key
+at all, and a capability whose answer depended on which value was passed could not be stated
+by `backend-supports-p'.
+
+Measured, and worth knowing before choosing a sentinel: XGBoost compares MISSING against the
+data at SINGLE precision, whatever MATRIX's own element type. Two `double-float's that round
+to the same `single-float' therefore both count as missing -- probed against the vendored
+library, the sentinel 16777217.0 matches the datum 16777216.0d0, a different double sharing
+its float32, and does not match 16777224.0d0, which is a different float32.
 
 REFERENCE, when supplied, is an existing dataset from the same backend whose bin mapper
 the new dataset aligns to instead of computing its own. A validation dataset destined
@@ -217,7 +244,7 @@ has no equivalent signal, so its `update-one-iteration' always returns true afte
 successful call; treat a true return as \"the call succeeded\", not as proof a split
 happened, unless the backend is known to be LightGBM."))
 
-(defgeneric predict (booster matrix &key kind num-iteration)
+(defgeneric predict (booster matrix &key kind num-iteration missing)
   (:documentation "Predict on MATRIX using BOOSTER.
 
 MATRIX is either a dense matrix -- a 2D array of `double-float' or `single-float', one row
@@ -260,6 +287,23 @@ supplied. NIL keeps meaning \"every round\" on every booster, including one with
 iteration to resolve `:best' against; `:best' is an additional accepted value, never a
 new default. It means the same thing for a `csr-matrix' as for a dense matrix on both
 backends.
+
+MISSING names the value in MATRIX that means *missing*, exactly as `make-dataset''s own
+MISSING names it in a training matrix: a `real' or NIL, `unsupported-argument' naming
+`:missing' for anything else, and NIL -- the default -- the backend's own sentinel, so a
+caller who passes nothing gets the predictions they always got. A non-NIL MISSING needs
+BOOSTER's backend's `:missing-value' capability, which `predict' re-checks ITSELF rather
+than inheriting any check `make-dataset' made: the two operations check it separately, and
+a backend could provide it for one and not the other. It says the same thing about a
+`csr-matrix' as about a dense matrix -- a STORED value equal to it is missing -- and says
+nothing about an entry a `csr-matrix' omits, which each library goes on reading its own way
+as described above.
+
+Nothing ties MISSING here to the MISSING the dataset BOOSTER was trained from was built
+with. XGBoost, the backend that provides the capability, does not record a dataset's
+sentinel on the booster trained from it, so predicting with a different sentinel than
+training used -- or with none -- is a call the library accepts and never reports. Keeping
+the two consistent is the caller's responsibility; nothing here detects that they are not.
 
 Returns a `(simple-array double-float (* *))', with one row per input row either way -- a
 `csr-matrix''s row count is `csr-matrix-num-rows', one less than its INDPTR's length."))

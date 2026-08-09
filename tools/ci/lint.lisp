@@ -23,9 +23,9 @@
 CLAUDE.md.")
 
 (defparameter +source-patterns+
-  '("src/*.lisp" "src/regen/*.lisp" "src/training/*.lisp" "src/lightgbm/*.lisp"
-    "src/xgboost/*.lisp" "tests/*.lisp" "tests/functional/*.lisp" "tools/ci/*.lisp"
-    "tools/*.lisp")
+  '("src/*.lisp" "src/regen/*.lisp" "src/training/*.lisp" "src/config/*.lisp"
+    "src/lightgbm/*.lisp" "src/xgboost/*.lisp" "tests/*.lisp" "tests/functional/*.lisp"
+    "tools/ci/*.lisp" "tools/*.lisp")
   "Hand-written Lisp sources, relative to the repository root.
 
 The per-backend patterns were added once a backend's first hand-written file
@@ -33,9 +33,9 @@ The per-backend patterns were added once a backend's first hand-written file
 only generated `c-api.lisp', already excluded below, so a glob that stopped at
 `src/*.lisp' quietly linted nothing there. Follows the same shape `src/regen/*.lisp'
 already established for the same reason. `src/training/*.lisp' arrived with
-`src/training/history.lisp' and is here for exactly that reason: CL's `*.lisp'
-wildcard does not cross a subdirectory, so a new directory under src/ is linted only
-once it is named here.
+`src/training/history.lisp', and `src/config/*.lisp' with `src/config/missing-value.lisp',
+for exactly that reason: CL's `*.lisp' wildcard does not cross a subdirectory, so a new
+directory under src/ is linted only once it is named here.
 
 `tools/*.lisp' (added for `tools/check-upstream.lisp') covers every hand-written
 script directly under tools/, including `tools/regen.lisp' -- CL's `*.lisp' wildcard

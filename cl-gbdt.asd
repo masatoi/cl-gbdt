@@ -47,7 +47,8 @@
                "cl-gbdt/tests/version"
                "cl-gbdt/tests/training-report"
                "cl-gbdt/tests/training-history"
-               "cl-gbdt/tests/training-early-stopping")
+               "cl-gbdt/tests/training-early-stopping"
+               "cl-gbdt/tests/missing-value")
   :perform (test-op (op c) (symbol-call :rove :run c)))
 
 ;;; Named for its path, like every other system here. That is not only for consistency:
@@ -82,5 +83,9 @@ guard, and have no portable fallback."
                ;; The same *FIXTURES* once more: `make-dataset' ingesting a
                ;; `cl-gbdt:csr-matrix' on both backends, and the `:sparse-input'
                ;; capability that gates it.
-               "cl-gbdt/tests/functional/sparse-input")
+               "cl-gbdt/tests/functional/sparse-input"
+               ;; And once more again: `make-dataset''s :MISSING, the value that means
+               ;; missing, and the `:missing-value' capability that gates it -- true on
+               ;; XGBoost, false on LightGBM, which signals instead.
+               "cl-gbdt/tests/functional/missing-value")
   :perform (test-op (op c) (symbol-call :rove :run c)))
