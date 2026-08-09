@@ -54,9 +54,9 @@
 
 Six, not two: with two the categorical and the quantitative reading of the column agree
 exactly -- one threshold between them separates the classes either way -- and nothing below
-could tell them apart. Six with the classes ALTERNATING is the smallest fixture where no
-ordering of the column separates them, so a model that can only threshold has to approximate
-what a model that can group categories gets exactly.")
+could tell them apart. With six and the classes ALTERNATING no ordering of the column
+separates them, so a model that can only threshold has to approximate what a model that can
+group categories gets exactly.")
 
 (defparameter *rows-per-category* 4
   "How many rows each category of `category-matrix' holds, making it 24 rows in all.
@@ -64,12 +64,13 @@ what a model that can group categories gets exactly.")
 Measured, and chosen from the two sizes tried rather than assumed -- on XGBoost, the only
 backend that answered `:categorical-features' true when the size was chosen. Four is the
 smaller and faster of them, it still gives every category more than one row, and it is where
-the two readings of column 0 are LEAST alike: the arm trained without :CATEGORICAL-FEATURES
-separates its own classes by 0.086 here against 0.106 at eight rows per category, while the
-categorical arm reaches 0.948 here and 0.969 there. Both sizes discriminate, and the
-assertions below hold by a wide margin on either; see
-`marking-a-column-categorical-changes-what-was-learned' for all twelve numbers, and for why
-the size was measured at all rather than picked.
+the two readings of column 0 are LEAST alike BY RATIO: the arm trained without
+:CATEGORICAL-FEATURES separates its own classes by 0.086 here against 0.106 at eight rows per
+category, while the categorical arm reaches 0.948 here and 0.969 there. BY RATIO is the whole
+qualifier: those are 11.0x apart here against 9.1x there, while by absolute separation eight
+rows is a hair wider (0.863 against 0.862). Both sizes discriminate, and the assertions below
+hold by a wide margin on either; see `marking-a-column-categorical-changes-what-was-learned'
+for all twelve numbers, and for why the size was measured at all rather than picked.
 
 LightGBM was measured at this size only, and separates the two readings further still: 0.869
 against 0.000. Four rows per category also happens to be well under LightGBM's own
@@ -242,6 +243,23 @@ than present and equal to zero."
     (cl-gbdt:make-csr-matrix :indptr indptr :indices indices :values values
                              :num-columns columns)))
 
+(defun swapped-category-matrix ()
+  "Return `category-matrix' with its two columns exchanged: column 1 holds the category
+ordinal and column 0 the noise.
+
+Only `a-multi-column-categorical-list-names-every-column-in-it' uses it, and it is what makes
+that test's assertion depend on the SECOND entry of a two-column list: on this matrix a list
+truncated to its first entry names nothing but noise. Row order is `category-matrix''s
+untouched, so `category-means' and `separation-margin' read it exactly as they read the
+original."
+  (let* ((matrix (category-matrix))
+         (rows (array-dimension matrix 0))
+         (swapped (make-array (list rows 2) :element-type 'double-float)))
+    (dotimes (row rows)
+      (setf (aref swapped row 0) (aref matrix row 1))
+      (setf (aref swapped row 1) (aref matrix row 0)))
+    swapped))
+
 (defun booster-parameters (backend-name)
   "Return BACKEND-NAME's entry in *BOOSTER-PARAMETERS*.
 
@@ -276,21 +294,25 @@ is NIL because that backend refuses :PARAMETERS outright."
                  (when categorical-features
                    (list :categorical-features categorical-features)))))
 
-(defun train-on (fixture backend matrix &key categorical-features)
+(defun train-on (fixture backend matrix &key categorical-features
+                                             (predict-matrix (category-matrix)))
   "Train a booster on BACKEND from MATRIX -- dense or a `cl-gbdt:csr-matrix' -- for
-*TRAINING-ROUNDS* rounds, and return its predictions on the dense `category-matrix'.
+*TRAINING-ROUNDS* rounds, and return its predictions on PREDICT-MATRIX, the dense
+`category-matrix' by default.
 
-Predicting on the dense matrix whatever MATRIX was is what makes two such results comparable:
+Predicting on a DENSE matrix whatever MATRIX was is what makes two such results comparable:
 what then differs between them is how the DATASET was built, not what the model was asked
-about. `cl-gbdt:predict' is handed no categorical argument because there is none to hand it --
-see this file's header."
+about. PREDICT-MATRIX exists for `a-multi-column-categorical-list-names-every-column-in-it'
+alone, whose fixture puts the categories in the other column and so has to be predicted on
+with the layout it trained on. `cl-gbdt:predict' is handed no categorical argument because
+there is none to hand it -- see this file's header."
   (cl-gbdt:with-dataset
       (dataset (make-categorical-dataset fixture backend matrix
                                           :categorical-features categorical-features))
     (cl-gbdt:with-booster
         (booster (cl-gbdt:train backend dataset :num-rounds *training-rounds*
                                 :parameters (booster-parameters (getf fixture :backend))))
-      (cl-gbdt:predict booster (category-matrix)))))
+      (cl-gbdt:predict booster predict-matrix))))
 
 (defun predictions-agree-p (left right)
   "True when LEFT and RIGHT, two `cl-gbdt:predict' results, have the same shape and no pair of
@@ -535,6 +557,58 @@ would let this file report a demonstration as skipped when something unrelated h
                                (separation-margin means) means)))))
           (cl-gbdt:close-backend backend))))))
 
+;;; A list naming MORE THAN ONE column, and the delimiter question only a two-column list
+;;; reaches.
+;;;
+;;; LightGBM's column list is one value inside a SPACE-delimited parameter string, so the comma
+;;; `categorical-feature-string' joins with is what keeps `(0 1)' a single value rather than a
+;;; value and a stray token. Every test above names `*CATEGORICAL-COLUMNS*', one column, and
+;;; none of them could see the difference: with the categories in column 0, a list that lost
+;;; everything after its first entry would still name column 0 and still separate the classes.
+;;;
+;;; Hence `swapped-category-matrix', where the categories are in column 1 and the noise in
+;;; column 0. A `(0 1)' that arrives intact names the column carrying the labels; one truncated
+;;; to `(0)' names noise alone. Measured on the swapped fixture, *TRAINING-ROUNDS* rounds, each
+;;; backend's own *BOOSTER-PARAMETERS* entry, margin by :CATEGORICAL-FEATURES argument:
+;;;
+;;;   LightGBM   none 0.000    (0) 0.000    (1) 0.869    (0 1) 0.869
+;;;   XGBoost    none 0.086    (0) 0.086    (1) 0.948    (0 1) 0.948
+;;;
+;;; and what LightGBM is handed for `(0 1)' is `categorical_feature=0,1' -- measured beside
+;;; another key, `min_data_in_leaf=1 categorical_feature=0,1', so the space delimiter is really
+;;; in play. `(0 1)' and `(1)' answer identically on both backends, category for category:
+;;; marking the noise column categorical as well changes no number, which is why the assertion
+;;; below is about the margin and not about the extra column having an effect of its own.
+;;;
+;;; Only on a backend whose capability is true, like every honouring test above.
+
+(deftest a-multi-column-categorical-list-names-every-column-in-it
+  (dolist (fixture *fixtures*)
+    (with-backend-library ((getf fixture :backend))
+      (let ((backend (cl-gbdt:open-backend (getf fixture :backend))))
+        (unwind-protect
+             (when (cl-gbdt:backend-supports-p backend :categorical-features)
+               (let* ((matrix (swapped-category-matrix))
+                      (both (train-on fixture backend matrix :categorical-features '(0 1)
+                                      :predict-matrix matrix))
+                      (first-only (train-on fixture backend matrix :categorical-features '(0)
+                                            :predict-matrix matrix))
+                      (means (category-means both)))
+                 (testing (format nil "~A: :categorical-features '(0 1) separates the ~
+                                       alternating classes by at least ~A on a matrix whose ~
+                                       categories are in column 1"
+                                  (getf fixture :backend) *separating-margin*)
+                   (ok (>= (separation-margin means) *separating-margin*)
+                       (format nil "(0 1) margin ~S from ~S, (0) margin ~S"
+                               (separation-margin means) means
+                               (separation-margin (category-means first-only)))))
+                 (testing (format nil "~A: and answers something else than '(0) alone, which ~
+                                       names only that matrix's noise column"
+                                  (getf fixture :backend))
+                   (ok (not (predictions-agree-p both first-only))
+                       (format nil "(0 1) ~S, (0) ~S" means (category-means first-only))))))
+          (cl-gbdt:close-backend backend))))))
+
 ;;; Policy section 7's central rule: the operation re-checks the capability itself rather than
 ;;; trusting the caller to have asked `backend-supports-p' first, and signals rather than
 ;;; quietly ignoring the argument.
@@ -711,87 +785,105 @@ the refused keys and the accepted one alike, and using the same one for both kee
 halves of `the-parameters-key-is-refused' differing only in the key.")
 
 (deftest the-parameters-key-is-refused
-  (dolist (fixture *fixtures*)
-    (with-backend-library ((getf fixture :backend))
-      (let ((backend (cl-gbdt:open-backend (getf fixture :backend)))
-            (matrix (category-matrix)))
-        (unwind-protect
-             ;; Asked only of a backend this file builds datasets with :PARAMETERS on, read
-             ;; from *FIXTURES* rather than from a backend name. XGBoost's entry there is NIL
-             ;; because that backend refuses :PARAMETERS outright, which would make every
-             ;; assertion below -- the accepted ones included -- signal for a reason that has
-             ;; nothing to do with categorical columns.
-             (let ((base (getf fixture :dataset-parameters)))
-               (when base
-                 (flet ((refusal-for (key &key categorical-features)
-                          "Return the `unsupported-argument' `make-dataset' signals for KEY
+  ;; ASKED is every backend whose shared library was present, CHECKED every one of those
+  ;; whose *FIXTURES* entry actually names :DATASET-PARAMETERS -- the only ones the refusal
+  ;; below is asked of, since XGBoost refuses :PARAMETERS outright. Collected across the loop,
+  ;; and asserted after it, for the reason the capability test above collects its own two
+  ;; lists: every assertion here sits inside `(when base ...)', so a fixture entry that lost
+  ;; its :DATASET-PARAMETERS would leave this file's only coverage of the alias refusal
+  ;; reporting green with nothing asserted at all.
+  (let ((asked '())
+        (checked '()))
+    (dolist (fixture *fixtures*)
+      (with-backend-library ((getf fixture :backend))
+        (push (getf fixture :backend) asked)
+        (let ((backend (cl-gbdt:open-backend (getf fixture :backend)))
+              (matrix (category-matrix)))
+          (unwind-protect
+               ;; Asked only of a backend this file builds datasets with :PARAMETERS on, read
+               ;; from *FIXTURES* rather than from a backend name. XGBoost's entry there is NIL
+               ;; because that backend refuses :PARAMETERS outright, which would make every
+               ;; assertion below -- the accepted ones included -- signal for a reason that has
+               ;; nothing to do with categorical columns.
+               (let ((base (getf fixture :dataset-parameters)))
+                 (when base
+                   (push (getf fixture :backend) checked)
+                   (flet ((refusal-for (key &key categorical-features)
+                            "Return the `unsupported-argument' `make-dataset' signals for KEY
 added to BASE -- with CATEGORICAL-FEATURES named as well when it is non-NIL -- or NIL when it
 built a dataset instead, which is then freed rather than leaked.
 
 CATEGORICAL-FEATURES NIL is passed as nothing at all rather than as `:categorical-features
 nil', for the reason `make-categorical-dataset' gives: it is what makes the two halves of this
 test differ in exactly the way a caller's two calls would."
-                          (handler-case
-                              (progn (cl-gbdt:free-dataset
-                                      (apply #'cl-gbdt:make-dataset
-                                             backend matrix
-                                             :parameters
-                                             (append base
-                                                     (list key
-                                                           *categorical-parameter-value*))
-                                             (when categorical-features
-                                               (list :categorical-features
-                                                     categorical-features))))
-                                     nil)
-                            (cl-gbdt:unsupported-argument (c) c))))
-                   (dolist (key *refused-parameter-keys*)
-                     (testing (format nil "~A: make-dataset signals unsupported-argument for ~
-                                           :parameters ~S alongside :categorical-features ~S, ~
-                                           naming the argument and the backend"
-                                      (getf fixture :backend) key *categorical-columns*)
-                       (let ((condition (refusal-for
-                                         key :categorical-features *categorical-columns*)))
-                         (ok condition "make-dataset signalled instead of building a dataset")
-                         (ok (and condition
-                                  (equal "make-dataset's :parameters"
-                                         (cl-gbdt:unsupported-argument-argument condition)))
-                             (format nil "the condition named argument ~S"
-                                     (and condition
-                                          (cl-gbdt:unsupported-argument-argument condition))))
-                         (ok (and condition
-                                  (eq (getf fixture :backend)
-                                      (cl-gbdt:unsupported-argument-backend condition)))
-                             (format nil "the condition named backend ~S"
-                                     (and condition
-                                          (cl-gbdt:unsupported-argument-backend condition)))))))
-                   (testing (format nil "~A: and does not refuse :parameters ~S alongside ~
-                                         :categorical-features ~S, the library not honouring ~
-                                         it as an alias"
-                                    (getf fixture :backend) *accepted-parameter-key*
-                                    *categorical-columns*)
-                     (let ((condition (refusal-for *accepted-parameter-key*
-                                                   :categorical-features
-                                                   *categorical-columns*)))
-                       (ok (null condition)
-                           (if condition
-                               (format nil "make-dataset signalled about ~S instead of ~
-                                            building a dataset"
-                                       (cl-gbdt:unsupported-argument-argument condition))
-                               "make-dataset built a dataset"))))
-                   ;; The other half of the rule, and the one an over-eager refusal breaks: a
-                   ;; caller who names NO categorical column is on the :PARAMETERS escape hatch
-                   ;; and must keep working. Every refused spelling is asked, not just the
-                   ;; canonical one, since a gate written per-key rather than once around them
-                   ;; all would pass for whichever one happened to be tested.
-                   (dolist (key *refused-parameter-keys*)
-                     (testing (format nil "~A: and does not refuse :parameters ~S when no ~
-                                           :categorical-features is named at all"
-                                      (getf fixture :backend) key)
-                       (let ((condition (refusal-for key)))
+                            (handler-case
+                                (progn (cl-gbdt:free-dataset
+                                        (apply #'cl-gbdt:make-dataset
+                                               backend matrix
+                                               :parameters
+                                               (append base
+                                                       (list key
+                                                             *categorical-parameter-value*))
+                                               (when categorical-features
+                                                 (list :categorical-features
+                                                       categorical-features))))
+                                       nil)
+                              (cl-gbdt:unsupported-argument (c) c))))
+                     (dolist (key *refused-parameter-keys*)
+                       (testing (format nil "~A: make-dataset signals unsupported-argument for ~
+                                             :parameters ~S alongside :categorical-features ~S, ~
+                                             naming the argument and the backend"
+                                        (getf fixture :backend) key *categorical-columns*)
+                         (let ((condition (refusal-for
+                                           key :categorical-features *categorical-columns*)))
+                           (ok condition "make-dataset signalled instead of building a dataset")
+                           (ok (and condition
+                                    (equal "make-dataset's :parameters"
+                                           (cl-gbdt:unsupported-argument-argument condition)))
+                               (format nil "the condition named argument ~S"
+                                       (and condition
+                                            (cl-gbdt:unsupported-argument-argument condition))))
+                           (ok (and condition
+                                    (eq (getf fixture :backend)
+                                        (cl-gbdt:unsupported-argument-backend condition)))
+                               (format nil "the condition named backend ~S"
+                                       (and condition
+                                            (cl-gbdt:unsupported-argument-backend condition)))))))
+                     (testing (format nil "~A: and does not refuse :parameters ~S alongside ~
+                                           :categorical-features ~S, the library not honouring ~
+                                           it as an alias"
+                                      (getf fixture :backend) *accepted-parameter-key*
+                                      *categorical-columns*)
+                       (let ((condition (refusal-for *accepted-parameter-key*
+                                                     :categorical-features
+                                                     *categorical-columns*)))
                          (ok (null condition)
                              (if condition
                                  (format nil "make-dataset signalled about ~S instead of ~
                                               building a dataset"
                                          (cl-gbdt:unsupported-argument-argument condition))
-                                 "make-dataset built a dataset"))))))))
-          (cl-gbdt:close-backend backend))))))
+                                 "make-dataset built a dataset"))))
+                     ;; The other half of the rule, and the one an over-eager refusal breaks: a
+                     ;; caller who names NO categorical column is on the :PARAMETERS escape hatch
+                     ;; and must keep working. Every refused spelling is asked, not just the
+                     ;; canonical one, since a gate written per-key rather than once around them
+                     ;; all would pass for whichever one happened to be tested.
+                     (dolist (key *refused-parameter-keys*)
+                       (testing (format nil "~A: and does not refuse :parameters ~S when no ~
+                                             :categorical-features is named at all"
+                                        (getf fixture :backend) key)
+                         (let ((condition (refusal-for key)))
+                           (ok (null condition)
+                               (if condition
+                                   (format nil "make-dataset signalled about ~S instead of ~
+                                                building a dataset"
+                                           (cl-gbdt:unsupported-argument-argument condition))
+                                   "make-dataset built a dataset"))))))))
+            (cl-gbdt:close-backend backend)))))
+    ;; Guarded on ASKED, not on a backend name: a fresh clone with no vendored library skips
+    ;; every backend through `with-backend-library' and demanding a run from a suite that ran
+    ;; nothing would turn that documented skip into a failure.
+    (when asked
+      (testing "at least one backend with a library present takes :parameters, so this ran"
+        (ok checked
+            (format nil "asked ~S, checked ~S" (reverse asked) (reverse checked)))))))

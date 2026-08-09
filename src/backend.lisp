@@ -171,8 +171,10 @@ misspelling distinguishable from a real answer.
 name which COLUMNS of the data hold categories rather than quantities, so a split on one of
 them partitions the category set instead of thresholding an ordinal that has no order. XGBoost
 answers it through the `\"feature_type\"' field its `XGDMatrixSetStrFeatureInfo' attaches to a
-finished DMatrix. It is a question about `make-dataset' alone: `predict' takes no such
-argument, the trained trees already carrying the category sets they split on.
+finished DMatrix, and LightGBM through a `categorical_feature' key in the parameter string that
+builds the dataset -- a key rather than a C symbol, so nothing a symbol probe can decide. It is
+a question about `make-dataset' alone: `predict' takes no such argument, the trained trees
+already carrying the category sets they split on.
 
 `:evaluation-history' is true on both backends: `train' records one, and each backend names
 the capability in its own `*provided-capabilities*' rather than in `*optional-symbols*',

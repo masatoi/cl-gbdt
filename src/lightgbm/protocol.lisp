@@ -311,9 +311,8 @@ two backends' code saying the same thing, so `make-dataset' here and `make-datas
 know what the other does.
 
 Written against `backend-supports-p' rather than against this backend's name, like both of
-those, so a caller who overwrites the capability plist -- which is what a library that could
-not provide the capability would have produced at `open-backend' -- is refused here rather
-than being handed a dataset built from a capability the backend no longer claims.
+those, so a caller who overwrites the capability plist is refused here rather than being
+handed a dataset built from a capability the backend no longer claims.
 
 Only a non-NIL :CATEGORICAL-FEATURES ever reaches this. NIL means what every caller has always
 got -- every column read as a quantity, and nothing added to the parameter string -- so a

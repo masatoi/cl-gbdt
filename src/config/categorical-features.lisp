@@ -16,32 +16,46 @@
 (uiop:define-package #:cl-gbdt/src/config/categorical-features
   (:use #:cl)
   (:import-from #:cl-gbdt/src/conditions
+                #:dimension-mismatch
                 #:unsupported-argument)
   (:import-from #:cl-gbdt/src/data
                 #:csr-matrix
-                #:csr-matrix-num-columns)
+                #:csr-matrix-num-columns
+                #:foreign-matrix
+                #:foreign-matrix-cols)
   (:export #:categorical-feature-types
            #:categorical-feature-string))
 
 (in-package #:cl-gbdt/src/config/categorical-features)
 
 (defun %matrix-num-features (matrix)
-  "Return MATRIX's column count, for either form `make-dataset' accepts.
+  "Return MATRIX's column count, for every form `make-dataset' accepts.
 
-A `csr-matrix' declares it; anything else is what `with-foreign-matrix' accepts, whose column
-count is its second array dimension. Both renderers below take the matrix and call this rather
-than being handed a count, because the two backends obtain a count at different moments --
-LightGBM builds its parameter string before any dataset exists, XGBoost attaches to a finished
-DMatrix -- and a range check made against two differently-obtained counts is how the same call
-comes to be refused on one backend and accepted on the other.
+There are three of them, all published by `cl-gbdt/src/data': a `csr-matrix' declares its
+count, a `foreign-matrix' carries it in the COLS slot it was built with, and a Lisp array
+holds it as its second dimension. `with-foreign-matrix' accepts the last two and
+`make-dataset' takes the first beside them, so handling only two here is not a narrower
+contract but a `type-error': `(array-dimension <foreign-matrix> 1)' signals one, measured,
+for a matrix form this wrapper documents as accepted.
 
-A matrix of rank below 2 reaches `array-dimension''s own error here, slightly before
-`with-foreign-matrix' would have signalled its typed one. That is reachable only by a caller
-who passes both a malformed matrix and :CATEGORICAL-FEATURES, since nothing calls this
-otherwise."
-  (if (typep matrix 'csr-matrix)
-      (csr-matrix-num-columns matrix)
-      (array-dimension matrix 1)))
+Both renderers below take the matrix and call this rather than being handed a count, because
+the two backends obtain a count at different moments -- LightGBM builds its parameter string
+before any dataset exists, XGBoost attaches to a finished DMatrix -- and a range check made
+against two differently-obtained counts is how the same call comes to be refused on one
+backend and accepted on the other.
+
+An array whose rank is not 2 signals `dimension-mismatch' with the same EXPECTED text
+`cl-gbdt/src/data''s own `call-with-foreign-matrix' signals for it, rather than the untyped
+`\"Vector axis is not zero: 1\"' `array-dimension' answered a rank-1 array with before this
+check existed. A MATRIX that is no array at all still reaches a raw `type-error' here, now
+from `array-rank'; that is reachable only by a caller who passes both a malformed matrix and
+:CATEGORICAL-FEATURES, since nothing calls this otherwise."
+  (typecase matrix
+    (csr-matrix (csr-matrix-num-columns matrix))
+    (foreign-matrix (foreign-matrix-cols matrix))
+    (t (unless (= 2 (array-rank matrix))
+         (error 'dimension-mismatch :expected "a 2D array" :given (array-dimensions matrix)))
+       (array-dimension matrix 1))))
 
 (defun %check-indices (indices num-features backend-name)
   "Signal `unsupported-argument' against BACKEND-NAME unless INDICES is a list of distinct
@@ -107,16 +121,20 @@ takes for INDICES, or NIL when INDICES is NIL.
 The caller's order is preserved: LightGBM reads the value as a set, so reordering it would be
 a difference the caller cannot observe and this function has no reason to introduce.
 
-`*print-base*' is bound to 10 and `*print-radix*' to NIL for the reason
-`cl-gbdt/src/config/missing-value''s `missing-value-json' docstring gives at length: a caller
-whose own `*print-base*' is 16 would otherwise see column 255 rendered `\"FF\"', a
-valid-looking token naming a different column.
+A caller's own printer bindings cannot reach the result, and the `~D' directive is what keeps
+them out: `~D' binds `*print-base*' to 10 and `*print-radix*' to false itself (CLHS 22.3.2.2,
+Tilde D: Decimal). Measured under `*print-base*' 16: `\"~{~D~^,~}\"' renders column 255 as
+`\"255\"', where the same list through `~A' -- or through `princ-to-string' -- renders
+`\"FF\"', a valid-looking token naming a different column. That is the risk
+`cl-gbdt/src/config/missing-value''s `missing-value-json' docstring gives at length; its own
+`let' of the two specials is load-bearing because it prints through `princ-to-string', and one
+here would not be, so there is none.
+`categorical-feature-string-ignores-the-caller-s-print-base' in tests/categorical-features.lisp
+pins the directive in its place.
 
 Signals `unsupported-argument' against BACKEND-NAME for anything `%check-indices' rejects --
 the range check included, even though this renderer does not need the count to do its own
 job, so that a list refused for XGBoost is refused for LightGBM too."
   (when indices
     (%check-indices indices (%matrix-num-features matrix) backend-name)
-    (let ((*print-base* 10)
-          (*print-radix* nil))
-      (format nil "~{~D~^,~}" indices))))
+    (format nil "~{~D~^,~}" indices)))
