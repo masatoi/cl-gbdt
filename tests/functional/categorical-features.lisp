@@ -542,9 +542,11 @@ would let this file report a demonstration as skipped when something unrelated h
 ;;;   LightGBM   none 0.000    (0) 0.000    (1) 0.869    (0 1) 0.869
 ;;;   XGBoost    none 0.086    (0) 0.086    (1) 0.948    (0 1) 0.948
 ;;;
-;;; and what LightGBM is handed for `(0 1)' is `categorical_feature=0,1' -- measured beside
-;;; another key, `min_data_in_leaf=1 categorical_feature=0,1', so the space delimiter is really
-;;; in play. `(0 1)' and `(1)' answer identically on both backends, category for category:
+;;; and this test's own :DATASET-PARAMETERS puts `categorical_feature=0,1' beside three other
+;;; keys rather than none: measured directly, what LightGBM is handed for `(0 1)' is the full
+;;; string `min_data_in_leaf=1 min_data_in_bin=1 verbose=-1 categorical_feature=0,1', so the
+;;; space delimiter is really in play, not merely illustrated. `(0 1)' and `(1)' answer
+;;; identically on both backends, category for category:
 ;;; marking the noise column categorical as well changes no number, which is why the assertion
 ;;; below is about the margin and not about the extra column having an effect of its own.
 ;;;
@@ -585,8 +587,12 @@ would let this file report a demonstration as skipped when something unrelated h
 ;;; hardcoded backend name: one that already answers false is left exactly as it opened, and
 ;;; one that answers true has its capability plist overwritten the way
 ;;; tests/functional/missing-value.lisp and tests/functional/sparse-input.lisp overwrite one
-;;; for the same purpose -- which is what a library that could not provide the capability would
-;;; have produced at `open-backend'.
+;;; for the same purpose. Unlike its model in sparse-input.lisp, where the capability really is
+;;; probed from a C symbol and an old-enough library would produce this same false answer on
+;;; its own, `:categorical-features' sits in `*provided-capabilities*' on both backends --
+;;; recorded true unconditionally, with nothing probed (see `probe-capabilities''s PROVIDED) --
+;;; so no library, however incomplete, can produce a false answer here by itself: the `setf'
+;;; above is the only way to reach this branch.
 ;;;
 ;;; `handler-case', not rove's `signals', which does not reliably catch a condition raised
 ;;; inside `restart-case'; the condition TYPE is asserted, not merely that something signalled.

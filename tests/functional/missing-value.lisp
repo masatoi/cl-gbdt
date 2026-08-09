@@ -543,6 +543,59 @@ something unrelated had broken."
                                (cl-gbdt:dataset-num-rows dataset))))))
           (cl-gbdt:close-backend backend))))))
 
+;;; README.markdown's Missing values section, under "Training and prediction sentinels are
+;;; not tied together", states that XGBoost does not record a dataset's sentinel on the
+;;; booster trained from it, and none is written into a saved model either -- measured when
+;;; the feature shipped, flagged by PR #19's review as measured but never pinned by a test.
+;;;
+;;; Re-measured here rather than trusting the number the claim was first written against: a
+;;; booster trained on this file's fixture with :MISSING *SENTINEL* produced a
+;;; `model-to-string' of 3103 characters, not the 2663 first recorded -- a fact about
+;;; XGBoost's serializer, which is exactly why the assertions below are about the text's
+;;; CONTENT and not its length.
+;;;
+;;; Two substrings, both checked against that real run before being asserted:
+;;;
+;;;   "missing" -- absent from the measured text entirely, confirming that the `"missing"'
+;;;   key `make-dataset' writes into the dataset's own creation config (see this file's
+;;;   header) never reaches the saved model at all.
+;;;
+;;;   "-999" -- *SENTINEL*'s own sign and leading digits. Tried first as the bare digits
+;;;   "999", the more literal reading of "contains no sentinel", and that failed the
+;;;   measured text on the wrong grounds: this model's `loss_changes' field
+;;;   holds `1.4869993E0', an ordinary gain that has nothing to do with the sentinel, and
+;;;   "999" matches inside it. The leading sign rules that coincidence out -- "-999" occurs
+;;;   nowhere in the same text, and nothing this small a fixture trains produces a split
+;;;   threshold, gain or cover anywhere near -999 by chance.
+;;;
+;;; Gated on `:missing-value' alone, the same shape `an-exponent-form-sentinel-reaches-the-
+;;; library' above uses: no `csr-matrix' is built here, so `:sparse-input' plays no part.
+
+(deftest saved-model-text-carries-no-sentinel
+  (dolist (fixture *fixtures*)
+    (with-backend-library ((getf fixture :backend))
+      (let ((backend (cl-gbdt:open-backend (getf fixture :backend))))
+        (unwind-protect
+             (when (cl-gbdt:backend-supports-p backend :missing-value)
+               (cl-gbdt:with-booster
+                   (booster (booster-trained-on fixture backend
+                                                (fixture-matrix :hole-value *sentinel*)
+                                                :missing *sentinel*))
+                 (let ((text (cl-gbdt:model-to-string booster)))
+                   (testing (format nil "~A: model-to-string after training with :missing ~A ~
+                                         writes no \"missing\" key into the saved model"
+                                    (getf fixture :backend) *sentinel*)
+                     (ok (not (search "missing" text))
+                         (format nil "model text length ~S contained ~S at ~S"
+                                 (length text) "missing" (search "missing" text))))
+                   (testing (format nil "~A: and no trace of the sentinel's own sign and ~
+                                         digits either"
+                                    (getf fixture :backend))
+                     (ok (not (search "-999" text))
+                         (format nil "model text length ~S contained ~S at ~S"
+                                 (length text) "-999" (search "-999" text)))))))
+          (cl-gbdt:close-backend backend))))))
+
 ;;; ---------------------------------------------------------------------------
 ;;; `predict''s own :MISSING
 ;;;
