@@ -38,6 +38,29 @@ and signalling nothing; only a NaN comparison would, and that branch is taken fi
         (t (let ((*read-default-float-format* (type-of value)))
              (princ-to-string value)))))
 
+(defun %rational-json (value)
+  "Render the ratio VALUE as a JSON number token, coercing it to `double-float' first.
+
+`missing-value-json''s `integer' clause takes integers ahead of this one, so VALUE is
+always a non-integer rational, which `princ-to-string' would print as `\"1/3\"' -- not a
+JSON number. The coerced double goes through `%float-json', so a ratio far outside the
+double-float range renders as an infinity for the same reason an overflowing float does.
+
+The coercion is wrapped in a `handler-case' because whether it *signals* is a property
+of the platform rather than of VALUE: SBCL enables the `:overflow' trap by default on
+x86-64 and on macOS aarch64, and none of the traps on Linux aarch64 -- see CLAUDE.md's
+floating-point trap masking section for that split. The same ratio therefore raises
+`floating-point-overflow' on the first two and quietly overflows to an infinity on the
+third. Substituting the infinity the untrapped platforms produce makes the rendered
+token identical on all of them, whatever traps the caller has in force. `(plusp value)'
+is an exact comparison on the original rational, so choosing between the two infinities
+cannot itself trap."
+  (%float-json (handler-case (coerce value 'double-float)
+                 (floating-point-overflow ()
+                   (if (plusp value)
+                       sb-ext:double-float-positive-infinity
+                       sb-ext:double-float-negative-infinity)))))
+
 (defun missing-value-json (value backend-name)
   "Return VALUE as the JSON number token a config JSON's missing-value sentinel takes,
 signalling `unsupported-argument' against BACKEND-NAME when VALUE is neither a `real'
@@ -60,14 +83,24 @@ since `floatp' answers T for all three and each has a bare JSON token XGBoost ac
 see that function's docstring for why they are tested rather than printed. A rational
 that overflows on coercion to `double-float' -- an exact ratio far outside the
 double-float range -- renders as an infinity for the same reason an overflowing float
-does: it is passed through `%float-json' too, after the coercion."
+does: `%rational-json' passes it through `%float-json' too, after the coercion.
+
+Which token VALUE renders as never depends on the floating-point trap state in force at
+the call. That is worth guaranteeing because the state is not the same everywhere: SBCL
+enables the `:overflow' trap by default on x86-64 and on macOS aarch64 and none of the
+traps on Linux aarch64 (CLAUDE.md's floating-point trap masking section), so an
+overflowing coercion signals on two of this project's three CI platforms and returns an
+infinity on the third. Every caller under src/ reaches here from an XGBoost protocol
+method whose whole body is masked, which hides the difference in production -- but not
+from a caller outside such a body, which `cl-gbdt/tests/missing-value' is, and not from
+the next caller to be written. `%rational-json' is where the difference is absorbed."
   (let ((*print-base* 10)
         (*print-radix* nil))
     (typecase value
       (null "NaN")
       (float (%float-json value))
       (integer (princ-to-string value))
-      (rational (%float-json (coerce value 'double-float)))
+      (rational (%rational-json value))
       (t (error 'unsupported-argument
                 :backend backend-name
                 :argument ":missing"

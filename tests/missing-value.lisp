@@ -64,17 +64,36 @@
 
 (deftest missing-value-json-renders-an-overflowing-rational-as-an-infinity
   ;; Measured: (/ (expt 10 401) 3) is a ratio, so it takes the `rational' branch, not
-  ;; the `float' one. Coercing it to double-float overflows, and before the fix the
-  ;; rational branch princ'd that overflow raw: "#.DOUBLE-FLOAT-POSITIVE-INFINITY" (and
-  ;; the negative form for the negation), neither a valid JSON number token. Reproduced
-  ;; both with and without float traps masked -- the coercion signals nothing, it just
-  ;; overflows -- so this is not specific to reaching XGBoost through a foreign call.
-  (testing "a huge positive ratio overflows to Infinity"
+  ;; the `float' one. Coercing it to double-float leaves the double-float range, and
+  ;; before the fix the rational branch princ'd the result raw --
+  ;; "#.DOUBLE-FLOAT-POSITIVE-INFINITY", and the negative form for the negation --
+  ;; neither of them a valid JSON number token.
+  ;;
+  ;; Whether that coercion *signals* instead of quietly returning an infinity is a
+  ;; property of the platform, not of the value: SBCL enables the :overflow trap by
+  ;; default on x86-64 and on macOS aarch64 and none of the traps on Linux aarch64
+  ;; (CLAUDE.md's floating-point trap masking section). Each token is therefore checked
+  ;; twice, once under whatever traps the suite inherits and once with them explicitly
+  ;; masked. On x86-64 and macOS aarch64 that is the trapping path followed by the
+  ;; masked one; on Linux aarch64 both runs are masked, since the traps cannot be
+  ;; enabled there at all. Across the three CI platforms both paths are exercised, and
+  ;; every assertion below holds on all three -- which is the point, since the renderer
+  ;; is reached masked from XGBoost's protocol methods and unmasked from here.
+  (testing "a huge positive ratio renders as Infinity under the suite's own traps"
     (ok (equal "Infinity" (%json (/ (expt 10 401) 3)))
         "what (/ (expt 10 401) 3) renders as"))
-  (testing "a huge negative ratio overflows to -Infinity"
+  (testing "a huge negative ratio renders as -Infinity under the suite's own traps"
     (ok (equal "-Infinity" (%json (- (/ (expt 10 401) 3))))
-        "what (- (/ (expt 10 401) 3)) renders as")))
+        "what (- (/ (expt 10 401) 3)) renders as"))
+  (testing "masking the traps leaves both tokens unchanged"
+    (ok (equal "Infinity"
+               (sb-int:with-float-traps-masked (:invalid :divide-by-zero :overflow)
+                 (%json (/ (expt 10 401) 3))))
+        "what (/ (expt 10 401) 3) renders as with the traps masked")
+    (ok (equal "-Infinity"
+               (sb-int:with-float-traps-masked (:invalid :divide-by-zero :overflow)
+                 (%json (- (/ (expt 10 401) 3)))))
+        "what (- (/ (expt 10 401) 3)) renders as with the traps masked")))
 
 (deftest missing-value-json-rejects-a-value-that-is-not-a-real
   (testing "a string signals unsupported-argument"
