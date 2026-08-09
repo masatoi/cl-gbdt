@@ -48,7 +48,8 @@
                "cl-gbdt/tests/training-report"
                "cl-gbdt/tests/training-history"
                "cl-gbdt/tests/training-early-stopping"
-               "cl-gbdt/tests/missing-value")
+               "cl-gbdt/tests/missing-value"
+               "cl-gbdt/tests/categorical-features")
   :perform (test-op (op c) (symbol-call :rove :run c)))
 
 ;;; Named for its path, like every other system here. That is not only for consistency:
