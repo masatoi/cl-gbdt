@@ -1412,6 +1412,14 @@ one of them partitions the category set instead of thresholding an ordinal that 
 `NIL`, the default, is exactly today's behaviour: every column is read as a quantity, the same
 as every call made before the argument existed.
 
+Each backend renders the list its own way. XGBoost attaches it to the finished DMatrix as the
+`"feature_type"` field -- `"c"` for each named column, `"q"` for every other -- through the
+same `XGDMatrixSetStrFeatureInfo` call `:feature-names` already uses, under a different key.
+LightGBM instead composes a `categorical_feature` entry into the parameter string that builds
+the dataset -- see [LightGBM: `categorical_feature` and its four
+aliases](#lightgbm-categorical_feature-and-its-four-aliases) below for what that means when a
+caller also writes the key by hand.
+
 `predict` takes no such argument at all, on either backend. A booster trained from a dataset
 built with categorical columns predicts correctly from a plain matrix regardless -- measured
 below -- because the trained trees already carry the category sets they split on. XGBoost in
