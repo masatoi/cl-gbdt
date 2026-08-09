@@ -21,6 +21,23 @@
 
 (in-package #:cl-gbdt/src/config/missing-value)
 
+(defun %float-json (value)
+  "Render the FLOAT value as a JSON number token, NaN and the infinities included.
+
+NaN and the infinities are tested for before the general case, since `floatp' answers
+T for all three and each has a bare JSON token XGBoost accepts. They are tested with
+`sb-ext:float-nan-p' and `sb-ext:float-infinity-p' rather than by printing, because
+SBCL princs them as `\"#<DOUBLE-FLOAT quiet NaN>\"' and
+`\"#.SB-EXT:DOUBLE-FLOAT-POSITIVE-INFINITY\"'.
+
+`(plusp value)' on an infinity is an ordinary comparison against zero, well-defined
+and signalling nothing; only a NaN comparison would, and that branch is taken first."
+  (cond ((sb-ext:float-nan-p value) "NaN")
+        ((sb-ext:float-infinity-p value)
+         (if (plusp value) "Infinity" "-Infinity"))
+        (t (let ((*read-default-float-format* (type-of value)))
+             (princ-to-string value)))))
+
 (defun missing-value-json (value backend-name)
   "Return VALUE as the JSON number token a config JSON's missing-value sentinel takes,
 signalling `unsupported-argument' against BACKEND-NAME when VALUE is neither a `real'
@@ -38,24 +55,19 @@ binding of 16 cannot turn 255 into the valid-looking `\"FF\"', and
 `\"1.0d-5\"' outright (`json.cc:409: Expecting: \",\"'), measured against the vendored
 library.
 
-NaN and the infinities are tested for before the general float branch, since `floatp'
-answers T for all three, and each has a bare JSON token XGBoost accepts. They are tested
-with `sb-ext:float-nan-p' and `sb-ext:float-infinity-p' rather than by printing, because
-SBCL princs them as `\"#<DOUBLE-FLOAT quiet NaN>\"' and
-`\"#.SB-EXT:DOUBLE-FLOAT-POSITIVE-INFINITY\"'."
+NaN and the infinities are tested for before the general float case, in `%float-json',
+since `floatp' answers T for all three and each has a bare JSON token XGBoost accepts;
+see that function's docstring for why they are tested rather than printed. A rational
+that overflows on coercion to `double-float' -- an exact ratio far outside the
+double-float range -- renders as an infinity for the same reason an overflowing float
+does: it is passed through `%float-json' too, after the coercion."
   (let ((*print-base* 10)
         (*print-radix* nil))
     (typecase value
       (null "NaN")
-      (float
-       (cond ((sb-ext:float-nan-p value) "NaN")
-             ((sb-ext:float-infinity-p value)
-              (if (plusp value) "Infinity" "-Infinity"))
-             (t (let ((*read-default-float-format* (type-of value)))
-                  (princ-to-string value)))))
+      (float (%float-json value))
       (integer (princ-to-string value))
-      (rational (let ((*read-default-float-format* 'double-float))
-                  (princ-to-string (coerce value 'double-float))))
+      (rational (%float-json (coerce value 'double-float)))
       (t (error 'unsupported-argument
                 :backend backend-name
                 :argument ":missing"

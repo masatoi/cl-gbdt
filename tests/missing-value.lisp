@@ -62,6 +62,20 @@
     (ok (equal "-Infinity" (%json sb-ext:double-float-negative-infinity))
         "what -infinity renders as")))
 
+(deftest missing-value-json-renders-an-overflowing-rational-as-an-infinity
+  ;; Measured: (/ (expt 10 401) 3) is a ratio, so it takes the `rational' branch, not
+  ;; the `float' one. Coercing it to double-float overflows, and before the fix the
+  ;; rational branch princ'd that overflow raw: "#.DOUBLE-FLOAT-POSITIVE-INFINITY" (and
+  ;; the negative form for the negation), neither a valid JSON number token. Reproduced
+  ;; both with and without float traps masked -- the coercion signals nothing, it just
+  ;; overflows -- so this is not specific to reaching XGBoost through a foreign call.
+  (testing "a huge positive ratio overflows to Infinity"
+    (ok (equal "Infinity" (%json (/ (expt 10 401) 3)))
+        "what (/ (expt 10 401) 3) renders as"))
+  (testing "a huge negative ratio overflows to -Infinity"
+    (ok (equal "-Infinity" (%json (- (/ (expt 10 401) 3))))
+        "what (- (/ (expt 10 401) 3)) renders as")))
+
 (deftest missing-value-json-rejects-a-value-that-is-not-a-real
   (testing "a string signals unsupported-argument"
     (ok (handler-case (progn (%json "-999.0") nil)
