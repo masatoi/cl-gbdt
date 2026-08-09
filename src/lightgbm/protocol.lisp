@@ -291,6 +291,32 @@ existing call keeps working unchanged."
            :backend (backend-name backend) :capability :missing-value)))
 
 ;;; ---------------------------------------------------------------------------
+;;; The `:categorical-features' gate
+
+(defun %check-categorical-features (backend)
+  "Signal `capability-unavailable' when BACKEND's `:categorical-features' capability reads
+false.
+
+Which, on this backend, is today always: `*provided-capabilities*' does not name it and no
+symbol in `*optional-symbols*' could probe it true, so a caller who names a categorical column
+here is told so rather than having the argument dropped -- policy section 7's rule that the
+operation re-checks the capability itself rather than trusting the caller to have asked
+`backend-supports-p' first, the same rule `%check-sparse-input' and `%check-missing-value'
+above follow for their own.
+
+Written against `backend-supports-p' rather than against this backend's name, like both of
+those: the day this backend declares the capability, the argument starts being accepted here
+without this function changing. Mirrors `cl-gbdt/src/xgboost/protocol''s function of the same
+name, which is the same shape against an answer that is already true.
+
+Only a non-NIL :CATEGORICAL-FEATURES ever reaches this. NIL means what every caller has always
+got -- every column read as a quantity -- so a caller who passes nothing needs no capability
+and every existing call keeps working unchanged."
+  (unless (backend-supports-p backend :categorical-features)
+    (error 'capability-unavailable
+           :backend (backend-name backend) :capability :categorical-features)))
+
+;;; ---------------------------------------------------------------------------
 ;;; Datasets
 
 (defun %dataset-pointer (backend matrix parameter-string reference-pointer)
@@ -326,7 +352,8 @@ whole method single and varies only the call that actually differs."
               "LGBM_DatasetCreateFromMat")))
 
 (defmethod make-dataset ((backend lightgbm-backend) matrix
-                          &key label weight group feature-names parameters reference missing)
+                          &key label weight group feature-names parameters reference missing
+                            categorical-features)
   "Build a LightGBM dataset from MATRIX -- a dense matrix via `LGBM_DatasetCreateFromMat',
 a `csr-matrix' via `LGBM_DatasetCreateFromCSR' -- attaching LABEL, WEIGHT and GROUP with
 `LGBM_DatasetSetField' and FEATURE-NAMES with `LGBM_DatasetSetFeatureNames' when supplied.
@@ -347,6 +374,11 @@ a NaN LightGBM would in fact honour is refused with the rest. MISSING NIL, the d
 this backend's own default and reaches no check: every call that does not name a sentinel
 behaves exactly as it did before the argument existed.
 
+Signals `capability-unavailable' naming `:categorical-features' for a non-NIL
+CATEGORICAL-FEATURES, for as long as this backend does not declare that capability -- see
+`%check-categorical-features' above, which reads the capability rather than the backend's
+name. CATEGORICAL-FEATURES NIL, the default, reaches no check either.
+
 Signals `foreign-call-error' when dataset creation reports success but writes a
 null handle -- a library-contract violation, but one every later call through
 this handle would otherwise dereference blindly. Signals `wrong-backend-reference'
@@ -366,6 +398,8 @@ Signals `backend-not-open' before any of that when BACKEND is not open -- see
     (%check-backend-open backend)
     (when missing
       (%check-missing-value backend))
+    (when categorical-features
+      (%check-categorical-features backend))
     (let ((reference-pointer (%reference-pointer backend reference 'lightgbm-dataset))
           (parameter-string (%parameter-string parameters)))
       (multiple-value-bind (dataset-pointer function-name)

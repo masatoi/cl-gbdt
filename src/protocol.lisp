@@ -30,7 +30,7 @@
 
 (defgeneric make-dataset (backend matrix
                            &key label weight group feature-names parameters reference
-                             missing)
+                             missing categorical-features)
   (:documentation "Build a training dataset for BACKEND from MATRIX.
 
 MATRIX is either a dense matrix -- anything `with-foreign-matrix' accepts -- or a
@@ -84,6 +84,34 @@ data at SINGLE precision, whatever MATRIX's own element type. Two `double-float'
 to the same `single-float' therefore both count as missing -- probed against the vendored
 library, the sentinel 16777217.0 matches the datum 16777216.0d0, a different double sharing
 its float32, and does not match 16777224.0d0, which is a different float32.
+
+CATEGORICAL-FEATURES is a list of 0-based column indices naming which columns of MATRIX hold
+CATEGORIES rather than quantities. A category ordinal is a label, not a magnitude: a split on
+a quantitative column can only ask whether the value is above some threshold, which is a
+question about an order the ordinals do not have, while a split on a categorical one asks
+which SUBSET of the categories a row falls in. The distinction is invisible in the data --
+both are numbers in the same matrix -- so it is stated here or not at all. The order of the
+list is the caller's and carries no meaning; the same column named twice is an error rather
+than a duplicate to collapse.
+
+NIL, the default, is the backend's own default -- every column read as a quantity -- and is
+exactly what every call got before this argument existed. An index that is not an integer, is
+negative, is beyond MATRIX's last column, or was named twice signals `unsupported-argument'
+naming `:categorical-features'. The column count that range check is made against is MATRIX's
+own, and MATRIX may be a `csr-matrix', whose DECLARED width it is: CATEGORICAL-FEATURES means
+the same thing for either form.
+
+A non-NIL CATEGORICAL-FEATURES needs BACKEND's `:categorical-features' capability, which
+`make-dataset' re-checks itself: a caller who never asked `backend-supports-p' gets
+`capability-unavailable' rather than an argument silently ignored, and no backend ever falls
+back to reading the column as a quantity instead. XGBoost provides it -- the column list
+becomes the `\"feature_type\"' field it attaches to a finished DMatrix.
+
+`predict' takes no CATEGORICAL-FEATURES of its own, and deliberately: measured, a booster
+trained from a dataset built with one predicts correctly from a plain matrix, the trained
+trees carrying the category sets they split on rather than re-deriving them from what they are
+asked about. Naming the columns again at prediction time would be a second place for the same
+statement to be wrong.
 
 REFERENCE, when supplied, is an existing dataset from the same backend whose bin mapper
 the new dataset aligns to instead of computing its own. A validation dataset destined

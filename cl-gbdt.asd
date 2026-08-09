@@ -88,5 +88,9 @@ guard, and have no portable fallback."
                ;; And once more again: `make-dataset''s :MISSING, the value that means
                ;; missing, and the `:missing-value' capability that gates it -- true on
                ;; XGBoost, false on LightGBM, which signals instead.
-               "cl-gbdt/tests/functional/missing-value")
+               "cl-gbdt/tests/functional/missing-value"
+               ;; The same *FIXTURES* one last time: `make-dataset''s
+               ;; :CATEGORICAL-FEATURES, which columns hold categories rather than
+               ;; quantities, and the `:categorical-features' capability that gates it.
+               "cl-gbdt/tests/functional/categorical-features")
   :perform (test-op (op c) (symbol-call :rove :run c)))

@@ -153,7 +153,8 @@ to this function can detect it here."
     :early-stopping
     :model-slicing
     :multidimensional-feature-score
-    :missing-value)
+    :missing-value
+    :categorical-features)
   "Every capability name `backend-supports-p' will answer for.
 
 Policy section 7 named five as a MINIMUM -- it asks that at least those be answerable, not
@@ -165,6 +166,13 @@ as soon as it is a question worth asking, whether or not any backend answers tru
 `:multidimensional-feature-score' is registered and false everywhere, which says \"not
 supported yet\" rather than \"never heard of it\". Registering the name is what makes a
 misspelling distinguishable from a real answer.
+
+`:categorical-features' is the second name past that floor: whether the backend lets a caller
+name which COLUMNS of the data hold categories rather than quantities, so a split on one of
+them partitions the category set instead of thresholding an ordinal that has no order. XGBoost
+answers it through the `\"feature_type\"' field its `XGDMatrixSetStrFeatureInfo' attaches to a
+finished DMatrix. It is a question about `make-dataset' alone: `predict' takes no such
+argument, the trained trees already carrying the category sets they split on.
 
 `:evaluation-history' is true on both backends: `train' records one, and each backend names
 the capability in its own `*provided-capabilities*' rather than in `*optional-symbols*',
