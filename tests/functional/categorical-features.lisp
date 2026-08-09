@@ -37,8 +37,14 @@
   ;; :lightgbm)' below would signal `unknown-backend'.
   (:import-from #:cl-gbdt/src/lightgbm/all)
   (:import-from #:cl-gbdt/src/xgboost/all)
+  ;; `dense-to-csr' stores every element of the matrix it converts, zeros included. What this
+  ;; file needs that for: an entry a `csr-matrix' does not store is MISSING to XGBoost whatever
+  ;; any config says, and category 0's rows would otherwise arrive with their category absent
+  ;; rather than present and equal to zero.
   (:import-from #:cl-gbdt/tests/functional/support
-                #:with-backend-library)
+                #:with-backend-library
+                #:predictions-agree-p
+                #:dense-to-csr)
   ;; The fixture table comes from evaluation.lisp rather than being restated here, for the
   ;; reason that file's own export comment gives: a second table saying the same thing in its
   ;; own words is how two files that must agree stop agreeing. Only *FIXTURES* --
@@ -87,19 +93,6 @@ Twenty rather than the five tests/functional/missing-value.lisp uses: the depth-
 fixture trains move slowly, and the point of the comparison is what the two readings CONVERGE
 to, not how fast. Fewer rounds shrinks both arms' separation together and blunts the
 measurement rather than changing what it says.")
-
-(defparameter *prediction-tolerance* 1d-9
-  "How far two `cl-gbdt:predict' results may differ, element for element, and still count as
-the same numbers below.
-
-The same value, for the same reason, as tests/functional/missing-value.lisp's parameter of
-this name: both backends train and predict deterministically from fixed data, so two runs
-that built the same dataset should come off identical trees down identical paths. It is small
-enough that nothing this file exists to catch survives it: the two arms of every inequality
-below differ by 0.158 on XGBoost, and by 0.119 on LightGBM, at the category where they are
-closest -- and the inequality needs only ONE element over the tolerance, so what it actually
-rests on is the 0.435 they differ by where they are furthest apart, which is the same number
-on both. All of them are eight orders of magnitude above this.")
 
 (defparameter *separating-margin* 0.5d0
   "How far the worst-scored positive category must sit above the best-scored negative one for
@@ -219,30 +212,6 @@ marked every column."
             (if (category-positive-p (floor row *rows-per-category*)) 1.0 0.0)))
     label-vector))
 
-(defun category-csr (matrix)
-  "Return MATRIX, a `category-matrix' result, as a `cl-gbdt:csr-matrix' of the same width.
-
-Every element is stored explicitly, zeros included, rather than only the non-zero ones a CSR
-conversion usually keeps -- the same reason tests/functional/missing-value.lisp's
-`fixture-csr' gives: an entry a `csr-matrix' does not store is MISSING to XGBoost whatever any
-config says, and category 0's rows would otherwise arrive with their category absent rather
-than present and equal to zero."
-  (let* ((rows (array-dimension matrix 0))
-         (columns (array-dimension matrix 1))
-         (indptr (make-array (1+ rows)))
-         (indices (make-array (* rows columns)))
-         (values (make-array (* rows columns)))
-         (position 0))
-    (dotimes (row rows)
-      (setf (aref indptr row) position)
-      (dotimes (column columns)
-        (setf (aref indices position) column)
-        (setf (aref values position) (aref matrix row column))
-        (incf position)))
-    (setf (aref indptr rows) position)
-    (cl-gbdt:make-csr-matrix :indptr indptr :indices indices :values values
-                             :num-columns columns)))
-
 (defun swapped-category-matrix ()
   "Return `category-matrix' with its two columns exchanged: column 1 holds the category
 ordinal and column 0 the noise.
@@ -313,14 +282,6 @@ there is none to hand it -- see this file's header."
         (booster (cl-gbdt:train backend dataset :num-rounds *training-rounds*
                                 :parameters (booster-parameters (getf fixture :backend))))
       (cl-gbdt:predict booster predict-matrix))))
-
-(defun predictions-agree-p (left right)
-  "True when LEFT and RIGHT, two `cl-gbdt:predict' results, have the same shape and no pair of
-corresponding elements differs by more than *PREDICTION-TOLERANCE*."
-  (and (equal (array-dimensions left) (array-dimensions right))
-       (loop :for index :below (array-total-size left)
-             :always (<= (abs (- (row-major-aref left index) (row-major-aref right index)))
-                         *prediction-tolerance*))))
 
 (defun category-means (predictions)
   "Return one mean score per category, in category order, from PREDICTIONS -- a
@@ -523,7 +484,14 @@ would let this file report a demonstration as skipped when something unrelated h
 ;;; matrix's second dimension, and that each library honours a categorical column on a dataset
 ;;; built from CSR at all.
 ;;;
-;;; Measured the same way as the dense test, and -- `category-csr' storing every element
+;;; `dense-to-csr' stores every element, zeros included, and this is where this file needs
+;;; that: an entry a `csr-matrix' does not store is MISSING to XGBoost whatever any config
+;;; says. Category 0 IS the ordinal 0.0, on all four of its rows, so a conversion that dropped
+;;; zeros would deliver those rows with their category ABSENT rather than present and equal to
+;;; zero -- and half of column 1's noise with them. The categorical arm would then be grouping
+;;; five categories and a hole rather than the six this fixture is built to alternate.
+;;;
+;;; Measured the same way as the dense test, and -- `dense-to-csr' storing every element
 ;;; explicitly -- the same numbers on each backend as that test's, digit for digit:
 ;;; 0.816 / 0.406 / 0.547 / 0.461 / 0.556 / 0.193 plain and 0.974 / 0.026 / 0.974 / 0.026 /
 ;;; 0.974 / 0.026 categorical on XGBoost, 0.815 / 0.473 / 0.500 / 0.500 / 0.527 / 0.184 plain
@@ -538,7 +506,7 @@ would let this file report a demonstration as skipped when something unrelated h
         (unwind-protect
              (when (and (cl-gbdt:backend-supports-p backend :categorical-features)
                         (cl-gbdt:backend-supports-p backend :sparse-input))
-               (let* ((csr (category-csr (category-matrix)))
+               (let* ((csr (dense-to-csr (category-matrix)))
                       (categorical (train-on fixture backend csr
                                              :categorical-features *categorical-columns*))
                       (plain (train-on fixture backend csr))
@@ -574,9 +542,12 @@ would let this file report a demonstration as skipped when something unrelated h
 ;;;   LightGBM   none 0.000    (0) 0.000    (1) 0.869    (0 1) 0.869
 ;;;   XGBoost    none 0.086    (0) 0.086    (1) 0.948    (0 1) 0.948
 ;;;
-;;; and what LightGBM is handed for `(0 1)' is `categorical_feature=0,1' -- measured beside
-;;; another key, `min_data_in_leaf=1 categorical_feature=0,1', so the space delimiter is really
-;;; in play. `(0 1)' and `(1)' answer identically on both backends, category for category:
+;;; and *FIXTURES*' own :DATASET-PARAMETERS, which this test builds its dataset from like
+;;; every other test in this file, puts `categorical_feature=0,1' beside three other keys
+;;; rather than none: measured directly, what LightGBM is handed for `(0 1)' is the full
+;;; string `min_data_in_leaf=1 min_data_in_bin=1 verbose=-1 categorical_feature=0,1', so the
+;;; space delimiter is really in play, not merely illustrated. `(0 1)' and `(1)' answer
+;;; identically on both backends, category for category:
 ;;; marking the noise column categorical as well changes no number, which is why the assertion
 ;;; below is about the margin and not about the extra column having an effect of its own.
 ;;;
@@ -617,8 +588,12 @@ would let this file report a demonstration as skipped when something unrelated h
 ;;; hardcoded backend name: one that already answers false is left exactly as it opened, and
 ;;; one that answers true has its capability plist overwritten the way
 ;;; tests/functional/missing-value.lisp and tests/functional/sparse-input.lisp overwrite one
-;;; for the same purpose -- which is what a library that could not provide the capability would
-;;; have produced at `open-backend'.
+;;; for the same purpose. Unlike its model in sparse-input.lisp, where the capability really is
+;;; probed from a C symbol and an old-enough library would produce this same false answer on
+;;; its own, `:categorical-features' sits in `*provided-capabilities*' on both backends --
+;;; recorded true unconditionally, with nothing probed (see `probe-capabilities''s PROVIDED) --
+;;; so no library, however incomplete, can produce a false answer here by itself: the `setf'
+;;; above is the only way to reach this branch.
 ;;;
 ;;; `handler-case', not rove's `signals', which does not reliably catch a condition raised
 ;;; inside `restart-case'; the condition TYPE is asserted, not merely that something signalled.

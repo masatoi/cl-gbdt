@@ -17,8 +17,8 @@ file if you have it locally).
 `make-dataset`, `dataset-num-rows`, `dataset-num-features`, `train`,
 `update-one-iteration`, `predict`, `save-model`, `load-model`, `model-to-string`,
 `feature-importance`, `evaluation`, `free-dataset` and `free-booster` -- against the real
-LightGBM and XGBoost shared libraries, exercised by 470 functional assertions (design doc
-section 12, layer 2), in addition to 404 assertions that need no shared library at all
+LightGBM and XGBoost shared libraries, exercised by 480 functional assertions (design doc
+section 12, layer 2), in addition to 411 assertions that need no shared library at all
 (layer 1). `train` also returns a `training-report` as its secondary value, and takes
 `:early-stopping` to end a run once a watched metric stops improving -- see
 [Training report](#training-report) below. `make-dataset` and `predict` also accept a
@@ -2036,9 +2036,10 @@ Two things those scripts do that the plain commands above do not, and that CI ne
   invoking it directly would be permanently green. `rove:run` returns false on failure and
   the script turns that into a status.
 - **They check which foreign libraries were opened.** Layer 1 must open none; layer 2 must
-  open both. A functional run where every test skipped for want of `vendor/` prints the same
-  summary as one where every test passed, so the difference has to be asserted rather than
-  inferred.
+  open both. rove counts a skip as pending rather than as a failure, so a functional run in
+  which every library-dependent test skipped for want of `vendor/` still exits green and still
+  reports each test file as completed — the summary reads the same as one where both libraries
+  really were called. The difference has to be asserted rather than inferred.
 
 `tools/ci/lint.lisp` runs mallet *and* a column-width check, because mallet does not check
 line length — a 132-column file passes it without comment. mallet is not in the Quicklisp

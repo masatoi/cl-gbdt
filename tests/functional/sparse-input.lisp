@@ -39,10 +39,18 @@
   ;; :lightgbm)' below would signal `unknown-backend'.
   (:import-from #:cl-gbdt/src/lightgbm/all)
   (:import-from #:cl-gbdt/src/xgboost/all)
+  ;; `dense-to-csr' stores every element of the matrix it converts, zeros included. What this
+  ;; file needs that for: `sparse-and-dense-training-agree' below compares a sparsely-trained
+  ;; model against a densely-trained one, so a conversion that dropped zeros would be
+  ;; describing different data to the two backends -- 0.0 to LightGBM, missing to XGBoost --
+  ;; and that test would be asserting something different on each.
   (:import-from #:cl-gbdt/tests/functional/support
                 #:with-backend-library
                 #:make-separable-dataset
-                #:predictions-separate-p)
+                #:predictions-separate-p
+                #:*prediction-tolerance*
+                #:predictions-agree-p
+                #:dense-to-csr)
   ;; The fixture table and its dataset builder come from evaluation.lisp rather than being
   ;; restated here, for the reason that file's own export comment gives: a second table
   ;; saying the same thing in its own words is how two files that must agree stop agreeing.
@@ -54,53 +62,6 @@
                 #:make-fixture-dataset))
 
 (in-package #:cl-gbdt/tests/functional/sparse-input)
-
-(defparameter *prediction-tolerance* 1d-9
-  "How far two `cl-gbdt:predict' results may differ, element for element, and still count as
-the same numbers in `sparse-and-dense-training-agree' and `sparse-and-dense-prediction-agree'.
-
-Exact equality is what is actually expected: the dense and CSR ingestion paths hand the
-library the same values, and both libraries train deterministically from a fixed dataset, so
-the two boosters should be identical trees. The tolerance is here because that expectation
-rests on the two C entry points accumulating in the same order, which neither library
-documents, and a last-bit difference would be a true negative dressed as a failure. It is
-small enough that nothing this test exists to catch survives it: a transposed index, a
-dropped row or a matrix read as zeros moves a probability by far more than 1d-9.")
-
-(defun dense-to-csr (matrix &key (num-columns (array-dimension matrix 1)))
-  "Return MATRIX, a 2D `double-float' array, as a `cl-gbdt:csr-matrix' NUM-COLUMNS wide.
-
-Every element of MATRIX is stored explicitly, zeros included, rather than only the non-zero
-ones a CSR conversion usually keeps. The two libraries do not agree on what an ABSENT entry
-means -- LightGBM reads one as 0.0 while its own `zero_as_missing' is off, XGBoost reads one
-as missing -- so a conversion that dropped zeros would be describing different data to the
-two backends, and `sparse-and-dense-training-agree' below would be asserting something
-different on each. Storing every element leaves the `csr-matrix' and MATRIX describing the
-same numbers on both, which is the property that test is about.
-
-NUM-COLUMNS defaults to MATRIX's own width. A larger value declares trailing columns that
-hold nothing at all -- no entry of INDICES names them -- which is what
-`sparse-dataset-reports-the-declared-width' needs and where the absent-entry case is
-covered instead.
-
-This is the only place a `csr-matrix' is built from the suite's dense fixture, so the two
-forms of the same data cannot drift apart."
-  (let* ((rows (array-dimension matrix 0))
-         (cols (array-dimension matrix 1))
-         (stored (* rows cols))
-         (indptr (make-array (1+ rows)))
-         (indices (make-array stored))
-         (values (make-array stored))
-         (position 0))
-    (dotimes (row rows)
-      (setf (aref indptr row) position)
-      (dotimes (col cols)
-        (setf (aref indices position) col)
-        (setf (aref values position) (aref matrix row col))
-        (incf position)))
-    (setf (aref indptr rows) position)
-    (cl-gbdt:make-csr-matrix :indptr indptr :indices indices :values values
-                             :num-columns num-columns)))
 
 (defun single-column-matrix (values)
   "Return VALUES, a list of reals, as a `(simple-array double-float (N 1))'.
@@ -125,17 +86,63 @@ input row and one column per class. Every fixture's objective is binary, so COLU
     (dotimes (row rows result)
       (setf (aref result row) (aref predictions row column)))))
 
-(defun predictions-agree-p (left right)
-  "True when LEFT and RIGHT, two `cl-gbdt:predict' results, have the same shape and no pair
-of corresponding elements differs by more than *PREDICTION-TOLERANCE*."
-  (and (equal (array-dimensions left) (array-dimensions right))
-       (loop :for index :below (array-total-size left)
-             :always (<= (abs (- (row-major-aref left index) (row-major-aref right index)))
-                         *prediction-tolerance*))))
-
 (defun fixture-for (backend-name)
   "Return the *FIXTURES* entry for BACKEND-NAME."
   (find backend-name *fixtures* :key (lambda (fixture) (getf fixture :backend))))
+
+;;; ---------------------------------------------------------------------------
+;;; The shared helper every comparison below rests on
+;;;
+;;; `predictions-agree-p' SIGNALS on a shape mismatch rather than answering NIL -- see its own
+;;; docstring in tests/functional/support.lisp for why. Four assertions in this file read
+;;; `(not (predictions-agree-p ...))', and a NIL answer satisfies every one of them without
+;;; comparing a single number. Nothing pinned that branch, so deleting it -- a plausible
+;;; "simplification" back to `(and (equal dims) ...)' -- would restore that false pass. This is
+;;; the pin: measured with the `unless' deleted from `predictions-agree-p', the two mismatch
+;;; assertions below go red, the control below them stays green, and no other file in layer 2
+;;; changes.
+;;;
+;;; It lives here rather than in support.lisp because that file defines no test of its own,
+;;; and adding one there would move rove's per-file test count. This file was chosen among the
+;;; three that call the helper because its own comparisons are the shape-varied ones: :KIND
+;;; :RAW against :NORMAL, a limited :NUM-ITERATION against an unlimited one, a dense matrix
+;;; against two different CSR forms of it.
+;;;
+;;; No `with-backend-library', and no booster: the helper is pure Lisp over two arrays, so two
+;;; `double-float' arrays of different shapes are the whole input and no shared library is
+;;; reached. `handler-case', not rove's `signals', which does not reliably catch a condition
+;;; raised inside `restart-case'; the condition TYPE is asserted, not merely that something
+;;; signalled. That type is `simple-error', which is what the helper's bare `(error "...")'
+;;; signals -- measured.
+;;;
+;;; The argument ORDER in both mismatch calls is load-bearing: the SMALLER array is LEFT. The
+;;; loop under the guard runs to `(array-total-size left)' and indexes RIGHT with that same
+;;; index, so with the guard deleted a smaller LEFT stays in bounds on RIGHT, the loop finds
+;;; every pair equal, and the function returns T -- a clean FAILED assertion. Reversed, it
+;;; would index past RIGHT's end and raise `sb-int:invalid-array-index-error', which
+;;; `(simple-error () t)' does not catch -- measured: that condition is a subtype of
+;;; `type-error' and not of `simple-error' -- so the test would ERROR instead of failing, and
+;;; pin the guard far less legibly.
+
+(deftest predictions-agree-p-signals-on-a-shape-mismatch
+  (let ((two-by-one (make-array '(2 1) :element-type 'double-float :initial-element 0d0))
+        (two-by-two (make-array '(2 2) :element-type 'double-float :initial-element 0d0))
+        (three-by-one (make-array '(3 1) :element-type 'double-float :initial-element 0d0)))
+    (testing "a differing column count signals rather than answering NIL"
+      (ok (handler-case (progn (predictions-agree-p two-by-one two-by-two) nil)
+            (simple-error () t))
+          "whether comparing a (2 1) result against a (2 2) one signalled"))
+    (testing "a differing row count signals too"
+      (ok (handler-case (progn (predictions-agree-p two-by-one three-by-one) nil)
+            (simple-error () t))
+          "whether comparing a (2 1) result against a (3 1) one signalled"))
+    ;; The control: the guard rejects mismatched shapes only, not every call. Without it, a
+    ;; helper that signalled unconditionally would pass both assertions above.
+    (testing "two results of the same shape still compare normally"
+      (ok (predictions-agree-p two-by-one
+                               (make-array '(2 1) :element-type 'double-float
+                                                  :initial-element 0d0))
+          "whether two identical (2 1) results still agree"))))
 
 ;;; ---------------------------------------------------------------------------
 ;;; The capability this task ships
@@ -182,6 +189,13 @@ of corresponding elements differs by more than *PREDICTION-TOLERANCE*."
 ;;; trained on either must be the same model. An implementation that transposed INDICES
 ;;; against INDPTR, dropped the last row by passing the wrong NINDPTR, or handed the library
 ;;; a buffer of zeros would satisfy every shape assertion in this file and fail here.
+;;;
+;;; That rests on `dense-to-csr' storing EVERY element, zeros included, and this is the test
+;;; that needs it: the fixture's single zero is element [0][0], and an entry a `csr-matrix'
+;;; does not store is 0.0 to LightGBM but MISSING to XGBoost. A conversion that dropped it
+;;; would leave the sparse arm trained on different data from the dense arm -- and on
+;;; DIFFERENTLY different data per backend, so this test would be asserting something other
+;;; than what it says, and something other than that on each.
 ;;;
 ;;; Within one backend only, never across the two -- LightGBM and XGBoost train different
 ;;; models from the same rows by design, and policy section 13 forbids comparing their

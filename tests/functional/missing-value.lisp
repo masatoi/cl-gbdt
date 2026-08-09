@@ -38,8 +38,15 @@
   ;; :lightgbm)' below would signal `unknown-backend'.
   (:import-from #:cl-gbdt/src/lightgbm/all)
   (:import-from #:cl-gbdt/src/xgboost/all)
+  ;; `dense-to-csr' stores every element of the matrix it converts, zeros included. What this
+  ;; file needs that for: an entry a `csr-matrix' does not store is MISSING to XGBoost whatever
+  ;; any config says -- see that struct's own docstring, where the divergence is stated -- so a
+  ;; conversion that dropped zeros would hand the library a second, unnamed missing cell and
+  ;; `prediction-sentinel-works-on-a-csr-matrix' would no longer be about its sentinel alone.
   (:import-from #:cl-gbdt/tests/functional/support
-                #:with-backend-library)
+                #:with-backend-library
+                #:predictions-agree-p
+                #:dense-to-csr)
   ;; The fixture table and its dataset builder come from evaluation.lisp rather than being
   ;; restated here, for the reason that file's own export comment gives: a second table saying
   ;; the same thing in its own words is how two files that must agree stop agreeing.
@@ -51,19 +58,6 @@
                 #:make-fixture-dataset))
 
 (in-package #:cl-gbdt/tests/functional/missing-value)
-
-(defparameter *prediction-tolerance* 1d-9
-  "How far two `cl-gbdt:predict' results may differ, element for element, and still count as
-the same numbers below.
-
-Exact equality is what is actually expected of every equality this file asserts: a sentinel
-honoured and a stored NaN describe the same missing cell to the library, and both backends
-train and predict deterministically from fixed data, so the two answers should come off
-identical trees down identical paths. The tolerance is here because that expectation rests on
-two config strings reaching the same code path inside the library, which nothing documents.
-It is small enough that nothing this file exists to catch survives it: the measured gaps the
-inequality assertions rest on are 0.026 on XGBoost's ingestion path and 0.693 on its
-prediction path, seven and eight orders of magnitude above this.")
 
 (defparameter *training-rounds* 5
   "How many boosting rounds every booster below is trained for. Five, matching
@@ -215,43 +209,6 @@ asked about. It also keeps every test that uses this about the INGESTION path al
 `predict''s own :MISSING."
   (cl-gbdt:with-booster (booster (booster-trained-on fixture backend matrix :missing missing))
     (cl-gbdt:predict booster (fixture-matrix))))
-
-(defun fixture-csr (matrix)
-  "Return MATRIX, a `fixture-matrix' result, as a `cl-gbdt:csr-matrix' of the same width.
-
-Every element is stored explicitly, zeros included, rather than only the non-zero ones a CSR
-conversion usually keeps. An entry a `csr-matrix' does not store is MISSING to XGBoost
-whatever any config says -- see that struct's own docstring, where the divergence is stated
--- so a conversion that dropped zeros would hand the library a second, unnamed missing cell
-and `prediction-sentinel-works-on-a-csr-matrix' would no longer be about its sentinel alone.
-
-tests/functional/sparse-input.lisp converts its own dense fixture the same way, but its
-`dense-to-csr' is that file's internal helper over that file's fixture; the reason for
-storing every element is a different one there, and stating this one here keeps it next to
-the test that depends on it."
-  (let* ((rows (array-dimension matrix 0))
-         (columns (array-dimension matrix 1))
-         (indptr (make-array (1+ rows)))
-         (indices (make-array (* rows columns)))
-         (values (make-array (* rows columns)))
-         (position 0))
-    (dotimes (row rows)
-      (setf (aref indptr row) position)
-      (dotimes (column columns)
-        (setf (aref indices position) column)
-        (setf (aref values position) (aref matrix row column))
-        (incf position)))
-    (setf (aref indptr rows) position)
-    (cl-gbdt:make-csr-matrix :indptr indptr :indices indices :values values
-                             :num-columns columns)))
-
-(defun predictions-agree-p (left right)
-  "True when LEFT and RIGHT, two `cl-gbdt:predict' results, have the same shape and no pair of
-corresponding elements differs by more than *PREDICTION-TOLERANCE*."
-  (and (equal (array-dimensions left) (array-dimensions right))
-       (loop :for index :below (array-total-size left)
-             :always (<= (abs (- (row-major-aref left index) (row-major-aref right index)))
-                         *prediction-tolerance*))))
 
 ;;; ---------------------------------------------------------------------------
 ;;; The capability this task ships
@@ -408,8 +365,15 @@ something unrelated had broken."
 ;;; backend's own default, which is what dropping the sentinel there amounts to -- fails both
 ;;; assertions below and nothing else in either suite.
 ;;;
+;;; `dense-to-csr' stores every element, zeros included, and this is where this file needs
+;;; that: an entry a `csr-matrix' does not store is MISSING to XGBoost whatever any config
+;;; says. The fixture's column 0 is 0.0 on all four negative rows, so a conversion that
+;;; dropped zeros would hand the library four more missing cells that nothing named -- and the
+;;; assertions below would no longer be about the sentinel alone, which is the whole subject
+;;; of this file.
+;;;
 ;;; Measured against the vendored XGBoost before either assertion was written, the same five
-;;; rounds on the same eight rows as the dense test above -- and, `fixture-csr' storing every
+;;; rounds on the same eight rows as the dense test above -- and, `dense-to-csr' storing every
 ;;; element explicitly, the same three numbers: the four negative rows answer 0.153285950422287
 ;;; in every case, and the four positive rows are what move:
 ;;;
@@ -428,12 +392,12 @@ something unrelated had broken."
              (when (and (cl-gbdt:backend-supports-p backend :missing-value)
                         (cl-gbdt:backend-supports-p backend :sparse-input))
                (let ((honoured (train-on fixture backend
-                                         (fixture-csr (fixture-matrix :hole-value *sentinel*))
+                                         (dense-to-csr (fixture-matrix :hole-value *sentinel*))
                                          :missing *sentinel*))
                      (literal (train-on fixture backend
-                                        (fixture-csr (fixture-matrix :hole-value *sentinel*))))
+                                        (dense-to-csr (fixture-matrix :hole-value *sentinel*))))
                      (nan (train-on fixture backend
-                                    (fixture-csr (fixture-matrix :hole-value (quiet-nan))))))
+                                    (dense-to-csr (fixture-matrix :hole-value (quiet-nan))))))
                  (testing (format nil "~A: a csr-matrix dataset built with :missing ~A answers ~
                                        what a stored NaN answers -- the sentinel was honoured"
                                   (getf fixture :backend) *sentinel*)
@@ -452,11 +416,16 @@ something unrelated had broken."
 ;;;
 ;;; LightGBM reaches this branch with no simulation at all -- its C API has no `missing' key,
 ;;; so the capability is false there and always will be. XGBoost's is true, so its plist is
-;;; overwritten the way tests/functional/sparse-input.lisp overwrites one for the same purpose,
-;;; which is what a library that could not provide the capability would have produced at
-;;; `open-backend'. Both are driven from the same `backend-supports-p' answer rather than a
-;;; hardcoded backend name, so this asserts the gate on EVERY backend, however each one came to
-;;; have it closed.
+;;; overwritten the way tests/functional/sparse-input.lisp overwrites one for the same purpose.
+;;; Unlike its model there, where `:sparse-input' really is probed from a C symbol and a library
+;;; too old to have that symbol would produce this same false answer on its own,
+;;; `:missing-value' sits in XGBoost's `*provided-capabilities*' -- recorded true
+;;; unconditionally, with nothing probed (see `probe-capabilities''s PROVIDED) -- so no XGBoost,
+;;; however incomplete, can produce a false answer here by itself, and the `setf' in the test
+;;; below is what puts THAT backend in this state. LightGBM, as the sentence above says, needs
+;;; no help. Both are driven from the same `backend-supports-p' answer rather than a hardcoded
+;;; backend name, so this asserts the gate on EVERY backend, however each one came to have it
+;;; closed.
 ;;;
 ;;; Two sentinel values, not one, because the rule is that :MISSING signals REGARDLESS OF THE
 ;;; VALUE. A NaN is the second: LightGBM would in fact honour a NaN, that being what its own
@@ -579,6 +548,84 @@ something unrelated had broken."
                                (cl-gbdt:dataset-num-rows dataset))))))
           (cl-gbdt:close-backend backend))))))
 
+;;; README.markdown's Missing values section, under "Training and prediction sentinels are
+;;; not tied together", states that XGBoost does not record a dataset's sentinel on the
+;;; booster trained from it, and none is written into a saved model either -- measured when
+;;; the feature shipped, flagged by PR #19's review as measured but never pinned by a test.
+;;;
+;;; Re-measured here rather than trusting the number the claim was first written against: a
+;;; booster trained on this file's fixture with :MISSING *SENTINEL* produced a
+;;; `model-to-string' of 3103 characters, not the 2663 first recorded -- a fact about
+;;; XGBoost's serializer, which is exactly why the assertions below are about the text's
+;;; CONTENT and not its length.
+;;;
+;;; Three substrings, all checked against that real run before being asserted:
+;;;
+;;;   "missing" -- absent from the measured text entirely, confirming that the `"missing"'
+;;;   key `make-dataset' writes into the dataset's own creation config (see this file's
+;;;   header) never reaches the saved model at all.
+;;;
+;;;   "-999" -- *SENTINEL*'s own sign and leading digits. Tried first as the bare digits
+;;;   "999", the more literal reading of "contains no sentinel", and that failed the
+;;;   measured text on the wrong grounds: this model's `loss_changes' field
+;;;   holds `1.4869993E0', an ordinary gain that has nothing to do with the sentinel, and
+;;;   "999" matches inside it. The leading sign rules that coincidence out -- "-999" occurs
+;;;   nowhere in the same text, and nothing this small a fixture trains produces a split
+;;;   threshold, gain or cover anywhere near -999 by chance.
+;;;
+;;;   "learner" -- the positive control, and the reason the two above mean anything. Both of
+;;;   them are ABSENCES, and every absence is true of the empty string: a regression that left
+;;;   `model-to-string' returning "" satisfies both and pins nothing. Measured by forcing
+;;;   exactly that -- `:count 0' in place of the `out_len' read in `model-to-string'
+;;;   (src/xgboost/protocol.lisp) -- the two assertions above stayed GREEN, reporting "model
+;;;   text length 0", and only this third one went red. This is also the only test in
+;;;   tests/functional/ that calls `model-to-string' on an XGBoost booster, so nothing else
+;;;   would have caught it. The measured text opens `{"learner":{"attributes":{},...' --
+;;;   "learner" at position 2, the model JSON's own top-level key -- so finding it says the
+;;;   text really is a serialised model. The same role the "both models learned something to
+;;;   agree about" assertion plays under `sparse-and-dense-training-agree' in
+;;;   tests/functional/sparse-input.lisp -- that deftest, not the similarly-worded control
+;;;   under `an-omitted-entry-is-zero-to-lightgbm-and-missing-to-xgboost' further down.
+;;;
+;;; Gated on `:missing-value' alone, the same shape `an-exponent-form-sentinel-reaches-the-
+;;; library' above uses: no `csr-matrix' is built here, so `:sparse-input' plays no part.
+
+(deftest saved-model-text-carries-no-sentinel
+  (dolist (fixture *fixtures*)
+    (with-backend-library ((getf fixture :backend))
+      (let ((backend (cl-gbdt:open-backend (getf fixture :backend))))
+        (unwind-protect
+             (when (cl-gbdt:backend-supports-p backend :missing-value)
+               (cl-gbdt:with-booster
+                   (booster (booster-trained-on fixture backend
+                                                (fixture-matrix :hole-value *sentinel*)
+                                                :missing *sentinel*))
+                 (let* ((text (cl-gbdt:model-to-string booster))
+                        (missing-at (search "missing" text))
+                        (sentinel-at (search "-999" text))
+                        (learner-at (search "learner" text)))
+                   (testing (format nil "~A: model-to-string after training with :missing ~A ~
+                                         writes no \"missing\" key into the saved model"
+                                    (getf fixture :backend) *sentinel*)
+                     (ok (not missing-at)
+                         (format nil "model text length ~S, position of ~S: ~S"
+                                 (length text) "missing" missing-at)))
+                   (testing (format nil "~A: and no trace of the sentinel's own sign and ~
+                                         digits either"
+                                    (getf fixture :backend))
+                     (ok (not sentinel-at)
+                         (format nil "model text length ~S, position of ~S: ~S"
+                                 (length text) "-999" sentinel-at)))
+                   ;; The positive control: both assertions above are absences, and an absence
+                   ;; is true of the empty string. This one says the text is a model.
+                   (testing (format nil "~A: and the text really is a serialised model, so ~
+                                         those two absences say something"
+                                    (getf fixture :backend))
+                     (ok learner-at
+                         (format nil "model text length ~S, position of ~S: ~S"
+                                 (length text) "learner" learner-at))))))
+          (cl-gbdt:close-backend backend))))))
+
 ;;; ---------------------------------------------------------------------------
 ;;; `predict''s own :MISSING
 ;;;
@@ -664,13 +711,13 @@ something unrelated had broken."
                         (cl-gbdt:backend-supports-p backend :sparse-input))
                (cl-gbdt:with-booster
                    (booster (booster-trained-on fixture backend (fixture-matrix)))
-                 (let* ((holed (fixture-csr (fixture-matrix :hole-value *sentinel*)))
+                 (let* ((holed (dense-to-csr (fixture-matrix :hole-value *sentinel*)))
                         (honoured (cl-gbdt:predict booster holed
                                                    :kind :normal :missing *sentinel*))
                         (literal (cl-gbdt:predict booster holed :kind :normal))
                         (nan (cl-gbdt:predict
                               booster
-                              (fixture-csr (fixture-matrix :hole-value (quiet-nan)))
+                              (dense-to-csr (fixture-matrix :hole-value (quiet-nan)))
                               :kind :normal)))
                    (testing (format nil "~A: predict on a csr-matrix with :missing ~A answers ~
                                          what a stored NaN answers"

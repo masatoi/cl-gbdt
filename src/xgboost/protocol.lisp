@@ -100,7 +100,6 @@
                 #:missing-training-set
                 #:capability-unavailable)
   (:import-from #:cl-gbdt/src/data
-                #:with-foreign-matrix
                 #:csr-matrix
                 #:csr-matrix-indptr
                 #:csr-matrix-indices
@@ -811,11 +810,12 @@ that is stated as the caller's responsibility.
 A dense MATRIX is built into a transient DMatrix via `%create-dmatrix' first --
 `XGBoosterPredictFromDMatrix' takes a DMatrix handle, unlike LightGBM's
 `LGBM_BoosterPredictForMat', which predicts straight off a raw pointer and row/column
-counts. It is built before MATRIX is pinned for its row count rather than inside that pin,
-which is what keeps `%create-dmatrix''s claim that a refused MISSING signals with nothing
-held true of this call site too. The transient DMatrix is freed before this returns, on
-every exit path, since nothing else retains it. Its free is checked with `check-xgb', not
-discarded outright: a failure there is reported with `warn' rather than an error, matching
+counts. It is built first, before anything else here, so a MISSING that
+`%dense-matrix-config-json' refuses signals with nothing pinned and no foreign allocation
+held -- the property `%create-dmatrix''s own docstring claims. The transient DMatrix is
+freed before this returns, on every exit path, since nothing else retains it. Its free is
+checked with `check-xgb', not discarded outright: a failure there is reported with `warn'
+rather than an error, matching
 `free-dataset''s own reasoning for warning instead of signalling, since raising an error
 from cleanup would replace whatever condition is already propagating on an unwinding exit
 -- but on the ordinary success path, a failed free still leaks foreign memory and is worth
@@ -901,12 +901,11 @@ one itself."
                                                  (csr-matrix-num-columns matrix)
                                                  predict-type iteration-end missing
                                                  out-shape out-dim out-result))))
-            ;; The transient DMatrix is built BEFORE `with-foreign-matrix' pins MATRIX,
-            ;; rather than inside it, so a MISSING that `%dense-matrix-config-json' refuses
-            ;; signals with nothing pinned and no foreign allocation held -- the property
-            ;; `%create-dmatrix''s own docstring claims, and one an enclosing pin here
-            ;; falsified the moment MISSING stopped being the constant NIL. The pin below is
-            ;; only for NROW; `%create-dmatrix' does its own for the buffer it describes.
+            ;; The transient DMatrix is built first, so a MISSING that
+            ;; `%dense-matrix-config-json' refuses signals with nothing pinned and no foreign
+            ;; allocation held -- the property `%create-dmatrix''s own docstring claims. NROW
+            ;; comes from the DMatrix `%create-dmatrix' already built, via `%dataset-num-rows',
+            ;; rather than a second pin of MATRIX just to read its row count back.
             (let ((dmatrix-pointer (%create-dmatrix matrix missing)))
               (when (cffi:null-pointer-p dmatrix-pointer)
                 (error 'foreign-call-error
@@ -914,7 +913,7 @@ one itself."
                        :code 0
                        :message "reported success but returned a null dataset handle"))
               (unwind-protect
-                   (with-foreign-matrix (data-pointer nrow ncol element-type) matrix
+                   (let ((nrow (%dataset-num-rows dmatrix-pointer)))
                      (cffi:with-foreign-string
                          (config (%predict-config-json predict-type iteration-end))
                        (predict-into nrow

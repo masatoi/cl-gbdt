@@ -59,6 +59,8 @@
                 #:dimension-mismatch)
   (:import-from #:cl-gbdt/src/parameters
                 #:normalize-parameters)
+  (:import-from #:cl-gbdt/src/config/feature-names
+                #:check-feature-names)
   (:import-from #:cl-gbdt/src/config/missing-value
                 #:missing-value-json)
   (:import-from #:cl-gbdt/src/data
@@ -410,9 +412,10 @@ before returning.
 The config JSON is built BEFORE the matrix is pinned, so a MISSING that
 `%dense-matrix-config-json' refuses signals with nothing yet held: rejecting the argument
 never has to unwind out of a pin or a foreign allocation. That is a property of this
-function's own body and of where each caller puts the call: `predict' in
-`cl-gbdt/src/xgboost/protocol' builds its transient DMatrix outside the `with-foreign-matrix'
-it uses for the row count, rather than inside it, for exactly this reason."
+function's own body alone: `predict' in `cl-gbdt/src/xgboost/protocol' calls this function
+once, pins nothing of MATRIX itself around that call, and reads the DMatrix's row count
+back afterward via `%dataset-num-rows' rather than a pin of its own -- so the property
+holds at that call site with nothing further required of it."
   (let ((config-json (%dense-matrix-config-json missing)))
     (with-foreign-matrix (data-pointer nrow ncol element-type) matrix
       (let ((typestr (%array-interface-typestr element-type)))
@@ -569,11 +572,17 @@ directly, matching `%set-info-field''s reasoning for LABEL and WEIGHT above."
   "Attach FEATURE-NAMES, a list of strings, to DATASET-POINTER via
 `XGDMatrixSetStrFeatureInfo' under XGBoost's \"feature_name\" field.
 
+Signals `unsupported-argument' against `:xgboost' when FEATURE-NAMES is not a proper
+list, via `check-feature-names' -- checked before COUNT is computed, since `length' on a
+dotted list is exactly the raw `type-error' that check exists to head off. Mirrors
+`cl-gbdt/src/lightgbm/native''s identical guard in its own `%set-feature-names'.
+
 Every string successfully allocated is freed on any exit, including one signaled partway
 through the allocation loop itself -- ALLOCATED tracks exactly how many of the COUNT slots
 hold a real `foreign-string-alloc' result, matching
 `cl-gbdt/src/lightgbm/backend''s `%set-feature-names', which this mirrors call-for-call
 apart from the field name and the C function it calls."
+  (check-feature-names feature-names :xgboost)
   (let ((count (length feature-names))
         (allocated 0))
     (cffi:with-foreign-object (names :pointer count)
