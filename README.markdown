@@ -265,13 +265,15 @@ Four things it promises, each of which is the point of it existing at all:
 ```
 
 `backend-info` reports the whole probed plist, false capabilities included, so it shows
-what was asked as well as what was answered. Four of the five registered capabilities answer
+what was asked as well as what was answered. Six of the seven registered capabilities answer
 true somewhere today: `:model-slicing`, on XGBoost only -- see the model-slicing row in the
 table below -- plus `:evaluation-history` and `:early-stopping` on both backends, since
 `train` records a history and takes `:early-stopping` (see
-[Training report](#training-report)), and `:sparse-input` on both, since both libraries
-export the CSR entry points it names (see [Sparse input](#sparse-input-csr-matrices)). The
-fifth, `:multidimensional-feature-score`, is registered and false everywhere, which says
+[Training report](#training-report)), `:sparse-input` on both, since both libraries
+export the CSR entry points it names (see [Sparse input](#sparse-input-csr-matrices)),
+`:missing-value` on XGBoost only (see [Missing values](#missing-values)), and
+`:categorical-features` on both (see [Categorical features](#categorical-features)). The
+seventh, `:multidimensional-feature-score`, is registered and false everywhere, which says
 "not supported yet" rather than "never heard of it".
 
 `:evaluation-history` is true unconditionally rather than probed. The C functions behind it
