@@ -484,6 +484,13 @@ would let this file report a demonstration as skipped when something unrelated h
 ;;; matrix's second dimension, and that each library honours a categorical column on a dataset
 ;;; built from CSR at all.
 ;;;
+;;; `dense-to-csr' stores every element, zeros included, and this is where this file needs
+;;; that: an entry a `csr-matrix' does not store is MISSING to XGBoost whatever any config
+;;; says. Category 0 IS the ordinal 0.0, on all four of its rows, so a conversion that dropped
+;;; zeros would deliver those rows with their category ABSENT rather than present and equal to
+;;; zero -- and half of column 1's noise with them. The categorical arm would then be grouping
+;;; five categories and a hole rather than the six this fixture is built to alternate.
+;;;
 ;;; Measured the same way as the dense test, and -- `dense-to-csr' storing every element
 ;;; explicitly -- the same numbers on each backend as that test's, digit for digit:
 ;;; 0.816 / 0.406 / 0.547 / 0.461 / 0.556 / 0.193 plain and 0.974 / 0.026 / 0.974 / 0.026 /

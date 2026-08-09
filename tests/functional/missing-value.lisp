@@ -365,6 +365,13 @@ something unrelated had broken."
 ;;; backend's own default, which is what dropping the sentinel there amounts to -- fails both
 ;;; assertions below and nothing else in either suite.
 ;;;
+;;; `dense-to-csr' stores every element, zeros included, and this is where this file needs
+;;; that: an entry a `csr-matrix' does not store is MISSING to XGBoost whatever any config
+;;; says. The fixture's column 0 is 0.0 on all four negative rows, so a conversion that
+;;; dropped zeros would hand the library four more missing cells that nothing named -- and the
+;;; assertions below would no longer be about the sentinel alone, which is the whole subject
+;;; of this file.
+;;;
 ;;; Measured against the vendored XGBoost before either assertion was written, the same five
 ;;; rounds on the same eight rows as the dense test above -- and, `dense-to-csr' storing every
 ;;; element explicitly, the same three numbers: the four negative rows answer 0.153285950422287

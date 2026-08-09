@@ -136,6 +136,13 @@ input row and one column per class. Every fixture's objective is binary, so COLU
 ;;; against INDPTR, dropped the last row by passing the wrong NINDPTR, or handed the library
 ;;; a buffer of zeros would satisfy every shape assertion in this file and fail here.
 ;;;
+;;; That rests on `dense-to-csr' storing EVERY element, zeros included, and this is the test
+;;; that needs it: the fixture's single zero is element [0][0], and an entry a `csr-matrix'
+;;; does not store is 0.0 to LightGBM but MISSING to XGBoost. A conversion that dropped it
+;;; would leave the sparse arm trained on different data from the dense arm -- and on
+;;; DIFFERENTLY different data per backend, so this test would be asserting something other
+;;; than what it says, and something other than that on each.
+;;;
 ;;; Within one backend only, never across the two -- LightGBM and XGBoost train different
 ;;; models from the same rows by design, and policy section 13 forbids comparing their
 ;;; numbers to each other.

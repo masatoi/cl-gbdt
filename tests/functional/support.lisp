@@ -238,13 +238,16 @@ which would break on any upstream version bump without telling us anything new."
   "How far two `cl-gbdt:predict' results may differ, element for element, and still count as
 the same numbers to `predictions-agree-p' below.
 
-Exact equality is what is actually expected wherever it is used: both libraries train and
-predict deterministically from fixed data, so two runs that described the same rows to one of
-them should come off identical trees down identical paths. The tolerance is here because that
-expectation rests on details neither library documents -- two C entry points accumulating in
-the same order for tests/functional/sparse-input.lisp, two config strings reaching the same
-code path for tests/functional/missing-value.lisp -- and a last-bit difference would be a true
-negative dressed as a failure.
+Exact equality is what is actually expected of every EQUALITY asserted with it: both libraries
+train and predict deterministically from fixed data, so two runs that described the same rows
+to one of them should come off identical trees down identical paths. The tolerance is here
+because that expectation rests on details neither library documents -- two C entry points
+accumulating in the same order for tests/functional/sparse-input.lisp, two config strings
+reaching the same code path for tests/functional/missing-value.lisp -- and a last-bit
+difference would be a true negative dressed as a failure. Those two files are the ones that
+assert equalities at all: tests/functional/categorical-features.lisp asserts only
+INEQUALITIES, where a large difference is the expectation and this is merely the floor one has
+to clear.
 
 It is small enough that nothing the files using it exist to catch survives it. The gaps their
 inequality assertions rest on, measured against the vendored libraries and carried over
@@ -260,22 +263,32 @@ unchanged from the three per-file parameters this one replaces:
                                              LightGBM
 
 Seven and eight orders of magnitude above 1d-9. tests/functional/sparse-input.lisp's own
-parameter recorded no measured gap: what it stated instead is that a transposed index, a
-dropped row or a matrix read as zeros moves a probability by far more than this.")
+parameter recorded no gap of its own, stating instead that a transposed index, a dropped row
+or a matrix read as zeros moves a probability by far more than this. That is not to say that
+file measured none: the gaps ITS inequalities rest on are recorded in its own comments, beside
+the assertions they belong to -- 0.022 on LightGBM and 0.015 on XGBoost above
+`sparse-prediction-honours-num-iteration', for one. The table above is what the three deleted
+parameters recorded, not an inventory of every gap in the suite.")
 
 (defun predictions-agree-p (left right)
   "True when LEFT and RIGHT, two `cl-gbdt:predict' results, differ nowhere by more than
 *PREDICTION-TOLERANCE*, element for element.
 
 Signals an error when they have different SHAPES rather than answering NIL. Every caller
-compares two results of the same row count and the same column count -- sometimes one
-booster's answers about two forms of one matrix, sometimes two boosters' answers about one
-matrix -- so a shape mismatch is a broken test rather than a disagreement about numbers, and
-answering NIL let `(not (predictions-agree-p ...))', which several tests assert, pass for the
-wrong reason.
+compares two results of the same row count and the same column count. Those comparisons take
+three shapes: two boosters' answers about one matrix; one booster's answers about two forms of
+one matrix -- a dense one against its `dense-to-csr' form, or a matrix holding a sentinel
+against one holding a NaN; and one booster's two answers about ONE matrix under different
+`cl-gbdt:predict' options -- :KIND :RAW against :NORMAL, a limited :NUM-ITERATION against an
+unlimited one, a :MISSING sentinel honoured against the same matrix read literally. In all of
+them a shape mismatch is a broken test rather than a disagreement about numbers, and answering
+NIL let `(not (predictions-agree-p ...))', which several tests assert, pass for the wrong
+reason.
 
-That every caller does is measured rather than assumed: with the error branch in place the
-whole layer-2 suite is green, so no call site reached it."
+Measured rather than assumed, as far as a suite run can measure it: with the error branch in
+place the whole layer-2 suite is green, so no call the suite MAKES reached it. That is not
+every call site on both backends -- tests/functional/missing-value.lisp's calls run on XGBoost
+alone, each sitting behind the `:missing-value' capability, which LightGBM answers false."
   (unless (equal (array-dimensions left) (array-dimensions right))
     (error "predictions-agree-p was given results of different shapes: ~S and ~S"
            (array-dimensions left) (array-dimensions right)))
@@ -292,8 +305,9 @@ means -- LightGBM reads one as 0.0 while its own `zero_as_missing' is off, XGBoo
 as missing whatever any config says; see `cl-gbdt:csr-matrix''s own docstring, where the
 divergence is stated -- so a conversion that dropped zeros would describe different data to
 the two backends. Storing every element leaves the `csr-matrix' and MATRIX describing the same
-numbers on both. WHY each caller needs that differs, so each states its own reason where it
-imports this.
+numbers on both. WHY each caller needs that differs, so each file states its own reason twice:
+on the `:import-from' clause that adopts this function, where a reader first meets the name,
+and again in the comment above the test that depends on it.
 
 NUM-COLUMNS defaults to MATRIX's own width. A larger value declares trailing columns that hold
 nothing at all -- no entry of INDICES names them -- which is how a caller reaches the
@@ -301,8 +315,9 @@ absent-entry case deliberately rather than by accident.
 
 This is the only place tests/functional/ turns a dense array into a `csr-matrix', so the two
 forms of the same data cannot drift apart. `omitted-entry-csr' in
-tests/functional/sparse-input.lisp also builds one, but from a list of rows and omitting zeros
-on purpose: it is that file's demonstration of the very divergence this function avoids."
+tests/functional/sparse-input.lisp also builds one, but from a list of rows rather than an
+array and under an OMIT-ZEROS key: it is that file's demonstration of the very divergence this
+function avoids, and the key's two settings are the demonstration's two arms."
   (let* ((rows (array-dimension matrix 0))
          (cols (array-dimension matrix 1))
          (stored (* rows cols))
