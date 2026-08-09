@@ -110,12 +110,17 @@ through a different mechanism: the list becomes a `categorical_feature' entry in
 parameter string that builds the dataset.
 
 That is the same channel PARAMETERS itself reaches LightGBM through, and so the one place
-where naming CATEGORICAL-FEATURES changes what PARAMETERS may say. That backend refuses the
-key there -- `categorical_feature' and the four further spellings it honours,
-`cat_feature', `categorical_column', `cat_column' and `categorical_features' -- with
-`unsupported-argument', since `make-dataset' writes the key itself now and a caller's own
-copy would silently override it. Every other key still passes through untouched, and no
-other backend refuses anything on this account.
+where naming CATEGORICAL-FEATURES changes what PARAMETERS may say. Supplying BOTH signals
+`unsupported-argument' there, for `categorical_feature' and the four further spellings that
+backend honours -- `cat_feature', `categorical_column', `cat_column' and
+`categorical_features' -- because the entry `make-dataset' writes lands after the caller's
+own and LightGBM keeps the first, so it is CATEGORICAL-FEATURES that would be silently
+discarded.
+
+PARAMETERS on its own is unaffected. A caller who names no categorical column and writes one
+of those keys by hand is using PARAMETERS as the pass-through it has always been, and gets
+exactly the dataset they got before CATEGORICAL-FEATURES existed. Every other key passes
+through untouched either way, and no other backend refuses anything on this account.
 
 `predict' takes no CATEGORICAL-FEATURES of its own, and deliberately: measured, a booster
 trained from a dataset built with one predicts correctly from a plain matrix, the trained

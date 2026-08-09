@@ -344,17 +344,22 @@ list and re-measures the distinction against the real library.")
   "Signal `unsupported-argument' against BACKEND when PARAMETERS names a key from
 `*categorical-feature-parameter-names*'.
 
-`make-dataset' writes `categorical_feature' into the same parameter string PARAMETERS
-becomes, from its own :CATEGORICAL-FEATURES argument, so a caller who also wrote the key by
-hand would be stating the same thing twice in one string. Which of the two the library would
-then read is measured, and it is the worse answer of the two: LightGBM takes the FIRST
-occurrence of a duplicated key -- `categorical_feature=0 categorical_feature=1' trains
-exactly what `categorical_feature=0' alone trains -- while this wrapper appends its own entry
-LAST. So it is the wrapper's copy, the one rendered from the argument the caller explicitly
-named, that would silently lose. Policy section 6 keeps :PARAMETERS as the escape hatch for a
-backend's own vocabulary, but not for a key the wrapper has taken over: an argument accepted
-and then quietly discarded is exactly the failure mode `cl-gbdt/src/xgboost/native''s
-`%check-unsupported' exists to prevent on the other backend.
+Called ONLY when `make-dataset' was given a non-NIL :CATEGORICAL-FEATURES, which is the only
+state in which the clash below can arise -- see that method, where the call sits inside the
+same `when' as `%check-categorical-features'. A caller who names no categorical column and
+writes `categorical_feature' in :PARAMETERS by hand is using policy section 6's escape hatch
+for a backend's own vocabulary, gets it honoured exactly as they always did, and never
+reaches this function. Nothing about that path changed when :CATEGORICAL-FEATURES was added.
+
+What this refuses is the two together. `make-dataset' writes `categorical_feature' into the
+same parameter string PARAMETERS becomes, from :CATEGORICAL-FEATURES, so a caller who supplies
+both is stating the same thing twice in one string. Which copy the library would then read is
+measured, and it is the worse answer of the two: LightGBM takes the FIRST occurrence of a
+duplicated key -- `categorical_feature=0 categorical_feature=1' trains exactly what
+`categorical_feature=0' alone trains -- while this method appends its own entry LAST. So it is
+the wrapper's copy, rendered from the argument the caller explicitly named, that would
+silently lose. An argument accepted and then quietly discarded is exactly the failure mode
+`cl-gbdt/src/xgboost/native''s `%check-unsupported' exists to prevent on the other backend.
 
 Refused rather than merged with :CATEGORICAL-FEATURES, or honoured in its place: the two say
 the same thing in two vocabularies, and a wrapper that reconciled them would have to say what
@@ -366,10 +371,10 @@ normalized once here and again by `%parameter-string'; the only consequence is t
 odd-length plist's `data-error' comes from this call rather than that one, both of them
 before any foreign call.
 
-Unconditional, not gated on the `:categorical-features' capability: this backend provides
-that capability unconditionally, so there is no state in which the key is free again, and a
-refusal that came and went with a capability answer would be a second rule to keep in step
-with the first."
+Gated on the ARGUMENT, not on the `:categorical-features' capability: this backend provides
+that capability unconditionally, so gating on it would refuse the key in every state the
+argument could be refused in anyway, and would take the escape hatch away from callers who
+never asked for the feature."
   (let ((named (find-if (lambda (pair)
                           (member (car pair) *categorical-feature-parameter-names*
                                   :test #'string=))
@@ -460,13 +465,18 @@ above, which reads the capability rather than this backend's name) and `unsuppor
 naming `:categorical-features' for an index that is not an integer, is negative, is beyond
 MATRIX's last column, or was named twice.
 
-Signals `unsupported-argument' naming \"make-dataset's :parameters\" when PARAMETERS itself
-carries any of the five spellings LightGBM honours for that key -- `categorical_feature',
-`cat_feature', `categorical_column', `cat_column' or `categorical_features' -- because this
-method writes the key itself now, and a duplicate would silently override it. Every other key
-still passes through untouched, `cat_features' among them, which the library does NOT honour
-as an alias. See `%check-categorical-parameter-keys' above for the measurement behind both
-halves of that.
+Signals `unsupported-argument' naming \"make-dataset's :parameters\" when CATEGORICAL-FEATURES
+is supplied AND PARAMETERS carries any of the five spellings LightGBM honours for that key --
+`categorical_feature', `cat_feature', `categorical_column', `cat_column' or
+`categorical_features'. Only the two together: the entry this method appends would land after
+the caller's and LightGBM keeps the FIRST occurrence of a duplicated key, so the argument the
+caller explicitly named would be the one silently discarded.
+
+PARAMETERS alone is untouched by any of this. A caller who names no categorical column and
+writes `categorical_feature' there by hand is on policy section 6's escape hatch for a
+backend's own vocabulary, and gets it honoured exactly as they did before this argument
+existed. `cat_features' is never refused either way, the library not honouring it as an alias.
+See `%check-categorical-parameter-keys' above for the measurements behind all of that.
 
 Signals `foreign-call-error' when dataset creation reports success but writes a
 null handle -- a library-contract violation, but one every later call through
@@ -487,9 +497,13 @@ Signals `backend-not-open' before any of that when BACKEND is not open -- see
     (%check-backend-open backend)
     (when missing
       (%check-missing-value backend))
+    ;; Both checks hang off the same non-NIL CATEGORICAL-FEATURES, and the second one for a
+    ;; reason of its own: the clash it refuses can only arise once this method is writing an
+    ;; entry of its own. A caller who names no categorical column is using :PARAMETERS as
+    ;; policy section 6's escape hatch and keeps working exactly as before.
     (when categorical-features
-      (%check-categorical-features backend))
-    (%check-categorical-parameter-keys backend parameters)
+      (%check-categorical-features backend)
+      (%check-categorical-parameter-keys backend parameters))
     ;; Rendered before anything is allocated, because on this backend the column list is a
     ;; key in the very parameter string that CREATES the dataset -- so a bad index signals
     ;; with nothing yet to free, and the string is built once for whichever creation entry
