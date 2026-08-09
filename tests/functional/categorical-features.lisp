@@ -542,8 +542,9 @@ would let this file report a demonstration as skipped when something unrelated h
 ;;;   LightGBM   none 0.000    (0) 0.000    (1) 0.869    (0 1) 0.869
 ;;;   XGBoost    none 0.086    (0) 0.086    (1) 0.948    (0 1) 0.948
 ;;;
-;;; and this test's own :DATASET-PARAMETERS puts `categorical_feature=0,1' beside three other
-;;; keys rather than none: measured directly, what LightGBM is handed for `(0 1)' is the full
+;;; and *FIXTURES*' own :DATASET-PARAMETERS, which this test builds its dataset from like
+;;; every other test in this file, puts `categorical_feature=0,1' beside three other keys
+;;; rather than none: measured directly, what LightGBM is handed for `(0 1)' is the full
 ;;; string `min_data_in_leaf=1 min_data_in_bin=1 verbose=-1 categorical_feature=0,1', so the
 ;;; space delimiter is really in play, not merely illustrated. `(0 1)' and `(1)' answer
 ;;; identically on both backends, category for category:
