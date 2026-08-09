@@ -810,11 +810,12 @@ that is stated as the caller's responsibility.
 A dense MATRIX is built into a transient DMatrix via `%create-dmatrix' first --
 `XGBoosterPredictFromDMatrix' takes a DMatrix handle, unlike LightGBM's
 `LGBM_BoosterPredictForMat', which predicts straight off a raw pointer and row/column
-counts. It is built before MATRIX is pinned for its row count rather than inside that pin,
-which is what keeps `%create-dmatrix''s claim that a refused MISSING signals with nothing
-held true of this call site too. The transient DMatrix is freed before this returns, on
-every exit path, since nothing else retains it. Its free is checked with `check-xgb', not
-discarded outright: a failure there is reported with `warn' rather than an error, matching
+counts. It is built first, before anything else here, so a MISSING that
+`%dense-matrix-config-json' refuses signals with nothing pinned and no foreign allocation
+held -- the property `%create-dmatrix''s own docstring claims. The transient DMatrix is
+freed before this returns, on every exit path, since nothing else retains it. Its free is
+checked with `check-xgb', not discarded outright: a failure there is reported with `warn'
+rather than an error, matching
 `free-dataset''s own reasoning for warning instead of signalling, since raising an error
 from cleanup would replace whatever condition is already propagating on an unwinding exit
 -- but on the ordinary success path, a failed free still leaks foreign memory and is worth

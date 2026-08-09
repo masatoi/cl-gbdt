@@ -412,9 +412,10 @@ before returning.
 The config JSON is built BEFORE the matrix is pinned, so a MISSING that
 `%dense-matrix-config-json' refuses signals with nothing yet held: rejecting the argument
 never has to unwind out of a pin or a foreign allocation. That is a property of this
-function's own body and of where each caller puts the call: `predict' in
-`cl-gbdt/src/xgboost/protocol' builds its transient DMatrix outside the `with-foreign-matrix'
-it uses for the row count, rather than inside it, for exactly this reason."
+function's own body alone: `predict' in `cl-gbdt/src/xgboost/protocol' calls this function
+once, pins nothing of MATRIX itself around that call, and reads the DMatrix's row count
+back afterward via `%dataset-num-rows' rather than a pin of its own -- so the property
+holds at that call site with nothing further required of it."
   (let ((config-json (%dense-matrix-config-json missing)))
     (with-foreign-matrix (data-pointer nrow ncol element-type) matrix
       (let ((typestr (%array-interface-typestr element-type)))
