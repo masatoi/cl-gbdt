@@ -15,6 +15,7 @@
 
 (uiop:define-package #:cl-gbdt/src/config/categorical-features
   (:use #:cl)
+  (:import-from #:alexandria #:proper-list-p)
   (:import-from #:cl-gbdt/src/conditions
                 #:dimension-mismatch
                 #:unsupported-argument)
@@ -58,8 +59,12 @@ from `array-rank'; that is reachable only by a caller who passes both a malforme
        (array-dimension matrix 1))))
 
 (defun %check-indices (indices num-features backend-name)
-  "Signal `unsupported-argument' against BACKEND-NAME unless INDICES is a list of distinct
-non-negative integers, each below NUM-FEATURES.
+  "Signal `unsupported-argument' against BACKEND-NAME unless INDICES is a *proper* list of
+distinct non-negative integers, each below NUM-FEATURES. `listp' alone is not enough to admit
+one: it is also true of a dotted list like `(0 . 1)', which then reaches `dolist'/`length' and
+fails with an untyped `type-error' instead, and of a circular list, which `dolist' would
+traverse forever. `proper-list-p' rejects both, and does so without walking a cycle to find
+out -- it is cycle-safe.
 
 Both renderers call this with the same count, from `%matrix-num-features', so neither can
 accept a list the other refuses.
@@ -67,12 +72,12 @@ accept a list the other refuses.
 A duplicate is rejected rather than collapsed: LightGBM would be handed \"1,1\" and XGBoost a
 vector that cannot record it was said twice, so silently accepting one would make the same
 call mean different things on the two backends."
-  (unless (listp indices)
+  (unless (proper-list-p indices)
     (error 'unsupported-argument
            :backend backend-name
            :argument ":categorical-features"
-           :reason (format nil "the categorical column list must be a list of ~
-                                column indices")))
+           :reason (format nil "the categorical column list must be a proper list of column ~
+                                indices -- listp alone also accepts a dotted or circular list")))
   (dolist (index indices)
     (unless (and (integerp index) (not (minusp index)))
       (error 'unsupported-argument

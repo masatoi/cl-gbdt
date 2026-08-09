@@ -162,3 +162,47 @@ building one costs no foreign memory, so this stays a layer-1 fixture like the t
               (cl-gbdt:unsupported-argument (c)
                 (cl-gbdt:unsupported-argument-backend c))))
         "the backend named by the condition")))
+
+(deftest categorical-features-rejects-a-non-list
+  ;; A bare atom is not a list at all -- listp already refused it before this fix, and
+  ;; proper-list-p must keep refusing it, so the guard's other half stays pinned too.
+  (testing "a bare integer signals unsupported-argument"
+    (ok (handler-case (progn (%types 0 3) nil)
+          (cl-gbdt:unsupported-argument () t))
+        "whether a non-list INDICES was rejected")))
+
+(deftest categorical-features-rejects-a-dotted-list
+  ;; listp is true of a dotted list too, so it let '(0 . 1) reach dolist/length and fail
+  ;; with a raw type-error instead of unsupported-argument -- measured before this fix.
+  ;; proper-list-p answers both correctly.
+  (testing "a minimally dotted list signals unsupported-argument"
+    (ok (handler-case (progn (%types '(0 . 1) 3) nil)
+          (cl-gbdt:unsupported-argument () t))
+        "whether '(0 . 1) was rejected"))
+  (testing "the string renderer rejects it too"
+    (ok (handler-case (progn (%string '(0 . 1) 3) nil)
+          (cl-gbdt:unsupported-argument () t))
+        "whether '(0 . 1) was rejected by the string renderer"))
+  (testing "a list that starts proper and ends dotted signals unsupported-argument"
+    ;; '(0 1 . 2) fails at a different point in the traversal than '(0 . 1): dolist gets
+    ;; further before the tail's non-list cdr trips it up.
+    (ok (handler-case (progn (%types '(0 1 . 2) 3) nil)
+          (cl-gbdt:unsupported-argument () t))
+        "whether '(0 1 . 2) was rejected")))
+
+(deftest categorical-features-rejects-a-circular-list
+  ;; listp is true of a circular list too, and dolist over one never terminates. A
+  ;; regression back to listp must fail this test in seconds, not hang the CI job that
+  ;; runs it until something kills it -- so the call itself is guarded by a timeout, and
+  ;; a timeout is explicitly reported as a failed assertion rather than left to make `ok'
+  ;; pass on a merely non-NIL sentinel, which a keyword like :DID-NOT-TERMINATE would.
+  (let ((circular (list 0)))
+    (setf (cdr circular) circular)
+    (testing "a circular list signals unsupported-argument rather than looping"
+      (handler-case
+          (sb-ext:with-timeout 5
+            (ok (handler-case (progn (%types circular 3) nil)
+                  (cl-gbdt:unsupported-argument () t))
+                "whether the circular list was rejected instead of hanging"))
+        (sb-ext:timeout ()
+          (ok nil "the circular list did not terminate within the 5-second timeout"))))))
