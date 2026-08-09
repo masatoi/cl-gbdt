@@ -36,8 +36,8 @@ over both backends.
 
 **Status: functional.** Both backends (`cl-gbdt/lightgbm`, `cl-gbdt/xgboost`) implement
 all 13 generic functions of the unified API -- `make-dataset`, `train`, `predict`, and
-the rest -- against the real shared libraries, exercised by 403 functional assertions in
-`cl-gbdt/tests/functional` (layer 2) on top of 378 assertions that need no shared
+the rest -- against the real shared libraries, exercised by 465 functional assertions in
+`cl-gbdt/tests/functional` (layer 2) on top of 395 assertions that need no shared
 library at all (layer 1). `train` returns a `training-report` as its secondary value, and
 takes `:record-history` (default `t`) to turn the per-iteration recording that fills it
 off -- recording roughly doubles LightGBM's `train` time, and on XGBoost it also makes a
@@ -55,7 +55,12 @@ own data that means missing, gated on the `:missing-value` capability that only 
 provides -- LightGBM signals `capability-unavailable` for any non-`NIL` value, a `NaN`
 included, since its C API has no missing-value key at all, and XGBoost compares the
 sentinel against the data at single precision -- see `README.markdown`'s Missing values
-section. Core `cl-gbdt` still
+section. `make-dataset` also takes `:categorical-features`, the 0-based columns that hold
+categories rather than quantities, gated on the `:categorical-features` capability that
+both backends provide; `predict` takes no such argument, the trained trees already
+carrying the category sets they split on, and XGBoost's `tree_method` must be `hist` or
+`approx` since `exact` refuses categorical splits, at `train` rather than `make-dataset`
+-- see `README.markdown`'s Categorical features section. Core `cl-gbdt` still
 loads, and is still tested, without
 either `liblightgbm.so` or `libxgboost.so` present: a shared library is opened only by
 an explicit `open-backend` call, from whichever backend system you load on top of the
