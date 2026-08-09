@@ -9,9 +9,10 @@
 ;;;; backends cannot drift apart in shape or meaning without one of them failing here.
 ;;;;
 ;;;; Which backend takes which branch is read from `cl-gbdt:backend-supports-p', never
-;;;; hardcoded. XGBoost answers true today and LightGBM false; a backend that later gains the
-;;;; capability starts being asked the honouring tests rather than silently staying in the
-;;;; set that is never asked anything.
+;;;; hardcoded. Both answer true today, by two different mechanisms -- a field attached to a
+;;;; finished DMatrix on XGBoost, a key in the parameter string that builds the dataset on
+;;;; LightGBM -- and the tests below are written so a backend that later LOSES the capability,
+;;;; or a third that gains it, changes which branch it takes rather than which tests exist.
 ;;;;
 ;;;; `cl-gbdt:predict' takes no :CATEGORICAL-FEATURES of its own, and there is nothing here
 ;;;; about one: the trained trees carry the category sets they split on, so the transient
@@ -60,13 +61,19 @@ what a model that can group categories gets exactly.")
 (defparameter *rows-per-category* 4
   "How many rows each category of `category-matrix' holds, making it 24 rows in all.
 
-Measured, and chosen from the two sizes tried rather than assumed. Four is the smaller and
-faster of them, it still gives every category more than one row, and it is where the two
-readings of column 0 are LEAST alike: the arm trained without :CATEGORICAL-FEATURES separates
-its own classes by 0.086 here against 0.106 at eight rows per category, while the categorical
-arm reaches 0.948 here and 0.969 there. Both sizes discriminate, and the assertions below hold
-by a wide margin on either; see `marking-a-column-categorical-changes-what-was-learned' for
-all twelve numbers, and for why the size was measured at all rather than picked.")
+Measured, and chosen from the two sizes tried rather than assumed -- on XGBoost, the only
+backend that answered `:categorical-features' true when the size was chosen. Four is the
+smaller and faster of them, it still gives every category more than one row, and it is where
+the two readings of column 0 are LEAST alike: the arm trained without :CATEGORICAL-FEATURES
+separates its own classes by 0.086 here against 0.106 at eight rows per category, while the
+categorical arm reaches 0.948 here and 0.969 there. Both sizes discriminate, and the
+assertions below hold by a wide margin on either; see
+`marking-a-column-categorical-changes-what-was-learned' for all twelve numbers, and for why
+the size was measured at all rather than picked.
+
+LightGBM was measured at this size only, and separates the two readings further still: 0.869
+against 0.000. Four rows per category also happens to be well under LightGBM's own
+`min_data_per_group' default, which is why *BOOSTER-PARAMETERS* has to say otherwise.")
 
 (defparameter *categorical-columns* '(0)
   "The :CATEGORICAL-FEATURES argument every honouring test below builds its dataset with:
@@ -88,26 +95,37 @@ The same value, for the same reason, as tests/functional/missing-value.lisp's pa
 this name: both backends train and predict deterministically from fixed data, so two runs
 that built the same dataset should come off identical trees down identical paths. It is small
 enough that nothing this file exists to catch survives it: the two arms of every inequality
-below differ by 0.158 at the category where they are closest -- and the inequality needs only
-ONE element over the tolerance, so what it actually rests on is the 0.435 they differ by where
-they are furthest apart. Both are eight orders of magnitude above this.")
+below differ by 0.158 on XGBoost, and by 0.119 on LightGBM, at the category where they are
+closest -- and the inequality needs only ONE element over the tolerance, so what it actually
+rests on is the 0.435 they differ by where they are furthest apart, which is the same number
+on both. All of them are eight orders of magnitude above this.")
 
 (defparameter *separating-margin* 0.5d0
   "How far the worst-scored positive category must sit above the best-scored negative one for
 `marking-a-column-categorical-changes-what-was-learned' to call the alternating classes
 separated.
 
-Measured before it was asserted, XGBoost, 24 rows, twenty rounds: the categorical arm's margin
-is 0.948 and the quantitative arm's is 0.086, so this sits roughly six times above what a
-model that cannot group categories reaches and roughly half of what one that can does. It is a
+Measured before it was asserted, 24 rows, twenty rounds, on each backend separately. XGBoost:
+the categorical arm's margin is 0.948 and the quantitative arm's is 0.086. LightGBM: 0.869 and
+0.000 -- its quantitative arm does not separate the classes AT ALL, two categories of opposite
+class landing on the same score. So on either backend this sits far above what a model that
+cannot group categories reaches and comfortably below what one that can does. It is a
 threshold on ONE arm's own numbers, never a comparison between backends.")
 
 (defparameter *booster-parameters*
-  '((:xgboost :objective "binary:logistic" :max-depth 1 :verbosity 0 :min-child-weight 0
+  '((:lightgbm :objective "binary" :max-depth 1 :verbose -1 :min-data-in-leaf 1
+               :min-data-per-group 1 :cat-smooth 0 :cat-l2 0)
+    (:xgboost :objective "binary:logistic" :max-depth 1 :verbosity 0 :min-child-weight 0
               :tree-method "hist"))
   "Per backend, keyed by backend name, the `cl-gbdt:train' parameters this file's fixture
 needs. Not *FIXTURES*' own :BOOSTER-PARAMETERS, which trains a depth-2 booster on a different
-eight-row problem; this fixture needs three settings that one does not have.
+eight-row problem; this fixture needs settings neither of those entries has.
+
+Both entries cap the tree at ONE split, and everything else in each is that backend's own way
+of stopping its splitting rules from rejecting a split over four rows. The two lists are not
+translations of each other and are never compared: each was measured on its own library.
+
+XGBoost:
 
 `max_depth' 1 makes every tree a single split, so what each tree can say about column 0 is
 exactly one partition of it -- a threshold under the quantitative reading, an arbitrary
@@ -126,7 +144,37 @@ the default resolves to an updater that supports categorical features and gives 
 identical to `hist' here, but `exact' refuses them outright -- and refuses at `train', not at
 `make-dataset' (`updater_colmaker.cc:107: Updater `grow_colmaker` or `exact` tree method
 doesn't support categorical features'), which would surface as a `foreign-call-error' from a
-call this file is not about. Naming the updater keeps that out of reach of a default change.")
+call this file is not about. Naming the updater keeps that out of reach of a default change.
+
+LightGBM, measured against the vendored 4.7.0 by dropping each setting from the list and
+re-running both arms:
+
+`max_depth' 1 for the same reason as XGBoost's, and here the measurement is decisive rather
+than cautionary: WITHOUT the cap the two arms answer identically -- 0.934 / 0.066 / 0.934 /
+0.066 / 0.934 / 0.066 both -- and `marking-a-column-categorical-changes-what-was-learned''s
+first assertion fails outright. Twenty unconstrained trees rebuild the alternating pattern
+from the ordinal alone, which is exactly what a depth-1 stump cannot do. `num_leaves' is left
+at the library's default: measured, setting it to 2 alongside `max_depth' 1 changes no number.
+
+`min_data_in_leaf' 1 is required, measured: at the default of 20 neither arm splits at all on
+24 rows and both answer 0.5 for every category.
+
+`min_data_per_group' 1 is required, measured: it is the minimum row count LightGBM demands of
+each side of a CATEGORICAL split, its default is 100, and this fixture gives each category
+four rows -- so at the default the categorical arm makes no split and answers 0.5 everywhere,
+while the quantitative arm is unaffected. It is this backend's counterpart of XGBoost's
+`min_child_weight' 0 above, and fails in exactly the same way when left alone.
+
+`cat_smooth' 0 is required, measured: at the default of 10 the categorical arm again answers
+0.5 for every category. The smoothing is applied to a per-category statistic computed over
+four rows, so a default sized for hundreds erases the categories' differences entirely.
+
+`cat_l2' 0 is required for the assertion rather than for the split, measured: at the default
+of 10 the categorical arm does split, but its margin is 0.361, below *SEPARATING-MARGIN*.
+
+`verbose' -1 is XGBoost's `verbosity' 0 above: nothing this file measures depends on it -- the
+vendored library prints nothing either way here -- and it is named so a build noisier than
+that one cannot put per-iteration lines into the suite's output.")
 
 (defun category-positive-p (category)
   "True when CATEGORY's rows carry the positive label.
@@ -394,15 +442,22 @@ would let this file report a demonstration as skipped when something unrelated h
 ;;;   8 rows per category, plain        0.825 0.378 0.549 0.443 0.623 0.179   margin 0.106
 ;;;   8 rows per category, categorical  0.985 0.015 0.985 0.015 0.985 0.015   margin 0.969
 ;;;
-;;; The categorical arm answers ONE number per class: the split it found is exactly the set
-;;; {0, 2, 4}, which is the labelling. The plain arm cannot express that set at all and lands
-;;; six different scores whose classes barely separate. *ROWS-PER-CATEGORY* is 4, the size at
-;;; which the plain arm does worst; *SEPARATING-MARGIN* is 0.5, between the two by a wide
-;;; margin on either size.
+;;; LightGBM, measured at *ROWS-PER-CATEGORY* only, with its own *BOOSTER-PARAMETERS* entry:
+;;;
+;;;   4 rows per category, plain        0.815 0.473 0.500 0.500 0.527 0.184   margin 0.000
+;;;   4 rows per category, categorical  0.934 0.066 0.934 0.066 0.934 0.066   margin 0.869
+;;;
+;;; The categorical arm answers ONE number per class on both: the split it found is exactly
+;;; the set {0, 2, 4}, which is the labelling. The plain arm cannot express that set at all and
+;;; lands six different scores whose classes barely separate -- on LightGBM they do not
+;;; separate at all, categories 2 and 3 tying at 0.500 for a margin of exactly zero.
+;;; *ROWS-PER-CATEGORY* is 4, the size at which XGBoost's plain arm does worst;
+;;; *SEPARATING-MARGIN* is 0.5, between the two arms by a wide margin on either size and on
+;;; either backend.
 ;;;
 ;;; The plain arm's own margin is deliberately NOT asserted to be small. That it stays small
-;;; is a fact about how well XGBoost approximates an alternating pattern, not a promise this
-;;; wrapper makes, and an assertion on it would fail the day the library got better at
+;;; is a fact about how well each library approximates an alternating pattern, not a promise
+;;; this wrapper makes, and an assertion on it would fail the day one of them got better at
 ;;; something. What this file needs from it is that it is not what the categorical arm
 ;;; produces, and (a) says exactly that.
 ;;;
@@ -436,19 +491,23 @@ would let this file report a demonstration as skipped when something unrelated h
 ;;; The same comparison over a `cl-gbdt:csr-matrix', which is the other form `make-dataset'
 ;;; accepts.
 ;;;
-;;; :CATEGORICAL-FEATURES is rendered from the CALLER's matrix, before any dataset exists, and
-;;; attached to the finished one -- a single site where the dense and sparse branches have
-;;; already converged, unlike :MISSING, which is a key in two different creation configs and
-;;; so needed its sparse case tested separately. What is genuinely unpinned without this test
-;;; is not the attachment but the two things around it: that the renderer reads a
-;;; `csr-matrix''s DECLARED column count where it reads a dense matrix's second dimension, and
-;;; that XGBoost honours a feature-type vector on a DMatrix built from CSR at all.
+;;; :CATEGORICAL-FEATURES is rendered from the CALLER's matrix on both backends, at a point
+;;; where the dense and sparse branches have already converged -- attached to the finished
+;;; DMatrix on XGBoost, written into the one parameter string both creation entry points read
+;;; on LightGBM. Neither is a second code site, unlike :MISSING, which is a key in two
+;;; different creation configs and so needed its sparse case tested separately. What is
+;;; genuinely unpinned without this test is not the attachment but the two things around it:
+;;; that the renderer reads a `csr-matrix''s DECLARED column count where it reads a dense
+;;; matrix's second dimension, and that each library honours a categorical column on a dataset
+;;; built from CSR at all.
 ;;;
 ;;; Measured the same way as the dense test, and -- `category-csr' storing every element
-;;; explicitly -- the same numbers: 0.816 / 0.406 / 0.547 / 0.461 / 0.556 / 0.193 plain,
-;;; 0.974 / 0.026 / 0.974 / 0.026 / 0.974 / 0.026 categorical. Gated on `:sparse-input' as
-;;; well as `:categorical-features', since a backend without the first has no `csr-matrix' to
-;;; build a dataset from at all.
+;;; explicitly -- the same numbers on each backend as that test's, digit for digit:
+;;; 0.816 / 0.406 / 0.547 / 0.461 / 0.556 / 0.193 plain and 0.974 / 0.026 / 0.974 / 0.026 /
+;;; 0.974 / 0.026 categorical on XGBoost, 0.815 / 0.473 / 0.500 / 0.500 / 0.527 / 0.184 plain
+;;; and 0.934 / 0.066 / 0.934 / 0.066 / 0.934 / 0.066 categorical on LightGBM. Gated on
+;;; `:sparse-input' as well as `:categorical-features', since a backend without the first has
+;;; no `csr-matrix' to build a dataset from at all.
 
 (deftest marking-a-column-categorical-works-on-a-csr-matrix
   (dolist (fixture *fixtures*)
@@ -580,4 +639,124 @@ would let this file report a demonstration as skipped when something unrelated h
                          (format nil "the condition named backend ~S"
                                  (and condition
                                       (cl-gbdt:unsupported-argument-backend condition))))))))
+          (cl-gbdt:close-backend backend))))))
+
+;;; ---------------------------------------------------------------------------
+;;; The key this feature now owns, refused in :PARAMETERS
+;;;
+;;; LightGBM's own name for the column list is a key in the parameter string rather than a C
+;;; argument, so :CATEGORICAL-FEATURES and :PARAMETERS reach the library through the SAME
+;;; channel there -- unlike XGBoost, where the list is a field attached to a finished DMatrix
+;;; and :PARAMETERS is refused outright. A caller who wrote the key by hand would be stating
+;;; the same thing twice in one string, and which copy the library reads is measured:
+;;; LightGBM takes the FIRST occurrence of a duplicated key -- `categorical_feature=0
+;;; categorical_feature=1' trains exactly what `categorical_feature=0' alone trains -- while
+;;; the wrapper appends its own entry LAST. So it is the wrapper's copy, rendered from the
+;;; :CATEGORICAL-FEATURES the caller explicitly named, that would silently lose. Refused, not
+;;; merged and not overwritten.
+;;;
+;;; Which spellings must be refused is a MEASUREMENT, not a guess: LightGBM's aliases appear
+;;; in no vendored header. Measured against the vendored 4.7.0 on this file's own fixture and
+;;; *BOOSTER-PARAMETERS*, twenty rounds, mean score per category -- an honoured spelling
+;;; answers 0.934 / 0.066 / 0.934 / 0.066 / 0.934 / 0.066, margin 0.869, and an inert one
+;;; reproduces the no-key row (0.815 / 0.473 / 0.500 / 0.500 / 0.527 / 0.184, margin 0.000)
+;;; digit for digit:
+;;;
+;;;   categorical_feature    honoured     kategorical_feature   inert (control)
+;;;   cat_feature            honoured     categorical_feat      inert (control)
+;;;   categorical_column     honoured     cat_features          inert (control)
+;;;   cat_column             honoured
+;;;   categorical_features   honoured
+;;;
+;;; `cat_features' is why the last assertion below exists. It is the PLURAL of `cat_feature',
+;;; which is honoured, and the library still ignores it -- so a refusal written as a prefix
+;;; test, or as any fuzzy match, would reject a key that must keep reaching the library as the
+;;; ordinary backend parameter it is. The list is exact.
+
+(defparameter *refused-parameter-keys*
+  '(:categorical-feature :cat-feature :categorical-column :cat-column :categorical-features
+    "categorical_feature")
+  "The :PARAMETERS keys `make-dataset' must refuse on a backend that spells its categorical
+column list as a parameter, one per honoured alias plus one written the other way a caller
+can write it.
+
+Restated here rather than read from the implementation's own list, deliberately: a test that
+asked the implementation which keys it refuses would pass for any list at all, including an
+empty one. This list is the measurement above, written down twice on purpose.
+
+The last entry is the string `\"categorical_feature\"' rather than a sixth alias -- the same
+key a caller can equally write as the keyword `:categorical-feature', since
+`cl-gbdt:normalize-parameters' downcases a key and turns its dashes into underscores. It
+pins that the refusal compares against that normalized form rather than against the keyword
+the caller happened to type.")
+
+(defparameter *accepted-parameter-key* :cat-features
+  "A :PARAMETERS key that must keep reaching the library: the plural of `cat_feature', which
+LightGBM does NOT honour as an alias -- measured, see above. It is ordinary
+backend-parameter territory, and a refusal that caught it would break a caller passing an
+unrelated key.")
+
+(defparameter *categorical-parameter-value* "0"
+  "The value every :PARAMETERS key above is given: column 0, the categorical column of
+`category-matrix', spelled the way LightGBM's parameter string spells a column list.
+
+The value is never what the refusal is about -- the key alone decides -- so one value serves
+the refused keys and the accepted one alike, and using the same one for both keeps the two
+halves of `the-parameters-key-is-refused' differing only in the key.")
+
+(deftest the-parameters-key-is-refused
+  (dolist (fixture *fixtures*)
+    (with-backend-library ((getf fixture :backend))
+      (let ((backend (cl-gbdt:open-backend (getf fixture :backend)))
+            (matrix (category-matrix)))
+        (unwind-protect
+             ;; Asked only of a backend this file builds datasets with :PARAMETERS on, read
+             ;; from *FIXTURES* rather than from a backend name. XGBoost's entry there is NIL
+             ;; because that backend refuses :PARAMETERS outright, which would make every
+             ;; assertion below -- the accepted key included -- signal for a reason that has
+             ;; nothing to do with categorical columns.
+             (let ((base (getf fixture :dataset-parameters)))
+               (when base
+                 (flet ((refusal-for (key)
+                          "Return the `unsupported-argument' `make-dataset' signals for KEY
+added to BASE, or NIL when it built a dataset instead -- which is then freed rather than
+leaked, since reaching that branch is already one failure and a leaked handle would be a
+poor second one to hand whoever is reading the first."
+                          (handler-case
+                              (progn (cl-gbdt:free-dataset
+                                      (cl-gbdt:make-dataset
+                                       backend matrix
+                                       :parameters
+                                       (append base
+                                               (list key *categorical-parameter-value*))))
+                                     nil)
+                            (cl-gbdt:unsupported-argument (c) c))))
+                   (dolist (key *refused-parameter-keys*)
+                     (testing (format nil "~A: make-dataset signals unsupported-argument for ~
+                                           :parameters ~S, naming the argument and the backend"
+                                      (getf fixture :backend) key)
+                       (let ((condition (refusal-for key)))
+                         (ok condition "make-dataset signalled instead of building a dataset")
+                         (ok (and condition
+                                  (equal "make-dataset's :parameters"
+                                         (cl-gbdt:unsupported-argument-argument condition)))
+                             (format nil "the condition named argument ~S"
+                                     (and condition
+                                          (cl-gbdt:unsupported-argument-argument condition))))
+                         (ok (and condition
+                                  (eq (getf fixture :backend)
+                                      (cl-gbdt:unsupported-argument-backend condition)))
+                             (format nil "the condition named backend ~S"
+                                     (and condition
+                                          (cl-gbdt:unsupported-argument-backend condition)))))))
+                   (testing (format nil "~A: and does not refuse :parameters ~S, which the ~
+                                         library does not honour as an alias"
+                                    (getf fixture :backend) *accepted-parameter-key*)
+                     (let ((condition (refusal-for *accepted-parameter-key*)))
+                       (ok (null condition)
+                           (if condition
+                               (format nil "make-dataset signalled about ~S instead of ~
+                                            building a dataset"
+                                       (cl-gbdt:unsupported-argument-argument condition))
+                               "make-dataset built a dataset")))))))
           (cl-gbdt:close-backend backend))))))

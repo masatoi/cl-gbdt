@@ -105,7 +105,17 @@ A non-NIL CATEGORICAL-FEATURES needs BACKEND's `:categorical-features' capabilit
 `make-dataset' re-checks itself: a caller who never asked `backend-supports-p' gets
 `capability-unavailable' rather than an argument silently ignored, and no backend ever falls
 back to reading the column as a quantity instead. XGBoost provides it -- the column list
-becomes the `\"feature_type\"' field it attaches to a finished DMatrix.
+becomes the `\"feature_type\"' field it attaches to a finished DMatrix. LightGBM provides it
+through a different mechanism: the list becomes a `categorical_feature' entry in the
+parameter string that builds the dataset.
+
+That is the same channel PARAMETERS itself reaches LightGBM through, and so the one place
+where naming CATEGORICAL-FEATURES changes what PARAMETERS may say. That backend refuses the
+key there -- `categorical_feature' and the four further spellings it honours,
+`cat_feature', `categorical_column', `cat_column' and `categorical_features' -- with
+`unsupported-argument', since `make-dataset' writes the key itself now and a caller's own
+copy would silently override it. Every other key still passes through untouched, and no
+other backend refuses anything on this account.
 
 `predict' takes no CATEGORICAL-FEATURES of its own, and deliberately: measured, a booster
 trained from a dataset built with one predicts correctly from a plain matrix, the trained
