@@ -38,8 +38,15 @@
   ;; :lightgbm)' below would signal `unknown-backend'.
   (:import-from #:cl-gbdt/src/lightgbm/all)
   (:import-from #:cl-gbdt/src/xgboost/all)
+  ;; `dense-to-csr' stores every element of the matrix it converts, zeros included. What this
+  ;; file needs that for: an entry a `csr-matrix' does not store is MISSING to XGBoost whatever
+  ;; any config says -- see that struct's own docstring, where the divergence is stated -- so a
+  ;; conversion that dropped zeros would hand the library a second, unnamed missing cell and
+  ;; `prediction-sentinel-works-on-a-csr-matrix' would no longer be about its sentinel alone.
   (:import-from #:cl-gbdt/tests/functional/support
-                #:with-backend-library)
+                #:with-backend-library
+                #:predictions-agree-p
+                #:dense-to-csr)
   ;; The fixture table and its dataset builder come from evaluation.lisp rather than being
   ;; restated here, for the reason that file's own export comment gives: a second table saying
   ;; the same thing in its own words is how two files that must agree stop agreeing.
@@ -51,19 +58,6 @@
                 #:make-fixture-dataset))
 
 (in-package #:cl-gbdt/tests/functional/missing-value)
-
-(defparameter *prediction-tolerance* 1d-9
-  "How far two `cl-gbdt:predict' results may differ, element for element, and still count as
-the same numbers below.
-
-Exact equality is what is actually expected of every equality this file asserts: a sentinel
-honoured and a stored NaN describe the same missing cell to the library, and both backends
-train and predict deterministically from fixed data, so the two answers should come off
-identical trees down identical paths. The tolerance is here because that expectation rests on
-two config strings reaching the same code path inside the library, which nothing documents.
-It is small enough that nothing this file exists to catch survives it: the measured gaps the
-inequality assertions rest on are 0.026 on XGBoost's ingestion path and 0.693 on its
-prediction path, seven and eight orders of magnitude above this.")
 
 (defparameter *training-rounds* 5
   "How many boosting rounds every booster below is trained for. Five, matching
@@ -215,43 +209,6 @@ asked about. It also keeps every test that uses this about the INGESTION path al
 `predict''s own :MISSING."
   (cl-gbdt:with-booster (booster (booster-trained-on fixture backend matrix :missing missing))
     (cl-gbdt:predict booster (fixture-matrix))))
-
-(defun fixture-csr (matrix)
-  "Return MATRIX, a `fixture-matrix' result, as a `cl-gbdt:csr-matrix' of the same width.
-
-Every element is stored explicitly, zeros included, rather than only the non-zero ones a CSR
-conversion usually keeps. An entry a `csr-matrix' does not store is MISSING to XGBoost
-whatever any config says -- see that struct's own docstring, where the divergence is stated
--- so a conversion that dropped zeros would hand the library a second, unnamed missing cell
-and `prediction-sentinel-works-on-a-csr-matrix' would no longer be about its sentinel alone.
-
-tests/functional/sparse-input.lisp converts its own dense fixture the same way, but its
-`dense-to-csr' is that file's internal helper over that file's fixture; the reason for
-storing every element is a different one there, and stating this one here keeps it next to
-the test that depends on it."
-  (let* ((rows (array-dimension matrix 0))
-         (columns (array-dimension matrix 1))
-         (indptr (make-array (1+ rows)))
-         (indices (make-array (* rows columns)))
-         (values (make-array (* rows columns)))
-         (position 0))
-    (dotimes (row rows)
-      (setf (aref indptr row) position)
-      (dotimes (column columns)
-        (setf (aref indices position) column)
-        (setf (aref values position) (aref matrix row column))
-        (incf position)))
-    (setf (aref indptr rows) position)
-    (cl-gbdt:make-csr-matrix :indptr indptr :indices indices :values values
-                             :num-columns columns)))
-
-(defun predictions-agree-p (left right)
-  "True when LEFT and RIGHT, two `cl-gbdt:predict' results, have the same shape and no pair of
-corresponding elements differs by more than *PREDICTION-TOLERANCE*."
-  (and (equal (array-dimensions left) (array-dimensions right))
-       (loop :for index :below (array-total-size left)
-             :always (<= (abs (- (row-major-aref left index) (row-major-aref right index)))
-                         *prediction-tolerance*))))
 
 ;;; ---------------------------------------------------------------------------
 ;;; The capability this task ships
@@ -409,7 +366,7 @@ something unrelated had broken."
 ;;; assertions below and nothing else in either suite.
 ;;;
 ;;; Measured against the vendored XGBoost before either assertion was written, the same five
-;;; rounds on the same eight rows as the dense test above -- and, `fixture-csr' storing every
+;;; rounds on the same eight rows as the dense test above -- and, `dense-to-csr' storing every
 ;;; element explicitly, the same three numbers: the four negative rows answer 0.153285950422287
 ;;; in every case, and the four positive rows are what move:
 ;;;
@@ -428,12 +385,12 @@ something unrelated had broken."
              (when (and (cl-gbdt:backend-supports-p backend :missing-value)
                         (cl-gbdt:backend-supports-p backend :sparse-input))
                (let ((honoured (train-on fixture backend
-                                         (fixture-csr (fixture-matrix :hole-value *sentinel*))
+                                         (dense-to-csr (fixture-matrix :hole-value *sentinel*))
                                          :missing *sentinel*))
                      (literal (train-on fixture backend
-                                        (fixture-csr (fixture-matrix :hole-value *sentinel*))))
+                                        (dense-to-csr (fixture-matrix :hole-value *sentinel*))))
                      (nan (train-on fixture backend
-                                    (fixture-csr (fixture-matrix :hole-value (quiet-nan))))))
+                                    (dense-to-csr (fixture-matrix :hole-value (quiet-nan))))))
                  (testing (format nil "~A: a csr-matrix dataset built with :missing ~A answers ~
                                        what a stored NaN answers -- the sentinel was honoured"
                                   (getf fixture :backend) *sentinel*)
@@ -664,13 +621,13 @@ something unrelated had broken."
                         (cl-gbdt:backend-supports-p backend :sparse-input))
                (cl-gbdt:with-booster
                    (booster (booster-trained-on fixture backend (fixture-matrix)))
-                 (let* ((holed (fixture-csr (fixture-matrix :hole-value *sentinel*)))
+                 (let* ((holed (dense-to-csr (fixture-matrix :hole-value *sentinel*)))
                         (honoured (cl-gbdt:predict booster holed
                                                    :kind :normal :missing *sentinel*))
                         (literal (cl-gbdt:predict booster holed :kind :normal))
                         (nan (cl-gbdt:predict
                               booster
-                              (fixture-csr (fixture-matrix :hole-value (quiet-nan)))
+                              (dense-to-csr (fixture-matrix :hole-value (quiet-nan)))
                               :kind :normal)))
                    (testing (format nil "~A: predict on a csr-matrix with :missing ~A answers ~
                                          what a stored NaN answers"

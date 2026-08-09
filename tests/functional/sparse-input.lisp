@@ -39,10 +39,18 @@
   ;; :lightgbm)' below would signal `unknown-backend'.
   (:import-from #:cl-gbdt/src/lightgbm/all)
   (:import-from #:cl-gbdt/src/xgboost/all)
+  ;; `dense-to-csr' stores every element of the matrix it converts, zeros included. What this
+  ;; file needs that for: `sparse-and-dense-training-agree' below compares a sparsely-trained
+  ;; model against a densely-trained one, so a conversion that dropped zeros would be
+  ;; describing different data to the two backends -- 0.0 to LightGBM, missing to XGBoost --
+  ;; and that test would be asserting something different on each.
   (:import-from #:cl-gbdt/tests/functional/support
                 #:with-backend-library
                 #:make-separable-dataset
-                #:predictions-separate-p)
+                #:predictions-separate-p
+                #:*prediction-tolerance*
+                #:predictions-agree-p
+                #:dense-to-csr)
   ;; The fixture table and its dataset builder come from evaluation.lisp rather than being
   ;; restated here, for the reason that file's own export comment gives: a second table
   ;; saying the same thing in its own words is how two files that must agree stop agreeing.
@@ -54,53 +62,6 @@
                 #:make-fixture-dataset))
 
 (in-package #:cl-gbdt/tests/functional/sparse-input)
-
-(defparameter *prediction-tolerance* 1d-9
-  "How far two `cl-gbdt:predict' results may differ, element for element, and still count as
-the same numbers in `sparse-and-dense-training-agree' and `sparse-and-dense-prediction-agree'.
-
-Exact equality is what is actually expected: the dense and CSR ingestion paths hand the
-library the same values, and both libraries train deterministically from a fixed dataset, so
-the two boosters should be identical trees. The tolerance is here because that expectation
-rests on the two C entry points accumulating in the same order, which neither library
-documents, and a last-bit difference would be a true negative dressed as a failure. It is
-small enough that nothing this test exists to catch survives it: a transposed index, a
-dropped row or a matrix read as zeros moves a probability by far more than 1d-9.")
-
-(defun dense-to-csr (matrix &key (num-columns (array-dimension matrix 1)))
-  "Return MATRIX, a 2D `double-float' array, as a `cl-gbdt:csr-matrix' NUM-COLUMNS wide.
-
-Every element of MATRIX is stored explicitly, zeros included, rather than only the non-zero
-ones a CSR conversion usually keeps. The two libraries do not agree on what an ABSENT entry
-means -- LightGBM reads one as 0.0 while its own `zero_as_missing' is off, XGBoost reads one
-as missing -- so a conversion that dropped zeros would be describing different data to the
-two backends, and `sparse-and-dense-training-agree' below would be asserting something
-different on each. Storing every element leaves the `csr-matrix' and MATRIX describing the
-same numbers on both, which is the property that test is about.
-
-NUM-COLUMNS defaults to MATRIX's own width. A larger value declares trailing columns that
-hold nothing at all -- no entry of INDICES names them -- which is what
-`sparse-dataset-reports-the-declared-width' needs and where the absent-entry case is
-covered instead.
-
-This is the only place a `csr-matrix' is built from the suite's dense fixture, so the two
-forms of the same data cannot drift apart."
-  (let* ((rows (array-dimension matrix 0))
-         (cols (array-dimension matrix 1))
-         (stored (* rows cols))
-         (indptr (make-array (1+ rows)))
-         (indices (make-array stored))
-         (values (make-array stored))
-         (position 0))
-    (dotimes (row rows)
-      (setf (aref indptr row) position)
-      (dotimes (col cols)
-        (setf (aref indices position) col)
-        (setf (aref values position) (aref matrix row col))
-        (incf position)))
-    (setf (aref indptr rows) position)
-    (cl-gbdt:make-csr-matrix :indptr indptr :indices indices :values values
-                             :num-columns num-columns)))
 
 (defun single-column-matrix (values)
   "Return VALUES, a list of reals, as a `(simple-array double-float (N 1))'.
@@ -124,14 +85,6 @@ input row and one column per class. Every fixture's objective is binary, so COLU
          (result (make-array rows :element-type 'double-float)))
     (dotimes (row rows result)
       (setf (aref result row) (aref predictions row column)))))
-
-(defun predictions-agree-p (left right)
-  "True when LEFT and RIGHT, two `cl-gbdt:predict' results, have the same shape and no pair
-of corresponding elements differs by more than *PREDICTION-TOLERANCE*."
-  (and (equal (array-dimensions left) (array-dimensions right))
-       (loop :for index :below (array-total-size left)
-             :always (<= (abs (- (row-major-aref left index) (row-major-aref right index)))
-                         *prediction-tolerance*))))
 
 (defun fixture-for (backend-name)
   "Return the *FIXTURES* entry for BACKEND-NAME."

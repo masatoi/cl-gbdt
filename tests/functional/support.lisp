@@ -3,6 +3,10 @@
 (uiop:define-package #:cl-gbdt/tests/functional/support
   (:use #:cl #:rove)
   (:import-from #:cffi)
+  ;; Zero symbols: `dense-to-csr' below is the only thing here that reaches the unified API and
+  ;; it calls `cl-gbdt:make-csr-matrix' package-qualified. Declared so that dependency is
+  ;; explicit rather than inherited through the array-interface clause underneath it.
+  (:import-from #:cl-gbdt)
   (:import-from #:cl-gbdt/src/xgboost/array-interface
                 #:array-interface-json)
   (:export #:backend-library-path
@@ -14,6 +18,9 @@
            #:within-group-strictly-increasing-p
            #:make-multiclass-dataset
            #:predictions-match-labels-p
+           #:*prediction-tolerance*
+           #:predictions-agree-p
+           #:dense-to-csr
            #:array-interface-json))
 
 (in-package #:cl-gbdt/tests/functional/support)
@@ -226,3 +233,89 @@ which would break on any upstream version bump without telling us anything new."
                             :do (setf best-value (aref predictions row column)
                                       best-column column)
                           :finally (return (= best-column label)))))))
+
+(defparameter *prediction-tolerance* 1d-9
+  "How far two `cl-gbdt:predict' results may differ, element for element, and still count as
+the same numbers to `predictions-agree-p' below.
+
+Exact equality is what is actually expected wherever it is used: both libraries train and
+predict deterministically from fixed data, so two runs that described the same rows to one of
+them should come off identical trees down identical paths. The tolerance is here because that
+expectation rests on details neither library documents -- two C entry points accumulating in
+the same order for tests/functional/sparse-input.lisp, two config strings reaching the same
+code path for tests/functional/missing-value.lisp -- and a last-bit difference would be a true
+negative dressed as a failure.
+
+It is small enough that nothing the files using it exist to catch survives it. The gaps their
+inequality assertions rest on, measured against the vendored libraries and carried over
+unchanged from the three per-file parameters this one replaces:
+
+  tests/functional/missing-value.lisp        0.026 on XGBoost's ingestion path and 0.693 on
+                                             its prediction path
+  tests/functional/categorical-features.lisp 0.435 where the two arms are furthest apart, the
+                                             same number on both backends -- which is what an
+                                             inequality needing only ONE element over the
+                                             tolerance actually rests on; where they are
+                                             closest it is 0.158 on XGBoost and 0.119 on
+                                             LightGBM
+
+Seven and eight orders of magnitude above 1d-9. tests/functional/sparse-input.lisp's own
+parameter recorded no measured gap: what it stated instead is that a transposed index, a
+dropped row or a matrix read as zeros moves a probability by far more than this.")
+
+(defun predictions-agree-p (left right)
+  "True when LEFT and RIGHT, two `cl-gbdt:predict' results, differ nowhere by more than
+*PREDICTION-TOLERANCE*, element for element.
+
+Signals an error when they have different SHAPES rather than answering NIL. Every caller
+compares two results of the same row count and the same column count -- sometimes one
+booster's answers about two forms of one matrix, sometimes two boosters' answers about one
+matrix -- so a shape mismatch is a broken test rather than a disagreement about numbers, and
+answering NIL let `(not (predictions-agree-p ...))', which several tests assert, pass for the
+wrong reason.
+
+That every caller does is measured rather than assumed: with the error branch in place the
+whole layer-2 suite is green, so no call site reached it."
+  (unless (equal (array-dimensions left) (array-dimensions right))
+    (error "predictions-agree-p was given results of different shapes: ~S and ~S"
+           (array-dimensions left) (array-dimensions right)))
+  (loop :for index :below (array-total-size left)
+        :always (<= (abs (- (row-major-aref left index) (row-major-aref right index)))
+                    *prediction-tolerance*)))
+
+(defun dense-to-csr (matrix &key (num-columns (array-dimension matrix 1)))
+  "Return MATRIX, a 2D `double-float' array, as a `cl-gbdt:csr-matrix' NUM-COLUMNS wide.
+
+Every element of MATRIX is stored explicitly, zeros included, rather than only the non-zero
+ones a CSR conversion usually keeps. The two libraries do not agree on what an ABSENT entry
+means -- LightGBM reads one as 0.0 while its own `zero_as_missing' is off, XGBoost reads one
+as missing whatever any config says; see `cl-gbdt:csr-matrix''s own docstring, where the
+divergence is stated -- so a conversion that dropped zeros would describe different data to
+the two backends. Storing every element leaves the `csr-matrix' and MATRIX describing the same
+numbers on both. WHY each caller needs that differs, so each states its own reason where it
+imports this.
+
+NUM-COLUMNS defaults to MATRIX's own width. A larger value declares trailing columns that hold
+nothing at all -- no entry of INDICES names them -- which is how a caller reaches the
+absent-entry case deliberately rather than by accident.
+
+This is the only place tests/functional/ turns a dense array into a `csr-matrix', so the two
+forms of the same data cannot drift apart. `omitted-entry-csr' in
+tests/functional/sparse-input.lisp also builds one, but from a list of rows and omitting zeros
+on purpose: it is that file's demonstration of the very divergence this function avoids."
+  (let* ((rows (array-dimension matrix 0))
+         (cols (array-dimension matrix 1))
+         (stored (* rows cols))
+         (indptr (make-array (1+ rows)))
+         (indices (make-array stored))
+         (values (make-array stored))
+         (position 0))
+    (dotimes (row rows)
+      (setf (aref indptr row) position)
+      (dotimes (col cols)
+        (setf (aref indices position) col)
+        (setf (aref values position) (aref matrix row col))
+        (incf position)))
+    (setf (aref indptr rows) position)
+    (cl-gbdt:make-csr-matrix :indptr indptr :indices indices :values values
+                             :num-columns num-columns)))
