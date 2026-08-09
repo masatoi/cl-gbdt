@@ -295,7 +295,7 @@ but not predict from one would have been told a half-truth. Listing both from th
 the answer never changes meaning as the sparse path grows.")
 
 (defparameter *provided-capabilities*
-  '(:evaluation-history :early-stopping)
+  '(:evaluation-history :early-stopping :categorical-features)
   "Capabilities this backend provides unconditionally, recorded true at `open-backend'
 without being probed -- `probe-capabilities''s PROVIDED, which says why a probe cannot
 express this.
@@ -310,6 +310,16 @@ answer differently from one open to the next.
 loops run in Lisp, so the stop decision is `cl-gbdt/src/training/early-stopping''s pure code,
 which every open backend has by construction. A probe has nothing to look for, and the
 capability cannot vary between one open and the next.
+`:categorical-features' is here for a third reason, and the plainest of the three: on this
+backend the column list is a KEY IN THE PARAMETER STRING -- `categorical_feature', written
+by `make-dataset' through `%parameter-string' -- so no C symbol carries it at all, and
+there is nothing a probe could look for. That is where this differs from XGBoost's entry of
+the same name, which is provided because the call that attaches the list,
+`XGDMatrixSetStrFeatureInfo', is already required there. The two entry points that read
+this backend's parameter string, `LGBM_DatasetCreateFromMat' and
+`LGBM_DatasetCreateFromCSR', are already accounted for -- the first in `*required-symbols*'
+above, the second in `*optional-symbols*' under `:sparse-input' -- so a library that opens
+at all can be told which of its columns hold categories.
 
 Every name here must be registered in `cl-gbdt/src/backend''s `*known-capabilities*', or
 `backend-supports-p' would signal `unknown-capability' for a capability the plist claims;

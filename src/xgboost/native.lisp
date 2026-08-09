@@ -84,6 +84,7 @@
            #:%set-info-field
            #:%set-group-field
            #:%set-feature-names
+           #:%set-feature-types
            #:%free-dmatrix
            #:%free-dmatrix-unchecked
            #:%dataset-num-rows
@@ -318,7 +319,7 @@ but not predict from one would have been told a half-truth. Listing both from th
 the answer never changes meaning as the sparse path grows.")
 
 (defparameter *provided-capabilities*
-  '(:evaluation-history :early-stopping :missing-value)
+  '(:evaluation-history :early-stopping :missing-value :categorical-features)
   "Capabilities this backend provides unconditionally, recorded true at `open-backend'
 without being probed -- `probe-capabilities''s PROVIDED, which says why a probe cannot
 express this.
@@ -339,6 +340,11 @@ a C function of its own. Every entry point that reads it is already in `*require
 or `*optional-symbols*' for another reason, so there is no symbol whose presence or absence
 could make this capability true or false, and a probe has nothing left to decide. A library
 that opens at all can be told which value means missing.
+`:categorical-features' is here for that same first reason once more: the C function that
+carries it, `XGDMatrixSetStrFeatureInfo', is already in `*required-symbols*' above -- it is
+how FEATURE-NAMES has always been attached -- and marking a column categorical is the same
+call under a different field name. A library missing it never opens at all, so a probe in
+`*optional-symbols*' would have nothing left to decide.
 
 Every name here must be registered in `cl-gbdt/src/backend''s `*known-capabilities*', or
 `backend-supports-p' would signal `unknown-capability' for a capability the plist claims;
@@ -583,6 +589,30 @@ apart from the field name and the C function it calls."
                           "XGDMatrixSetStrFeatureInfo")))
         (dotimes (index allocated)
           (cffi:foreign-string-free (cffi:mem-aref names :pointer index)))))))
+
+(defun %set-feature-types (dataset-pointer feature-types)
+  "Attach FEATURE-TYPES, a list of strings, to DATASET-POINTER via
+`XGDMatrixSetStrFeatureInfo' under XGBoost's \"feature_type\" field.
+
+One string per column, as `cl-gbdt/src/config/categorical-features''s
+`categorical-feature-types' renders them. Mirrors `%set-feature-names' above call for call,
+apart from the field name -- including how it frees on a signal partway through the
+allocation loop, whose reasoning that function's docstring carries."
+  (let ((count (length feature-types))
+        (allocated 0))
+    (cffi:with-foreign-object (types :pointer count)
+      (unwind-protect
+           (progn
+             (loop :for type :in feature-types
+                   :for index :from 0
+                   :do (setf (cffi:mem-aref types :pointer index)
+                             (cffi:foreign-string-alloc type))
+                       (setf allocated (1+ index)))
+             (cffi:with-foreign-string (field "feature_type")
+               (check-xgb (xgd-matrix-set-str-feature-info dataset-pointer field types count)
+                          "XGDMatrixSetStrFeatureInfo")))
+        (dotimes (index allocated)
+          (cffi:foreign-string-free (cffi:mem-aref types :pointer index)))))))
 
 (defun %free-dmatrix (pointer)
   "Free the DMatrix at POINTER via `XGDMatrixFree', signalling `foreign-call-error' when

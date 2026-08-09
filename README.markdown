@@ -17,16 +17,20 @@ file if you have it locally).
 `make-dataset`, `dataset-num-rows`, `dataset-num-features`, `train`,
 `update-one-iteration`, `predict`, `save-model`, `load-model`, `model-to-string`,
 `feature-importance`, `evaluation`, `free-dataset` and `free-booster` -- against the real
-LightGBM and XGBoost shared libraries, exercised by 403 functional assertions (design doc
-section 12, layer 2), in addition to 378 assertions that need no shared library at all
+LightGBM and XGBoost shared libraries, exercised by 470 functional assertions (design doc
+section 12, layer 2), in addition to 404 assertions that need no shared library at all
 (layer 1). `train` also returns a `training-report` as its secondary value, and takes
 `:early-stopping` to end a run once a watched metric stops improving -- see
 [Training report](#training-report) below. `make-dataset` and `predict` also accept a
 `csr-matrix` wherever they accept a dense matrix -- see [Sparse
 input](#sparse-input-csr-matrices) below -- and both also take `:missing`, the value in
 the caller's data that means missing, gated on the `:missing-value` capability that only
-XGBoost provides -- see [Missing values](#missing-values) below. See [Usage](#usage)
-below for a worked example.
+XGBoost provides -- see [Missing values](#missing-values) below. `make-dataset` also
+takes `:categorical-features`, the 0-based columns that hold categories rather than
+quantities, gated on the `:categorical-features` capability that both backends provide
+-- `predict` takes no such argument, the trained trees already carrying the category
+sets they split on -- see [Categorical features](#categorical-features) below. See
+[Usage](#usage) below for a worked example.
 
 Loading `cl-gbdt` itself still does not require either `liblightgbm.so` or
 `libxgboost.so` to be installed -- see [Systems](#systems): a shared library is opened
@@ -261,13 +265,15 @@ Four things it promises, each of which is the point of it existing at all:
 ```
 
 `backend-info` reports the whole probed plist, false capabilities included, so it shows
-what was asked as well as what was answered. Four of the five registered capabilities answer
+what was asked as well as what was answered. Six of the seven registered capabilities answer
 true somewhere today: `:model-slicing`, on XGBoost only -- see the model-slicing row in the
 table below -- plus `:evaluation-history` and `:early-stopping` on both backends, since
 `train` records a history and takes `:early-stopping` (see
-[Training report](#training-report)), and `:sparse-input` on both, since both libraries
-export the CSR entry points it names (see [Sparse input](#sparse-input-csr-matrices)). The
-fifth, `:multidimensional-feature-score`, is registered and false everywhere, which says
+[Training report](#training-report)), `:sparse-input` on both, since both libraries
+export the CSR entry points it names (see [Sparse input](#sparse-input-csr-matrices)),
+`:missing-value` on XGBoost only (see [Missing values](#missing-values)), and
+`:categorical-features` on both (see [Categorical features](#categorical-features)). The
+seventh, `:multidimensional-feature-score`, is registered and false everywhere, which says
 "not supported yet" rather than "never heard of it".
 
 `:evaluation-history` is true unconditionally rather than probed. The C functions behind it
@@ -1399,6 +1405,499 @@ same result omitting `:missing` from `predict` entirely already gives. A caller 
 with one sentinel and predicts with another, or forgets `:missing` on one side, gets a
 booster and a prediction that both ran without complaint, and numbers that silently do not
 mean what the caller intended.
+
+### Categorical features
+
+`make-dataset` takes `:categorical-features`, a list of 0-based column indices naming which
+columns of the caller's own matrix hold *categories* rather than *quantities* -- so a split on
+one of them partitions the category set instead of thresholding an ordinal that has no order.
+`NIL`, the default, is exactly today's behaviour: every column is read as a quantity, the same
+as every call made before the argument existed.
+
+Each backend renders the list its own way. XGBoost attaches it to the finished DMatrix as the
+`"feature_type"` field -- `"c"` for each named column, `"q"` for every other -- through the
+same `XGDMatrixSetStrFeatureInfo` call `:feature-names` already uses, under a different key.
+LightGBM instead composes a `categorical_feature` entry into the parameter string that builds
+the dataset -- see [LightGBM: `categorical_feature` and its four
+aliases](#lightgbm-categorical_feature-and-its-four-aliases) below for what that means when a
+caller also writes the key by hand.
+
+`predict` takes no such argument at all, on either backend. A booster trained from a dataset
+built with categorical columns predicts correctly from a plain matrix regardless -- measured
+below -- because the trained trees already carry the category sets they split on. XGBoost in
+particular records nothing about which columns were categorical on the booster itself: a model
+it saves carries an empty `"feature_types":[]`, the same field a model trained with no
+categorical column at all would save.
+
+`:categorical-features` needs the `:categorical-features` capability, answerable through
+`backend-supports-p` and true on both vendored backends, and **`make-dataset` re-checks it
+itself** rather than trusting a caller who asked first, exactly as [the capability
+model](#asking-a-backend-what-it-can-do) requires everywhere else. It applies identically
+whether the caller's matrix is dense or a `csr-matrix` -- the column count checked against is
+the matrix's own, and for a `csr-matrix` that is its **declared** `NUM-COLUMNS`, not the
+largest index actually stored. An index that is not an integer, is negative, is at or beyond
+the matrix's last column, or was named more than once, signals `unsupported-argument` naming
+`:categorical-features` and the backend, from `make-dataset` itself rather than from either
+library:
+
+```lisp
+(ql:quickload '(:cl-gbdt :cl-gbdt/lightgbm :cl-gbdt/xgboost) :silent t)
+
+;; Six categories in column 0, alternating class by category -- 0, 2 and 4 positive, 1, 3 and 5
+;; negative -- four rows apiece, 24 rows in all. No threshold on the ordinal 0..5 separates an
+;; alternating pattern; a categorical split choosing the subset {0, 2, 4} does. Column 1 is
+;; noise: it alternates independently of the class and carries no signal.
+;; Taken from tests/functional/categorical-features.lisp's own fixture and parameters.
+(defparameter *num-categories* 6)
+(defparameter *rows-per-category* 4)
+
+(defun category-matrix ()
+  (let* ((rows (* *num-categories* *rows-per-category*))
+         (matrix (make-array (list rows 2) :element-type 'double-float)))
+    (dotimes (row rows)
+      (setf (aref matrix row 0) (coerce (floor row *rows-per-category*) 'double-float))
+      (setf (aref matrix row 1) (coerce (mod row 2) 'double-float)))
+    matrix))
+
+(defun category-labels ()
+  (let* ((rows (* *num-categories* *rows-per-category*))
+         (label-vector (make-array rows :element-type 'single-float)))
+    (dotimes (row rows)
+      (setf (aref label-vector row)
+            (if (evenp (floor row *rows-per-category*)) 1.0 0.0)))
+    label-vector))
+
+(defun category-means (predictions)
+  (loop :for category :below *num-categories*
+        :collect (/ (loop :for row :from (* category *rows-per-category*)
+                            :below (* (1+ category) *rows-per-category*)
+                          :sum (row-major-aref predictions row))
+                    *rows-per-category*)))
+
+(defun demo (name backend dataset-parameters booster-parameters)
+  (format t "~A backend-supports-p :categorical-features => ~S~%"
+          name (cl-gbdt:backend-supports-p backend :categorical-features))
+  (flet ((run (categorical-features)
+           (cl-gbdt:with-dataset
+               (dataset (apply #'cl-gbdt:make-dataset backend (category-matrix)
+                               :label (category-labels)
+                               (append (when dataset-parameters
+                                         (list :parameters dataset-parameters))
+                                       (when categorical-features
+                                         (list :categorical-features categorical-features)))))
+             (cl-gbdt:with-booster (booster (cl-gbdt:train backend dataset :num-rounds 20
+                                                           :parameters booster-parameters))
+               (category-means (cl-gbdt:predict booster (category-matrix)))))))
+    (format t "~A category means, :categorical-features '(0): ~S~%" name (run '(0)))
+    (format t "~A category means, the same matrix read as quantities: ~S~%" name (run nil))))
+
+(let ((lgbm (cl-gbdt:open-backend :lightgbm))
+      (xgb (cl-gbdt:open-backend :xgboost)))
+  (demo "XGBoost " xgb nil
+        '(:objective "binary:logistic" :max-depth 1 :verbosity 0 :min-child-weight 0
+          :tree-method "hist"))
+  (demo "LightGBM" lgbm '(:min-data-in-leaf 1 :min-data-in-bin 1 :min-data-per-group 1
+                           :cat-smooth 0 :cat-l2 0 :verbose -1)
+        '(:objective "binary" :max-depth 1 :verbose -1 :min-data-in-leaf 1 :min-data-per-group 1
+          :cat-smooth 0 :cat-l2 0))
+
+  ;; predict never takes :categorical-features -- every predict call above already omits it,
+  ;; and still routes each row down the trained categorical splits correctly. XGBoost's own
+  ;; saved model confirms it records nothing about which columns were categorical:
+  (cl-gbdt:with-dataset
+      (dataset (cl-gbdt:make-dataset xgb (category-matrix) :label (category-labels)
+                                      :categorical-features '(0)))
+    (cl-gbdt:with-booster (booster (cl-gbdt:train xgb dataset :num-rounds 5
+                                      :parameters '(:objective "binary:logistic" :max-depth 1
+                                                    :verbosity 0 :min-child-weight 0
+                                                    :tree-method "hist")))
+      (let* ((json (cl-gbdt:model-to-string booster))
+             (pos (search "\"feature_types\"" json)))
+        (format t "XGBoost  saved model's own feature_types field: ~A~%"
+                (subseq json pos (+ pos 25))))))
+
+  ;; The same comparison over a csr-matrix, the other form make-dataset accepts -- every element
+  ;; stored explicitly, so nothing here is about an absent CSR entry (see Sparse input above).
+  (flet ((as-csr (matrix)
+           (let* ((rows (array-dimension matrix 0)) (columns (array-dimension matrix 1))
+                  (indptr (make-array (1+ rows))) (indices (make-array (* rows columns)))
+                  (values (make-array (* rows columns))) (position 0))
+             (dotimes (row rows)
+               (setf (aref indptr row) position)
+               (dotimes (column columns)
+                 (setf (aref indices position) column)
+                 (setf (aref values position) (aref matrix row column))
+                 (incf position)))
+             (setf (aref indptr rows) position)
+             (cl-gbdt:make-csr-matrix :indptr indptr :indices indices :values values
+                                      :num-columns columns))))
+    (cl-gbdt:with-dataset (dataset (cl-gbdt:make-dataset xgb (as-csr (category-matrix))
+                                                          :label (category-labels)
+                                                          :categorical-features '(0)))
+      (cl-gbdt:with-booster (booster (cl-gbdt:train xgb dataset :num-rounds 20
+                                        :parameters '(:objective "binary:logistic" :max-depth 1
+                                                      :verbosity 0 :min-child-weight 0
+                                                      :tree-method "hist")))
+        (format t "XGBoost  category means from a csr-matrix dataset, ~
+                   :categorical-features '(0): ~S~%"
+                (category-means (cl-gbdt:predict booster (category-matrix)))))))
+
+  ;; A bad index signals unsupported-argument naming :categorical-features and the backend,
+  ;; from make-dataset itself, before either backend's own creation call is reached.
+  (dolist (indices (list '("0") '(-1) '(2) '(0 0)))
+    (handler-case
+        (cl-gbdt:free-dataset
+         (cl-gbdt:make-dataset xgb (category-matrix) :label (category-labels)
+                                :categorical-features indices))
+      (error (c) (format t "XGBoost  :categorical-features ~S SIGNALED ~A: ~A~%"
+                          indices (type-of c) c))))
+
+  ;; A :valid-sets entry built WITHOUT :categorical-features, alongside a training set built
+  ;; WITH it, provokes nothing: training succeeds and both entries evaluate the same way.
+  (cl-gbdt:with-dataset
+      (xgb-train (cl-gbdt:make-dataset xgb (category-matrix) :label (category-labels)
+                                        :categorical-features '(0)))
+    (cl-gbdt:with-dataset (xgb-valid (cl-gbdt:make-dataset xgb (category-matrix)
+                                                            :label (category-labels)))
+      (cl-gbdt:with-booster
+          (booster (cl-gbdt:train xgb xgb-train :num-rounds 5 :valid-sets (list xgb-valid)
+                                   :parameters '(:objective "binary:logistic" :max-depth 1
+                                                 :verbosity 0 :min-child-weight 0
+                                                 :tree-method "hist" :eval-metric "logloss")))
+        (format t "XGBoost  evaluation, train :categorical-features '(0), valid without it: ~S~%"
+                (cl-gbdt:evaluation booster)))))
+  (cl-gbdt:with-dataset
+      (lgbm-train (cl-gbdt:make-dataset lgbm (category-matrix) :label (category-labels)
+                                         :categorical-features '(0)
+                                         :parameters '(:min-data-in-leaf 1 :min-data-in-bin 1
+                                                       :min-data-per-group 1 :cat-smooth 0
+                                                       :cat-l2 0 :verbose -1)))
+    (cl-gbdt:with-dataset (lgbm-valid (cl-gbdt:make-dataset lgbm (category-matrix)
+                                                             :label (category-labels)
+                                                             :reference lgbm-train
+                                                             :parameters '(:min-data-in-leaf 1
+                                                                           :min-data-in-bin 1
+                                                                           :min-data-per-group 1
+                                                                           :cat-smooth 0 :cat-l2 0
+                                                                           :verbose -1)))
+      (cl-gbdt:with-booster
+          (booster (cl-gbdt:train lgbm lgbm-train :num-rounds 5 :valid-sets (list lgbm-valid)
+                                   :parameters '(:objective "binary" :max-depth 1 :verbose -1
+                                                 :min-data-in-leaf 1 :min-data-per-group 1
+                                                 :cat-smooth 0 :cat-l2 0
+                                                 :metric "binary_logloss")))
+        (format t "LightGBM evaluation, train :categorical-features '(0), valid without it: ~S~%"
+                (cl-gbdt:evaluation booster)))))
+
+  (cl-gbdt:close-backend lgbm)
+  (cl-gbdt:close-backend xgb))
+```
+
+Output:
+
+```
+XGBoost  backend-supports-p :categorical-features => T
+XGBoost  category means, :categorical-features '(0): (0.9739266037940979d0
+                                                      0.026073377579450607d0
+                                                      0.9739266037940979d0
+                                                      0.026073377579450607d0
+                                                      0.9739266037940979d0
+                                                      0.026073377579450607d0)
+XGBoost  category means, the same matrix read as quantities: (0.8159463405609131d0
+                                                              0.40605124831199646d0
+                                                              0.5471441149711609d0
+                                                              0.46124157309532166d0
+                                                              0.5562390089035034d0
+                                                              0.19264821708202362d0)
+LightGBM backend-supports-p :categorical-features => T
+LightGBM category means, :categorical-features '(0): (0.9344864001786668d0
+                                                      0.0655135998213332d0
+                                                      0.9344864001786668d0
+                                                      0.0655135998213332d0
+                                                      0.9344864001786668d0
+                                                      0.0655135998213332d0)
+LightGBM category means, the same matrix read as quantities: (0.8154497898954673d0
+                                                              0.4733477173729823d0
+                                                              0.5002265133575413d0
+                                                              0.5002265133575413d0
+                                                              0.5265399565045455d0
+                                                              0.184374537772783d0)
+XGBoost  saved model's own feature_types field: "feature_types":[],"gradi
+XGBoost  category means from a csr-matrix dataset, :categorical-features '(0): (0.9739266037940979d0
+                                                                                0.026073377579450607d0
+                                                                                0.9739266037940979d0
+                                                                                0.026073377579450607d0
+                                                                                0.9739266037940979d0
+                                                                                0.026073377579450607d0)
+XGBoost  :categorical-features ("0") SIGNALED UNSUPPORTED-ARGUMENT: :categorical-features is not supported by XGBOOST: each categorical column must be a non-negative integer index.
+XGBoost  :categorical-features (-1) SIGNALED UNSUPPORTED-ARGUMENT: :categorical-features is not supported by XGBOOST: each categorical column must be a non-negative integer index.
+XGBoost  :categorical-features (2) SIGNALED UNSUPPORTED-ARGUMENT: :categorical-features is not supported by XGBOOST: categorical column index 2 is beyond the matrix's 2 columns.
+XGBoost  :categorical-features (0 0) SIGNALED UNSUPPORTED-ARGUMENT: :categorical-features is not supported by XGBOOST: the same categorical column was named more than once.
+XGBoost  evaluation, train :categorical-features '(0), valid without it: ((0
+                                                                           "logloss"
+                                                                           0.17660880088806152d0)
+                                                                          (1
+                                                                           "logloss"
+                                                                           0.17660880088806152d0))
+LightGBM evaluation, train :categorical-features '(0), valid without it: ((0
+                                                                           "binary_logloss"
+                                                                           0.35374722486733495d0)
+                                                                          (1
+                                                                           "binary_logloss"
+                                                                           0.353747224867335d0))
+```
+
+Six categories in one column, alternating class by category, is a fixture where no
+threshold on the ordinal separates the two classes but a categorical split choosing the subset
+`{0, 2, 4}` does -- taken directly from `tests/functional/categorical-features.lisp`, whose own
+comments measure why the small-fixture parameters above are needed, one setting at a time, on
+rows this few: `max_depth` `1` on both backends, or spare tree capacity rebuilds the
+alternating pattern from the plain ordinal and hides what this fixture measures; XGBoost's
+`min_child_weight` `0`, since its default's per-leaf hessian check over four rows rejects the
+split; and LightGBM's `min_data_in_leaf`, `min_data_in_bin`, `min_data_per_group`, `cat_smooth`
+and `cat_l2`, each of which blocks or weakens a categorical split at its own default on a
+fixture this small. On both backends the categorical arm answers one score per class -- `0.974`
+positive / `0.026` negative on XGBoost, `0.934`/`0.066` on LightGBM -- while the plain arm, the
+identical matrix read as quantities, cannot express that split: six different scores that
+barely separate the classes on XGBoost, and on LightGBM two categories (2 and 3) that tie
+exactly at `0.500`.
+
+`predict` above is called with no argument naming the categorical column at all -- there is no
+such argument to give it -- and every prediction still comes out right: on the dense matrix,
+and identically on a `csr-matrix` built from the same rows (`0.9739266037940979d0` and its five
+siblings again, digit for digit). XGBoost's own saved model confirms the mechanism: an empty
+`"feature_types":[]`, the same field a model trained with no categorical column at all would
+save -- the category sets a split needs live in the trees themselves, not on the booster.
+
+The four `unsupported-argument` signals above are the renderer's own rejections
+(`cl-gbdt/src/config/categorical-features`), shared by both backends, so the identical four
+checks refuse a bad index on LightGBM as well -- naming `LIGHTGBM` in place of `XGBOOST` and
+nothing else.
+
+The last two lines are the answer to a question the [missing values](#missing-values) section
+above invites: a `:valid-sets` entry built *without* `:categorical-features`, alongside a
+training set built *with* it, provokes nothing at all. Training succeeds, and the two entries
+evaluate the same way on both backends -- exactly, on XGBoost, and on LightGBM to within
+floating-point noise on the order of `1d-17`. That noise is not from this feature: repeating an
+otherwise identical comparison with no categorical column anywhere shows the same run-to-run
+jitter in LightGBM's `evaluation`, from one run of this section to the next.
+
+#### XGBoost: `tree_method` must be `hist` or `approx`
+
+Measured directly: a dataset built with `:categorical-features` trains successfully with
+`tree_method` `hist` and with `approx`, but `exact` refuses it -- and only once `train` reaches
+`XGBoosterUpdateOneIter`, not at `make-dataset`. The wrapper does not pre-validate
+`tree_method`; it is ordinary `:parameters` business, set on the booster rather than the
+dataset, and nothing here stops a caller from setting it wrong:
+
+```lisp
+(let ((xgb (cl-gbdt:open-backend :xgboost)))
+  (unwind-protect
+      (cl-gbdt:with-dataset
+          (dataset (cl-gbdt:make-dataset xgb (category-matrix) :label (category-labels)
+                                          :categorical-features '(0)))
+        (format t "make-dataset with :categorical-features '(0) succeeded: rows=~D~%"
+                (cl-gbdt:dataset-num-rows dataset))
+        (handler-case
+            (cl-gbdt:with-booster
+                (booster (cl-gbdt:train xgb dataset :num-rounds 5
+                                        :parameters '(:objective "binary:logistic" :max-depth 1
+                                                      :verbosity 0 :min-child-weight 0
+                                                      :tree-method "exact")))
+              (declare (ignore booster))
+              (format t "train with tree_method exact succeeded (unexpected)~%"))
+          (error (c)
+            (let ((text (princ-to-string c)))
+              (format t "train with tree_method exact SIGNALED ~A:~%  ~A~%" (type-of c)
+                      (subseq text 0 (position #\Newline text))))))
+        (cl-gbdt:with-booster
+            (booster (cl-gbdt:train xgb dataset :num-rounds 5
+                                    :parameters '(:objective "binary:logistic" :max-depth 1
+                                                  :verbosity 0 :min-child-weight 0
+                                                  :tree-method "hist")))
+          (declare (ignore booster))
+          (format t "train with tree_method hist succeeded~%"))
+        (cl-gbdt:with-booster
+            (booster (cl-gbdt:train xgb dataset :num-rounds 5
+                                    :parameters '(:objective "binary:logistic" :max-depth 1
+                                                  :verbosity 0 :min-child-weight 0
+                                                  :tree-method "approx")))
+          (declare (ignore booster))
+          (format t "train with tree_method approx succeeded~%")))
+    (cl-gbdt:close-backend xgb)))
+```
+
+Output:
+
+```
+make-dataset with :categorical-features '(0) succeeded: rows=24
+train with tree_method exact SIGNALED FOREIGN-CALL-ERROR:
+  XGBoosterUpdateOneIter returned -1: [13:50:17] /__w/xgboost/xgboost/src/tree/updater_colmaker.cc:107: Updater `grow_colmaker` or `exact` tree method doesn't support categorical features.
+train with tree_method hist succeeded
+train with tree_method approx succeeded
+```
+
+The bracketed time in XGBoost's message is its own wall-clock stamp, the only part of this
+output that changes between runs -- the same caveat [Sparse input](#sparse-input-csr-matrices)
+makes about a different message above. The dataset is built and the feature types attached
+without complaint whatever `tree_method` will later be; it is `train`, not `make-dataset`, that
+finds out `exact` cannot use them.
+
+#### LightGBM: `categorical_feature` and its four aliases
+
+LightGBM's own name for the categorical column list is a parameter-string key,
+`categorical_feature`, and the library also honours four synonyms for it -- measured against
+the vendored 4.7.0: `cat_feature`, `categorical_column`, `cat_column` and `categorical_features`.
+Supplying `:categorical-features` and any of those five spellings in `:parameters` together
+signals `unsupported-argument` naming `make-dataset`'s own `:parameters` argument -- not
+because the wrapper owns the key outright, but because LightGBM keeps the *first* occurrence of
+a duplicated key while `make-dataset` appends its own entry *last*, so the argument the caller
+explicitly named would be the one silently discarded. `:parameters` **on its own is
+unaffected**: a caller who names no categorical column and writes `categorical_feature` there
+by hand -- policy section 6's escape hatch for a backend's own vocabulary -- keeps working
+exactly as it did before this argument existed. A near-miss such as `cat_features`, the plural
+of the honoured `cat_feature`, is not itself an alias -- LightGBM does not honour it -- and is
+never refused, alongside `:categorical-features` or without it: two ways of saying the same
+thing remain reachable on this backend, by design.
+
+```lisp
+(defparameter *dataset-parameters*
+  '(:min-data-in-leaf 1 :min-data-in-bin 1 :min-data-per-group 1 :cat-smooth 0 :cat-l2 0
+    :verbose -1))
+
+(let ((lgbm (cl-gbdt:open-backend :lightgbm)))
+  (unwind-protect
+      (progn
+        ;; Both :categorical-features and one of the five spellings LightGBM honours for the
+        ;; same key in :parameters: refused, naming make-dataset's own :parameters argument.
+        (dolist (key '(:categorical-feature :cat-feature :categorical-column :cat-column
+                       :categorical-features))
+          (handler-case
+              (cl-gbdt:free-dataset
+               (cl-gbdt:make-dataset lgbm (category-matrix) :label (category-labels)
+                                      :categorical-features '(0)
+                                      :parameters (append (list key "0") *dataset-parameters*)))
+            (error (c) (format t ":categorical-features '(0) alongside :parameters ~S SIGNALED ~A~%"
+                                key (type-of c)))))
+        ;; :parameters alone, naming no :categorical-features, is untouched -- the escape hatch.
+        (cl-gbdt:with-dataset
+            (dataset (cl-gbdt:make-dataset lgbm (category-matrix) :label (category-labels)
+                                            :parameters (append '(:categorical-feature "0")
+                                                                *dataset-parameters*)))
+          (format t ":parameters :categorical-feature alone (no :categorical-features) built ~
+                     a dataset: rows=~D~%"
+                  (cl-gbdt:dataset-num-rows dataset)))
+        ;; cat_features, the plural of the honoured cat_feature, is not itself an alias and is
+        ;; never refused -- it reaches the library untouched even alongside :categorical-features.
+        (cl-gbdt:with-dataset
+            (dataset (cl-gbdt:make-dataset lgbm (category-matrix) :label (category-labels)
+                                            :categorical-features '(0)
+                                            :parameters (append '(:cat-features "0")
+                                                                *dataset-parameters*)))
+          (format t ":categorical-features '(0) alongside :parameters :cat-features (not an ~
+                     alias) built a dataset: rows=~D~%"
+                  (cl-gbdt:dataset-num-rows dataset))))
+    (cl-gbdt:close-backend lgbm)))
+```
+
+Output:
+
+```
+:categorical-features '(0) alongside :parameters :CATEGORICAL-FEATURE SIGNALED UNSUPPORTED-ARGUMENT
+:categorical-features '(0) alongside :parameters :CAT-FEATURE SIGNALED UNSUPPORTED-ARGUMENT
+:categorical-features '(0) alongside :parameters :CATEGORICAL-COLUMN SIGNALED UNSUPPORTED-ARGUMENT
+:categorical-features '(0) alongside :parameters :CAT-COLUMN SIGNALED UNSUPPORTED-ARGUMENT
+:categorical-features '(0) alongside :parameters :CATEGORICAL-FEATURES SIGNALED UNSUPPORTED-ARGUMENT
+:parameters :categorical-feature alone (no :categorical-features) built a dataset: rows=24
+:categorical-features '(0) alongside :parameters :cat-features (not an alias) built a dataset: rows=24
+```
+
+#### The values inside a categorical column are passed through unvalidated
+
+`:categorical-features` validates which *columns* are categorical -- the four checks above --
+never what *values* sit inside them. Measured on LightGBM: a fractional category id truncates
+to an integer one silently, and a negative one is converted to missing, with a warning on the
+library's own stderr and nothing that reaches Lisp as a condition either way.
+
+```lisp
+(defun quiet-nan ()
+  "A quiet double-float NaN, built from its bits so no arithmetic can trap."
+  (sb-kernel:make-double-float -524288 0))
+
+(defun category-matrix-with-cell (row value)
+  "CATEGORY-MATRIX, with ROW's column 0 replaced by VALUE."
+  (let ((matrix (category-matrix)))
+    (setf (aref matrix row 0) value)
+    matrix))
+
+(defun train-predict (backend matrix)
+  (cl-gbdt:with-dataset
+      (dataset (cl-gbdt:make-dataset backend matrix :label (category-labels)
+                                      :categorical-features '(0)
+                                      :parameters '(:min-data-in-leaf 1 :min-data-in-bin 1
+                                                    :min-data-per-group 1 :cat-smooth 0
+                                                    :cat-l2 0 :verbose 1)))
+    (cl-gbdt:with-booster
+        (booster (cl-gbdt:train backend dataset :num-rounds 20
+                                :parameters '(:objective "binary" :max-depth 1 :verbose -1
+                                              :min-data-in-leaf 1 :min-data-per-group 1
+                                              :cat-smooth 0 :cat-l2 0)))
+      (category-means (cl-gbdt:predict booster (category-matrix))))))
+
+(let ((lgbm (cl-gbdt:open-backend :lightgbm)))
+  (unwind-protect
+      (progn
+        ;; A fractional category id truncates to an integer one: every row's column 0 gets
+        ;; +0.7, and the categories it truncates to (0..5) are exactly the same as before.
+        (format t "integer category ids:                ~S~%"
+                (train-predict lgbm (category-matrix)))
+        (let ((offset (category-matrix)))
+          (dotimes (row (array-dimension offset 0)) (incf (aref offset row 0) 0.7d0))
+          (format t "the same ids, each +0.7 (fractional): ~S~%" (train-predict lgbm offset)))
+
+        ;; A negative category value prints a warning on LightGBM's own stderr and is converted
+        ;; to missing -- verified against an explicit NaN in the identical cell, which reaches
+        ;; the same prediction and prints no warning at all: the two are the same event.
+        (format t "row 1 (category 0) set to -1.0d0 (negative):~%  ~S~%"
+                (train-predict lgbm (category-matrix-with-cell 1 -1.0d0)))
+        (format t "row 1 (category 0) set to an explicit NaN instead:~%  ~S~%"
+                (train-predict lgbm (category-matrix-with-cell 1 (quiet-nan)))))
+    (cl-gbdt:close-backend lgbm)))
+```
+
+Output:
+
+```
+integer category ids:                (0.9344864001786668d0 0.0655135998213332d0
+                                      0.9344864001786668d0 0.0655135998213332d0
+                                      0.9344864001786668d0 0.0655135998213332d0)
+the same ids, each +0.7 (fractional): (0.9344864001786668d0
+                                       0.0655135998213332d0
+                                       0.9344864001786668d0
+                                       0.0655135998213332d0
+                                       0.9344864001786668d0
+                                       0.0655135998213332d0)
+[LightGBM] [Warning] Met negative value in categorical features, will convert it to NaN
+row 1 (category 0) set to -1.0d0 (negative):
+  (0.9344864001786668d0 0.06551359982133317d0 0.9344864001786668d0
+   0.06551359982133317d0 0.9344864001786668d0 0.06551359982133317d0)
+row 1 (category 0) set to an explicit NaN instead:
+  (0.9344864001786668d0 0.06551359982133317d0 0.9344864001786668d0
+   0.06551359982133317d0 0.9344864001786668d0 0.06551359982133317d0)
+```
+
+Every fractional id in the second run truncates to the same integer category the first run
+used, so the two predictions match digit for digit. The negative id in the third run is the
+only line that prints a warning -- and its own predictions match the fourth run's, where the
+same cell holds an explicit NaN instead of `-1.0d0`, digit for digit as well: LightGBM's
+"convert it to NaN" is not a figure of speech, and the fourth run reaches the identical code
+path silently, an actual NaN never having been negative to begin with. Both of those runs
+differ from the first two only in the three negative categories' shared score
+(`0.0655135998213332d0` becomes `0.06551359982133317d0`; category 0's own score, positive and
+untouched by the corrupted row, stays bit-identical) -- a real difference, if a small one on
+this fixture, from the model having one fewer valid example of column 0 to learn category 0
+from. The wrapper validates the *indices* `:categorical-features` names; it never validates
+the *values* sitting in the columns those indices point at.
 
 ## Systems
 

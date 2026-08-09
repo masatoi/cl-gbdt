@@ -26,6 +26,7 @@
                 #:%set-info-field
                 #:%set-group-field
                 #:%set-feature-names
+                #:%set-feature-types
                 #:%free-dmatrix
                 #:%free-dmatrix-unchecked
                 #:%dataset-num-rows
@@ -106,6 +107,8 @@
                 #:csr-matrix-values
                 #:csr-matrix-num-columns
                 #:csr-matrix-num-rows)
+  (:import-from #:cl-gbdt/src/config/categorical-features
+                #:categorical-feature-types)
   (:import-from #:cl-gbdt/src/training/history
                 #:training-report-from-history)
   (:import-from #:cl-gbdt/src/training/early-stopping
@@ -291,6 +294,27 @@ all."
            :backend (backend-name backend) :capability :missing-value)))
 
 ;;; ---------------------------------------------------------------------------
+;;; The `:categorical-features' gate
+
+(defun %check-categorical-features (backend)
+  "Signal `capability-unavailable' when BACKEND's `:categorical-features' capability reads
+false.
+
+Policy section 7 requires the operation itself to re-check a capability rather than trusting
+the caller to have asked `backend-supports-p' first -- the same rule `%check-sparse-input' and
+`%check-missing-value' above follow for their own. This backend answers true unconditionally,
+which does not make the check redundant: it is what keeps the two backends' code saying the
+same thing, so `make-dataset' here and `make-dataset' in `cl-gbdt/src/lightgbm/protocol' gate
+the argument identically and neither has to be read to know what the other does.
+
+Only a non-NIL :CATEGORICAL-FEATURES ever reaches this. NIL means what every caller has always
+got -- no feature-type vector attached at all, every column read as a quantity -- so a caller
+who passes nothing needs no capability."
+  (unless (backend-supports-p backend :categorical-features)
+    (error 'capability-unavailable
+           :backend (backend-name backend) :capability :categorical-features)))
+
+;;; ---------------------------------------------------------------------------
 ;;; Datasets
 
 (defun %creation-function-name (matrix)
@@ -337,7 +361,8 @@ mirrors, for why."
         (values (%create-dmatrix matrix missing) function-name))))
 
 (defmethod make-dataset ((backend xgboost-backend) matrix
-                          &key label weight group feature-names parameters reference missing)
+                          &key label weight group feature-names parameters reference missing
+                            categorical-features)
   "Build an XGBoost dataset (a DMatrix) from MATRIX -- a dense matrix via
 `XGDMatrixCreateFromDense', a `csr-matrix' via `XGDMatrixCreateFromCSR' -- attaching LABEL
 and WEIGHT with `XGDMatrixSetInfoFromInterface', GROUP with `XGDMatrixSetUIntInfo', and
@@ -360,6 +385,31 @@ sent unconditionally before the argument existed, so a caller who passes nothing
 what they got before. The comparison the library then makes is at SINGLE precision, whatever
 MATRIX's own element type: two `double-float's that share a `single-float' both count as
 missing against a sentinel that narrows to it.
+
+CATEGORICAL-FEATURES, a list of 0-based column indices, is attached with the same
+`XGDMatrixSetStrFeatureInfo' FEATURE-NAMES uses, under the `\"feature_type\"' field instead of
+`\"feature_name\"' -- one string per column, `\"c\"' for a named column and `\"q\"' for every
+other, as `categorical-feature-types' renders them. It needs this backend's
+`:categorical-features' capability, which `%check-categorical-features' re-checks below rather
+than trusting the caller to have asked, and it signals `unsupported-argument' naming
+`:categorical-features' for an index that is not an integer, is negative, is beyond MATRIX's
+last column, or was named twice. NIL, the default, attaches no `\"feature_type\"' at all --
+exactly what every call sent before the argument existed, not a vector of `\"q\"'.
+
+The list is rendered from the CALLER's MATRIX, before `%dataset-pointer' builds anything, so a
+bad index signals with no DMatrix yet allocated and the range check is made against the same
+count `cl-gbdt/src/lightgbm/protocol''s `make-dataset' checks against. The attachment then has
+to wait until after creation, `XGDMatrixSetStrFeatureInfo' needing a handle -- which is also
+why a `csr-matrix' needs nothing of its own here: the two creation branches have converged by
+the time it runs, and the renderer reads a `csr-matrix''s declared column count where it reads
+a dense matrix's second dimension.
+
+Measured, and the reason a dataset that builds here can still fail later: `tree_method exact'
+refuses categorical features at `train', not at `make-dataset'. The DMatrix is built and the
+types attached without complaint, and `XGBoosterUpdateOneIter' then returns -1 with
+`Updater `grow_colmaker` or `exact` tree method doesn't support categorical features'. That is
+:PARAMETERS' business, not this method's -- `hist' and `approx' both work -- and nothing here
+pre-validates an updater it is not given.
 
 REFERENCE and PARAMETERS both signal `unsupported-argument' rather than being silently
 dropped: REFERENCE is a LightGBM-only concept -- aligning a new dataset's bin mapper to an
@@ -389,9 +439,9 @@ otherwise dereference blindly.
 
 The raw DMatrix handle exists in C from the moment the creation call returns, but
 `make-handle' does not take ownership of it until the very end -- attaching LABEL, WEIGHT,
-GROUP or FEATURE-NAMES can each signal first (a wrong-length `:label' is the commonest
-way). OWNED tracks whether `make-handle' ran; when it did not, the raw DMatrix is freed
-here instead of orphaned.
+GROUP, FEATURE-NAMES or the rendered feature types can each signal first (a wrong-length
+`:label' is the commonest way). OWNED tracks whether `make-handle' ran; when it did not, the
+raw DMatrix is freed here instead of orphaned.
 
 Signals `backend-not-open' before any of that when BACKEND is not open -- see
 `%check-backend-open'."
@@ -399,6 +449,8 @@ Signals `backend-not-open' before any of that when BACKEND is not open -- see
     (%check-backend-open backend)
     (when missing
       (%check-missing-value backend))
+    (when categorical-features
+      (%check-categorical-features backend))
     (%check-unsupported
      backend "make-dataset's :reference" reference
      "XGBoost has no bin-mapper alignment; :reference is a LightGBM-only concept")
@@ -408,30 +460,37 @@ Signals `backend-not-open' before any of that when BACKEND is not open -- see
                    of which are LightGBM's dataset-level binning parameters, and the ~
                    library silently ignores any other key rather than rejecting it"
              (%creation-function-name matrix)))
-    (multiple-value-bind (dataset-pointer function-name)
-        (%dataset-pointer backend matrix missing)
-      (when (cffi:null-pointer-p dataset-pointer)
-        (error 'foreign-call-error
-               :function-name function-name
-               :code 0
-               :message "reported success but returned a null dataset handle"))
-      (let ((owned nil))
-        (unwind-protect
-             (progn
-               (when label
-                 (%set-info-field dataset-pointer "label" label))
-               (when weight
-                 (%set-info-field dataset-pointer "weight" weight))
-               (when group
-                 (%set-group-field dataset-pointer group))
-               (when feature-names
-                 (%set-feature-names dataset-pointer feature-names))
-               (prog1
-                   (make-handle 'xgboost-dataset dataset-pointer backend :dataset)
-                 (setf owned t)))
-          (unless owned
-            (handler-case (%free-dmatrix-unchecked dataset-pointer)
-              (error () nil))))))))
+    ;; Rendered before creation, attached after: the renderer takes the caller's own MATRIX,
+    ;; so a bad index signals here with nothing yet allocated, while the attachment needs a
+    ;; DMatrix handle to attach to. See this method's docstring.
+    (let ((feature-types (categorical-feature-types categorical-features matrix
+                                                    (backend-name backend))))
+      (multiple-value-bind (dataset-pointer function-name)
+          (%dataset-pointer backend matrix missing)
+        (when (cffi:null-pointer-p dataset-pointer)
+          (error 'foreign-call-error
+                 :function-name function-name
+                 :code 0
+                 :message "reported success but returned a null dataset handle"))
+        (let ((owned nil))
+          (unwind-protect
+               (progn
+                 (when label
+                   (%set-info-field dataset-pointer "label" label))
+                 (when weight
+                   (%set-info-field dataset-pointer "weight" weight))
+                 (when group
+                   (%set-group-field dataset-pointer group))
+                 (when feature-names
+                   (%set-feature-names dataset-pointer feature-names))
+                 (when feature-types
+                   (%set-feature-types dataset-pointer feature-types))
+                 (prog1
+                     (make-handle 'xgboost-dataset dataset-pointer backend :dataset)
+                   (setf owned t)))
+            (unless owned
+              (handler-case (%free-dmatrix-unchecked dataset-pointer)
+                (error () nil)))))))))
 
 (defmethod dataset-num-rows ((dataset xgboost-dataset))
   "Return DATASET's row count, read via `XGDMatrixNumRow'."

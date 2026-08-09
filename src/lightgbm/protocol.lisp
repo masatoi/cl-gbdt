@@ -98,6 +98,10 @@
                 #:csr-matrix-values
                 #:csr-matrix-num-columns
                 #:csr-matrix-num-rows)
+  (:import-from #:cl-gbdt/src/config/categorical-features
+                #:categorical-feature-string)
+  (:import-from #:cl-gbdt/src/parameters
+                #:normalize-parameters)
   (:import-from #:cl-gbdt/src/training/history
                 #:training-report-from-history)
   (:import-from #:cl-gbdt/src/training/early-stopping
@@ -291,6 +295,102 @@ existing call keeps working unchanged."
            :backend (backend-name backend) :capability :missing-value)))
 
 ;;; ---------------------------------------------------------------------------
+;;; The `:categorical-features' gate
+
+(defun %check-categorical-features (backend)
+  "Signal `capability-unavailable' when BACKEND's `:categorical-features' capability reads
+false.
+
+Policy section 7 requires the operation itself to re-check a capability rather than trusting
+the caller to have asked `backend-supports-p' first -- the same rule `%check-sparse-input' and
+`%check-missing-value' above follow for their own. This backend answers true unconditionally,
+`*provided-capabilities*' naming it because the column list is a key in the parameter string
+and so has no C symbol to probe. That does not make the check redundant: it is what keeps the
+two backends' code saying the same thing, so `make-dataset' here and `make-dataset' in
+`cl-gbdt/src/xgboost/protocol' gate the argument identically and neither has to be read to
+know what the other does.
+
+Written against `backend-supports-p' rather than against this backend's name, like both of
+those, so a caller who overwrites the capability plist is refused here rather than being
+handed a dataset built from a capability the backend no longer claims.
+
+Only a non-NIL :CATEGORICAL-FEATURES ever reaches this. NIL means what every caller has always
+got -- every column read as a quantity, and nothing added to the parameter string -- so a
+caller who passes nothing needs no capability and every existing call keeps working
+unchanged."
+  (unless (backend-supports-p backend :categorical-features)
+    (error 'capability-unavailable
+           :backend (backend-name backend) :capability :categorical-features)))
+
+(defparameter *categorical-feature-parameter-names*
+  '("categorical_feature" "cat_feature" "categorical_column" "cat_column"
+    "categorical_features")
+  "Every spelling LightGBM honours for the parameter-string key `make-dataset' now writes
+itself, as `normalize-parameters' renders a key: lower case, underscores for dashes.
+
+MEASURED against the vendored LightGBM 4.7.0, not read off a header -- the library's
+parameter aliases appear in none of the vendored ones. Each of the five above changes what
+is learned from a column of category ordinals; three near-misses tried alongside them --
+`kategorical_feature', `categorical_feat' and `cat_features' -- leave the trained numbers
+identical to a run that named no key at all. `cat_features' is the one that matters: it is
+the PLURAL of `cat_feature', which IS honoured, so this list can only be enumerated and
+never prefix-matched or fuzzily matched. Refusing `cat_features' would reject an ordinary
+backend parameter that must keep reaching the library.
+`tests/functional/categorical-features.lisp''s `the-parameters-key-is-refused' restates the
+list and re-measures the distinction against the real library.")
+
+(defun %check-categorical-parameter-keys (backend parameters)
+  "Signal `unsupported-argument' against BACKEND when PARAMETERS names a key from
+`*categorical-feature-parameter-names*'.
+
+Called ONLY when `make-dataset' was given a non-NIL :CATEGORICAL-FEATURES, which is the only
+state in which the clash below can arise -- see that method, where the call sits inside the
+same `when' as `%check-categorical-features'. A caller who names no categorical column and
+writes `categorical_feature' in :PARAMETERS by hand is using policy section 6's escape hatch
+for a backend's own vocabulary, gets it honoured exactly as they always did, and never
+reaches this function. Nothing about that path changed when :CATEGORICAL-FEATURES was added.
+
+What this refuses is the two together. `make-dataset' writes `categorical_feature' into the
+same parameter string PARAMETERS becomes, from :CATEGORICAL-FEATURES, so a caller who supplies
+both is stating the same thing twice in one string. Which copy the library would then read is
+measured, and it is the worse answer of the two: LightGBM takes the FIRST occurrence of a
+duplicated key -- `categorical_feature=0 categorical_feature=1' trains exactly what
+`categorical_feature=0' alone trains -- while this method appends its own entry LAST. So it is
+the wrapper's copy, rendered from the argument the caller explicitly named, that would
+silently lose. An argument accepted and then quietly discarded is exactly the failure mode
+`cl-gbdt/src/xgboost/native''s `%check-unsupported' exists to prevent on the other backend.
+
+Refused rather than merged with :CATEGORICAL-FEATURES, or honoured in its place: the two say
+the same thing in two vocabularies, and a wrapper that reconciled them would have to say what
+each of the five aliases means alongside each of the others as well.
+
+Keys are compared against `normalize-parameters''s own output, so `:categorical-feature' and
+`\"categorical_feature\"' are one key here, as they already are to the library. PARAMETERS is
+normalized once here and again by `%parameter-string'; the only consequence is that an
+odd-length plist's `data-error' comes from this call rather than that one, both of them
+before any foreign call.
+
+Gated on the ARGUMENT, not on the `:categorical-features' capability: this backend provides
+that capability unconditionally, so gating on it would refuse the key in every state the
+argument could be refused in anyway, and would take the escape hatch away from callers who
+never asked for the feature."
+  (let ((named (find-if (lambda (pair)
+                          (member (car pair) *categorical-feature-parameter-names*
+                                  :test #'string=))
+                        (normalize-parameters parameters))))
+    (when named
+      (error 'unsupported-argument
+             :backend (backend-name backend)
+             :argument "make-dataset's :parameters"
+             :reason (format nil "~A is one of the ~R spellings LightGBM honours for the ~
+                                  categorical column list (~{~A~^, ~}), and make-dataset ~
+                                  writes that key itself from its :categorical-features ~
+                                  argument -- name the columns there instead"
+                             (car named)
+                             (length *categorical-feature-parameter-names*)
+                             *categorical-feature-parameter-names*)))))
+
+;;; ---------------------------------------------------------------------------
 ;;; Datasets
 
 (defun %dataset-pointer (backend matrix parameter-string reference-pointer)
@@ -326,7 +426,8 @@ whole method single and varies only the call that actually differs."
               "LGBM_DatasetCreateFromMat")))
 
 (defmethod make-dataset ((backend lightgbm-backend) matrix
-                          &key label weight group feature-names parameters reference missing)
+                          &key label weight group feature-names parameters reference missing
+                            categorical-features)
   "Build a LightGBM dataset from MATRIX -- a dense matrix via `LGBM_DatasetCreateFromMat',
 a `csr-matrix' via `LGBM_DatasetCreateFromCSR' -- attaching LABEL, WEIGHT and GROUP with
 `LGBM_DatasetSetField' and FEATURE-NAMES with `LGBM_DatasetSetFeatureNames' when supplied.
@@ -347,6 +448,35 @@ a NaN LightGBM would in fact honour is refused with the rest. MISSING NIL, the d
 this backend's own default and reaches no check: every call that does not name a sentinel
 behaves exactly as it did before the argument existed.
 
+CATEGORICAL-FEATURES names which columns of MATRIX hold categories rather than quantities,
+and becomes a `categorical_feature' entry in the parameter string -- this backend's own name
+for the list, rendered by `categorical-feature-string' from the caller's own MATRIX. It is
+appended after PARAMETERS' own entries, and reaches whichever creation entry point MATRIX's
+form selects without a branch of its own: the string is built once, and neither
+`LGBM_DatasetCreateFromMat' nor `LGBM_DatasetCreateFromCSR' can tell which of the two it was
+built for.
+
+CATEGORICAL-FEATURES NIL, the default, adds nothing to that string -- not an empty entry --
+so a call that names no categorical column builds exactly the dataset it built before this
+argument existed. A non-NIL value signals `capability-unavailable' naming
+`:categorical-features' when the capability reads false (see `%check-categorical-features'
+above, which reads the capability rather than this backend's name) and `unsupported-argument'
+naming `:categorical-features' for an index that is not an integer, is negative, is beyond
+MATRIX's last column, or was named twice.
+
+Signals `unsupported-argument' naming \"make-dataset's :parameters\" when CATEGORICAL-FEATURES
+is supplied AND PARAMETERS carries any of the five spellings LightGBM honours for that key --
+`categorical_feature', `cat_feature', `categorical_column', `cat_column' or
+`categorical_features'. Only the two together: the entry this method appends would land after
+the caller's and LightGBM keeps the FIRST occurrence of a duplicated key, so the argument the
+caller explicitly named would be the one silently discarded.
+
+PARAMETERS alone is untouched by any of this. A caller who names no categorical column and
+writes `categorical_feature' there by hand is on policy section 6's escape hatch for a
+backend's own vocabulary, and gets it honoured exactly as they did before this argument
+existed. `cat_features' is never refused either way, the library not honouring it as an alias.
+See `%check-categorical-parameter-keys' above for the measurements behind all of that.
+
 Signals `foreign-call-error' when dataset creation reports success but writes a
 null handle -- a library-contract violation, but one every later call through
 this handle would otherwise dereference blindly. Signals `wrong-backend-reference'
@@ -366,8 +496,26 @@ Signals `backend-not-open' before any of that when BACKEND is not open -- see
     (%check-backend-open backend)
     (when missing
       (%check-missing-value backend))
-    (let ((reference-pointer (%reference-pointer backend reference 'lightgbm-dataset))
-          (parameter-string (%parameter-string parameters)))
+    ;; Both checks hang off the same non-NIL CATEGORICAL-FEATURES, and the second one for a
+    ;; reason of its own: the clash it refuses can only arise once this method is writing an
+    ;; entry of its own. A caller who names no categorical column is using :PARAMETERS as
+    ;; policy section 6's escape hatch and keeps working exactly as before.
+    (when categorical-features
+      (%check-categorical-features backend)
+      (%check-categorical-parameter-keys backend parameters))
+    ;; Rendered before anything is allocated, because on this backend the column list is a
+    ;; key in the very parameter string that CREATES the dataset -- so a bad index signals
+    ;; with nothing yet to free, and the string is built once for whichever creation entry
+    ;; point MATRIX's own form selects. The renderer takes the caller's MATRIX, dense or
+    ;; `csr-matrix', which is what makes both backends range-check the same column count.
+    (let* ((categorical-string (categorical-feature-string categorical-features matrix
+                                                           (backend-name backend)))
+           (reference-pointer (%reference-pointer backend reference 'lightgbm-dataset))
+           (parameter-string
+             (%parameter-string
+              (if categorical-string
+                  (append parameters (list :categorical-feature categorical-string))
+                  parameters))))
       (multiple-value-bind (dataset-pointer function-name)
           (%dataset-pointer backend matrix parameter-string reference-pointer)
         (when (cffi:null-pointer-p dataset-pointer)
