@@ -274,8 +274,9 @@ parameters recorded, not an inventory of every gap in the suite.")
   "True when LEFT and RIGHT, two `cl-gbdt:predict' results, differ nowhere by more than
 *PREDICTION-TOLERANCE*, element for element.
 
-Signals an error when they have different SHAPES rather than answering NIL. Every caller
-compares two results of the same row count and the same column count. Those comparisons take
+Signals an error when they have different SHAPES rather than answering NIL. Every COMPARISON
+caller -- every call that exists to weigh two real `cl-gbdt:predict' results against each
+other -- passes two of the same row count and the same column count. Those comparisons take
 three shapes: two boosters' answers about one matrix; one booster's answers about two forms of
 one matrix -- a dense one against its `dense-to-csr' form, a dense one against the
 `omitted-entry-csr' form tests/functional/sparse-input.lisp builds for itself, or a matrix
@@ -287,14 +288,18 @@ about numbers, and answering NIL let `(not (predictions-agree-p ...))', which se
 assert, pass for the wrong reason.
 
 Measured rather than assumed, as far as a suite run can measure it: with the error branch in
-place the whole layer-2 suite is green, so no call the suite MAKES reached it. That is not
+place the whole layer-2 suite is green, so no COMPARISON call in it reached the branch -- one
+that had would have signalled with nothing to catch it, and taken the suite red. That is not
 every call site on both backends -- tests/functional/missing-value.lisp's calls run on XGBoost
 alone, each sitting behind the `:missing-value' capability, which LightGBM answers false.
 
-That the branch is REACHABLE, and by an error rather than a NIL, is pinned by
-`predictions-agree-p-signals-on-a-shape-mismatch' in tests/functional/sparse-input.lisp. It
-lives there rather than here because this file defines no test of its own, and moving it here
-would move rove's per-file test count with it."
+The one caller that DOES reach the branch is not a comparison at all:
+`predictions-agree-p-signals-on-a-shape-mismatch' in tests/functional/sparse-input.lisp hands
+this function two deliberately mismatched arrays and catches what comes back, pinning that the
+branch is reachable and that it signals rather than answering NIL. It is the exception the
+paragraph above is scoped around, which is why a green suite says nothing about it either way.
+It lives there rather than here because this file defines no test of its own, and moving it
+here would move rove's per-file test count with it."
   (unless (equal (array-dimensions left) (array-dimensions right))
     (error "predictions-agree-p was given results of different shapes: ~S and ~S"
            (array-dimensions left) (array-dimensions right)))

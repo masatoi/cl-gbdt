@@ -2036,9 +2036,10 @@ Two things those scripts do that the plain commands above do not, and that CI ne
   invoking it directly would be permanently green. `rove:run` returns false on failure and
   the script turns that into a status.
 - **They check which foreign libraries were opened.** Layer 1 must open none; layer 2 must
-  open both. A functional run where every test skipped for want of `vendor/` prints the same
-  summary as one where every test passed, so the difference has to be asserted rather than
-  inferred.
+  open both. rove counts a skip as pending rather than as a failure, so a functional run in
+  which every library-dependent test skipped for want of `vendor/` still exits green and still
+  reports each test file as completed — the summary reads the same as one where both libraries
+  really were called. The difference has to be asserted rather than inferred.
 
 `tools/ci/lint.lisp` runs mallet *and* a column-width check, because mallet does not check
 line length — a 132-column file passes it without comment. mallet is not in the Quicklisp

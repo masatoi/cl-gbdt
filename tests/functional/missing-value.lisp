@@ -583,7 +583,9 @@ something unrelated had broken."
 ;;;   would have caught it. The measured text opens `{"learner":{"attributes":{},...' --
 ;;;   "learner" at position 2, the model JSON's own top-level key -- so finding it says the
 ;;;   text really is a serialised model. The same role the "both models learned something to
-;;;   agree about" assertion plays in tests/functional/sparse-input.lisp.
+;;;   agree about" assertion plays under `sparse-and-dense-training-agree' in
+;;;   tests/functional/sparse-input.lisp -- that deftest, not the similarly-worded control
+;;;   under `an-omitted-entry-is-zero-to-lightgbm-and-missing-to-xgboost' further down.
 ;;;
 ;;; Gated on `:missing-value' alone, the same shape `an-exponent-form-sentinel-reaches-the-
 ;;; library' above uses: no `csr-matrix' is built here, so `:sparse-input' plays no part.

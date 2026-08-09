@@ -114,6 +114,15 @@ input row and one column per class. Every fixture's objective is binary, so COLU
 ;;; raised inside `restart-case'; the condition TYPE is asserted, not merely that something
 ;;; signalled. That type is `simple-error', which is what the helper's bare `(error "...")'
 ;;; signals -- measured.
+;;;
+;;; The argument ORDER in both mismatch calls is load-bearing: the SMALLER array is LEFT. The
+;;; loop under the guard runs to `(array-total-size left)' and indexes RIGHT with that same
+;;; index, so with the guard deleted a smaller LEFT stays in bounds on RIGHT, the loop finds
+;;; every pair equal, and the function returns T -- a clean FAILED assertion. Reversed, it
+;;; would index past RIGHT's end and raise `sb-int:invalid-array-index-error', which
+;;; `(simple-error () t)' does not catch -- measured: that condition is a subtype of
+;;; `type-error' and not of `simple-error' -- so the test would ERROR instead of failing, and
+;;; pin the guard far less legibly.
 
 (deftest predictions-agree-p-signals-on-a-shape-mismatch
   (let ((two-by-one (make-array '(2 1) :element-type 'double-float :initial-element 0d0))
