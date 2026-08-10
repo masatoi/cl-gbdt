@@ -14,6 +14,9 @@
   (:use #:cl)
   (:import-from #:cl-gbdt/src/conditions
                 #:dimension-mismatch)
+  ;; Imported, not reached through an export: `src/parameters' is one of the packages
+  ;; `src/all.lisp' re-exports into `CL-GBDT', so exporting `parameter-name' there would
+  ;; publish it as public API. Importing it here names the one file that needs it instead.
   (:import-from #:cl-gbdt/src/parameters
                 #:parameter-name)
   (:export #:check-objective-result

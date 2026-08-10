@@ -3,8 +3,10 @@
 (uiop:define-package #:cl-gbdt/src/parameters
   (:use #:cl)
   (:import-from #:cl-gbdt/src/conditions #:data-error)
-  (:export #:normalize-parameters
-           #:parameter-name))
+  ;; `parameter-name' is deliberately not exported: this package is one `src/all.lisp'
+  ;; re-exports into `CL-GBDT', so exporting it would publish a private helper as public
+  ;; API. `cl-gbdt/src/config/objective' imports it directly instead.
+  (:export #:normalize-parameters))
 
 (in-package #:cl-gbdt/src/parameters)
 
