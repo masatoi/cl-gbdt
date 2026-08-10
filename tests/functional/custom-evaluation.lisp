@@ -202,10 +202,11 @@ the library already uses, and it must be the only place.")
 still count as the same number.
 
 Per backend, like *DATASET-PARAMETERS*, *METRIC-PARAMETERS* and *LIBRARY-METRIC-NAMES* above,
-and for a reason of the same kind rather than as a convenience: THE TWO LIBRARIES COMPUTE LOG
-LOSS IN DIFFERENT PRECISIONS, so no one number bounds both. This was a single 1d-9 constant
-while only LightGBM provided the capability, and the commit that declared it on XGBoost is
-what found that 1d-9 was a LightGBM measurement all along.
+and for a reason of the same kind rather than as a convenience: THE TWO LIBRARIES' OWN LOG
+LOSS REACHES DIFFERENT FLOATING-POINT PRECISIONS, as the two measurements below show, so no
+one number bounds both. This was a single 1d-9 constant while only LightGBM provided the
+capability, and the commit that declared it on XGBoost is what found that 1d-9 had been a
+LightGBM measurement all along.
 
 The two sums are of the same per-row terms over the same rows, from the identical
 `double-float' probabilities -- `train' hands the caller the very buffer the library
@@ -214,37 +215,58 @@ backends -- but they are computed by different code in different languages, and 
 accumulates in an order the other can be held to. So they agree to the last bits their
 arithmetic HAS rather than exactly, and how many bits that is differs:
 
-  - LightGBM computes `binary_logloss' in double throughout, so a caller reimplementing it in
-    Lisp double arithmetic lands within the last bits. Measured over five iterations, the
-    largest difference across the whole series was 6.66d-16 at dataset index 0 and 1.11d-16 at
-    index 1.
-  - XGBoost evaluates each ROW's `logloss' term in SINGLE precision -- `bst_float', in its own
-    `EvalRowLogLoss' -- and only accumulates the mean in double, so a caller computing that
-    same sum in double cannot land nearer than single precision allows. Measured over five
-    iterations on this fixture, the largest difference was 1.35d-8 across both datasets: four
-    orders of magnitude wider than LightGBM's, and the reason 1d-9 fails there for a reason
-    that has nothing to do with the array the caller was handed.
+  - LightGBM's own `binary_logloss' lands within the last bits of DOUBLE of a caller
+    reimplementing it in Lisp double arithmetic. Measured over five iterations, the largest
+    difference across the whole series was 6.66d-16 at dataset index 0 and 1.11d-16 at index 1
+    -- a handful of double ulps at 0.69, which is as near as two independently-ordered double
+    summations of the same terms ever get.
+  - XGBoost's own `logloss' lands only within SINGLE precision of one. Measured over five
+    iterations on this fixture, the largest difference was 1.35d-8, across both datasets.
 
-That XGBoost's gap is a precision floor and not a wrong array is measured directly rather than
-inferred, which is what makes 1d-7 a floor with an order of magnitude of headroom rather than a
-tolerance widened until the test passed: a Lisp reimplementation that evaluates each row in
-`single-float' and accumulates in `double' reproduces XGBoost's own published value EXACTLY --
-difference 0.0d0 at every one of five rounds -- off the very array `logloss-evaluation' is
-handed here. The one below evaluates in double, as any natural Lisp caller would, and is left
-that way deliberately: what this file tests is a caller's own ordinary metric, not a
-bit-for-bit reimplementation of one library's arithmetic.
+Each bound is one backend's own two readings of one run, and neither is a claim about the
+other backend -- policy section 13. They are not subtracted from, divided by, or ranked against
+each other anywhere here; what the two bullets say is which FLOATING-POINT TYPE each library's
+own arithmetic reaches, which is a fact about that library and not a comparison of two results.
 
-Neither number is compared against the other, and neither is a claim about the other backend --
-policy section 13. What each bounds is one backend's own two readings of one run.
+WHY 1d-7 IS A FLOOR AND NOT A TOLERANCE WIDENED UNTIL THE TEST PASSED. Two things, both
+checkable from this repository:
 
-Headroom in the other direction is what both are chosen for, and 1d-7 still keeps six orders of
-magnitude of it: nothing this file exists to catch survives it. A metric that ignored SCORES
-entirely -- the control below, which returns a flat 0.5 -- sits about 0.19 away from a
-library series measured between 0.681 and 0.698, and a validation set whose bin mappers were
-never aligned moves the predictions themselves by 0.136. It is
-`cl-gbdt/tests/functional/support''s *PREDICTION-TOLERANCE* restated rather than a new idea,
-and is not imported from there only because what it bounds is a metric rather than a
-prediction.")
+  - Arithmetic. One ulp of `single-float' at 0.69 is 2^-24, about 6d-8. A per-row term of that
+    magnitude computed in single precision therefore carries a few times 1d-8 of error, and a
+    mean of forty of them cannot be pinned nearer than about 1d-8 unless the roundings happen
+    to cancel. 1.35d-8 is exactly that order; 1d-9 is below the arithmetic's own floor and
+    could never have been met. 1d-7 is one per-term ulp -- the ceiling of what single precision
+    can promise for one of these terms -- rather than a number fitted just above 1.35d-8.
+  - Reproduction, which is what converts \"the two numbers disagree\" into \"they cannot agree
+    more closely\". A Lisp reimplementation that evaluates each row in `single-float' and
+    accumulates in `double' reproduces XGBoost's own published value EXACTLY -- difference
+    0.0d0 at every one of five rounds -- off the very array `logloss-evaluation' is handed
+    here. So the array is right and the arithmetic is the whole of the gap. `logloss-evaluation'
+    below is left computing in double, as any natural Lisp caller would: what this file tests
+    is a caller's own ordinary metric, not a bit-for-bit reimplementation of one library's
+    arithmetic.
+
+The single-precision ATTRIBUTION -- XGBoost evaluating each row's term as `bst_float' in its
+own `EvalRowLogLoss' -- is upstream source that this repository does not vendor and that no
+reader here can open, so it is offered as the explanation the two checkable facts above are
+consistent with, not as a citation. Nothing below rests on it: the ulp arithmetic and the
+exact reproduction stand on their own, and would still justify 1d-7 if the mechanism inside
+XGBoost turned out to be some other route to the same single-precision floor.
+
+Headroom in the other direction is what both numbers are chosen for, and 1d-7 still keeps six
+orders of magnitude of it: nothing this file exists to catch survives it. A metric that ignored
+SCORES entirely -- the control below, which returns a flat 0.5 -- sits about 0.19 away from
+each backend's own library series, measured between 0.682 and 0.698 on LightGBM and between
+0.681 and 0.696 on XGBoost, each stated for its own backend and neither compared with the
+other. A validation set whose bin mappers were never aligned moves the predictions themselves
+by 0.136. It is `cl-gbdt/tests/functional/support''s *PREDICTION-TOLERANCE* restated rather
+than a new idea, and is not imported from there only because what it bounds is a metric rather
+than a prediction.
+
+Nothing here loosens what pins the ARRAY the caller is handed. That is held by the
+`predict :kind :normal' assertions in the agreement test below, which are bounded by
+`cl-gbdt/tests/functional/support''s own *PREDICTION-TOLERANCE* -- a different constant, in a
+different file, that this table does not touch and both backends meet at exactly 0.0.")
 
 (defun metric-tolerance (name)
   "Return backend NAME's own agreement tolerance -- see *METRIC-TOLERANCES*."
@@ -265,10 +287,12 @@ log-loss series. That is what makes it a test of whether the caller's function a
 the numbers the library saw, rather than of whether it was called at all.
 
 P is clamped away from 0 and 1 before `log'. Measured on this fixture the clamp is never
-reached -- five iterations leave every probability between 0.431844 and 0.568156 -- so it
-cannot be what makes the two series agree; it is there so a later fixture or a longer run
-cannot turn this function into one that returns an infinity, which would compare equal to
-nothing and unequal to nothing."
+reached on EITHER backend -- five iterations over both datasets leave every probability
+between 0.431844 and 0.568156 on LightGBM, and between 0.415616 and 0.585161 on XGBoost, each
+range its own backend's and neither compared with the other -- so the clamp cannot be what
+makes either backend's two series agree; it is there so a later fixture or a longer run cannot
+turn this function into one that returns an infinity, which would compare equal to nothing and
+unequal to nothing."
   (lambda (scores index)
     (let ((labels* (aref label-vectors index))
           (rows (array-dimension scores 0))
@@ -566,8 +590,10 @@ number or a string fails somewhere no matter what; a symbol quietly works, wrong
   ;; Both datasets, not just the training set: the caller's function is handed one array per
   ;; dataset, and a backend that handed the training set's predictions to every index would
   ;; agree at index 0 and disagree at index 1. The two library series really are different
-  ;; numbers here -- measured on LightGBM, 0.682 at index 0 against 0.698 at index 1 after
-  ;; five iterations -- so index 1's agreement is not index 0's agreement in disguise.
+  ;; numbers on each backend -- measured on LightGBM, 0.682 at index 0 against 0.698 at index 1
+  ;; after five iterations, and on XGBoost 0.681 against 0.696 after its own five. Each pair is
+  ;; that backend's own and the two pairs are not compared; what each says is that index 1's
+  ;; agreement is not index 0's agreement in disguise, on the backend it was measured on.
   (dolist (name '(:lightgbm :xgboost))
     (support:with-backend-library (name)
       (let ((backend (cl-gbdt:open-backend name)))

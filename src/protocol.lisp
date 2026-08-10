@@ -287,9 +287,17 @@ agrees on the masked convention the two C libraries are written against.
 EVALUATION, NIL by default, is a function that turns one dataset's current predictions into
 a named metric value, so the run records the caller's own measure of fit beside the
 library's. It requires the `:custom-evaluation' capability, which `train' re-checks and
-signals `capability-unavailable' for. Until XGBoost declares that capability, that backend
-refuses every non-NIL EVALUATION there and nothing else about it is decided by this
-docstring.
+signals `capability-unavailable' for. BOTH backends provide it, and the re-check is not
+thereby decorative: it is what a caller who withdrew the capability, or who moved to a
+library lacking what LightGBM's read needs, meets instead of a run that quietly recorded the
+library's metrics alone.
+
+It also signals `unsupported-argument' naming :EVALUATION, on either backend, for a non-NIL
+EVALUATION combined with RECORD-HISTORY NIL -- a custom metric's whole result is the
+per-iteration series RECORD-HISTORY NIL exists not to build -- and for an EVALUATION that is
+not a `function'. A SYMBOL naming a function is refused with the rest: `funcall' would resolve
+it afresh at each iteration against whatever global definition was then in force, rather than
+against what the caller passed. All three checks run before any foreign call.
 
 It is called ONCE PER DATASET PER ITERATION, after that iteration's update, with two
 arguments: SCORES, that dataset's current predictions as a (ROWS GROUPS) `double-float'
@@ -304,13 +312,19 @@ handed its own shorter array, not a padded or truncated view of the training set
 
 SCORES is what `predict :kind :normal' returns for that dataset, and NOT the margin
 OBJECTIVE is handed: with a classification objective configured, these are the transformed
-probabilities. Measured against the vendored LIGHTGBM's cached predictions, for a training
-set and for a validation set alike -- the one backend that implements this argument as this
-sentence is written; a backend that gains it later states its own measurement rather than
-inheriting this one. Under a custom OBJECTIVE on LightGBM the two coincide,
-`objective=none' leaving no transform to apply, so :NORMAL and :RAW are then the same
-numbers -- that is the divergence OBJECTIVE's own paragraphs above already describe,
-inherited here rather than introduced.
+probabilities. Measured on EACH backend separately, for a training set and for a validation
+set alike, and the measurement means something different on each: on LightGBM SCORES comes
+from a cached-prediction entry point, so agreeing with `predict' says two different C
+functions agree; on XGBoost SCORES is itself a prediction pass over the dataset's own DMatrix,
+so agreeing says that DMatrix and a fresh one built from the same rows answer alike. Neither
+backend's figure stands in for the other's and the two are not compared.
+
+Under a custom OBJECTIVE the two backends then part company, and it is the divergence
+OBJECTIVE's own paragraphs above already describe rather than a new one. On LightGBM
+`objective=none' leaves no transform to apply, so :NORMAL and :RAW become the same numbers and
+SCORES coincides with what OBJECTIVE was handed. On XGBoost nothing is rewritten, so a
+configured `binary:logistic' goes on transforming and the two stay apart: one run in which
+EVALUATION reads probabilities while OBJECTIVE reads the margin behind them.
 
 A NIL VALUE means \"not computable this iteration\" -- a fold whose denominator was zero,
 a metric undefined before some minimum number of rows has a prediction. It is recorded in

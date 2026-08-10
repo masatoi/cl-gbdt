@@ -191,10 +191,10 @@ run boosts against the caller's own loss rather than one built into the library.
 
 `:custom-evaluation' is the fifth name past that floor: whether `train' accepts an
 `:evaluation' function that turns one dataset's current predictions into a named metric
-value, recorded per iteration alongside the library's own metrics. LightGBM answers it true,
-probing the three C functions its per-dataset prediction read needs; XGBoost declares it in
-neither of its lists and so reads false, which its `%check-custom-evaluation' refuses every
-non-NIL `:evaluation' on.
+value, recorded per iteration alongside the library's own metrics. Both backends answer it
+true, and it is the ONE name here whose two true answers come out of DIFFERENT LISTS --
+LightGBM probes it, XGBoost declares it. See the paragraph on where a re-checked name's answer
+comes from, below, which that shape is the sole exception to.
 
 It is not the odd member of an otherwise uniform list. SIX of the ten names here are
 re-checked by the operation they gate, each signalling `capability-unavailable' for an argument
@@ -217,12 +217,25 @@ outright on a backend that simply has less to say.
 Where a re-checked name's answer COMES from varies and does not affect that split: a backend
 declares it in `*provided-capabilities*' when nothing is left to look up, and names its C
 functions in `*optional-symbols*' when a library that opens perfectly well can still lack
-them -- `:sparse-input', `:model-slicing', `:custom-objective' and `:custom-evaluation' are
-probed that way on every backend providing them, `:missing-value' and
-`:categorical-features' declared. A false answer needs the same re-check either way, and a
-backend naming a capability in NEITHER list reads false for a third reason again -- the
-absence of any declaration, which is XGBoost's `:custom-evaluation' answer and LightGBM's
-`:missing-value' one.
+them -- `:sparse-input', `:model-slicing' and `:custom-objective' are probed that way on every
+backend providing them, `:missing-value' and `:categorical-features' declared.
+
+`:custom-evaluation' is the one name that is BOTH, and that is a fact about the two LIBRARIES
+rather than a disagreement between the two backends about what the capability means. Each
+backend's per-dataset prediction read needs different C functions, and they fall on opposite
+sides of required: LightGBM's needs three (`LGBM_BoosterGetPredict',
+`LGBM_BoosterGetNumPredict', `LGBM_BoosterGetNumClasses'), not one of them in that backend's
+`*required-symbols*', so a LightGBM lacking any of the three opens perfectly well and cannot
+serve a custom metric -- exactly the state a probe exists to detect. XGBoost's needs one
+(`XGBoosterPredictFromDMatrix'), which IS in its `*required-symbols*', so no XGBoost this
+library will open is in the corresponding state and a probe would have nothing left to decide.
+Naming it in both lists on ONE backend is what would be wrong: `probe-capabilities' records
+PROVIDED entries ahead of probed ones, so the probe's answer would be unreachable, which that
+function's own docstring calls a contradiction in the backend's declarations.
+
+A false answer needs the same re-check whichever list it came from, and a backend naming a
+capability in NEITHER list reads false for a third reason again -- the absence of any
+declaration, which is LightGBM's `:missing-value' answer.
 
 `:evaluation-history' is true on both backends: `train' records one, and each backend names
 the capability in its own `*provided-capabilities*' rather than in `*optional-symbols*',
