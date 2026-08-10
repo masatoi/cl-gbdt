@@ -53,14 +53,14 @@ exist. Threading a keyword this way costs nothing: both `train' methods already 
 `backend' in scope and can pass `(backend-name backend)'.
 
 Signals `unsupported-argument' naming \"train's :evaluation\" unless NAME is a `string' and
-VALUE is `(or real null)'. NAME must be a string outright, never merely coerced to one: both
-readers key a series by (DATASET-INDEX, METRIC-NAME) under `equal', and `evaluation' reports
-every metric name the library itself computes as a string, so a keyword or a symbol NAME
-would key a series under a shape nothing else in the report could ever be looked up by. NIL
-is an accepted VALUE, not a special case bolted on here: it is how both backends already
-record a field they could not read as a real, and `observe-iteration' already treats it as no
-improvement rather than an error, so a caller's own unreadable value is recorded the same
-way."
+VALUE is `(or real null)'. NAME must be a string outright, never merely coerced to one:
+`training-report-from-history' folds a series by (DATASET-INDEX, METRIC-NAME) under `equal',
+and `evaluation' reports every metric name the library itself computes as a string, so a
+keyword or a symbol NAME would key a series under a shape nothing else in the report could
+ever be looked up by. NIL is an accepted VALUE, not a special case bolted on here: it is how
+both backends already record a field they could not read as a real, and `observe-iteration'
+already treats it as no improvement rather than an error, so a caller's own unreadable value
+is recorded the same way."
   (unless (stringp name)
     (error 'unsupported-argument
            :backend backend-name
@@ -87,11 +87,14 @@ actually called `train' on rather than a backend that does not exist.
 
 LIBRARY-ENTRIES is one iteration's worth of the library's OWN (DATASET-INDEX METRIC-NAME
 VALUE) entries -- what `%read-evaluation' returns before a caller's own metric is appended to
-it. A collision here would fold the caller's series into the library's own under
-`training-report-from-history''s and `observe-iteration''s shared (DATASET-INDEX,
-METRIC-NAME) key, so whichever of the two values arrived second for a given iteration would
-silently overwrite the other every time, in a series a reader has no way to tell was ever
-shared.
+it. A collision here would put two different values under the one (DATASET-INDEX,
+METRIC-NAME) pair `training-report-from-history' and `observe-iteration' each use to find a
+series, and each would mishandle it its own way: `training-report-from-history' would push
+both values onto that one pair's accumulator within a single iteration, corrupting that
+series' alignment with the run's iterations from that point on; `observe-iteration''s
+`%find-watched-entry' would return only the first of the two entries `find-if' reaches for
+that pair, so a watcher on it would silently read one value and never learn the other
+existed.
 
 Checked against one iteration's actual entries rather than at `train''s own entry, for the
 same reason `observe-iteration''s docstring gives for its own first-call metric check: what
