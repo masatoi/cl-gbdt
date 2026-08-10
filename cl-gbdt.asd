@@ -52,7 +52,8 @@
                "cl-gbdt/tests/categorical-features"
                "cl-gbdt/tests/feature-names"
                "cl-gbdt/tests/prediction-shape"
-               "cl-gbdt/tests/objective")
+               "cl-gbdt/tests/objective"
+               "cl-gbdt/tests/custom-metric")
   :perform (test-op (op c) (symbol-call :rove :run c)))
 
 ;;; Named for its path, like every other system here. That is not only for consistency:

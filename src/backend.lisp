@@ -156,7 +156,8 @@ to this function can detect it here."
     :missing-value
     :categorical-features
     :prediction-shape
-    :custom-objective)
+    :custom-objective
+    :custom-evaluation)
   "Every capability name `backend-supports-p' will answer for.
 
 Policy section 7 named five as a MINIMUM -- it asks that at least those be answerable, not
@@ -188,16 +189,25 @@ IT, which is deliberate.
 `:objective' function that turns the current raw scores into a gradient and a Hessian, so a
 run boosts against the caller's own loss rather than one built into the library.
 
-It is not the odd member of an otherwise uniform list. FIVE of the nine names here are
+`:custom-evaluation' is the fifth name past that floor: whether `train' accepts an
+`:evaluation' function that turns one dataset's current predictions into a named metric
+value, recorded per iteration alongside the library's own metrics. Registered here before
+either backend answers it, exactly as `:multidimensional-feature-score' was: `train' does not
+yet take the `:evaluation' argument that would give a backend something to answer true to, so
+both currently read false.
+
+It is not the odd member of an otherwise uniform list. FIVE of the ten names here are
 re-checked by the operation they gate, each signalling `capability-unavailable' for an argument
 it cannot honour: `:sparse-input', `:missing-value', `:categorical-features' and
 `:custom-objective', in both backends' `protocol.lisp' -- the last of them by
 `%check-custom-objective', off `train''s :OBJECTIVE -- and `:model-slicing', in XGBoost's
-`slice-model'. Those five are the whole of it -- `:evaluation-history', `:early-stopping' and
-`:multidimensional-feature-score' are re-checked nowhere either (the last has no backend
-answering it true at all, and `%check-feature-score-dim', which is where a multidimensional
-score is rejected, signals `unsupported-argument' off what the library reported at runtime
-rather than off the capability).
+`slice-model'. Those five are the whole of it -- `:evaluation-history', `:early-stopping',
+`:multidimensional-feature-score' and `:custom-evaluation' are re-checked nowhere either (the
+third has no backend answering it true at all, and `%check-feature-score-dim', which is where
+a multidimensional score is rejected, signals `unsupported-argument' off what the library
+reported at runtime rather than off the capability; the fourth because `train' does not yet
+take the `:evaluation' argument a re-check would gate -- nothing calls `backend-supports-p'
+with it yet, at this commit).
 `:prediction-shape' has no argument to refuse at all: nothing asks for a shape, so a false
 answer means the second value is always NIL while `predict' otherwise behaves exactly as it
 always did. That is not the silent fallback policy section 7 forbids -- section 7 protects a
