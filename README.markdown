@@ -17,8 +17,8 @@ file if you have it locally).
 `make-dataset`, `dataset-num-rows`, `dataset-num-features`, `train`,
 `update-one-iteration`, `predict`, `save-model`, `load-model`, `model-to-string`,
 `feature-importance`, `evaluation`, `free-dataset` and `free-booster` -- against the real
-LightGBM and XGBoost shared libraries, exercised by 563 functional assertions across 12 test
-files (design doc section 12, layer 2), in addition to 432 assertions across 18 test files
+LightGBM and XGBoost shared libraries, exercised by 597 functional assertions across 12 test
+files (design doc section 12, layer 2), in addition to 448 assertions across 18 test files
 that need no shared library at all (layer 1). `train` also returns a `training-report` as
 its secondary value, and takes
 `:early-stopping` to end a run once a watched metric stops improving -- see
@@ -40,9 +40,9 @@ takes `:objective`, a function that turns the current raw scores into a gradient
 Hessian so a run boosts against the caller's own loss, gated on the `:custom-objective`
 capability that both backends provide; the two libraries flatten that array in opposite
 orders and the wrapper absorbs it, and on LightGBM `:objective` overrides any `objective`
-in `:parameters`, forcing it to `"none"`, since the library refuses the combination
-outright -- see [Custom objective](#custom-objective) below. See [Usage](#usage) below for
-a worked example.
+in `:parameters` -- all five spellings that library honours -- forcing it to `"none"`,
+since the library refuses the combination outright -- see [Custom
+objective](#custom-objective) below. See [Usage](#usage) below for a worked example.
 
 Loading `cl-gbdt` itself still does not require either `liblightgbm.so` or
 `libxgboost.so` to be installed -- see [Systems](#systems): a shared library is opened
@@ -320,7 +320,7 @@ out first:
 | What `evaluation` evaluates | The datasets `train` attached, read back by index (`LGBM_BoosterGetEval`): the library computed these metrics during training and this reads them out | The booster's own retained training set and `:valid-sets` entries, which this backend hands to `XGBoosterEvalOneIter` explicitly -- that call evaluates whatever DMatrices it is given and consults nothing the booster was built with, so passing the retained ones is what makes the index mean the same thing on both backends |
 | `evaluation`'s values | `LGBM_BoosterGetEval`'s own doubles, returned unmodified -- the secondary value says `:value-source :library-doubles` | Parsed out of the single formatted line `XGBoosterEvalOneIter` produces -- `:value-source :parsed-text`, with that line itself kept verbatim under `:raw`, and a value XGBoost spelled `inf`/`nan` coming back as `nil` rather than a number. The same line is `cl-gbdt/xgboost:evaluate-one-iteration`'s own primary value at Layer 1, for a caller who wants it without going through the portable API |
 | Model slicing | No counterpart at all: LightGBM's C API has nothing that extracts a range of boosting rounds into a new model, so `(backend-supports-p backend :model-slicing)` is `nil` and there is no LightGBM function to call | `cl-gbdt/xgboost:slice-model` (Layer 1, XGBoost-only), over `XGBoosterSlice`. Returns a new booster holding a half-open `[begin, end)` range of the parent's layers, independent of it -- freeing the parent leaves the slice usable. Deliberately not part of the unified API: with no LightGBM counterpart a portable version could only signal for every caller of one backend, or emulate, and emulating is what [the capability model](#asking-a-backend-what-it-can-do) exists to rule out |
-| `train`'s `:objective` | **Overrides** any `objective` in `:parameters`, forcing it to `"none"` -- `LGBM_BoosterUpdateOneIterCustom` refuses to run while the booster holds an objective function at all | Never rewrites `:parameters`; a configured objective's own prediction transform stays in effect, so a custom-objective run's `predict :kind :normal` differs from `:raw` there, while LightGBM's are identical. See [Custom objective](#custom-objective) for both |
+| `train`'s `:objective` | **Overrides** any `objective` in `:parameters` -- all five spellings this library honours, `objective_type`, `app`, `application` and `loss` included -- forcing it to `"none"`, since `LGBM_BoosterUpdateOneIterCustom` refuses to run while the booster holds an objective function at all | Never rewrites `:parameters`; a configured objective's own prediction transform stays in effect, so a custom-objective run's `predict :kind :normal` differs from `:raw` there, while LightGBM's are identical. See [Custom objective](#custom-objective) for both |
 | `backend-version` | Always `nil` -- LightGBM's C API has no version entry point | A `"MAJOR.MINOR.PATCH"` string, e.g. `"3.3.0"` |
 | Untested-version warning | Never signalled -- there is no version to compare, so `open-backend` never checks one | `open-backend` signals `untested-backend-version` (a warning, not an error) when the loaded version falls outside the recorded supported range |
 
@@ -2430,6 +2430,25 @@ Naming `"regression"` explicitly changes nothing: `train` drops every `objective
 identical booster. **XGBoost's `:parameters` are never rewritten** --
 `XGBoosterTrainOneIter` has no such restriction, measured to accept a custom update with any
 objective set -- so there is nothing on that backend to override.
+
+**"Every `objective` entry" means all five spellings LightGBM honours**, not the literal one
+alone. That library reads `objective_type`, `app`, `application` and `loss` as aliases for
+`objective` -- its own `LGBM_DumpParamAliases` returns
+`"objective": ["app", "loss", "application", "objective_type"]`, and each of the four is live
+in the vendored 4.7.0, `:app "binary"` training the identical model `:objective "binary"`
+trains. All five are dropped, so `:app "regression"` alongside `:objective #'squared-error`
+behaves exactly like the `:objective "regression"` run above. The list can only be enumerated,
+never prefix-matched: `apps` is *not* an alias, and neither is `objective_seed`, which is a
+real LightGBM parameter in its own right -- dropping either would silently delete a caller's
+configuration. Only keys that render to one of the five are touched; everything else passes
+through in its original order.
+
+Finally, a non-`NIL` `:objective` must be a `function`. A number, a string, or a *symbol*
+naming a function signals `unsupported-argument` naming `train's :objective`, before any
+foreign call and so before a booster exists -- on both backends. The symbol case is refused
+deliberately: `funcall` would have accepted it and resolved it afresh at each iteration
+against whatever global definition happened to be in force, rather than against what the
+caller passed.
 
 #### The remaining divergence: what `:normal` means under a custom objective
 
