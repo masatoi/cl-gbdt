@@ -155,7 +155,8 @@ to this function can detect it here."
     :multidimensional-feature-score
     :missing-value
     :categorical-features
-    :prediction-shape)
+    :prediction-shape
+    :custom-objective)
   "Every capability name `backend-supports-p' will answer for.
 
 Policy section 7 named five as a MINIMUM -- it asks that at least those be answerable, not
@@ -182,6 +183,10 @@ a result it just predicted, which `predict' returns as its second value -- a lis
 in `array-dimensions' order, or NIL where the backend states none. Its answer says what that
 second value CONTAINS rather than whether a call will be accepted, and NO OPERATION REFUSES ON
 IT, which is deliberate.
+
+`:custom-objective' is the fourth name past that floor: whether `train' accepts an
+`:objective' function that turns the current raw scores into a gradient and a Hessian, so a
+run boosts against the caller's own loss rather than one built into the library.
 
 It is not the odd member of an otherwise uniform list. FOUR of the names here are re-checked by
 the operation they gate, each signalling `capability-unavailable' for an argument it cannot
