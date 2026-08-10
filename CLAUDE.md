@@ -38,12 +38,11 @@ over both backends.
 all 13 generic functions of the unified API -- `make-dataset`, `train`, `predict`, and
 the rest -- against the real shared libraries, exercised by 527 functional assertions across
 11 test files in `cl-gbdt/tests/functional` (layer 2) on top of 418 assertions across 17
-test files that need no shared library at all (layer 1). `train` returns a
-`training-report` as its secondary value, and
-takes `:record-history` (default `t`) to turn the per-iteration recording that fills it
-off -- recording roughly doubles LightGBM's `train` time, and on XGBoost it also makes a
-`:valid-sets` entry the library cannot evaluate fail `train` outright (see
-`README.markdown`'s Training report section). `train` also takes `:early-stopping` to end
+test files that need no shared library at all (layer 1). `train` returns a `training-report`
+as its secondary value, and takes `:record-history` (default `t`) to turn the per-iteration
+recording that fills it off -- recording roughly doubles LightGBM's `train` time, and on
+XGBoost it also makes a `:valid-sets` entry the library cannot evaluate fail `train` outright
+(see `README.markdown`'s Training report section). `train` also takes `:early-stopping` to end
 a run once a watched metric stops improving, and `predict`, `save-model` and
 `model-to-string` accept `:num-iteration :best` to resolve against the iteration it
 picked -- see `README.markdown`'s Training report section for both. `make-dataset` and

@@ -2129,11 +2129,12 @@ what turns the ordering from an assumption into a measurement, held by
 `:leaf-index` gets no such derivation. Its element count divides by iterations and output
 groups exactly as `:contrib`'s divides by output groups and width, but a leaf index is an
 opaque identifier -- it sums to nothing and agrees with nothing, so there is no SHAP-sum-style
-property here to check a guessed ordering against. This project has caught an unverified
-ordering claim thirteen times across three branches; asserting a shape with nothing to check
-it against would be exactly that claim again. `NIL` is what `predict`'s second value means
-everywhere a backend states none, and LightGBM's `:leaf-index` result -- the `18x12` array --
-is entirely unaffected by stating it.
+property here to check a guessed ordering against. Asserting an ordering with nothing to check
+it against would be exactly the mistake the measurement above exists to avoid: a shape stated
+on arithmetic alone, with no SHAP-sum-style test and no feature-major control to catch it if
+the axes were transposed. `NIL` is what `predict`'s second value means everywhere a backend
+states none, and LightGBM's `:leaf-index` result -- the `18x12` array -- is entirely
+unaffected by stating it.
 
 #### On a `csr-matrix`, XGBoost states a shape for two kinds out of four
 
