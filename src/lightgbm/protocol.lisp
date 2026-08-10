@@ -23,6 +23,8 @@
                 #:%create-booster
                 #:%add-valid-data
                 #:%update-one-iteration
+                #:%training-scores
+                #:%update-one-iteration-custom
                 #:%check-booster-datasets-live
                 #:%free-booster-unchecked
                 #:%free-booster
@@ -100,6 +102,9 @@
                 #:csr-matrix-num-rows)
   (:import-from #:cl-gbdt/src/config/categorical-features
                 #:categorical-feature-string)
+  (:import-from #:cl-gbdt/src/config/objective
+                #:check-objective-result
+                #:objective-parameters)
   (:import-from #:cl-gbdt/src/config/prediction-shape
                 #:contrib-shape)
   (:import-from #:cl-gbdt/src/parameters
@@ -393,6 +398,51 @@ never asked for the feature."
                              *categorical-feature-parameter-names*)))))
 
 ;;; ---------------------------------------------------------------------------
+;;; The `:custom-objective' gate
+
+(defun %check-custom-objective (backend objective)
+  "Signal `capability-unavailable' when OBJECTIVE is non-NIL and BACKEND does not provide
+`:custom-objective', and `unsupported-argument' when OBJECTIVE is non-NIL and is not a
+function.
+
+Only a non-NIL OBJECTIVE ever reaches either error: NIL means what every caller has always
+got, the library computing its own gradient, so a caller who passes nothing needs no
+capability and cannot fail the type check either.
+Policy section 7 requires the operation itself to re-check rather than trusting the caller to
+have asked `backend-supports-p' first -- the same rule `%check-sparse-input',
+`%check-missing-value' and `%check-categorical-features' above follow for their own. Mirrors
+`cl-gbdt/src/xgboost/protocol''s function of the same name.
+
+Unlike `%check-categorical-features', whose answer this backend declares unconditionally in
+`*provided-capabilities*', this one's is PROBED: the three C functions `train''s custom loop
+needs are named in `*optional-symbols*' rather than `*required-symbols*', so a LightGBM
+missing any of them opens normally and reads false here. See that variable's own docstring
+for why the entry belongs there and not in `*provided-capabilities*'. `%check-missing-value'
+is a third case again, and neither of those two: `:missing-value' appears in NEITHER list on
+this backend, so its false answer is the ABSENCE of a declaration rather than a declaration --
+see `backend-supports-p', which reads a capability missing from the plist as unavailable.
+
+The type check is here, beside the capability check, rather than left to the `funcall' in
+`train''s loop. By then the booster handle exists and one iteration's scores have already
+been read out of the library, so `:objective 42' would surface as SBCL's own untyped
+`type-error' from mid-loop -- naming neither the argument nor the backend -- where every
+other malformed argument on this backend signals `unsupported-argument' before any foreign
+call. `functionp' rather than a `function' type declaration: a symbol naming a function is
+NOT accepted, since `funcall' would resolve it against whatever global definition happened to
+be in force at each iteration rather than against what the caller passed."
+  (when objective
+    (unless (backend-supports-p backend :custom-objective)
+      (error 'capability-unavailable
+             :backend (backend-name backend) :capability :custom-objective))
+    (unless (functionp objective)
+      (error 'unsupported-argument
+             :backend (backend-name backend)
+             :argument "train's :objective"
+             :reason (format nil "the custom objective must be a function of one argument, ~
+                                  or NIL for the library's own gradient -- got ~S"
+                             objective)))))
+
+;;; ---------------------------------------------------------------------------
 ;;; Datasets
 
 (defun %dataset-pointer (backend matrix parameter-string reference-pointer)
@@ -608,9 +658,47 @@ Does not check that the result is a `lightgbm-dataset' -- `%check-lightgbm-datas
 that afterward, on every element `%valid-set-name' has already let through."
   (if (consp entry) (cdr entry) entry))
 
+(defun %recheck-train-datasets (backend dataset valid-sets)
+  "Re-run `train''s own opening checks over BACKEND, DATASET and VALID-SETS, and return
+DATASET's freshly read live pointer.
+
+`train''s loop calls this after every `funcall' of a caller-supplied OBJECTIVE, which is the
+only point in the loop where code this library did not write runs. That code may free the
+training set -- `free-dataset' from inside the objective is the case this was found through --
+and the pointer `train' read once before the loop is then a pointer into freed memory that
+`LGBM_BoosterUpdateOneIterCustom' would dereference. Measured before this function existed:
+a memory fault at an arbitrary address, killing the process rather than signalling. The
+checks are exactly the ones `train' already ran, so the caller gets `released-handle-error',
+`backend-not-open' or `wrong-backend-reference' -- the typed conditions every other freed
+handle in this library produces -- and never a fault. The RETURN VALUE is the point of the
+exercise: re-checking and then going on to use the pointer read before the loop would fix
+nothing, so `train' assigns this to the variable it reads from.
+
+The VALID-SETS entries are re-checked for the same reason even though nothing here uses their
+pointers: `LGBM_BoosterGetEval', which the same iteration reaches through `%read-evaluation'
+when RECORD-HISTORY is true, evaluates each attached validation set through memory that
+dataset owns, and `LGBM_DatasetFree' clears nothing in the booster when one is freed -- see
+`%check-booster-datasets-live', which exists for that exact hazard on the public
+`update-one-iteration' path.
+
+BACKEND itself is re-checked with `%check-backend-open' because `close-backend' unmaps the
+shared library and the objective can call it. `handle-live-pointer' already refuses a handle
+whose OWN backend has been closed, which covers the ordinary case where DATASET was built by
+BACKEND; the check here is what covers the case `%check-lightgbm-dataset' documents as
+legitimate and therefore does not catch -- a dataset built by a second `lightgbm-backend'
+instance over the same library, whose own backend is still open while BACKEND is not. It
+costs one slot read per iteration."
+  (%check-backend-open backend)
+  (let ((train-data-pointer
+          (%check-lightgbm-dataset backend dataset "train's dataset argument"
+                                    'lightgbm-dataset)))
+    (dolist (valid-set valid-sets)
+      (%check-lightgbm-dataset backend valid-set "a train :valid-sets entry" 'lightgbm-dataset))
+    train-data-pointer))
+
 (defmethod train ((backend lightgbm-backend) dataset
                    &key valid-sets (num-rounds 100) parameters (record-history t)
-                        early-stopping)
+                        early-stopping objective)
   "Train a LightGBM booster on DATASET for up to NUM-ROUNDS boosting iterations, and
 return it and a `training-report' of the run.
 
@@ -664,6 +752,61 @@ The watcher sees each iteration's entries exactly as the history records them, o
 report shows can never be two different readings. `training-report-num-rounds' needs
 nothing extra to report the shortened run: it has counted actual iterations since Phase 3a.
 
+OBJECTIVE replaces `LGBM_BoosterUpdateOneIter' with `LGBM_BoosterUpdateOneIterCustom' for
+every iteration of the loop, driven by the gradient and Hessian the caller's own function
+returns -- see the `train' generic function's docstring for what that function is called with
+and what it must return. Signals `capability-unavailable' naming `:custom-objective' for a
+non-NIL OBJECTIVE when the capability reads false, before any foreign call: see
+`%check-custom-objective' above, which reads the capability rather than this backend's name,
+and `*optional-symbols*' for why the answer here is probed rather than declared. OBJECTIVE
+NIL, the default, reaches no check and runs exactly the `LGBM_BoosterUpdateOneIter' loop this
+method has always run.
+
+A non-NIL OBJECTIVE also OVERRIDES any `objective' entry in PARAMETERS, forcing it to
+\"none\" through `objective-parameters' before `LGBM_BoosterCreate' ever sees the string.
+That is not a convenience: `LGBM_BoosterUpdateOneIterCustom' refuses to run while the booster
+holds an objective function at all -- `Check failed: objective_function_ == nullptr', a
+non-zero return this method would surface as `foreign-call-error' -- so the combination the
+override replaces has no working form to preserve. Every other parameter passes through
+untouched and in its original order, `num_class' included, which is still what tells LightGBM
+how many output groups a multiclass custom objective has.
+
+Each iteration reads the booster's current raw scores with `%training-scores' --
+`LGBM_BoosterGetPredict' at `data_idx' 0, the scores LightGBM already holds for the training
+data, rather than a fresh `predict' over the training matrix, which this method does not have
+and which would cost a full prediction pass per iteration. It hands them to OBJECTIVE as a
+(ROWS GROUPS) `double-float' array, where ROWS comes from `%dataset-num-rows' on the training
+set's own pointer and GROUPS from `LGBM_BoosterGetNumClasses'. What comes back is checked by
+`check-objective-result' -- `cl-gbdt/src/config/objective''s, which is backend-neutral pure
+code and names no library, so a second backend refuses the same shapes with the same
+`dimension-mismatch' by calling it rather than by restating it -- and only then flattened into
+the C buffers, GROUP-MAJOR on this backend (row I of group K at `(+ (* K ROWS) I)') and
+converted to `single-float', which is what `LGBM_BoosterUpdateOneIterCustom''s `const float*'
+parameters admit. Both the flattening and the score layout are measured; see
+`%update-one-iteration-custom' and `%training-scores' for the measurements. The flattening is
+this method's business and not the caller's: OBJECTIVE is handed, and returns, a (ROWS GROUPS)
+array whichever order the library underneath wants it in.
+
+OBJECTIVE is funcalled inside this method's own `with-foreign-float-traps-masked' body wrap,
+so the caller's Lisp arithmetic runs under the masked convention on x86-64 as well as on
+aarch64 -- `(/ 1.0d0 0.0d0)' yields infinity there rather than signalling
+`division-by-zero'. Nothing about that is specific to a custom objective; it is simply where
+in `train' the caller's code now runs. A condition the caller's function does signal
+propagates out of `train' through the OWNED dance below, freeing the raw booster handle
+rather than orphaning it, exactly as a mid-loop foreign failure does.
+
+An objective that frees a handle this loop depends on, or closes BACKEND, is caught rather
+than crashed on: `%recheck-train-datasets' re-runs this method's own opening checks the
+moment the `funcall' returns, and TRAIN-DATA-POINTER is reassigned from what it returns, so
+nothing after the caller's code uses a pointer read before it. See that function for what
+each of the three re-checks is for. This is the only place the loop needs it -- the
+OBJECTIVE NIL branch beside it runs no caller code at all.
+
+Neither RECORD-HISTORY nor EARLY-STOPPING is disabled by OBJECTIVE, and neither is made
+meaningful by it: a metric configured through PARAMETERS relates to the library's own
+objective, not to the caller's, and this method neither signals nor warns about that -- see
+the `train' generic function's docstring, which states it as the caller's decision.
+
 DATASET and every VALID-SETS entry's dataset half are each run through
 `%check-lightgbm-dataset' before any foreign call. `train' dispatches on
 BACKEND, not on DATASET, so unlike `dataset-num-rows' or `free-dataset' there
@@ -701,6 +844,7 @@ Signals `backend-not-open' before any of that when BACKEND is not open -- see
 `%check-backend-open'."
   (with-foreign-float-traps-masked
     (%check-backend-open backend)
+    (%check-custom-objective backend objective)
     (let* ((valid-set-entries (copy-list valid-sets))
            (train-data-pointer
              (%check-lightgbm-dataset backend dataset "train's dataset argument"
@@ -730,7 +874,9 @@ Signals `backend-not-open' before any of that when BACKEND is not open -- see
            ;; with nothing further to do here.
            (completed-rounds 0))
       (let ((booster-pointer
-              (%create-booster train-data-pointer (%parameter-string parameters))))
+              (%create-booster train-data-pointer
+                               (%parameter-string
+                                (if objective (objective-parameters parameters) parameters)))))
         (let ((owned nil))
           (unwind-protect
                (progn
@@ -738,7 +884,22 @@ Signals `backend-not-open' before any of that when BACKEND is not open -- see
                  ;; ROUND is 1-based, which is the numbering `observe-iteration' answers
                  ;; `watcher-best-iteration' in and the report publishes.
                  (loop :for round :from 1 :to num-rounds
-                       :do (%update-one-iteration booster-pointer)
+                       :do (if objective
+                               (let ((scores (%training-scores
+                                              booster-pointer
+                                              (%dataset-num-rows train-data-pointer))))
+                                 (multiple-value-bind (grad hess) (funcall objective scores)
+                                   ;; Before anything else this iteration does, and before the
+                                   ;; next one reads TRAIN-DATA-POINTER again: the caller's
+                                   ;; own code has just run and may have freed a handle this
+                                   ;; loop holds a raw pointer to.
+                                   (setf train-data-pointer
+                                         (%recheck-train-datasets backend dataset valid-sets))
+                                   (check-objective-result grad hess
+                                                           (array-dimension scores 0)
+                                                           (array-dimension scores 1))
+                                   (%update-one-iteration-custom booster-pointer grad hess)))
+                               (%update-one-iteration booster-pointer))
                            (incf completed-rounds)
                            (let ((entries (when record-history
                                             (%read-evaluation booster-pointer dataset-count))))

@@ -24,6 +24,9 @@
                 #:lgbm-booster-create
                 #:lgbm-booster-add-valid-data
                 #:lgbm-booster-update-one-iter
+                #:lgbm-booster-update-one-iter-custom
+                #:lgbm-booster-get-num-classes
+                #:lgbm-booster-get-predict
                 #:lgbm-booster-free
                 #:lgbm-booster-calc-num-predict
                 #:lgbm-booster-predict-for-mat
@@ -64,6 +67,8 @@
                 #:normalize-parameters)
   (:import-from #:cl-gbdt/src/config/feature-names
                 #:check-feature-names)
+  (:import-from #:cl-gbdt/src/config/objective
+                #:objective-single-float)
   (:import-from #:cl-gbdt/src/data
                 #:with-foreign-matrix
                 #:write-foreign-sequence)
@@ -95,6 +100,9 @@
            #:%create-booster
            #:%add-valid-data
            #:%update-one-iteration
+           #:%booster-num-classes
+           #:%training-scores
+           #:%update-one-iteration-custom
            #:%check-booster-datasets-live
            #:%free-booster-unchecked
            #:%free-booster
@@ -281,7 +289,9 @@ system search never finds it.")
 after the library loads.")
 
 (defparameter *optional-symbols*
-  '((:sparse-input "LGBM_DatasetCreateFromCSR" "LGBM_BoosterPredictForCSR"))
+  '((:sparse-input "LGBM_DatasetCreateFromCSR" "LGBM_BoosterPredictForCSR")
+    (:custom-objective "LGBM_BoosterUpdateOneIterCustom" "LGBM_BoosterGetPredict"
+     "LGBM_BoosterGetNumClasses"))
   "Capability name to the C function names that capability needs.
 
 Unlike `*required-symbols*', whose absence makes `open-backend' signal
@@ -294,7 +304,24 @@ capability model is tested against; the entry above is what makes `:sparse-input
 `make-dataset' reaches only the first. The capability is one answer about whether this
 backend can take a `csr-matrix' at all, and a caller told \"yes\" who could build a dataset
 but not predict from one would have been told a half-truth. Listing both from the start means
-the answer never changes meaning as the sparse path grows.")
+the answer never changes meaning as the sparse path grows.
+
+`:custom-objective' names all three functions one iteration of `train''s custom loop makes,
+for the same reason: `LGBM_BoosterUpdateOneIterCustom' performs the update,
+`LGBM_BoosterGetPredict' reads the raw scores the caller's function is handed, and
+`LGBM_BoosterGetNumClasses' says how many output groups those scores have. A library
+providing the update but not the read could not run one iteration, so a capability answering
+true off the update alone would be answering about less than the caller asked.
+
+It belongs HERE and not in `*provided-capabilities*' below, and the distinction is not
+cosmetic: none of the three is in `*required-symbols*' above, so a LightGBM missing any of
+them opens perfectly well and simply cannot boost against a caller's own gradient -- which is
+exactly the state a probe exists to detect. `probe-capabilities' records PROVIDED entries
+ahead of probed ones, so naming a capability in both lists would make the probe's answer
+unreachable; its own docstring calls that combination a contradiction in the backend's
+declarations. This is the same shape as `:sparse-input' above, and the opposite of
+`:categorical-features' below, whose column list is a parameter-string key with no symbol to
+look for at all.")
 
 (defparameter *provided-capabilities*
   '(:evaluation-history :early-stopping :categorical-features :prediction-shape)
@@ -340,12 +367,13 @@ were there a symbol to look for it in.
 
 No operation re-checks it. Nothing takes an argument asking for a shape, so a backend answering
 false returns NIL as `predict''s second value and predicts exactly as it otherwise would,
-rather than signalling. Four of the eight names in `cl-gbdt/src/backend''s
+rather than signalling. Five of the nine names in `cl-gbdt/src/backend''s
 `*known-capabilities*' ARE re-checked by the operation they gate -- `:sparse-input',
-`:missing-value' and `:categorical-features', by `%check-sparse-input',
-`%check-missing-value' and `%check-categorical-features' in `cl-gbdt/src/lightgbm/protocol',
-and `:model-slicing', by XGBoost's `slice-model' -- and the other four are re-checked nowhere.
-See `*known-capabilities*' itself, where that split is stated in full.
+`:missing-value', `:categorical-features' and `:custom-objective', by `%check-sparse-input',
+`%check-missing-value', `%check-categorical-features' and `%check-custom-objective' in
+`cl-gbdt/src/lightgbm/protocol', and `:model-slicing', by XGBoost's `slice-model' -- and the
+other four are re-checked nowhere. See `*known-capabilities*' itself, where that split is
+stated in full.
 
 Every name here must be registered in `cl-gbdt/src/backend''s `*known-capabilities*', or
 `backend-supports-p' would signal `unknown-capability' for a capability the plist claims;
@@ -646,6 +674,83 @@ parameter: nonzero when this iteration produced no split."
     (check-lgbm (lgbm-booster-update-one-iter booster-pointer finished)
                 "LGBM_BoosterUpdateOneIter")
     (cffi:mem-ref finished :int)))
+
+(defun %booster-num-classes (booster-pointer)
+  "Return how many output groups BOOSTER-POINTER's model has, via
+`LGBM_BoosterGetNumClasses'.
+
+One for regression and binary classification, `num_class' for multiclass -- and `num_class'
+is still what supplies it under `objective=none', which is why forcing the objective does not
+also have to supply the group count."
+  (cffi:with-foreign-object (classes :int)
+    (check-lgbm (lgbm-booster-get-num-classes booster-pointer classes)
+                "LGBM_BoosterGetNumClasses")
+    (cffi:mem-ref classes :int)))
+
+(defun %training-scores (booster-pointer rows)
+  "Return BOOSTER-POINTER's current raw scores for its training set as a (ROWS GROUPS)
+`double-float' array.
+
+`LGBM_BoosterGetPredict' with `data_idx' 0 reads the scores LightGBM already holds for the
+training data rather than predicting afresh, which is both cheaper and the number the next
+gradient has to be computed from. Its buffer is flat and **group-major**: row I of output
+group K sits at `(+ (* K ROWS) I)'. Measured against `predict :kind :raw' on the same booster
+under `objective=none', where the two agree exactly; read row-major they differ.
+
+Under `objective=none' -- the only configuration `train' calls this from, since LightGBM
+refuses a custom update under any other -- the scores are the raw margin. With an objective
+set LightGBM converts them through it first, so this function's contract holds only where
+`train' uses it."
+  (let* ((groups (%booster-num-classes booster-pointer))
+         (count (* rows groups)))
+    (cffi:with-foreign-objects ((out-len :int64) (buffer :double count))
+      (check-lgbm (lgbm-booster-get-predict booster-pointer 0 out-len buffer)
+                  "LGBM_BoosterGetPredict")
+      (assert (= count (cffi:mem-ref out-len :int64)) ()
+              "LGBM_BoosterGetPredict wrote ~D elements, expected ~D for ~D rows x ~D groups"
+              (cffi:mem-ref out-len :int64) count rows groups)
+      (let ((scores (make-array (list rows groups) :element-type 'double-float)))
+        (dotimes (row rows scores)
+          (dotimes (group groups)
+            (setf (aref scores row group)
+                  (cffi:mem-aref buffer :double (+ (* group rows) row)))))))))
+
+(defun %update-one-iteration-custom (booster-pointer grad hess)
+  "Advance BOOSTER-POINTER by one iteration on the caller's GRAD and HESS, via
+`LGBM_BoosterUpdateOneIterCustom'. Both are (ROWS GROUPS) arrays.
+
+They are flattened **group-major** -- row I of output group K at `(+ (* K ROWS) I)' -- and
+converted to `single-float', which is the only element type the C signature's `const float*'
+admits. Measured: a gradient of alternating -1/+1 for group 0 and 0 elsewhere moves only group
+0's raw score under this layout and smears across all three under the row-major one.
+
+The conversion goes through `objective-single-float', so an element that is not a real signals
+`unsupported-element-type' naming its type rather than a `type-error' from inside `coerce'.
+GRAD and HESS may be `double-float', `single-float' or general arrays -- `check-objective-result'
+checks their shape and leaves their elements to that function, one element at a time as they
+are written, which is why nothing scans either array twice.
+
+The `produced_empty_tree' out parameter is read because the C function requires the pointer,
+and then discarded. `train''s ordinary loop already discards `%update-one-iteration''s
+equivalent -- the public `update-one-iteration' returns it, `train' does not look at it -- and
+a custom loop that ended early on the flag would make the two loops behave differently for the
+same underlying condition."
+  (let* ((rows (array-dimension grad 0))
+         (groups (array-dimension grad 1))
+         (count (* rows groups)))
+    (cffi:with-foreign-objects ((grad-buffer :float count)
+                                (hess-buffer :float count)
+                                (produced :int))
+      (dotimes (row rows)
+        (dotimes (group groups)
+          (let ((index (+ (* group rows) row)))
+            (setf (cffi:mem-aref grad-buffer :float index)
+                  (objective-single-float (aref grad row group)))
+            (setf (cffi:mem-aref hess-buffer :float index)
+                  (objective-single-float (aref hess row group))))))
+      (check-lgbm (lgbm-booster-update-one-iter-custom booster-pointer grad-buffer hess-buffer
+                                                       produced)
+                  "LGBM_BoosterUpdateOneIterCustom"))))
 
 (defun %check-booster-datasets-live (booster)
   "Signal `released-handle-error' when any dataset BOOSTER depends on -- its training

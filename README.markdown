@@ -17,8 +17,8 @@ file if you have it locally).
 `make-dataset`, `dataset-num-rows`, `dataset-num-features`, `train`,
 `update-one-iteration`, `predict`, `save-model`, `load-model`, `model-to-string`,
 `feature-importance`, `evaluation`, `free-dataset` and `free-booster` -- against the real
-LightGBM and XGBoost shared libraries, exercised by 527 functional assertions across 11 test
-files (design doc section 12, layer 2), in addition to 418 assertions across 17 test files
+LightGBM and XGBoost shared libraries, exercised by 615 functional assertions across 12 test
+files (design doc section 12, layer 2), in addition to 464 assertions across 18 test files
 that need no shared library at all (layer 1). `train` also returns a `training-report` as
 its secondary value, and takes
 `:early-stopping` to end a run once a watched metric stops improving -- see
@@ -35,8 +35,14 @@ also returns the SHAPE the backend states for the result it just wrote as a seco
 a list of integers in `array-dimensions` order, or `NIL` where the backend states none --
 gated on the `:prediction-shape` capability that both backends provide; XGBoost reads its
 own `out_shape`/`out_dim` back from the library and LightGBM derives what it can, stating
-`NIL` for `:leaf-index` -- see [Prediction shape](#prediction-shape) below. See
-[Usage](#usage) below for a worked example.
+`NIL` for `:leaf-index` -- see [Prediction shape](#prediction-shape) below. `train` also
+takes `:objective`, a function that turns the current raw scores into a gradient and a
+Hessian so a run boosts against the caller's own loss, gated on the `:custom-objective`
+capability that both backends provide; the two libraries flatten that array in opposite
+orders and the wrapper absorbs it, and on LightGBM `:objective` overrides any `objective`
+in `:parameters` -- all five spellings that library honours -- forcing it to `"none"`,
+since the library refuses the combination outright -- see [Custom
+objective](#custom-objective) below. See [Usage](#usage) below for a worked example.
 
 Loading `cl-gbdt` itself still does not require either `liblightgbm.so` or
 `libxgboost.so` to be installed -- see [Systems](#systems): a shared library is opened
@@ -271,18 +277,20 @@ Four things it promises, each of which is the point of it existing at all:
 ```
 
 `backend-info` reports the whole probed plist, false capabilities included, so it shows
-what was asked as well as what was answered. Seven of the eight registered capabilities
+what was asked as well as what was answered. Eight of the nine registered capabilities
 answer true somewhere today: `:model-slicing`, on XGBoost only -- see the model-slicing row
 in the table below -- plus `:evaluation-history` and `:early-stopping` on both backends,
 since `train` records a history and takes `:early-stopping` (see
 [Training report](#training-report)), `:sparse-input` on both, since both libraries
 export the CSR entry points it names (see [Sparse input](#sparse-input-csr-matrices)),
 `:missing-value` on XGBoost only (see [Missing values](#missing-values)),
-`:categorical-features` on both (see [Categorical features](#categorical-features)), and
+`:categorical-features` on both (see [Categorical features](#categorical-features)),
 `:prediction-shape` on both, since `predict` states a shape for the result it just predicted
-on both libraries (see [Prediction shape](#prediction-shape)). The eighth,
-`:multidimensional-feature-score`, is registered and false everywhere, which says "not
-supported yet" rather than "never heard of it".
+on both libraries (see [Prediction shape](#prediction-shape)), and `:custom-objective` on
+both, since `train` boosts against a caller's own gradient and Hessian on both libraries (see
+[Custom objective](#custom-objective)). The ninth, `:multidimensional-feature-score`, is
+registered and false everywhere, which says "not supported yet" rather than "never heard of
+it".
 
 `:evaluation-history` is true unconditionally rather than probed. The C functions behind it
 are in each backend's `*required-symbols*`, so a library missing them never opens at all
@@ -312,6 +320,7 @@ out first:
 | What `evaluation` evaluates | The datasets `train` attached, read back by index (`LGBM_BoosterGetEval`): the library computed these metrics during training and this reads them out | The booster's own retained training set and `:valid-sets` entries, which this backend hands to `XGBoosterEvalOneIter` explicitly -- that call evaluates whatever DMatrices it is given and consults nothing the booster was built with, so passing the retained ones is what makes the index mean the same thing on both backends |
 | `evaluation`'s values | `LGBM_BoosterGetEval`'s own doubles, returned unmodified -- the secondary value says `:value-source :library-doubles` | Parsed out of the single formatted line `XGBoosterEvalOneIter` produces -- `:value-source :parsed-text`, with that line itself kept verbatim under `:raw`, and a value XGBoost spelled `inf`/`nan` coming back as `nil` rather than a number. The same line is `cl-gbdt/xgboost:evaluate-one-iteration`'s own primary value at Layer 1, for a caller who wants it without going through the portable API |
 | Model slicing | No counterpart at all: LightGBM's C API has nothing that extracts a range of boosting rounds into a new model, so `(backend-supports-p backend :model-slicing)` is `nil` and there is no LightGBM function to call | `cl-gbdt/xgboost:slice-model` (Layer 1, XGBoost-only), over `XGBoosterSlice`. Returns a new booster holding a half-open `[begin, end)` range of the parent's layers, independent of it -- freeing the parent leaves the slice usable. Deliberately not part of the unified API: with no LightGBM counterpart a portable version could only signal for every caller of one backend, or emulate, and emulating is what [the capability model](#asking-a-backend-what-it-can-do) exists to rule out |
+| `train`'s `:objective` | **Overrides** any `objective` in `:parameters` -- all five spellings this library honours, `objective_type`, `app`, `application` and `loss` included -- forcing it to `"none"`, since `LGBM_BoosterUpdateOneIterCustom` refuses to run while the booster holds an objective function at all | Never rewrites `:parameters`; a configured objective's own prediction transform stays in effect, so a custom-objective run's `predict :kind :normal` differs from `:raw` there, while LightGBM's are identical. See [Custom objective](#custom-objective) for both |
 | `backend-version` | Always `nil` -- LightGBM's C API has no version entry point | A `"MAJOR.MINOR.PATCH"` string, e.g. `"3.3.0"` |
 | Untested-version warning | Never signalled -- there is no version to compare, so `open-backend` never checks one | `open-backend` signals `untested-backend-version` (a warning, not an error) when the loaded version falls outside the recorded supported range |
 
@@ -1921,12 +1930,13 @@ feature existed.
 both vendored backends -- but **no operation refuses on it**. There is no argument asking for
 a shape, so a false answer would mean only that the second value is always `NIL`; `predict`
 would keep predicting exactly as it does today, on every `KIND`, dense or sparse. That is not
-the general rule for a capability in this API -- four of the eight registered capabilities
+the general rule for a capability in this API -- five of the nine registered capabilities
 are re-checked by the operation they gate and signal `capability-unavailable` when they read
-false: `:sparse-input`, `:missing-value` and `:categorical-features` (each documented above,
-on the operation that checks it) and `:model-slicing` (see [Asking a backend what it can
-do](#asking-a-backend-what-it-can-do)). `:prediction-shape` is simply not one of those four,
-because it gates nothing a caller asks for.
+false: `:sparse-input`, `:missing-value`, `:categorical-features` and `:custom-objective`
+(each documented above, on the operation that checks it -- the last of them at
+[Custom objective](#custom-objective)) and `:model-slicing` (see [Asking a backend what it
+can do](#asking-a-backend-what-it-can-do)). `:prediction-shape` is simply not one of those
+five, because it gates nothing a caller asks for.
 
 The two backends fill the second value from opposite directions. XGBoost's prediction entry
 points write an `out_shape`/`out_dim` pair, and `predict` reads that pair straight back and
@@ -2195,6 +2205,398 @@ state `(18 3)`, identical to the dense call earlier in this section; `:leaf-inde
 `:contrib` never reach a shape, or a result, at all. LightGBM has no such split -- its CSR
 entry point serves all four `KIND`s, and states, or declines to state, a shape for each of
 them exactly as it does on a dense matrix.
+
+### Custom objective
+
+`train` also takes `:objective`, a function that turns the current raw scores into a gradient
+and a Hessian, so a run boosts against the caller's own loss instead of one built into the
+library. It needs the `:custom-objective` capability, answerable through `backend-supports-p`
+and true on both vendored backends; `train` re-checks it itself and signals
+`capability-unavailable` for a non-`NIL` `:objective` when it reads false, before any foreign
+call.
+
+```lisp
+(ql:quickload '(:cl-gbdt :cl-gbdt/lightgbm) :silent t)
+
+(defparameter *co-matrix*
+  (make-array '(8 1) :element-type 'double-float
+              :initial-contents '((0.0d0) (1.0d0) (2.0d0) (3.0d0)
+                                   (4.0d0) (5.0d0) (6.0d0) (7.0d0))))
+(defparameter *co-label*
+  (make-array 8 :element-type 'double-float
+              :initial-contents '(0.0d0 1.0d0 4.0d0 9.0d0 16.0d0 25.0d0 36.0d0 49.0d0)))
+
+(defun squared-error (scores)
+  "GRAD = prediction - label, HESS = 1 -- squared error's own derivatives."
+  (let* ((rows (array-dimension scores 0))
+         (grad (make-array (list rows 1) :element-type 'double-float))
+         (hess (make-array (list rows 1) :element-type 'double-float :initial-element 1.0d0)))
+    (dotimes (row rows (values grad hess))
+      (setf (aref grad row 0) (- (aref scores row 0) (aref *co-label* row))))))
+
+(let ((backend (cl-gbdt:open-backend :lightgbm)))
+  (unwind-protect
+      (cl-gbdt:with-dataset
+          (dataset (cl-gbdt:make-dataset backend *co-matrix* :label *co-label*
+                                          :parameters '(:min-data-in-leaf 1 :min-data-in-bin 1
+                                                        :verbose -1)))
+        (cl-gbdt:with-booster
+            (built-in (cl-gbdt:train backend dataset :num-rounds 5
+                                      :parameters '(:objective "regression" :num-leaves 4
+                                                    :min-data-in-leaf 1 :min-data-in-bin 1
+                                                    :verbose -1 :boost-from-average nil)))
+          (cl-gbdt:with-booster
+              (custom (cl-gbdt:train backend dataset :num-rounds 5
+                                      :parameters '(:num-leaves 4 :min-data-in-leaf 1
+                                                    :min-data-in-bin 1 :verbose -1
+                                                    :boost-from-average nil)
+                                      :objective #'squared-error))
+            (format t "built-in :raw:~%~S~%" (cl-gbdt:predict built-in *co-matrix* :kind :raw))
+            (format t "custom  :raw:~%~S~%" (cl-gbdt:predict custom *co-matrix* :kind :raw)))))
+    (cl-gbdt:close-backend backend)))
+```
+
+Output:
+
+```
+built-in :raw:
+#2A((0.9006424501538277d0)
+    (0.9006424501538277d0)
+    (0.9006424501538277d0)
+    (3.7816945374011977d0)
+    (5.989342808723447d0)
+    (11.236049175262446d0)
+    (13.940538883209221d0)
+    (19.681847476959206d0))
+custom  :raw:
+#2A((0.9006424501538277d0)
+    (0.9006424501538277d0)
+    (0.9006424501538277d0)
+    (3.7816945374011977d0)
+    (5.989342808723447d0)
+    (11.236049175262446d0)
+    (13.940538883209221d0)
+    (19.681847476959206d0))
+```
+
+`SQUARED-ERROR` above is squared error's own gradient and Hessian, `grad = prediction - label`
+and `hess = 1` -- the same derivatives LightGBM's built-in `"regression"` objective uses -- and
+the two runs land on the identical model, digit for digit: a custom objective is not an
+approximation of the library's own, it drives the same trees when it computes the same thing.
+
+`:objective` is called once per iteration, before that iteration's update, with **one
+argument**: the booster's current raw scores for its training set, as a `(ROWS GROUPS)`
+`double-float` array -- the margin, before any sigmoid or softmax transform, and the same shape
+and element type `predict` returns. `GROUPS` is 1 for regression and binary classification and
+`num_class` for multiclass. It must return **two values**, the gradient and the Hessian, each a
+`(ROWS GROUPS)` array. The **shape** is what is checked -- the wrong rank, the wrong
+dimensions, or one value instead of two signals `dimension-mismatch` before any foreign call,
+so a wrongly shaped array is never read as though it had the right shape:
+
+```lisp
+(ql:quickload '(:cl-gbdt :cl-gbdt/lightgbm) :silent t)
+
+(defparameter *co-matrix*
+  (make-array '(8 1) :element-type 'double-float
+              :initial-contents '((0.0d0) (1.0d0) (2.0d0) (3.0d0)
+                                   (4.0d0) (5.0d0) (6.0d0) (7.0d0))))
+(defparameter *co-label*
+  (make-array 8 :element-type 'double-float
+              :initial-contents '(0.0d0 1.0d0 4.0d0 9.0d0 16.0d0 25.0d0 36.0d0 49.0d0)))
+
+(let ((backend (cl-gbdt:open-backend :lightgbm)))
+  (unwind-protect
+      (cl-gbdt:with-dataset
+          (dataset (cl-gbdt:make-dataset backend *co-matrix* :label *co-label*
+                                          :parameters '(:min-data-in-leaf 1 :min-data-in-bin 1
+                                                        :verbose -1)))
+        ;; A flat (ROWS) vector instead of the required (ROWS GROUPS) array -- the shape a
+        ;; caller who thinks in one dimension returns.
+        (handler-case
+            (cl-gbdt:train backend dataset :num-rounds 1
+                            :objective (lambda (scores)
+                                         (declare (ignore scores))
+                                         (values (make-array 8 :element-type 'double-float
+                                                                :initial-element 0.0d0)
+                                                 (make-array '(8 1) :element-type 'double-float
+                                                                    :initial-element 1.0d0))))
+          (error (c) (format t "SIGNALED ~A~%  ~A~%" (type-of c) c))))
+    (cl-gbdt:close-backend backend)))
+```
+
+Output:
+
+```
+SIGNALED DIMENSION-MISMATCH
+  Dimension mismatch. Expected: (8 1), got: (GRADIENT (8) HESSIAN (8 1))
+```
+
+The **element type is not** part of that check, and deliberately. `double-float`,
+`single-float` and a general array whose elements are reals -- what `(make-array (list rows 1))`
+with no `:element-type` gives, the most natural thing to write -- are all accepted, and all
+three train the identical model on both backends, because each element is coerced to the
+`single-float` the C signature's `const float*` takes as the buffer is written. An element that
+is *not* a real -- a string, `NIL`, a complex -- signals `unsupported-element-type` naming that
+element's own type, at the write and before the library has been called: the same condition,
+with the same value in `unsupported-element-type-given`, that a `csr-matrix` holding a non-real
+value already signals from `make-csr-matrix`. Nothing scans either array a second time to say
+so; the check rides along with the coercion that was happening anyway.
+
+The two libraries want that `(ROWS GROUPS)` array flattened into their C buffers in opposite
+orders -- LightGBM **group-major** (row I of group K at `(+ (* K ROWS) I)`), XGBoost
+**row-major** (row I of group K at `(+ (* I GROUPS) K)`, what an `__array_interface__` of shape
+`[ROWS, GROUPS]` means) -- and each backend's own code absorbs that difference. **The
+flattening is the wrapper's job, not the caller's**: `:objective` is handed, and returns, one
+`(ROWS GROUPS)` array on both backends, whichever order the library underneath actually wants
+it in. Both orderings are measured rather than assumed -- a gradient confined to one output
+group moves only that group's raw score under the correct layout and smears across every group
+under the other -- held by
+`a-gradient-in-one-output-group-moves-only-that-group` in
+`tests/functional/custom-objective.lisp`, which runs the same fixture on both backends and
+would fail if either flattening were transposed.
+
+`:objective` is the only place inside `train`'s loop where code cl-gbdt did not write runs, and
+that code can reach the handles the loop is holding: `free-dataset` on the training set, on a
+`:valid-sets` entry, or `close-backend` on the backend itself. All three are **caught**, not
+crashed on. `train` re-runs its own dataset and backend checks the moment the objective
+returns, before the iteration makes another foreign call, and reads fresh pointers from them --
+so freeing the training set from inside an objective signals `released-handle-error` naming
+that dataset, exactly as freeing it anywhere else in this library does. Without that re-check
+the loop hands a pointer into freed memory straight to C: measured, LightGBM died with
+`Memory fault at 0x543447170e8a6` and XGBoost with `Signal 7 received`, killing the process
+rather than signalling anything a caller could handle.
+
+#### LightGBM forces `objective` to `"none"`
+
+`LGBM_BoosterUpdateOneIterCustom` refuses to run at all while the booster holds an objective
+function -- `Check failed: objective_function_ == nullptr`, measured against the vendored
+library to return non-zero and train nothing -- so a non-`NIL` `:objective` on LightGBM
+**overrides** any `objective` entry in `:parameters`, forcing it to `"none"` before
+`LGBM_BoosterCreate` ever sees the string. This is not a convenience the caller can opt out of:
+the combination it replaces has no working form to preserve. Every other parameter passes
+through untouched and in its original order, `num_class` included, which is still what tells
+LightGBM how many output groups a multiclass custom objective has.
+
+```lisp
+(ql:quickload '(:cl-gbdt :cl-gbdt/lightgbm) :silent t)
+
+(defparameter *co-matrix*
+  (make-array '(8 1) :element-type 'double-float
+              :initial-contents '((0.0d0) (1.0d0) (2.0d0) (3.0d0)
+                                   (4.0d0) (5.0d0) (6.0d0) (7.0d0))))
+(defparameter *co-label*
+  (make-array 8 :element-type 'double-float
+              :initial-contents '(0.0d0 1.0d0 4.0d0 9.0d0 16.0d0 25.0d0 36.0d0 49.0d0)))
+
+(defun squared-error (scores)
+  "GRAD = prediction - label, HESS = 1 -- squared error's own derivatives."
+  (let* ((rows (array-dimension scores 0))
+         (grad (make-array (list rows 1) :element-type 'double-float))
+         (hess (make-array (list rows 1) :element-type 'double-float :initial-element 1.0d0)))
+    (dotimes (row rows (values grad hess))
+      (setf (aref grad row 0) (- (aref scores row 0) (aref *co-label* row))))))
+
+;; A caller who explicitly names LightGBM's own "regression" objective in :parameters
+;; alongside :objective still gets the identical model a run naming no objective there gets --
+;; proof the override happened, not merely documented.
+(let ((backend (cl-gbdt:open-backend :lightgbm)))
+  (unwind-protect
+      (cl-gbdt:with-dataset
+          (dataset (cl-gbdt:make-dataset backend *co-matrix* :label *co-label*
+                                          :parameters '(:min-data-in-leaf 1 :min-data-in-bin 1
+                                                        :verbose -1)))
+        (cl-gbdt:with-booster
+            (silent (cl-gbdt:train backend dataset :num-rounds 5
+                                    :parameters '(:num-leaves 4 :min-data-in-leaf 1
+                                                  :min-data-in-bin 1 :verbose -1
+                                                  :boost-from-average nil)
+                                    :objective #'squared-error))
+          (cl-gbdt:with-booster
+              (overridden (cl-gbdt:train backend dataset :num-rounds 5
+                                          :parameters '(:objective "regression" :num-leaves 4
+                                                        :min-data-in-leaf 1 :min-data-in-bin 1
+                                                        :verbose -1 :boost-from-average nil)
+                                          :objective #'squared-error))
+            (format t "no objective named in :parameters, :raw:~%~S~%"
+                    (cl-gbdt:predict silent *co-matrix* :kind :raw))
+            (format t "\"regression\" named in :parameters too, :raw:~%~S~%"
+                    (cl-gbdt:predict overridden *co-matrix* :kind :raw)))))
+    (cl-gbdt:close-backend backend)))
+```
+
+Output:
+
+```
+no objective named in :parameters, :raw:
+#2A((0.9006424501538277d0)
+    (0.9006424501538277d0)
+    (0.9006424501538277d0)
+    (3.7816945374011977d0)
+    (5.989342808723447d0)
+    (11.236049175262446d0)
+    (13.940538883209221d0)
+    (19.681847476959206d0))
+"regression" named in :parameters too, :raw:
+#2A((0.9006424501538277d0)
+    (0.9006424501538277d0)
+    (0.9006424501538277d0)
+    (3.7816945374011977d0)
+    (5.989342808723447d0)
+    (11.236049175262446d0)
+    (13.940538883209221d0)
+    (19.681847476959206d0))
+```
+
+Naming `"regression"` explicitly changes nothing: `train` drops every `objective` entry
+`:parameters` holds and appends its own `:objective "none"` last, so the two runs above are the
+identical booster. **XGBoost's `:parameters` are never rewritten** --
+`XGBoosterTrainOneIter` has no such restriction, measured to accept a custom update with any
+objective set -- so there is nothing on that backend to override.
+
+**"Every `objective` entry" means all five spellings LightGBM honours**, not the literal one
+alone. That library reads `objective_type`, `app`, `application` and `loss` as aliases for
+`objective` -- its own `LGBM_DumpParamAliases` returns
+`"objective": ["app", "loss", "application", "objective_type"]`, and each of the four is live
+in the vendored 4.7.0, `:app "binary"` training the identical model `:objective "binary"`
+trains. All five are dropped, so `:app "regression"` alongside `:objective #'squared-error`
+behaves exactly like the `:objective "regression"` run above. The list can only be enumerated,
+never prefix-matched: `apps` is *not* an alias, and neither is `objective_seed`, which is a
+real LightGBM parameter in its own right -- dropping either would silently delete a caller's
+configuration. Only keys that render to one of the five are touched; everything else passes
+through in its original order.
+
+Finally, a non-`NIL` `:objective` must be a `function`. A number, a string, or a *symbol*
+naming a function signals `unsupported-argument` naming `train's :objective`, before any
+foreign call and so before a booster exists -- on both backends. The symbol case is refused
+deliberately: `funcall` would have accepted it and resolved it afresh at each iteration
+against whatever global definition happened to be in force, rather than against what the
+caller passed.
+
+#### The remaining divergence: what `:normal` means under a custom objective
+
+Because LightGBM's objective is forced to `"none"` while XGBoost's stays whatever the caller
+configured, the two backends disagree about what `predict`'s `:kind :normal` means under a
+custom objective. LightGBM applies no transform at all, so `:normal` equals `:raw` there. A
+configured XGBoost objective's own prediction transform stays in effect regardless of who
+supplied the gradient, so with `binary:logistic` still set, `:normal` returns probabilities of
+a margin the caller's own loss produced, while `:raw` returns that margin untouched:
+
+```lisp
+(ql:quickload '(:cl-gbdt :cl-gbdt/lightgbm :cl-gbdt/xgboost) :silent t)
+
+(defparameter *co-matrix*
+  (make-array '(8 1) :element-type 'double-float
+              :initial-contents '((0.0d0) (1.0d0) (2.0d0) (3.0d0)
+                                   (4.0d0) (5.0d0) (6.0d0) (7.0d0))))
+(defparameter *co-binary-label*
+  (make-array 8 :element-type 'single-float
+              :initial-contents '(0.0 0.0 0.0 0.0 1.0 1.0 1.0 1.0)))
+
+(defun logistic-objective (scores)
+  "GRAD/HESS for logistic loss over *CO-BINARY-LABEL*, from the raw margin SCORES."
+  (let* ((rows (array-dimension scores 0))
+         (grad (make-array (list rows 1) :element-type 'double-float))
+         (hess (make-array (list rows 1) :element-type 'double-float)))
+    (dotimes (row rows (values grad hess))
+      (let ((p (/ 1.0d0 (+ 1.0d0 (exp (- (aref scores row 0)))))))
+        (setf (aref grad row 0) (- p (aref *co-binary-label* row)))
+        (setf (aref hess row 0) (max 1d-6 (* p (- 1.0d0 p))))))))
+
+;; LightGBM's :normal equals its :raw under a custom objective, since :objective forces
+;; "objective":"none". XGBoost's configured objective keeps transforming: :normal differs
+;; from :raw there.
+(let ((lgbm (cl-gbdt:open-backend :lightgbm))
+      (xgb (cl-gbdt:open-backend :xgboost)))
+  (unwind-protect
+      (progn
+        (cl-gbdt:with-dataset
+            (dataset (cl-gbdt:make-dataset lgbm *co-matrix* :label *co-binary-label*
+                                            :parameters '(:min-data-in-leaf 1 :min-data-in-bin 1
+                                                          :verbose -1)))
+          (cl-gbdt:with-booster
+              (booster (cl-gbdt:train lgbm dataset :num-rounds 5
+                                       :parameters '(:num-leaves 4 :min-data-in-leaf 1
+                                                     :min-data-in-bin 1 :verbose -1)
+                                       :objective #'logistic-objective))
+            (format t "LightGBM :normal:~%~S~%" (cl-gbdt:predict booster *co-matrix* :kind :normal))
+            (format t "LightGBM :raw:~%~S~%" (cl-gbdt:predict booster *co-matrix* :kind :raw))))
+        (cl-gbdt:with-dataset
+            (dataset (cl-gbdt:make-dataset xgb *co-matrix* :label *co-binary-label*))
+          (cl-gbdt:with-booster
+              (booster (cl-gbdt:train xgb dataset :num-rounds 5
+                                       :parameters '(:objective "binary:logistic" :max-depth 2
+                                                     :eta 0.5d0 :verbosity 0)
+                                       :objective #'logistic-objective))
+            (format t "XGBoost  :normal:~%~S~%" (cl-gbdt:predict booster *co-matrix* :kind :normal))
+            (format t "XGBoost  :raw:~%~S~%" (cl-gbdt:predict booster *co-matrix* :kind :raw)))))
+    (cl-gbdt:close-backend lgbm)
+    (cl-gbdt:close-backend xgb)))
+```
+
+Output:
+
+```
+LightGBM :normal:
+#2A((-0.857090443203849d0)
+    (-0.857090443203849d0)
+    (-0.857090443203849d0)
+    (-0.857090443203849d0)
+    (0.8570904432038492d0)
+    (0.8570904432038492d0)
+    (0.8570904432038492d0)
+    (0.8570904432038492d0))
+LightGBM :raw:
+#2A((-0.857090443203849d0)
+    (-0.857090443203849d0)
+    (-0.857090443203849d0)
+    (-0.857090443203849d0)
+    (0.8570904432038492d0)
+    (0.8570904432038492d0)
+    (0.8570904432038492d0)
+    (0.8570904432038492d0))
+XGBoost  :normal:
+#2A((0.3775406777858734d0)
+    (0.3775406777858734d0)
+    (0.3775406777858734d0)
+    (0.3775406777858734d0)
+    (0.622459352016449d0)
+    (0.622459352016449d0)
+    (0.622459352016449d0)
+    (0.622459352016449d0))
+XGBoost  :raw:
+#2A((-0.5d0) (-0.5d0) (-0.5d0) (-0.5d0) (0.5d0) (0.5d0) (0.5d0) (0.5d0))
+```
+
+LightGBM's `:normal` and `:raw` match to the last digit; XGBoost's do not, and its `:normal`
+values sit in `(0, 1)`, a sigmoid of its own `:raw` margin. One custom-objective run, two
+meanings for `:normal` -- a caller moving the same `:objective` function between backends gets
+a probability from one and a margin from the other unless they account for it.
+
+#### What `:objective` sees on XGBoost's training set, and DART
+
+XGBoost has no counterpart to LightGBM's `LGBM_BoosterGetPredict`, which simply hands back
+scores the booster already holds; each iteration's scores for `:objective` are instead a fresh
+margin prediction over the training `DMatrix`, sent with `"training":true` in that call's
+config JSON. The vendored header
+(`ffi-spec/xgboost/include/xgboost/c_api.h:1180-1191`) documents that key as distinguishing two
+prediction scenarios, obtaining `y_pred` versus "obtain[ing] the prediction for computing
+gradients", and says the second "applies when you are defining a custom objective function".
+On the default `gbtree` booster the two values were measured to train identical models; the
+same header names DART's training-time dropout as the case where they differ, since dropped
+trees make "the prediction result... different from the one obtained by normal inference step".
+**That DART difference is the header's own statement, not a measurement taken in this
+repository** -- no test here exercises `:booster "dart"` together with `:objective`, though
+`:booster` reaches XGBoost's parameters untouched, so the combination is reachable and simply
+unmeasured.
+
+Two further things this argument does not change. A library metric configured through
+`:parameters` relates to the library's own objective, not to the caller's, so what
+`:record-history` records and what `:early-stopping` watches -- see [Training
+report](#training-report) -- may be meaningless under a custom objective; nothing here signals
+about that, the caller decides. And `:objective` is `funcall`ed inside `train`'s own
+floating-point-trap mask, so the caller's Lisp arithmetic runs under the same masked convention
+the two C libraries are written against: `(/ 1.0d0 0.0d0)` yields infinity rather than
+signalling, on x86-64 as well as on aarch64.
 
 ## Systems
 

@@ -30,6 +30,7 @@
                 #:xg-booster-get-num-feature
                 #:xg-booster-boosted-rounds
                 #:xg-booster-update-one-iter
+                #:xg-booster-train-one-iter
                 #:xg-booster-eval-one-iter
                 #:xg-booster-predict-from-d-matrix
                 #:xg-booster-predict-from-csr
@@ -63,6 +64,8 @@
                 #:check-feature-names)
   (:import-from #:cl-gbdt/src/config/missing-value
                 #:missing-value-json)
+  (:import-from #:cl-gbdt/src/config/objective
+                #:objective-single-float)
   (:import-from #:cl-gbdt/src/data
                 #:with-foreign-matrix
                 #:write-foreign-sequence)
@@ -106,6 +109,8 @@
            #:%predict-ncol
            #:%predict-from-dmatrix
            #:%predict-from-csr
+           #:%training-scores
+           #:%train-one-iteration-custom
            #:%save-model
            #:%load-model
            #:%save-model-to-buffer
@@ -304,7 +309,8 @@ the library loads.")
 
 (defparameter *optional-symbols*
   '((:model-slicing "XGBoosterSlice")
-    (:sparse-input "XGDMatrixCreateFromCSR" "XGBoosterPredictFromCSR"))
+    (:sparse-input "XGDMatrixCreateFromCSR" "XGBoosterPredictFromCSR")
+    (:custom-objective "XGBoosterTrainOneIter"))
   "Capability name to the C function names that capability needs.
 
 Unlike `*required-symbols*', whose absence makes `open-backend' signal
@@ -319,7 +325,38 @@ capability before reaching it.
 `make-dataset' reaches only the first. The capability is one answer about whether this
 backend can take a `csr-matrix' at all, and a caller told \"yes\" who could build a dataset
 but not predict from one would have been told a half-truth. Listing both from the start means
-the answer never changes meaning as the sparse path grows.")
+the answer never changes meaning as the sparse path grows.
+
+`:custom-objective' names ONE function where LightGBM's entry of the same name needs three:
+`XGBoosterTrainOneIter' takes the caller's gradient and Hessian, and everything else one
+iteration of `train''s custom loop calls is already required here. The scores the caller's
+function is handed come from `XGBoosterPredictFromDMatrix' -- `%training-scores' below is a
+margin prediction over the training DMatrix, not a separate score-reading entry point the way
+LightGBM's `LGBM_BoosterGetPredict' is -- the output-group count is not read from the library
+at all but divided out of that prediction's own element count by `%predict-ncol', and the round
+number the update is given comes from `XGBoosterBoostedRounds', through `%boosted-rounds', the
+same way the built-in `%update-one-iteration' gets its own. Both of those C names are in
+`*required-symbols*' above, so neither adds a name here.
+
+It belongs HERE and not in `*provided-capabilities*' below: `XGBoosterTrainOneIter' is NOT in
+`*required-symbols*' above, so an XGBoost too old to export it opens perfectly well and simply
+cannot boost against a caller's own gradient -- which is exactly the state a probe exists to
+detect. `probe-capabilities' records PROVIDED entries ahead of probed ones, so naming a
+capability in both lists would make the probe's answer unreachable; its own docstring calls
+that combination a contradiction in the backend's declarations, and
+`tools/ci/check-abi-blacklist.lisp''s own header names the same arrangement among the things
+it cannot catch -- a capability declared provided is recorded true on a library that lacks the
+symbol, and nothing there would notice. This is the same shape as `:sparse-input' and
+`:model-slicing' above, and the opposite of `:missing-value' and `:categorical-features'
+below, whose entry points are required already. `cl-gbdt/src/lightgbm/native''s entry of this
+same name is probed for the same reason.
+
+`XGBoosterBoostOneIter', the other entry point that takes a gradient and a Hessian, is bound
+in c-api.lisp and named nowhere here, because nothing calls it. The vendored header
+(`ffi-spec/xgboost/include/xgboost/c_api.h') marks it `@deprecated since 2.1.0' and
+`XGBoosterTrainOneIter' `@since 2.0.0'; it also takes bare `float*' pointers and a flat
+length, where `XGBoosterTrainOneIter' takes two `__array_interface__' descriptors that can
+state a (ROWS GROUPS) shape.")
 
 (defparameter *provided-capabilities*
   '(:evaluation-history :early-stopping :missing-value :categorical-features
@@ -811,10 +848,31 @@ something else."
 protocol."
   (or num-iteration 0))
 
-(defun %predict-config-json (predict-type iteration-end &key (missing nil missing-supplied-p))
+(defun %predict-config-json (predict-type iteration-end
+                             &key (training nil) (missing nil missing-supplied-p))
   "Return the JSON config `XGBoosterPredictFromDMatrix' expects for PREDICT-TYPE (already
 mapped by `%predict-type') and ITERATION-END (already resolved by
 `%resolve-num-iteration').
+
+TRAINING renders the `\"training\"' key, which is always present: false by default, true when
+this argument is. The key is required -- omitting it entirely returns -1, `Argument
+`training` is required for `XGBoosterPredictFromDMatrix`', confirmed against the vendored
+library -- so what this argument decides is the VALUE, never whether the key appears, which is
+the opposite of MISSING below.
+
+What the value means is documented in the vendored header
+(`ffi-spec/xgboost/include/xgboost/c_api.h:1180-1191'), against this very config: prediction
+runs in one of two scenarios, obtaining `y_pred' from the model, or \"obtain[ing] the
+prediction for computing gradients\", and \"the second scenario applies when you are defining a
+custom objective function\". So false is right for `predict', whose caller asked for a
+prediction, and true is right for `%training-scores', whose result exists only to be handed to
+a caller's objective function -- see that function, which is the only caller passing true.
+
+The two are NOT interchangeable in general, whatever a `gbtree' measurement suggests: the same
+header names DART's training-time dropout as the case where they differ, \"the prediction
+result will be different from the one obtained by normal inference step due to dropped trees\".
+`:booster \"dart\"' reaches `%set-parameters' untouched, so that configuration is reachable
+from the unified API.
 
 `\"strict_shape\":true' always: without it, XGBoost's non-strict mode squeezes away a
 single-class model's trailing dimension inconsistently with a multi-class model's --
@@ -836,9 +894,9 @@ key -- a DMatrix settled its own missing sentinel when it was built, out of the 
 prediction with no DMatrix behind it and therefore nothing to have settled one: confirmed
 against the vendored library, that call refuses outright without the key (\"Argument
 `missing` is required\"), rather than assuming a default."
-  (format nil "{\"type\":~D,\"training\":false,\"iteration_begin\":0,~
+  (format nil "{\"type\":~D,\"training\":~A,\"iteration_begin\":0,~
 \"iteration_end\":~D,\"strict_shape\":true~A}"
-          predict-type iteration-end
+          predict-type (if training "true" "false") iteration-end
           (if missing-supplied-p
               (format nil ",\"missing\":~A" (missing-value-json missing :xgboost))
               "")))
@@ -954,6 +1012,149 @@ returns -- none of which differs between the two entry points."
                            booster-pointer indptr-json indices-json values-json num-columns
                            config (cffi:null-pointer) out-shape out-dim out-result)
                           "XGBoosterPredictFromCSR")))))))))
+
+;;; ---------------------------------------------------------------------------
+;;; Custom objective
+;;;
+;;; Below the Inference section rather than inside Training above, because the first of these
+;;; two functions IS a prediction: `%training-scores' reaches `%predict-config-json',
+;;; `%predict-type', `%predict-from-dmatrix', `%total-element-count' and `%predict-ncol', every
+;;; one of them defined above. Keeping the pair here keeps this file's definition order and its
+;;; call order the same. `cl-gbdt/src/lightgbm/native' keeps its own pair of the same names in
+;;; its Training section instead, which is not an inconsistency between the two files: that
+;;; library reads a booster's current scores with `LGBM_BoosterGetPredict', which is not a
+;;; prediction entry point and depends on nothing in that file's Inference section.
+;;;
+;;; Neither function wraps itself in `with-foreign-float-traps-masked', and both reach the
+;;; shared library. That is this file's ordinary rule, not an omission: both are reached only
+;;; from `cl-gbdt/src/xgboost/protocol''s `train', whose whole body is already wrapped. See the
+;;; Floating-point trap safety section at the top of this file -- what makes
+;;; `evaluate-one-iteration' and `booster-boosted-rounds' exceptions to it is that
+;;; `src/xgboost/all.lisp' publishes them from `cl-gbdt/xgboost', leaving no `defmethod' above
+;;; them to establish the mask. Neither of these two is published from anywhere, and
+;;; `tools/ci/check-float-traps.lisp' reads that same `:export' clause, so it has nothing to
+;;; say about either -- a clean run of it is not evidence about these two functions.
+
+(defun %training-scores (booster-pointer dmatrix-pointer rows)
+  "Return BOOSTER-POINTER's current raw scores for DMATRIX-POINTER as a (ROWS GROUPS)
+`double-float' array.
+
+A margin prediction over the training DMatrix -- `%predict-config-json' with `:raw''s
+predict type and ITERATION-END 0, every iteration the booster has so far. `predict' builds
+its config through the same function, differing in that it resolves ITERATION-END through
+`%resolve-num-iteration' from a caller's :NUM-ITERATION where this passes the literal 0, and
+in the TRAINING flag below.
+
+`\"training\":true', which is what makes this a second caller of that builder rather than a
+reuse of `predict''s exact string. The key itself is required either way -- omitting it
+returns -1, `Argument `training` is required for `XGBoosterPredictFromDMatrix`' -- and TRUE
+is the value the vendored header asks for here: it names two prediction scenarios
+(`ffi-spec/xgboost/include/xgboost/c_api.h:1180-1191'), obtaining `y_pred' and \"obtain[ing]
+the prediction for computing gradients\", and says \"the second scenario applies when you are
+defining a custom objective function\", which is the only thing this function's result is
+ever used for.
+
+Nothing existing moves when that flag changes value, and that is measured rather than
+assumed: on the default `gbtree' booster, `false' and `true' train identical models here.
+Where they are NOT identical is the case the same header names -- DART, whose training-time
+dropout means \"the prediction result will be different from the one obtained by normal
+inference step due to dropped trees\". That difference is the header's statement, NOT a
+measurement taken here; what a `:booster \"dart\"' run does under this flag has not been
+measured. It is reachable, though: PARAMETERS reach `%set-parameters' untouched, so sending
+`false' would hand such a caller's objective the full undropped ensemble.
+
+The buffer is read ROW-MAJOR -- row I of output group K at `(+ (* I GROUPS) K)' -- which is
+how `cl-gbdt/src/xgboost/protocol''s `predict' already reads the identical buffer from the
+identical call, and which the multiclass layout test in
+tests/functional/custom-objective.lisp holds directly: it asserts on the SCORES its
+objective was handed at the second of two iterations, which is the only place a wrong
+reading of this buffer shows up (at iteration 1 every score is 0).
+
+GROUPS comes from the element count the library reports, the same `%total-element-count'
+and `%predict-ncol' pair `predict' uses, rather than from a `num_class' parameter this file
+would have to parse. `\"strict_shape\":true' is what makes that division trustworthy for a
+single-group model as well as a multiclass one; see `%predict-config-json'.
+
+`:raw' rather than `:normal' because a gradient is computed from the margin: this backend
+does not rewrite PARAMETERS, so a configured objective's prediction transform is still in
+effect and `:normal' would hand the caller probabilities. See
+`cl-gbdt/src/xgboost/protocol''s `train'.
+
+OUT-RESULT is XGBoost's own memory, valid only until the next call into this booster, so
+every element is copied out and coerced to `double-float' before this returns -- the same
+lifetime `predict' works to."
+  (let ((config (%predict-config-json (%predict-type :raw) 0 :training t)))
+    (cffi:with-foreign-objects ((out-shape :pointer) (out-dim :uint64) (out-result :pointer))
+      (cffi:with-foreign-string (config-string config)
+        (check-xgb (%predict-from-dmatrix booster-pointer dmatrix-pointer config-string
+                                          out-shape out-dim out-result)
+                   "XGBoosterPredictFromDMatrix"))
+      (let* ((element-count (%total-element-count (cffi:mem-ref out-shape :pointer)
+                                                  (cffi:mem-ref out-dim :uint64)))
+             (groups (%predict-ncol element-count rows))
+             (buffer (cffi:mem-ref out-result :pointer))
+             (scores (make-array (list rows groups) :element-type 'double-float)))
+        (dotimes (row rows scores)
+          (dotimes (group groups)
+            (setf (aref scores row group)
+                  (coerce (cffi:mem-aref buffer :float (+ (* row groups) group))
+                          'double-float))))))))
+
+(defun %train-one-iteration-custom (booster-pointer dmatrix-pointer iteration grad hess)
+  "Advance BOOSTER-POINTER by one iteration on the caller's GRAD and HESS, via
+`XGBoosterTrainOneIter'. Both are (ROWS GROUPS) arrays.
+
+They are flattened **row-major** -- row I of output group K at `(+ (* I GROUPS) K)' -- which
+is what an `__array_interface__' of shape `[ROWS, GROUPS]' means, and converted to
+`single-float'. Measured against the vendored library: a gradient written for output group 0
+alone moves only that group's raw score under this layout and smears across all three under
+the group-major one `cl-gbdt/src/lightgbm/native''s `%update-one-iteration-custom' needs.
+
+The descriptor says `\"<f4\"', and **XGBoost validates that field against nothing**:
+measured, `\"<f4\"' over a `float64' buffer produces garbage (1.2e27) and `\"<i4\"' is
+accepted in silence and trains a different model (4.13 away from the built-in run). Nothing
+downstream will report a wrong typestr, so this call site is the only thing keeping the
+buffer from being misread.
+
+The conversion goes through `objective-single-float', so an element that is not a real signals
+`unsupported-element-type' naming its type rather than a `type-error' from inside `coerce'.
+GRAD and HESS may be `double-float', `single-float' or general arrays --
+`check-objective-result' checks their shape and leaves their elements to that function, one
+element at a time as they are written, which is why nothing scans either array twice.
+
+ITERATION is the round number the C signature asks for, and `train' reads it back from
+`%boosted-rounds' at each call, the same way `%update-one-iteration' does. The REASON that
+function gives does not carry over unchanged: it reads the count back so a booster whose
+rounds did not start at 0 cannot have a local counter repeat rounds already boosted, whereas
+the vendored header says of THIS entry point's `iter' that \"when training continuation is
+used, the count should restart\" (`ffi-spec/xgboost/include/xgboost/c_api.h:1099-1100'), which
+is a restarting local counter. The two conventions agree here only because `train' always
+builds a fresh booster, so `%boosted-rounds' runs 0, 1, 2, ... -- a future entry point that
+continued training an existing booster would have to choose between them. Measured, the value
+does not affect the result at all: 0-based, always-zero and 1-based all reproduce the built-in
+run exactly. It is sent honestly rather than relied on.
+
+Both buffers only need to stay alive for the duration of this call: `XGBoosterTrainOneIter'
+reads them and returns, exactly the lifetime `%create-dmatrix' relies on for the array
+interface it hands `XGDMatrixCreateFromDense'."
+  (let* ((rows (array-dimension grad 0))
+         (groups (array-dimension grad 1))
+         (count (* rows groups)))
+    (cffi:with-foreign-objects ((grad-buffer :float count) (hess-buffer :float count))
+      (dotimes (row rows)
+        (dotimes (group groups)
+          (let ((index (+ (* row groups) group)))
+            (setf (cffi:mem-aref grad-buffer :float index)
+                  (objective-single-float (aref grad row group)))
+            (setf (cffi:mem-aref hess-buffer :float index)
+                  (objective-single-float (aref hess row group))))))
+      (cffi:with-foreign-string
+          (grad-json (array-interface-json grad-buffer "<f4" rows groups))
+        (cffi:with-foreign-string
+            (hess-json (array-interface-json hess-buffer "<f4" rows groups))
+          (check-xgb (xg-booster-train-one-iter booster-pointer dmatrix-pointer iteration
+                                                grad-json hess-json)
+                     "XGBoosterTrainOneIter"))))))
 
 ;;; ---------------------------------------------------------------------------
 ;;; Persistence

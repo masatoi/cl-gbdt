@@ -153,7 +153,8 @@ Free the result with `free-dataset' or wrap it in `with-dataset'."))
   (:documentation "Return the number of features in DATASET."))
 
 (defgeneric train (backend dataset
-                    &key valid-sets num-rounds parameters record-history early-stopping)
+                    &key valid-sets num-rounds parameters record-history early-stopping
+                         objective)
   (:documentation "Train a BACKEND model on DATASET and return two values: a booster and
 a `training-report' of the run.
 
@@ -236,6 +237,52 @@ A run given EARLY-STOPPING usually fills `training-report-best-iteration', `-bes
 and `-early-stopped-p', and the returned booster's `booster-best-iteration' -- but not
 always; see below for the two cases where they stay NIL regardless. A run not given
 EARLY-STOPPING at all always leaves all four NIL.
+
+OBJECTIVE, NIL by default, is a function that supplies the gradient and Hessian itself,
+so the run boosts against the caller's own loss rather than the library's. It requires
+the `:custom-objective' capability, which `train' re-checks and signals
+`capability-unavailable' for. A non-NIL OBJECTIVE that is not a `function' -- a number, a
+string, or a SYMBOL naming one -- signals `unsupported-argument' naming :OBJECTIVE, before
+any foreign call and so before a booster exists to leak.
+
+It is called once per iteration, before that iteration's update, with one argument: the
+booster's current raw scores for its training set, as a (ROWS GROUPS) `double-float'
+array -- the margin, before any sigmoid or softmax, and the same shape and element type
+`predict' returns. GROUPS is 1 for regression and binary classification and `num_class'
+for multiclass. It must return two values, the gradient and the Hessian, each a (ROWS
+GROUPS) array. The SHAPE is what is checked: a wrong rank, wrong dimensions, or one value
+where two were required signals `dimension-mismatch' before any foreign call. The element
+type is not: `double-float', `single-float' and a general array whose elements are reals --
+what `(make-array (list ROWS GROUPS))' gives, and the most natural thing to write -- are all
+accepted and all train the same model, each element being coerced where the buffer is
+written. An element that is not a real signals `unsupported-element-type' naming its type,
+there at the write, before the library has been called.
+
+The caller writes one array shape and it means the same thing on both backends: the two
+libraries flatten it differently -- LightGBM group-major, XGBoost row-major -- and each
+backend's own code absorbs that.
+
+A handle the objective frees, or a backend it closes, is caught the moment it returns and
+before any further foreign call: `train' re-runs its own dataset and backend checks there,
+so freeing the training set from inside an objective signals `released-handle-error' rather
+than faulting the process.
+
+On LightGBM, OBJECTIVE **overrides** any `objective' in PARAMETERS, forcing it to
+\"none\". LightGBM refuses a custom update while the booster holds an objective function
+at all, so the combination the override replaces cannot run; every other parameter,
+`num_class' included, passes through untouched. XGBoost's parameters are never rewritten,
+and its configured objective goes on transforming predictions -- so with
+`binary:logistic' still set there, `predict :kind :normal' returns probabilities while
+LightGBM's returns the raw score. One custom-objective run, two meanings for :NORMAL.
+
+A library metric configured through PARAMETERS relates to the library's objective, not to
+the caller's, so what RECORD-HISTORY records and what EARLY-STOPPING watches may be
+meaningless under a custom objective. Nothing signals; the caller decides.
+
+The function runs inside `train''s foreign-float-trap mask, so the caller's own Lisp
+arithmetic does not trap: `(/ 1.0d0 0.0d0)' yields infinity rather than signalling, on
+x86-64 as well as on aarch64. The mask is what makes the two platforms agree here, and it
+agrees on the masked convention the two C libraries are written against.
 
 The secondary value is a `training-report'. Its `training-report-series' is a list of
 `training-series', one per metric per dataset -- the same (DATASET-INDEX, METRIC-NAME)

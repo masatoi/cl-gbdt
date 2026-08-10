@@ -155,7 +155,8 @@ to this function can detect it here."
     :multidimensional-feature-score
     :missing-value
     :categorical-features
-    :prediction-shape)
+    :prediction-shape
+    :custom-objective)
   "Every capability name `backend-supports-p' will answer for.
 
 Policy section 7 named five as a MINIMUM -- it asks that at least those be answerable, not
@@ -183,20 +184,33 @@ in `array-dimensions' order, or NIL where the backend states none. Its answer sa
 second value CONTAINS rather than whether a call will be accepted, and NO OPERATION REFUSES ON
 IT, which is deliberate.
 
-It is not the odd member of an otherwise uniform list. FOUR of the names here are re-checked by
-the operation they gate, each signalling `capability-unavailable' for an argument it cannot
-honour: `:sparse-input', `:missing-value' and `:categorical-features', in both backends'
-`protocol.lisp', and `:model-slicing', in XGBoost's `slice-model'. Those four are the whole of
-it -- `:evaluation-history', `:early-stopping' and `:multidimensional-feature-score' are
-re-checked nowhere either (the last has no backend answering it true at all, and
-`%check-feature-score-dim', which is where a multidimensional score is rejected, signals
-`unsupported-argument' off what the library reported at runtime rather than off the capability).
+`:custom-objective' is the fourth name past that floor: whether `train' accepts an
+`:objective' function that turns the current raw scores into a gradient and a Hessian, so a
+run boosts against the caller's own loss rather than one built into the library.
+
+It is not the odd member of an otherwise uniform list. FIVE of the nine names here are
+re-checked by the operation they gate, each signalling `capability-unavailable' for an argument
+it cannot honour: `:sparse-input', `:missing-value', `:categorical-features' and
+`:custom-objective', in both backends' `protocol.lisp' -- the last of them by
+`%check-custom-objective', off `train''s :OBJECTIVE -- and `:model-slicing', in XGBoost's
+`slice-model'. Those five are the whole of it -- `:evaluation-history', `:early-stopping' and
+`:multidimensional-feature-score' are re-checked nowhere either (the last has no backend
+answering it true at all, and `%check-feature-score-dim', which is where a multidimensional
+score is rejected, signals `unsupported-argument' off what the library reported at runtime
+rather than off the capability).
 `:prediction-shape' has no argument to refuse at all: nothing asks for a shape, so a false
 answer means the second value is always NIL while `predict' otherwise behaves exactly as it
 always did. That is not the silent fallback policy section 7 forbids -- section 7 protects a
 caller who asked for something and would otherwise have it quietly dropped, and here nothing was
-asked for -- and a re-check added for symmetry with those four would make `predict' signal
+asked for -- and a re-check added for symmetry with those five would make `predict' signal
 outright on a backend that simply has less to say.
+
+Where a re-checked name's answer COMES from varies and does not affect that split: a backend
+declares it in `*provided-capabilities*' when nothing is left to look up, and names its C
+functions in `*optional-symbols*' when a library that opens perfectly well can still lack
+them -- `:sparse-input', `:model-slicing' and `:custom-objective' are probed that way on
+every backend providing them, `:missing-value' and `:categorical-features' declared. A false
+answer needs the same re-check either way.
 
 `:evaluation-history' is true on both backends: `train' records one, and each backend names
 the capability in its own `*provided-capabilities*' rather than in `*optional-symbols*',
