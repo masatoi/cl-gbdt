@@ -1,6 +1,6 @@
 ;;;; custom-metric.lisp --- Layer 1 tests for the custom metric's pure helpers.
 ;;;;
-;;;; Both functions here are pure: no handle, no pointer, no shared library. They are the
+;;;; Every function here is pure: no handle, no pointer, no shared library. They are the
 ;;;; parts of the custom-evaluation path that can be tested without either library present,
 ;;;; which is what keeps `foreign libraries open: NIL' true for this suite.
 
@@ -8,9 +8,12 @@
   (:use #:cl #:rove)
   (:import-from #:cl-gbdt/src/training/custom-metric
                 #:custom-metric-entry
-                #:check-metric-name-collision)
+                #:check-metric-name-collision
+                #:make-metric-name-pin
+                #:pin-metric-name)
   (:import-from #:cl-gbdt/src/conditions
                 #:unsupported-argument
+                #:unsupported-argument-argument
                 #:unsupported-argument-backend))
 
 (in-package #:cl-gbdt/tests/custom-metric)
@@ -85,3 +88,71 @@
                       (unsupported-argument (c) c))))
     (ok (eq :test-backend (unsupported-argument-backend condition))
         "check-metric-name-collision did not report the backend it was called with")))
+
+;;; ---------------------------------------------------------------------------
+;;; The name pin
+
+;;; `check-metric-name-collision' above runs on the FIRST iteration only, which is all the
+;;; library's own names need -- they do not change after that. A caller's do: the same
+;;; :EVALUATION may return one name on iteration 1 and another on iteration 2, and neither
+;;; name is wrong on the iteration it appears in, so no per-iteration check can catch it. The
+;;; pin is what makes the run remember, and the tests below are written as SEQUENCES of calls
+;;; rather than single ones because that is the only shape in which the bug exists.
+
+(deftest the-pin-accepts-one-name-per-index-for-as-long-as-it-is-repeated
+  (let ((pin (make-metric-name-pin)))
+    (ok (null (multiple-value-list (pin-metric-name :test-backend pin "my_metric" 0))))
+    (ok (null (multiple-value-list (pin-metric-name :test-backend pin "my_metric" 0))))
+    (ok (null (multiple-value-list (pin-metric-name :test-backend pin "my_metric" 0))))))
+
+(deftest the-pin-refuses-a-name-that-changes-at-the-same-index
+  ;; The ragged half: "safe" then "other" gives two series, each shorter than the run and
+  ;; each misaligned with the iterations its values came from.
+  (let ((pin (make-metric-name-pin)))
+    (pin-metric-name :test-backend pin "safe" 0)
+    (ok (handler-case (progn (pin-metric-name :test-backend pin "other" 0) nil)
+          (unsupported-argument () t)))))
+
+(deftest the-pin-refuses-a-name-that-changes-into-a-colliding-one
+  ;; The long half, and the one `check-metric-name-collision' cannot reach: it runs on the
+  ;; first iteration only, so a caller returning "safe" then the library's own
+  ;; "binary_logloss" passes it and puts two entries under one key from iteration 2 on. The
+  ;; pin refuses the change itself, which is why no second collision check is needed.
+  (let ((pin (make-metric-name-pin)))
+    (check-metric-name-collision :test-backend "safe" 0 '((0 "binary_logloss" 0.5d0)))
+    (pin-metric-name :test-backend pin "safe" 0)
+    (ok (handler-case (progn (pin-metric-name :test-backend pin "binary_logloss" 0) nil)
+          (unsupported-argument () t)))))
+
+(deftest the-pin-is-per-index-and-not-per-run
+  ;; Two datasets may legitimately carry two different metric names -- the pair (INDEX, NAME)
+  ;; is what a series is keyed by, so index 1's name has nothing to do with index 0's. A pin
+  ;; that remembered one name for the whole run would refuse this.
+  (let ((pin (make-metric-name-pin)))
+    (pin-metric-name :test-backend pin "train_metric" 0)
+    (ok (null (multiple-value-list (pin-metric-name :test-backend pin "valid_metric" 1))))
+    ;; And each index still holds to its own afterwards, in both directions.
+    (ok (handler-case (progn (pin-metric-name :test-backend pin "valid_metric" 0) nil)
+          (unsupported-argument () t)))
+    (ok (handler-case (progn (pin-metric-name :test-backend pin "train_metric" 1) nil)
+          (unsupported-argument () t)))))
+
+(deftest a-fresh-pin-remembers-nothing-from-another-one
+  ;; `train' makes one per run. Two runs of the same :EVALUATION under two different names
+  ;; must both be accepted, or a caller could not reuse a closure across runs.
+  (let ((first-pin (make-metric-name-pin))
+        (second-pin (make-metric-name-pin)))
+    (pin-metric-name :test-backend first-pin "my_metric" 0)
+    (ok (null (multiple-value-list (pin-metric-name :test-backend second-pin "other" 0))))))
+
+(deftest the-pin-names-the-backend-it-was-called-on
+  (let* ((pin (make-metric-name-pin))
+         (condition (handler-case
+                        (progn (pin-metric-name :test-backend pin "safe" 0)
+                               (pin-metric-name :test-backend pin "other" 0)
+                               nil)
+                      (unsupported-argument (c) c))))
+    (ok (eq :test-backend (unsupported-argument-backend condition))
+        "pin-metric-name did not report the backend it was called with")
+    (ok (equal "train's :evaluation" (unsupported-argument-argument condition))
+        "pin-metric-name did not name train's :evaluation")))

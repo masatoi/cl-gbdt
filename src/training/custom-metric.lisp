@@ -1,6 +1,6 @@
 ;;;; custom-metric.lisp --- Building and collision-checking a custom metric's recorded entry.
 ;;;;
-;;;; Both functions here are pure: no handle, no pointer, no shared library, nothing that
+;;;; Every function here is pure: no handle, no pointer, no shared library, nothing that
 ;;;; requires `open-backend' at all. `custom-metric-entry' turns one call to a caller's
 ;;;; `:evaluation' function into the exact (DATASET-INDEX METRIC-NAME VALUE) shape both
 ;;;; backends' `%read-evaluation' already produce -- the shape `training-report-from-history'
@@ -9,9 +9,12 @@
 ;;;; existing at all is what lets a caller's metric reach both of those readers for free, by
 ;;;; producing the one shape they already know how to fold in, rather than a shape of its own
 ;;;; either reader would need special-casing to recognize. `check-metric-name-collision' guards
-;;;; the one way a caller's metric could corrupt them anyway: a name that collides with one the
+;;;; one way a caller's metric could corrupt them anyway: a name that collides with one the
 ;;;; library itself already reports for the same dataset index, which would fold two different
 ;;;; series into one under the (DATASET-INDEX, METRIC-NAME) key both readers key by.
+;;;; `make-metric-name-pin' and `pin-metric-name' guard the other, which is the caller's alone:
+;;;; a name that CHANGES from one iteration to the next, which no per-iteration check can
+;;;; catch because there is nothing wrong with either name on the iteration it appears in.
 ;;;;
 ;;;; Under src/training/, beside history.lisp and early-stopping.lisp, rather than in
 ;;;; src/config/: those two are already the backend-neutral, layer-1-testable training helpers
@@ -33,7 +36,9 @@
   (:import-from #:cl-gbdt/src/conditions
                 #:unsupported-argument)
   (:export #:custom-metric-entry
-           #:check-metric-name-collision))
+           #:check-metric-name-collision
+           #:make-metric-name-pin
+           #:pin-metric-name))
 
 (in-package #:cl-gbdt/src/training/custom-metric)
 
@@ -110,4 +115,73 @@ then."
            :argument "train's :evaluation"
            :reason (format nil "~S already names a metric the library reports for dataset ~
                                 index ~D" name dataset-index)))
+  (values))
+
+(defun make-metric-name-pin ()
+  "Return a fresh, empty pin for `pin-metric-name' below: state one `train' run keeps for the
+whole of its loop, mapping each dataset index to the metric name that index's `:evaluation'
+call returned the FIRST time it was called.
+
+Created once per run rather than once per iteration -- a pin that forgot between iterations
+would compare nothing -- and only for a run that actually has an EVALUATION, so a run without
+one allocates nothing. A hash table under `eql' because a dataset index is an integer and
+because the pin is written once per index and read once per index per iteration afterwards.
+
+The pin is `train''s own state and never the caller's: nothing here is exported from
+`CL-GBDT', and no argument of `train' reaches it. See `pin-metric-name' for what it is for."
+  (make-hash-table :test #'eql))
+
+(defun pin-metric-name (backend-name pin name dataset-index)
+  "Record NAME as DATASET-INDEX's metric name in PIN the first time that index is seen, and
+on every later call signal `unsupported-argument' naming \"train's :evaluation\" unless NAME
+is `string=' to what was recorded then. Return (values).
+
+BACKEND-NAME is the keyword `train''s own backend reports through `backend-name' --
+`:lightgbm' or `:xgboost' -- passed straight through, unexamined, to the
+`unsupported-argument' this signals, the same convention `custom-metric-entry' and
+`check-metric-name-collision' above follow.
+
+ONE NAME PER DATASET INDEX FOR THE WHOLE RUN is the contract this enforces, and it is what
+`train''s generic-function docstring states as a requirement on EVALUATION. A caller's
+function is free to return a different name at a different INDEX -- the pin is per index --
+but not a different name at the same one from one iteration to the next, because a series
+is keyed by the (DATASET-INDEX, METRIC-NAME) pair and a name that varies is asking for a
+series nothing can align:
+
+  - Varying WITHOUT ever colliding gives one short series per name it took. Each is pushed
+    only on the iterations that name appeared in, so every one of them comes out shorter than
+    the run -- breaking `train''s own \"every series is exactly that long\" guarantee in the
+    ragged direction, and misaligning each value with the iteration it was measured at.
+  - Varying INTO a name the library also reports gives a series LONGER than the run.
+    `check-metric-name-collision' cannot catch that one: `train' runs it on the first
+    iteration only, which is the first moment there is a real evaluation to compare against,
+    and a caller returning a safe name then and a colliding one afterwards passes it. From
+    the iteration the names meet, `training-report-from-history' pushes two values onto that
+    one key per iteration and the series reaches `1 + 2(N-1)' elements over N rounds --
+    longer than `training-report-num-rounds' says the run was.
+
+Pinning closes both, and closes the second WITHOUT a second collision check: once every
+index's name is fixed at the first iteration, the only name that can ever collide with the
+library's is the one the first iteration already offered, which is exactly what
+`check-metric-name-collision' is given. It also restores `%find-watched-entry''s stated
+invariant that at most one entry matches a given (index, metric) pair -- `find-if' returns
+the first of two and an early-stopping watcher would silently read one value per iteration
+and never learn the other existed.
+
+Refusing rather than renaming, or than recording under the new name: either would be this
+library inventing a series key the caller never asked for, and policy section 7's rule against
+silent fallbacks applies to a caller's own metric as much as to a capability. `string=' rather
+than `equal' matches how both readers compare a metric name, so a name this accepts is a name
+they will treat as the same one."
+  (multiple-value-bind (pinned foundp) (gethash dataset-index pin)
+    (cond ((not foundp)
+           (setf (gethash dataset-index pin) name))
+          ((not (string= pinned name))
+           (error 'unsupported-argument
+                  :backend backend-name
+                  :argument "train's :evaluation"
+                  :reason (format nil "the custom metric returned name ~S for dataset index ~
+                                       ~D after returning ~S for it; one name per dataset ~
+                                       index is required for the whole run"
+                                  name dataset-index pinned)))))
   (values))

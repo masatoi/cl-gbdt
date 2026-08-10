@@ -292,7 +292,7 @@ after the library loads.")
 (defparameter *optional-symbols*
   '((:sparse-input "LGBM_DatasetCreateFromCSR" "LGBM_BoosterPredictForCSR")
     (:custom-objective "LGBM_BoosterUpdateOneIterCustom" "LGBM_BoosterGetPredict"
-     "LGBM_BoosterGetNumClasses")
+     "LGBM_BoosterGetNumPredict" "LGBM_BoosterGetNumClasses")
     (:custom-evaluation "LGBM_BoosterGetPredict" "LGBM_BoosterGetNumPredict"
      "LGBM_BoosterGetNumClasses"))
   "Capability name to the C function names that capability needs.
@@ -309,36 +309,43 @@ backend can take a `csr-matrix' at all, and a caller told \"yes\" who could buil
 but not predict from one would have been told a half-truth. Listing both from the start means
 the answer never changes meaning as the sparse path grows.
 
-`:custom-objective' names all three functions one iteration of `train''s custom loop makes,
+`:custom-objective' names all four functions one iteration of `train''s custom loop makes,
 for the same reason: `LGBM_BoosterUpdateOneIterCustom' performs the update,
-`LGBM_BoosterGetPredict' reads the raw scores the caller's function is handed, and
+`LGBM_BoosterGetPredict' reads the raw scores the caller's function is handed,
+`LGBM_BoosterGetNumPredict' says how long that read's buffer is, and
 `LGBM_BoosterGetNumClasses' says how many output groups those scores have. A library
 providing the update but not the read could not run one iteration, so a capability answering
 true off the update alone would be answering about less than the caller asked.
+`LGBM_BoosterGetNumPredict' is here because the score read goes through
+`%booster-predictions', which sizes its buffer with `%num-predict' -- so the objective branch
+of `train' calls it once per iteration, exactly as the evaluation branch does. It was missing
+from this entry while that was already true, which would have let a LightGBM exporting the
+other three open, answer `:custom-objective' TRUE, and then die at the first iteration with
+SBCL's undefined-alien-function error rather than with the `capability-unavailable' this
+probe exists to produce.
 
 `:custom-evaluation' names the three functions `%booster-predictions' makes for ONE dataset:
 `LGBM_BoosterGetNumPredict' for that dataset's own buffer length, `LGBM_BoosterGetPredict'
 for the predictions the caller's `:evaluation' function is handed, and
-`LGBM_BoosterGetNumClasses' for how many output groups they have. It shares two of those
-names with `:custom-objective' above, which is expected rather than a duplication to
-collapse: `probe-capabilities' probes each ENTRY independently, and
-`tools/ci/check-abi-blacklist.lisp' maps an imported C name back to the LIST of capabilities
-naming it, so one name serving two capabilities is a list of two rather than a conflict.
-Collapsing the two entries into one would make a library missing
-`LGBM_BoosterUpdateOneIterCustom' -- which the evaluation path never calls -- answer false
-for a capability it can perfectly well provide.
+`LGBM_BoosterGetNumClasses' for how many output groups they have. All three are also named by
+`:custom-objective' above -- both branches read scores through the same `%booster-predictions'
+-- which is expected rather than a duplication to collapse: `probe-capabilities' probes each
+ENTRY independently, and `tools/ci/check-abi-blacklist.lisp' maps an imported C name back to
+the LIST of capabilities naming it, so one name serving two capabilities is a list of two
+rather than a conflict. Collapsing the two entries into one would make a library missing
+`LGBM_BoosterUpdateOneIterCustom' -- which the evaluation path never calls -- answer false for
+a capability it can perfectly well provide.
 
 Both custom entries belong HERE and not in `*provided-capabilities*' below, and the
 distinction is not cosmetic: not one of the four C names between them is in
 `*required-symbols*' above, so a LightGBM missing any of them opens perfectly well and simply
 cannot boost against a caller's own gradient, or hand a caller's own metric one dataset's
 predictions -- which is exactly the state a probe exists to detect. `probe-capabilities'
-records PROVIDED entries
-ahead of probed ones, so naming a capability in both lists would make the probe's answer
-unreachable; its own docstring calls that combination a contradiction in the backend's
-declarations. This is the same shape as `:sparse-input' above, and the opposite of
-`:categorical-features' below, whose column list is a parameter-string key with no symbol to
-look for at all.")
+records PROVIDED entries ahead of probed ones, so naming a capability in both lists would
+make the probe's answer unreachable; its own docstring calls that combination a contradiction
+in the backend's declarations. This is the same shape as `:sparse-input' above, and the
+opposite of `:categorical-features' below, whose column list is a parameter-string key with
+no symbol to look for at all.")
 
 (defparameter *provided-capabilities*
   '(:evaluation-history :early-stopping :categorical-features :prediction-shape)

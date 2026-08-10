@@ -359,6 +359,21 @@ a DIFFERENT index does not collide, and neither does a name the library does not
 all -- what is checked is what this booster actually reported, not a list of well-known
 metric names.
 
+EVALUATION must return THE SAME NAME FOR A GIVEN INDEX ON EVERY ITERATION OF THE RUN. Two
+indices may return two different names, and usually will not; what is refused is one index's
+name changing between iterations. The first iteration's name is remembered per index, and any
+later iteration returning a different one for that index signals `unsupported-argument'
+naming :EVALUATION, mid-run, exactly where the differing name was returned. This is a
+requirement rather than a convenience: a series holds one value per completed iteration, and
+a name that varies asks for something no series can be -- each name it took would be pushed
+only on the iterations it appeared in, giving several series all shorter than the run and
+each misaligned with the iterations its values were measured at. Varying INTO the library's
+own name for that index is worse still and is the case the collision check above cannot
+reach, since that check runs on the first iteration only: from the iteration the two names
+meet, one key would collect two values per iteration and its series would come out LONGER
+than `training-report-num-rounds' says the run was. Pinning the name is what keeps \"every
+series is exactly that long\", below, true of a caller's own series as well as the library's.
+
 The function runs inside `train''s foreign-float-trap mask, on the same terms OBJECTIVE
 does: the caller's own arithmetic does not trap, so `(/ 1.0d0 0.0d0)' yields infinity rather
 than signalling `division-by-zero' on x86-64 as well as on aarch64. A handle it frees, or a
@@ -372,12 +387,11 @@ found by the index and metric name a caller already knows. A run given EVALUATIO
 that function's own pairs as well, appended after all of those, which is why the
 `evaluation' pairs are described above as a PREFIX of this list rather than the whole of it.
 
-Each series carries
-`training-series-values', one element per completed iteration in order: a `double-float',
-or NIL where the backend reported a value that could not be read as a real. The last
-element of a series is what `evaluation' answers for that pair immediately after `train'
-returns; the earlier ones are what it would have answered at each earlier iteration, and
-are the only way to see them, since a trained booster no longer remembers them.
+Each series carries `training-series-values', one element per completed iteration in order:
+a `double-float', or NIL where the backend reported a value that could not be read as a real.
+The last element of a series is what `evaluation' answers for that pair immediately after
+`train' returns; the earlier ones are what it would have answered at each earlier iteration,
+and are the only way to see them, since a trained booster no longer remembers them.
 
 `training-report-num-rounds' is how many iterations actually ran, which is NUM-ROUNDS
 unless EARLY-STOPPING cut the run short, and every series is exactly that long.

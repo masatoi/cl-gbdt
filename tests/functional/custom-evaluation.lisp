@@ -726,22 +726,158 @@ number or a string fails somewhere no matter what; a symbol quietly works, wrong
           (cl-gbdt:close-backend backend))))))
 
 ;;; ---------------------------------------------------------------------------
+;;; :OBJECTIVE and :EVALUATION in the same run
+
+;;; Three docstrings state measured facts about this one configuration, and until this test
+;;; existed nothing anywhere ran it -- `src/protocol.lisp' ("On LightGBM `objective=none'
+;;; leaves no transform to apply, so :NORMAL and :RAW become the same numbers and SCORES
+;;; coincides with what OBJECTIVE was handed"), `cl-gbdt/src/lightgbm/native''s
+;;; `%booster-predictions' ("Under `objective=none' ... this buffer agrees with both to 0.0")
+;;; and `cl-gbdt/src/xgboost/native''s ("an :EVALUATION and an :OBJECTIVE in the same run are
+;;; handed different numbers because they asked for different ones"). Each is a claim about
+;;; what the two caller-supplied functions SEE, and each backend's answer is the opposite of
+;;; the other's, which is why the expectation is a per-backend table rather than one assertion.
+;;;
+;;; WHAT IS COMPARED, and why it is comparable at all. Within one iteration the two functions
+;;; are handed two different model states: :OBJECTIVE reads the scores BEFORE that iteration's
+;;; update, :EVALUATION after it. So the array to compare :EVALUATION's iteration R against is
+;;; :OBJECTIVE's iteration R+1 -- the same booster, after the same R updates, read once
+;;; through each path. Comparing them within an iteration would fail on both backends for a
+;;; reason that has nothing to do with either claim.
+;;;
+;;; Both comparisons are one backend's two readings of one run and neither is a claim about
+;;; the other backend -- policy section 13. Nothing here subtracts a LightGBM number from an
+;;; XGBoost one; what the table records is which of two behaviours each backend has.
+
+(defparameter *scores-under-a-custom-objective*
+  '((:lightgbm . t) (:xgboost . nil))
+  "Whether :EVALUATION's SCORES and :OBJECTIVE's are the SAME numbers on each backend, for one
+booster after the same number of updates.
+
+TRUE on LightGBM because `train' forces `objective=none' there -- `LGBM_BoosterUpdateOneIterCustom'
+refuses to run while the booster holds an objective function at all -- and with no objective
+there is no prediction transform, so `predict :kind :normal' and `:kind :raw' become the same
+numbers and the one buffer `LGBM_BoosterGetPredict' holds serves both readers.
+
+FALSE on XGBoost because that backend rewrites no parameter: the `binary:logistic' configured
+in *METRIC-PARAMETERS* goes on transforming, so :EVALUATION's `:normal' read is a probability
+and :OBJECTIVE's `:raw' read is the margin behind it, in the same run and off the same trees.
+That is the divergence `cl-gbdt/src/xgboost/native''s `%booster-predictions' and the README's
+Custom objective section both already describe as the price of not rewriting PARAMETERS; this
+table is where it is finally executed rather than only stated.
+
+The FALSE arm is the weaker assertion of the two and is deliberately not tightened into a
+figure: what it says is that the two arrays are not the same numbers, which is exactly the
+claim. A specific gap would be a fact about how far one fixture's probabilities sit from their
+own logits after five iterations, and would have to be re-measured for any change to the
+fixture without saying anything more about :EVALUATION.")
+
+(defun logistic-objective (labels*)
+  "Return an :OBJECTIVE computing binary logistic gradient and Hessian from the MARGINS it is
+handed: `grad = sigmoid(s) - y', `hess = p(1-p)'.
+
+A real objective rather than a constant, so the model actually moves over the run and the two
+score readings this test compares are five different pairs of arrays rather than five copies
+of an untrained one. Reads its own shape off SCORES, so it returns what
+`check-objective-result' demands on either backend."
+  (lambda (scores)
+    (let* ((rows (array-dimension scores 0))
+           (grad (make-array (list rows 1) :element-type 'double-float))
+           (hess (make-array (list rows 1) :element-type 'double-float)))
+      (dotimes (row rows (values grad hess))
+        (let ((p (/ 1d0 (+ 1d0 (exp (- (aref scores row 0)))))))
+          (setf (aref grad row 0) (- p (aref labels* row))
+                (aref hess row 0) (max (* p (- 1d0 p)) 1d-16)))))))
+
+(deftest an-objective-and-a-metric-in-one-run-see-what-each-was-promised
+  (dolist (name '(:lightgbm :xgboost))
+    (support:with-backend-library (name)
+      (let ((backend (cl-gbdt:open-backend name)))
+        (unwind-protect
+             (when (and (cl-gbdt:backend-supports-p backend :custom-evaluation)
+                        (cl-gbdt:backend-supports-p backend :custom-objective))
+               (multiple-value-bind (matrix labels*) (binary-fixture *rows* 0)
+                 (cl-gbdt:with-dataset (dataset (make-labelled-dataset backend name
+                                                                       matrix labels*))
+                   (let ((objective-scores '())
+                         (evaluation-scores '())
+                         (rounds 5))
+                     (multiple-value-bind (booster report)
+                         (cl-gbdt:train
+                          backend dataset :num-rounds rounds
+                          :parameters (cdr (assoc name *metric-parameters*))
+                          :objective (let ((inner (logistic-objective labels*)))
+                                       (lambda (scores)
+                                         (push scores objective-scores)
+                                         (funcall inner scores)))
+                          :evaluation (lambda (scores index)
+                                        (when (zerop index)
+                                          (push scores evaluation-scores))
+                                        (values *custom-metric-name* 0.5d0)))
+                       (cl-gbdt:free-booster booster)
+                       (setf objective-scores (nreverse objective-scores)
+                             evaluation-scores (nreverse evaluation-scores))
+                       ;; Both arguments were honoured in the one call, which is the whole of
+                       ;; what was never executed before: the objective ran every iteration
+                       ;; and the metric recorded a full series beside it.
+                       (ok (= rounds (length objective-scores))
+                           (format nil "the objective was called ~D times"
+                                   (length objective-scores)))
+                       (let ((values (series-values report 0 *custom-metric-name*)))
+                         (ok (and values (= rounds (length values)))
+                             "the caller's series is as long as the run"))
+                       ;; :EVALUATION's iteration R against :OBJECTIVE's iteration R+1 --
+                       ;; the same booster after the same R updates, read once through each
+                       ;; path. Four such pairs over five rounds.
+                       (let ((coincide (cdr (assoc name *scores-under-a-custom-objective*)))
+                             (agreements 0)
+                             (pairs 0))
+                         (loop :for after-update :in evaluation-scores
+                               :for before-next-update :in (rest objective-scores)
+                               :do (incf pairs)
+                                   (when (support:predictions-agree-p after-update
+                                                                      before-next-update)
+                                     (incf agreements)))
+                         (ok (= 4 pairs) (format nil "~D comparable pairs" pairs))
+                         (ok (= (if coincide pairs 0) agreements)
+                             (format nil
+                                     "~A: ~D of ~D pairs agreed, expected ~D -- ~
+                                      :evaluation's SCORES and :objective's are ~:[not ~;~]~
+                                      the same numbers on this backend"
+                                     name agreements pairs (if coincide pairs 0)
+                                     coincide))))))))
+          (cl-gbdt:close-backend backend))))))
+
+;;; ---------------------------------------------------------------------------
 ;;; What the recorded values are good for
 
 (defun stalling-evaluation (name)
-  "Return an :EVALUATION function whose value improves for three calls and then stalls:
-3.0, 2.0, 1.0, 1.0, 1.0, ... under NAME, ignoring the predictions entirely.
+  "Return an :EVALUATION function whose value improves for three calls, is NIL on the fourth
+and then stalls: 3.0, 2.0, 1.0, NIL, 1.0, 1.0, ... under NAME, ignoring the predictions
+entirely.
 
 Ignoring them is the point. What is under test is that a caller's metric reaches
 `:early-stopping' at all, and a value derived from a real model would make WHEN the run
 stopped a fact about the model rather than about the plumbing. Counting calls is counting
 ITERATIONS here only because the test that uses this passes no :VALID-SETS, so there is
-exactly one dataset and therefore one call per iteration."
+exactly one dataset and therefore one call per iteration.
+
+THE NIL AT CALL 4 is the one place in this suite a caller's own \"not computable this
+iteration\" travels the whole way -- through `custom-metric-entry', into the history, into a
+series slot, and past the watcher -- which `train''s generic docstring promises twice, once
+for the series and once for the watcher, and which tests/custom-metric.lisp could only pin at
+the entry it builds. It is placed at 4 rather than anywhere else so the run's shape does not
+change: NIL counts as NO IMPROVEMENT, exactly as the 1.0 at call 4 used to, so the test below
+still stops at iteration 5 with iteration 3 best and 1.0 the best score. What it adds is that
+the fourth slot of the series is NIL and the run still ended for the right reason -- if a NIL
+were dropped instead of recorded, the series would be one short; if it were admitted as a
+best score, the run would not have stopped where it does."
   (let ((calls 0))
     (lambda (scores index)
       (declare (ignore scores index))
       (incf calls)
-      (values name (coerce (max 1 (- 4 calls)) 'double-float)))))
+      (values name (unless (= calls 4)
+                     (coerce (max 1 (- 4 calls)) 'double-float))))))
 
 (deftest early-stopping-can-watch-a-custom-metric
   ;; A custom metric is recorded into the SAME per-iteration entry list the watcher reads,
@@ -750,10 +886,11 @@ exactly one dataset and therefore one call per iteration."
   ;; so the series the watcher finds cannot be a library series the run happened to also
   ;; report.
   ;;
-  ;; :ROUNDS 2 against a value that improves at iterations 1, 2 and 3 and then holds:
-  ;; iteration 4 is the first non-improvement (improvement is strict, so a plateau does not
-  ;; count), iteration 5 the second, and two consecutive is what :ROUNDS 2 tolerates. So the
-  ;; run stops after 5 of the 10 asked for, with iteration 3 the best.
+  ;; :ROUNDS 2 against a value that improves at iterations 1, 2 and 3, is NIL at 4 and holds
+  ;; at 5: iteration 4 is the first non-improvement -- a NIL cannot be compared against the
+  ;; best score and so counts as none -- iteration 5 the second, since improvement is strict
+  ;; and a plateau does not count either, and two consecutive is what :ROUNDS 2 tolerates. So
+  ;; the run stops after 5 of the 10 asked for, with iteration 3 the best.
   (dolist (name '(:lightgbm :xgboost))
     (support:with-backend-library (name)
       (let ((backend (cl-gbdt:open-backend name)))
@@ -781,8 +918,18 @@ exactly one dataset and therefore one call per iteration."
                          (format nil "best score was ~S"
                                  (cl-gbdt:training-report-best-score report)))
                      ;; The series is five long, not ten: an early-stopped run's series are
-                     ;; as long as the run, and the caller's series is no exception.
-                     (ok (= 5 (length (series-values report 0 *custom-metric-name*))))))))
+                     ;; as long as the run, and the caller's series is no exception. And the
+                     ;; NIL the metric returned at iteration 4 is IN ITS OWN SLOT rather than
+                     ;; dropped -- a drop would leave four values and slide the 1.0 measured
+                     ;; at iteration 5 back onto iteration 4's position.
+                     (let ((values (series-values report 0 *custom-metric-name*)))
+                       (ok (= 5 (length values)))
+                       (ok (and (= 5 (length values)) (null (aref values 3)))
+                           (format nil "the recorded series was ~S" values))
+                       (ok (and (= 5 (length values))
+                                (every #'realp (list (aref values 0) (aref values 1)
+                                                     (aref values 2) (aref values 4))))
+                           "every value but the NIL one came back a real"))))))
           (cl-gbdt:close-backend backend))))))
 
 (deftest the-library-series-are-still-evaluation-s-entries-in-order
@@ -834,7 +981,7 @@ exactly one dataset and therefore one call per iteration."
           (cl-gbdt:close-backend backend))))))
 
 ;;; ---------------------------------------------------------------------------
-;;; The two ways a caller's metric can be refused mid-run
+;;; The ways a caller's metric can be refused mid-run
 
 (deftest a-colliding-metric-name-signals
   ;; The pair (DATASET-INDEX, METRIC-NAME) is what a series is keyed by, so a caller's name
@@ -902,6 +1049,159 @@ exactly one dataset and therefore one call per iteration."
                          (let ((values (series-values report 0 (library-metric name))))
                            (ok values "the caller's series was recorded under that name")
                            (ok (and values (= 3 (length values)))))))))))
+          (cl-gbdt:close-backend backend))))))
+
+;;; The malformed RETURN, which is the refusal a caller is likeliest of all to meet and the
+;;; only one this file had left unasserted. `train''s generic docstring and the README both
+;;; promise that a NAME that is not a string, or a VALUE that is neither a real nor NIL,
+;;; signals `unsupported-argument' naming :EVALUATION -- and until this test existed, nothing
+;;; anywhere returned a bad one THROUGH `train'. tests/custom-metric.lisp pins
+;;; `custom-metric-entry' in isolation; what was missing was any evidence that `train' calls
+;;; it. Replacing either backend's `(custom-metric-entry (backend-name backend) name value
+;;; index)' with a bare `(list index name value)' left the whole suite green, taking the
+;;; validation AND the `backend-name' threading with it -- the same shape as the
+;;; agreement-test gap this branch already caught.
+;;;
+;;; It is also the only refusal here that fires MID-RUN with a booster handle already in
+;;; existence, so it is what exercises `train''s OWNED unwind with a TYPED condition rather
+;;; than with the `simple-error' `an-error-inside-the-metric-frees-the-booster' below raises.
+;;; Both malformed shapes are covered rather than one: the NAME check and the VALUE check are
+;;; two separate branches of `custom-metric-entry', and a bad NAME short-circuits before the
+;;; value is ever looked at, so one case cannot stand in for the other.
+
+(deftest a-malformed-metric-return-is-refused-mid-run
+  (dolist (name '(:lightgbm :xgboost))
+    (support:with-backend-library (name)
+      (let ((backend (cl-gbdt:open-backend name)))
+        (unwind-protect
+             (when (cl-gbdt:backend-supports-p backend :custom-evaluation)
+               (multiple-value-bind (matrix labels*) (binary-fixture *rows* 0)
+                 (cl-gbdt:with-dataset (dataset (make-labelled-dataset backend name
+                                                                       matrix labels*))
+                   ;; A keyword NAME, then a string VALUE: the two things `custom-metric-entry'
+                   ;; refuses, each in the shape a caller actually writes them.
+                   (dolist (returned (list (cons :my-metric 0.25d0)
+                                           (cons *custom-metric-name* "0.25")))
+                     (testing (format nil "~A: :evaluation returning ~S and ~S signals ~
+                                           unsupported-argument, naming the argument and the ~
+                                           backend" name (car returned) (cdr returned))
+                       (let ((condition
+                               (handler-case
+                                   (progn (cl-gbdt:free-booster
+                                           (cl-gbdt:train
+                                            backend dataset :num-rounds 3
+                                            :parameters (cdr (assoc name *metric-parameters*))
+                                            :evaluation
+                                            (lambda (scores index)
+                                              (declare (ignore scores index))
+                                              (values (car returned) (cdr returned)))))
+                                          nil)
+                                 (cl-gbdt:unsupported-argument (c) c))))
+                         (ok condition
+                             "train recorded the malformed return instead of signalling")
+                         (ok (and condition
+                                  (equal "train's :evaluation"
+                                         (cl-gbdt:unsupported-argument-argument condition)))
+                             (format nil "the condition named argument ~S"
+                                     (and condition
+                                          (cl-gbdt:unsupported-argument-argument condition))))
+                         (ok (and condition
+                                  (eq name (cl-gbdt:unsupported-argument-backend condition)))
+                             (format nil "the condition named backend ~S"
+                                     (and condition
+                                          (cl-gbdt:unsupported-argument-backend
+                                           condition)))))))
+                   ;; The backend is still usable afterwards, which is the observable half of
+                   ;; "the raw booster was freed by the OWNED unwind rather than orphaned"
+                   ;; for a typed condition raised from inside this library's own code.
+                   (multiple-value-bind (booster report)
+                       (cl-gbdt:train backend dataset :num-rounds 2
+                                      :parameters (cdr (assoc name *metric-parameters*)))
+                     (cl-gbdt:free-booster booster)
+                     (ok (series-values report 0 (library-metric name))
+                         "the backend still trains after the mid-run refusal")))))
+          (cl-gbdt:close-backend backend))))))
+
+;;; The NAME that CHANGES, which is the one no single iteration can see anything wrong with:
+;;; "safe" on iteration 1 and something else on iteration 2 are each a perfectly good name on
+;;; the iteration they appear in. `check-metric-name-collision' runs on the first iteration
+;;; only -- the first moment there is a real evaluation to compare against -- so a name that
+;;; changes INTO the library's own walks straight past it and puts two entries under one
+;;; (INDEX, NAME) key on every later iteration, giving a series of `1 + 2(N-1)' values over N
+;;; rounds: longer than `training-report-num-rounds', misaligned with the iterations, and
+;;; silent. A name that changes without ever colliding is the ragged case instead, several
+;;; series each shorter than the run.
+;;;
+;;; `pin-metric-name' (`cl-gbdt/src/training/custom-metric') is what refuses both, by holding
+;;; each dataset index to the name its FIRST call returned. tests/custom-metric.lisp pins that
+;;; function directly, over written call sequences; this is what says `train' actually calls
+;;; it, and it is asserted on both halves for the reason the malformed-return test above gives
+;;; for asserting both of its own.
+
+(deftest a-metric-name-that-changes-mid-run-is-refused
+  (dolist (name '(:lightgbm :xgboost))
+    (support:with-backend-library (name)
+      (let ((backend (cl-gbdt:open-backend name)))
+        (unwind-protect
+             (when (cl-gbdt:backend-supports-p backend :custom-evaluation)
+               (multiple-value-bind (matrix labels*) (binary-fixture *rows* 0)
+                 (cl-gbdt:with-dataset (dataset (make-labelled-dataset backend name
+                                                                       matrix labels*))
+                   ;; The second name each way round: one that collides with the library's
+                   ;; own -- the case the first-iteration collision check cannot reach -- and
+                   ;; one that collides with nothing at all.
+                   (dolist (second-name (list (library-metric name) "another_metric"))
+                     (testing (format nil "~A: a metric renamed to ~S at iteration 2 signals"
+                                      name second-name)
+                       (let* ((calls 0)
+                              (condition
+                                (handler-case
+                                    (progn (cl-gbdt:free-booster
+                                            (cl-gbdt:train
+                                             backend dataset :num-rounds 3
+                                             :parameters (cdr (assoc name
+                                                                     *metric-parameters*))
+                                             :evaluation
+                                             (lambda (scores index)
+                                               (declare (ignore scores index))
+                                               (incf calls)
+                                               (values (if (= calls 1)
+                                                           *custom-metric-name*
+                                                           second-name)
+                                                       0.5d0))))
+                                           nil)
+                                  (cl-gbdt:unsupported-argument (c) c))))
+                         (ok condition
+                             "train recorded the renamed metric instead of signalling")
+                         (ok (and condition
+                                  (equal "train's :evaluation"
+                                         (cl-gbdt:unsupported-argument-argument condition)))
+                             (format nil "the condition named argument ~S"
+                                     (and condition
+                                          (cl-gbdt:unsupported-argument-argument condition))))
+                         (ok (and condition
+                                  (eq name (cl-gbdt:unsupported-argument-backend condition)))
+                             (format nil "the condition named backend ~S"
+                                     (and condition
+                                          (cl-gbdt:unsupported-argument-backend condition))))
+                         ;; Refused where the differing name was returned -- the SECOND
+                         ;; iteration -- and not at the end of the run. There is one dataset
+                         ;; here, so a call is an iteration.
+                         (ok (= 2 calls)
+                             (format nil "the metric was called ~D times before the refusal"
+                                     calls)))))
+                   ;; And a name that never changes still runs to completion, so the pin is
+                   ;; not an unconditional refusal of the second iteration.
+                   (multiple-value-bind (booster report)
+                       (cl-gbdt:train backend dataset :num-rounds 3
+                                      :parameters (cdr (assoc name *metric-parameters*))
+                                      :evaluation (lambda (scores index)
+                                                    (declare (ignore scores index))
+                                                    (values *custom-metric-name* 0.5d0)))
+                     (cl-gbdt:free-booster booster)
+                     (let ((values (series-values report 0 *custom-metric-name*)))
+                       (ok (and values (= 3 (length values)))
+                           "an unchanging name still records one value per iteration"))))))
           (cl-gbdt:close-backend backend))))))
 
 ;;; ---------------------------------------------------------------------------

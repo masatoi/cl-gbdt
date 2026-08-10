@@ -306,7 +306,7 @@ this one is the suite's own `*prediction-tolerance*' restated rather than a new 
 ;;; first, and signals rather than quietly boosting against the library's own objective.
 ;;; Both vendored libraries provide the capability -- the test above asserts exactly that --
 ;;; so the only way to reach the gate is to overwrite the probed plist, which is what a
-;;; LightGBM missing one of its three C symbols, or an XGBoost with no
+;;; LightGBM missing one of its four C symbols, or an XGBoost with no
 ;;; `XGBoosterTrainOneIter', would have produced at `open-backend'. This is the same way
 ;;; `cl-gbdt/tests/functional/sparse-input''s
 ;;; `sparse-input-without-the-capability-signals' and

@@ -119,7 +119,9 @@
                 #:watcher-stopped-p)
   (:import-from #:cl-gbdt/src/training/custom-metric
                 #:custom-metric-entry
-                #:check-metric-name-collision)
+                #:check-metric-name-collision
+                #:make-metric-name-pin
+                #:pin-metric-name)
   (:import-from #:cl-gbdt/src/library
                 #:resolve-and-load-library)
   (:import-from #:cl-gbdt/src/foreign
@@ -417,7 +419,7 @@ have asked `backend-supports-p' first -- the same rule `%check-sparse-input',
 `cl-gbdt/src/xgboost/protocol''s function of the same name.
 
 Unlike `%check-categorical-features', whose answer this backend declares unconditionally in
-`*provided-capabilities*', this one's is PROBED: the three C functions `train''s custom loop
+`*provided-capabilities*', this one's is PROBED: the four C functions `train''s custom loop
 needs are named in `*optional-symbols*' rather than `*required-symbols*', so a LightGBM
 missing any of them opens normally and reads false here. See that variable's own docstring
 for why the entry belongs there and not in `*provided-capabilities*'. `%check-missing-value'
@@ -465,8 +467,9 @@ out of that backend's `*provided-capabilities*' rather than out of a probe.
 Like `:custom-objective''s, this backend's answer is PROBED rather than declared: the three
 C functions `%booster-predictions' makes are named in `*optional-symbols*' rather than
 `*required-symbols*', so a LightGBM missing any of them opens normally and reads false here.
-See that variable's own docstring for why the entry belongs there, and for why it names two
-of `:custom-objective''s three symbols without conflicting with it.
+See that variable's own docstring for why the entry belongs there, and for why all three are
+also named by `:custom-objective' -- whose loop reads scores through the same
+`%booster-predictions' -- without the two entries conflicting.
 
 RECORD-HISTORY NIL is refused rather than silently ignored, for exactly the reason
 `train-early-stopping-watcher' refuses the same pair: a custom metric's whole result is the
@@ -723,17 +726,16 @@ that afterward, on every element `%valid-set-name' has already let through."
 DATASET's freshly read live pointer.
 
 `train''s loop calls this after every `funcall' of a caller-supplied OBJECTIVE and after every
-`funcall' of a caller-supplied EVALUATION, which are the only points in the loop where code
-this library did not write runs. That code may free the
-training set -- `free-dataset' from inside the objective is the case this was found through --
-and the pointer `train' read once before the loop is then a pointer into freed memory that
-`LGBM_BoosterUpdateOneIterCustom' would dereference. Measured before this function existed:
-a memory fault at an arbitrary address, killing the process rather than signalling. The
-checks are exactly the ones `train' already ran, so the caller gets `released-handle-error',
-`backend-not-open' or `wrong-backend-reference' -- the typed conditions every other freed
-handle in this library produces -- and never a fault. The RETURN VALUE is the point of the
-exercise: re-checking and then going on to use the pointer read before the loop would fix
-nothing, so `train' assigns this to the variable it reads from.
+`funcall' of a caller-supplied EVALUATION, which are the only points in the loop where code this
+library did not write runs. That code may free the training set -- `free-dataset' from inside
+the objective is the case this was found through -- and the pointer `train' read once before the
+loop is then a pointer into freed memory that `LGBM_BoosterUpdateOneIterCustom' would
+dereference. Measured before this function existed: a memory fault at an arbitrary address,
+killing the process rather than signalling. The checks are exactly the ones `train' already ran,
+so the caller gets `released-handle-error', `backend-not-open' or `wrong-backend-reference' --
+the typed conditions every other freed handle in this library produces -- and never a fault. The
+RETURN VALUE is the point of the exercise: re-checking and then going on to use the pointer read
+before the loop would fix nothing, so `train' assigns this to the variable it reads from.
 
 The VALID-SETS entries are re-checked for the same reason even though nothing here uses their
 pointers: `LGBM_BoosterGetEval', which the same iteration reaches through `%read-evaluation'
@@ -744,7 +746,9 @@ dataset owns, and `LGBM_DatasetFree' clears nothing in the booster when one is f
 `%custom-evaluation-entries' reaches through `%booster-predictions' for each dataset index in
 turn, read the same per-dataset memory and are covered by exactly the same re-check -- which
 is why that function calls this one between two consecutive datasets' reads rather than only
-once per iteration.
+once per iteration. That function also calls this one ONCE MORE, before its loop, purely to
+have a live pointer to return should the loop run zero times; that call re-checks nothing the
+iteration's other calls do not already re-check, and see its own comment for why it is there.
 
 BACKEND itself is re-checked with `%check-backend-open' because `close-backend' unmaps the
 shared library and the objective can call it. `handle-live-pointer' already refuses a handle
@@ -762,7 +766,7 @@ costs one slot read per iteration."
     train-data-pointer))
 
 (defun %custom-evaluation-entries (backend evaluation booster-pointer dataset valid-sets
-                                    row-counts library-entries check-collisions-p)
+                                    row-counts library-entries check-collisions-p name-pin)
   "Call EVALUATION once for each of BOOSTER-POINTER's datasets and return two values: the
 (DATASET-INDEX METRIC-NAME VALUE) entries the calls produced, in dataset-index order, and
 DATASET's freshly re-read live pointer.
@@ -790,14 +794,31 @@ re-checks covers.
 
 CHECK-COLLISIONS-P runs `check-metric-name-collision' against LIBRARY-ENTRIES, this
 iteration's own `%read-evaluation' result. `train' passes true on the first iteration only:
-what the library reports cannot be known before a booster has produced one real evaluation,
-and after that first one the name set does not change. The check runs AFTER
-`custom-metric-entry' rather than before it, and the order is load-bearing:
-`check-metric-name-collision' compares with `string=', which signals a bare `type-error' for
-a name that is not a string designator at all, while `custom-metric-entry' is what turns that
-same name into this library's own `unsupported-argument'."
+what the LIBRARY reports cannot be known before a booster has produced one real evaluation,
+and after that first one the library's own name set does not change. The CALLER's names are
+a separate question and are not covered by that -- an EVALUATION returning a safe name on
+iteration 1 and a colliding one afterwards would pass this check -- which is what NAME-PIN
+below answers.
+
+NAME-PIN is the run's `make-metric-name-pin' table, threaded straight through from `train'
+so it outlives the iteration. `pin-metric-name' records each index's name on the first
+iteration and refuses a different one on every later iteration, which is what holds a caller
+to one name per dataset index for the whole run and so keeps every series exactly as long as
+the run. It also subsumes the round-2 collision case rather than needing a second check of
+its own: with each index's name fixed at the first iteration, the only name that can ever
+reach the library's is the one CHECK-COLLISIONS-P already compared.
+
+Both checks run AFTER `custom-metric-entry' rather than before it, and the order is
+load-bearing: each compares with `string=', which signals a bare `type-error' for a name that is
+not a string designator at all, while `custom-metric-entry' is what turns that same name into
+this library's own `unsupported-argument'."
   (let ((entries '())
-        (train-data-pointer nil))
+        ;; Initialised from a re-check rather than from NIL, so this function returns a live
+        ;; pointer even when ROW-COUNTS is empty and the loop below never runs. `train' always
+        ;; passes at least the training set's count today, but it assigns TRAIN-DATA-POINTER
+        ;; from this value unconditionally, and a NIL reaching `%dataset-num-rows' next
+        ;; iteration is a worse failure than the two slot reads this costs.
+        (train-data-pointer (%recheck-train-datasets backend dataset valid-sets)))
     (loop :for index :from 0
           :for rows :in row-counts
           :do (let ((predictions (%booster-predictions booster-pointer index rows)))
@@ -808,6 +829,7 @@ same name into this library's own `unsupported-argument'."
                     (when check-collisions-p
                       (check-metric-name-collision (backend-name backend) name index
                                                     library-entries))
+                    (pin-metric-name (backend-name backend) name-pin name index)
                     (push entry entries)))))
     (values (nreverse entries) train-data-pointer)))
 
@@ -1013,6 +1035,10 @@ Signals `backend-not-open' before any of that when BACKEND is not open -- see
            (row-counts (when evaluation
                          (mapcar #'%dataset-num-rows
                                  (cons train-data-pointer valid-set-pointers))))
+           ;; One pin for the whole run, so `pin-metric-name' can compare this iteration's
+           ;; name against the first iteration's. NIL without EVALUATION, which allocates
+           ;; nothing for a run that has no custom metric to hold to a name.
+           (name-pin (when evaluation (make-metric-name-pin)))
            ;; Built before `LGBM_BoosterCreate', so a malformed spec -- or one asking for
            ;; early stopping with RECORD-HISTORY NIL -- signals with no raw booster handle
            ;; in existence yet to unwind. NIL when EARLY-STOPPING is NIL, which is what the
@@ -1063,7 +1089,7 @@ Signals `backend-not-open' before any of that when BACKEND is not open -- see
                                (multiple-value-bind (custom pointer)
                                    (%custom-evaluation-entries
                                     backend evaluation booster-pointer dataset valid-sets
-                                    row-counts entries (= round 1))
+                                    row-counts entries (= round 1) name-pin)
                                  (setf entries (append entries custom)
                                        train-data-pointer pointer)))
                              (when record-history

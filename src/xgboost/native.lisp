@@ -402,9 +402,9 @@ false returns NIL as `predict''s second value rather than signalling. That is no
 a uniform rule -- of the five names beside it in this list, `:missing-value',
 `:categorical-features' and `:custom-evaluation' ARE re-checked, by
 `cl-gbdt/src/xgboost/protocol''s `%check-missing-value', `%check-categorical-features' and
-`%check-custom-evaluation', while `:evaluation-history' and
-`:early-stopping' are re-checked nowhere either. See `cl-gbdt/src/backend''s
-`*known-capabilities*', where the whole split is stated.
+`%check-custom-evaluation', while `:evaluation-history' and `:early-stopping' are re-checked
+nowhere either. See `cl-gbdt/src/backend''s `*known-capabilities*', where the whole split is
+stated.
 
 `:custom-evaluation' is here for that first reason a fifth time: the C function `train' hands
 a caller's own `:evaluation' metric one dataset's predictions with --
