@@ -23,6 +23,8 @@
                 #:%create-booster
                 #:%add-valid-data
                 #:%update-one-iteration
+                #:%training-scores
+                #:%update-one-iteration-custom
                 #:%check-booster-datasets-live
                 #:%free-booster-unchecked
                 #:%free-booster
@@ -100,6 +102,9 @@
                 #:csr-matrix-num-rows)
   (:import-from #:cl-gbdt/src/config/categorical-features
                 #:categorical-feature-string)
+  (:import-from #:cl-gbdt/src/config/objective
+                #:check-objective-result
+                #:objective-parameters)
   (:import-from #:cl-gbdt/src/config/prediction-shape
                 #:contrib-shape)
   (:import-from #:cl-gbdt/src/parameters
@@ -393,6 +398,29 @@ never asked for the feature."
                              *categorical-feature-parameter-names*)))))
 
 ;;; ---------------------------------------------------------------------------
+;;; The `:custom-objective' gate
+
+(defun %check-custom-objective (backend objective)
+  "Signal `capability-unavailable' when OBJECTIVE is non-NIL and BACKEND does not provide
+`:custom-objective'.
+
+Only a non-NIL OBJECTIVE ever reaches the error: NIL means what every caller has always got,
+the library computing its own gradient, so a caller who passes nothing needs no capability.
+Policy section 7 requires the operation itself to re-check rather than trusting the caller to
+have asked `backend-supports-p' first -- the same rule `%check-sparse-input',
+`%check-missing-value' and `%check-categorical-features' above follow for their own. Mirrors
+`cl-gbdt/src/xgboost/protocol''s function of the same name.
+
+Unlike `%check-missing-value' and `%check-categorical-features', whose answers this backend
+declares unconditionally, this one's is PROBED: the three C functions `train''s custom loop
+needs are named in `*optional-symbols*' rather than `*required-symbols*', so a LightGBM
+missing any of them opens normally and reads false here. See that variable's own docstring
+for why the entry belongs there and not in `*provided-capabilities*'."
+  (when (and objective (not (backend-supports-p backend :custom-objective)))
+    (error 'capability-unavailable
+           :backend (backend-name backend) :capability :custom-objective)))
+
+;;; ---------------------------------------------------------------------------
 ;;; Datasets
 
 (defun %dataset-pointer (backend matrix parameter-string reference-pointer)
@@ -610,7 +638,7 @@ that afterward, on every element `%valid-set-name' has already let through."
 
 (defmethod train ((backend lightgbm-backend) dataset
                    &key valid-sets (num-rounds 100) parameters (record-history t)
-                        early-stopping)
+                        early-stopping objective)
   "Train a LightGBM booster on DATASET for up to NUM-ROUNDS boosting iterations, and
 return it and a `training-report' of the run.
 
@@ -664,6 +692,54 @@ The watcher sees each iteration's entries exactly as the history records them, o
 report shows can never be two different readings. `training-report-num-rounds' needs
 nothing extra to report the shortened run: it has counted actual iterations since Phase 3a.
 
+OBJECTIVE replaces `LGBM_BoosterUpdateOneIter' with `LGBM_BoosterUpdateOneIterCustom' for
+every iteration of the loop, driven by the gradient and Hessian the caller's own function
+returns -- see the `train' generic function's docstring for what that function is called with
+and what it must return. Signals `capability-unavailable' naming `:custom-objective' for a
+non-NIL OBJECTIVE when the capability reads false, before any foreign call: see
+`%check-custom-objective' above, which reads the capability rather than this backend's name,
+and `*optional-symbols*' for why the answer here is probed rather than declared. OBJECTIVE
+NIL, the default, reaches no check and runs exactly the `LGBM_BoosterUpdateOneIter' loop this
+method has always run.
+
+A non-NIL OBJECTIVE also OVERRIDES any `objective' entry in PARAMETERS, forcing it to
+\"none\" through `objective-parameters' before `LGBM_BoosterCreate' ever sees the string.
+That is not a convenience: `LGBM_BoosterUpdateOneIterCustom' refuses to run while the booster
+holds an objective function at all -- `Check failed: objective_function_ == nullptr', a
+non-zero return this method would surface as `foreign-call-error' -- so the combination the
+override replaces has no working form to preserve. Every other parameter passes through
+untouched and in its original order, `num_class' included, which is still what tells LightGBM
+how many output groups a multiclass custom objective has.
+
+Each iteration reads the booster's current raw scores with `%training-scores' --
+`LGBM_BoosterGetPredict' at `data_idx' 0, the scores LightGBM already holds for the training
+data, rather than a fresh `predict' over the training matrix, which this method does not have
+and which would cost a full prediction pass per iteration. It hands them to OBJECTIVE as a
+(ROWS GROUPS) `double-float' array, where ROWS comes from `%dataset-num-rows' on the training
+set's own pointer and GROUPS from `LGBM_BoosterGetNumClasses'. What comes back is checked by
+`check-objective-result' -- `cl-gbdt/src/config/objective''s, which is backend-neutral pure
+code and names no library, so a second backend refuses the same shapes with the same
+`dimension-mismatch' by calling it rather than by restating it -- and only then flattened into
+the C buffers, GROUP-MAJOR on this backend (row I of group K at `(+ (* K ROWS) I)') and
+converted to `single-float', which is what `LGBM_BoosterUpdateOneIterCustom''s `const float*'
+parameters admit. Both the flattening and the score layout are measured; see
+`%update-one-iteration-custom' and `%training-scores' for the measurements. The flattening is
+this method's business and not the caller's: OBJECTIVE is handed, and returns, a (ROWS GROUPS)
+array whichever order the library underneath wants it in.
+
+OBJECTIVE is funcalled inside this method's own `with-foreign-float-traps-masked' body wrap,
+so the caller's Lisp arithmetic runs under the masked convention on x86-64 as well as on
+aarch64 -- `(/ 1.0d0 0.0d0)' yields infinity there rather than signalling
+`division-by-zero'. Nothing about that is specific to a custom objective; it is simply where
+in `train' the caller's code now runs. A condition the caller's function does signal
+propagates out of `train' through the OWNED dance below, freeing the raw booster handle
+rather than orphaning it, exactly as a mid-loop foreign failure does.
+
+Neither RECORD-HISTORY nor EARLY-STOPPING is disabled by OBJECTIVE, and neither is made
+meaningful by it: a metric configured through PARAMETERS relates to the library's own
+objective, not to the caller's, and this method neither signals nor warns about that -- see
+the `train' generic function's docstring, which states it as the caller's decision.
+
 DATASET and every VALID-SETS entry's dataset half are each run through
 `%check-lightgbm-dataset' before any foreign call. `train' dispatches on
 BACKEND, not on DATASET, so unlike `dataset-num-rows' or `free-dataset' there
@@ -701,6 +777,7 @@ Signals `backend-not-open' before any of that when BACKEND is not open -- see
 `%check-backend-open'."
   (with-foreign-float-traps-masked
     (%check-backend-open backend)
+    (%check-custom-objective backend objective)
     (let* ((valid-set-entries (copy-list valid-sets))
            (train-data-pointer
              (%check-lightgbm-dataset backend dataset "train's dataset argument"
@@ -730,7 +807,9 @@ Signals `backend-not-open' before any of that when BACKEND is not open -- see
            ;; with nothing further to do here.
            (completed-rounds 0))
       (let ((booster-pointer
-              (%create-booster train-data-pointer (%parameter-string parameters))))
+              (%create-booster train-data-pointer
+                               (%parameter-string
+                                (if objective (objective-parameters parameters) parameters)))))
         (let ((owned nil))
           (unwind-protect
                (progn
@@ -738,7 +817,16 @@ Signals `backend-not-open' before any of that when BACKEND is not open -- see
                  ;; ROUND is 1-based, which is the numbering `observe-iteration' answers
                  ;; `watcher-best-iteration' in and the report publishes.
                  (loop :for round :from 1 :to num-rounds
-                       :do (%update-one-iteration booster-pointer)
+                       :do (if objective
+                               (let ((scores (%training-scores
+                                              booster-pointer
+                                              (%dataset-num-rows train-data-pointer))))
+                                 (multiple-value-bind (grad hess) (funcall objective scores)
+                                   (check-objective-result grad hess
+                                                           (array-dimension scores 0)
+                                                           (array-dimension scores 1))
+                                   (%update-one-iteration-custom booster-pointer grad hess)))
+                               (%update-one-iteration booster-pointer))
                            (incf completed-rounds)
                            (let ((entries (when record-history
                                             (%read-evaluation booster-pointer dataset-count))))

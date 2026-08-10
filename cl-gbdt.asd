@@ -101,5 +101,10 @@ guard, and have no portable fallback."
                ;; result it just wrote, and the `:prediction-shape' capability, which no
                ;; operation refuses on -- a false answer means a NIL second value rather
                ;; than a signal.
-               "cl-gbdt/tests/functional/prediction-shape")
+               "cl-gbdt/tests/functional/prediction-shape"
+               ;; The one entry here that does NOT build on those *FIXTURES*: a custom
+               ;; objective's claim is that it reproduces a built-in one exactly, so it
+               ;; states a deterministic fixture of its own. `train''s :OBJECTIVE, and the
+               ;; `:custom-objective' capability that gates it.
+               "cl-gbdt/tests/functional/custom-objective")
   :perform (test-op (op c) (symbol-call :rove :run c)))

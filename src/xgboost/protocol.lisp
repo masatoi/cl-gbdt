@@ -315,6 +315,35 @@ who passes nothing needs no capability."
            :backend (backend-name backend) :capability :categorical-features)))
 
 ;;; ---------------------------------------------------------------------------
+;;; The `:custom-objective' gate
+
+(defun %check-custom-objective (backend objective)
+  "Signal `capability-unavailable' when OBJECTIVE is non-NIL and BACKEND does not provide
+`:custom-objective'.
+
+Only a non-NIL OBJECTIVE ever reaches the error: NIL means what every caller has always got,
+the library computing its own gradient, so a caller who passes nothing needs no capability.
+Policy section 7 requires the operation itself to re-check rather than trusting the caller to
+have asked `backend-supports-p' first -- the same rule `%check-sparse-input',
+`%check-missing-value' and `%check-categorical-features' above follow for their own. Mirrors
+`cl-gbdt/src/lightgbm/protocol''s function of the same name.
+
+This backend currently answers FALSE: `:custom-objective' appears in neither
+`*provided-capabilities*' nor `*optional-symbols*', so every non-NIL OBJECTIVE reaching
+`train' here is refused. That is the honest state rather than a stub: this library does have a
+custom-update entry point -- `XGBoosterBoostOneIter' and `XGBoosterTrainOneIter' both take a
+gradient and a Hessian directly -- but nothing here calls either yet, and a capability
+answering true off a path that does not exist is exactly what `backend-supports-p' must not
+do. Declaring the capability is what will make the answer true, and this check is already
+written against `backend-supports-p' rather than against this backend's name, so nothing here
+changes when it is. Refusing is what keeps a caller from silently getting a run boosted against
+`reg:squarederror' when they asked for their own loss, which is the silent fallback policy
+section 7 forbids."
+  (when (and objective (not (backend-supports-p backend :custom-objective)))
+    (error 'capability-unavailable
+           :backend (backend-name backend) :capability :custom-objective)))
+
+;;; ---------------------------------------------------------------------------
 ;;; Datasets
 
 (defun %creation-function-name (matrix)
@@ -555,7 +584,7 @@ that afterward, on every element `%valid-set-name' has already let through."
 
 (defmethod train ((backend xgboost-backend) dataset
                    &key valid-sets (num-rounds 100) parameters (record-history t)
-                        early-stopping)
+                        early-stopping objective)
   "Train an XGBoost booster on DATASET for up to NUM-ROUNDS boosting iterations, and
 return it and a `training-report' of the run.
 
@@ -622,6 +651,16 @@ The watcher sees each iteration's entries exactly as the history records them, o
 report shows can never be two different readings. `training-report-num-rounds' needs
 nothing extra to report the shortened run: it has counted actual iterations since Phase 3a.
 
+OBJECTIVE signals `capability-unavailable' naming `:custom-objective' whenever it is
+non-NIL, before any foreign call -- see `%check-custom-objective' above, which reads the
+capability rather than this backend's name, and which explains why this backend answers
+false. The argument is accepted by this lambda list, and refused by that check, rather than
+being absent from it: `train' is one generic function, so a method that did not take the
+keyword at all would answer a caller who named it with SBCL's
+`unknown-keyword-argument' rather than with the typed condition every other unavailable
+capability on this backend answers with. OBJECTIVE NIL, the default, reaches no check and
+trains exactly as this method always has.
+
 DATASET and every VALID-SETS entry's dataset half are each run through
 `%check-xgboost-dataset' before any foreign call. `train' dispatches on BACKEND, not on
 DATASET, so unlike `dataset-num-rows' or `free-dataset' there is no CLOS specializer here
@@ -656,6 +695,7 @@ Signals `backend-not-open' before any of that when BACKEND is not open -- see
 `%check-backend-open'."
   (with-foreign-float-traps-masked
     (%check-backend-open backend)
+    (%check-custom-objective backend objective)
     (let* ((valid-set-entries (copy-list valid-sets))
            (train-data-pointer
              (%check-xgboost-dataset backend dataset "train's dataset argument"
