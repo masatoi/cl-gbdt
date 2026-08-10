@@ -81,8 +81,9 @@
 
 (defparameter *kinds* '(:normal :raw :leaf-index :contrib)
   "Every KIND `cl-gbdt:predict' accepts, in the order its generic function's docstring lists
-them. Every test below that walks a set of kinds walks this one, so a fifth kind added to the
-protocol without a shape of its own starts failing here rather than going unasserted.")
+them, so every test below walks the same four. A fifth kind added to `predict' trips
+`%prediction-shape''s own `ecase' on LightGBM rather than going quietly unshaped; this list is
+what keeps the tests here from diverging from each other.")
 
 (defparameter *num-classes* 3
   "How many classes the multiclass fixture below holds, and how many output groups the model
