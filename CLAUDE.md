@@ -36,8 +36,8 @@ over both backends.
 
 **Status: functional.** Both backends (`cl-gbdt/lightgbm`, `cl-gbdt/xgboost`) implement
 all 13 generic functions of the unified API -- `make-dataset`, `train`, `predict`, and
-the rest -- against the real shared libraries, exercised by 597 functional assertions across
-12 test files in `cl-gbdt/tests/functional` (layer 2) on top of 448 assertions across 18
+the rest -- against the real shared libraries, exercised by 615 functional assertions across
+12 test files in `cl-gbdt/tests/functional` (layer 2) on top of 464 assertions across 18
 test files that need no shared library at all (layer 1). `train` returns a `training-report`
 as its secondary value, and takes `:record-history` (default `t`) to turn the per-iteration
 recording that fills it off -- recording roughly doubles LightGBM's `train` time, and on
@@ -74,7 +74,13 @@ difference, and on LightGBM `:objective` overrides any `objective` in `:paramete
 five spellings that library honours, its `objective_type`, `app`, `application` and `loss`
 aliases included -- forcing it to `"none"`, since `LGBM_BoosterUpdateOneIterCustom` refuses to
 run while the booster holds an objective function at all; a non-`NIL` `:objective` that is not
-a `function` signals `unsupported-argument` on both backends before any foreign call -- see
+a `function` signals `unsupported-argument` on both backends before any foreign call. What the
+objective RETURNS is checked for shape only -- `double-float`, `single-float` and a general
+array of reals all train the same model, and a non-real element signals
+`unsupported-element-type` where the buffer is written -- and because the objective is the
+only caller code inside `train`'s loop, `train` re-runs its own dataset and backend checks
+the moment it returns, so an objective that frees the training set gets
+`released-handle-error` instead of a memory fault -- see
 `README.markdown`'s Custom objective section. Core
 `cl-gbdt` still loads, and is still tested, without
 either `liblightgbm.so` or `libxgboost.so` present: a shared library is opened only by

@@ -8,9 +8,12 @@
   (:use #:cl #:rove)
   (:import-from #:cl-gbdt/src/config/objective
                 #:check-objective-result
+                #:objective-single-float
                 #:objective-parameters)
   (:import-from #:cl-gbdt/src/conditions
-                #:dimension-mismatch))
+                #:dimension-mismatch
+                #:unsupported-element-type
+                #:unsupported-element-type-given))
 
 (in-package #:cl-gbdt/tests/objective)
 
@@ -27,7 +30,40 @@
              (check-objective-result
               (make-array '(4 3) :element-type 'single-float :initial-element 0.0)
               (make-array '(4 3) :element-type 'single-float :initial-element 0.0)
-              4 3)))))
+              4 3))))
+  ;; And a general array, which is what `(make-array (list rows groups))' with no
+  ;; :ELEMENT-TYPE gives -- the most natural thing a caller writes. The shape is the whole of
+  ;; what this function judges; its elements are judged one at a time by
+  ;; `objective-single-float' as the buffer is written, so an integer 1 here is as acceptable
+  ;; as 1.0d0 and this must not reject either.
+  (ok (null (multiple-value-list
+             (check-objective-result (make-array '(4 3) :initial-element 0)
+                                     (make-array '(4 3) :initial-element 1)
+                                     4 3)))))
+
+(deftest objective-single-float-coerces-every-real-it-is-given
+  ;; The three element types the contract admits, plus the two non-float reals a general
+  ;; array can hold: each comes back as the `single-float' the C signature's `const float*'
+  ;; wants, and every value below is exactly representable, so `=' is the right assertion.
+  (ok (eql 1.5f0 (objective-single-float 1.5d0)))
+  (ok (eql 1.5f0 (objective-single-float 1.5f0)))
+  (ok (eql 1.5f0 (objective-single-float 3/2)))
+  (ok (eql 2.0f0 (objective-single-float 2)))
+  (ok (typep (objective-single-float 0) 'single-float)))
+
+(deftest objective-single-float-refuses-an-element-that-is-not-a-real
+  ;; A general array can hold anything, so this is the failure a caller reaches by returning
+  ;; one holding a string or NIL. It must be this library's own condition naming what was
+  ;; found, not the raw `type-error' `coerce' would have signalled from inside the buffer
+  ;; write -- the same condition, with the same `(type-of value)' in GIVEN, that
+  ;; `cl-gbdt/src/data''s `%require-real-values' signals for a `csr-matrix' value that is not
+  ;; a real.
+  (dolist (value (list "nope" nil #\a '(1 2) #c(1.0d0 2.0d0)))
+    (let ((condition (handler-case (progn (objective-single-float value) nil)
+                       (unsupported-element-type (c) c))))
+      (ok condition (format nil "~S was refused" value))
+      (ok (and condition (equal (type-of value) (unsupported-element-type-given condition)))
+          (format nil "the condition named ~S" (type-of value))))))
 
 (deftest check-objective-result-refuses-a-wrong-gradient-shape
   (ok (handler-case (progn (check-objective-result (grid 3 3) (grid 4 3) 4 3) nil)

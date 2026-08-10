@@ -67,6 +67,8 @@
                 #:normalize-parameters)
   (:import-from #:cl-gbdt/src/config/feature-names
                 #:check-feature-names)
+  (:import-from #:cl-gbdt/src/config/objective
+                #:objective-single-float)
   (:import-from #:cl-gbdt/src/data
                 #:with-foreign-matrix
                 #:write-foreign-sequence)
@@ -722,6 +724,12 @@ converted to `single-float', which is the only element type the C signature's `c
 admits. Measured: a gradient of alternating -1/+1 for group 0 and 0 elsewhere moves only group
 0's raw score under this layout and smears across all three under the row-major one.
 
+The conversion goes through `objective-single-float', so an element that is not a real signals
+`unsupported-element-type' naming its type rather than a `type-error' from inside `coerce'.
+GRAD and HESS may be `double-float', `single-float' or general arrays -- `check-objective-result'
+checks their shape and leaves their elements to that function, one element at a time as they
+are written, which is why nothing scans either array twice.
+
 The `produced_empty_tree' out parameter is read because the C function requires the pointer,
 and then discarded. `train''s ordinary loop already discards `%update-one-iteration''s
 equivalent -- the public `update-one-iteration' returns it, `train' does not look at it -- and
@@ -737,9 +745,9 @@ same underlying condition."
         (dotimes (group groups)
           (let ((index (+ (* group rows) row)))
             (setf (cffi:mem-aref grad-buffer :float index)
-                  (coerce (aref grad row group) 'single-float))
+                  (objective-single-float (aref grad row group)))
             (setf (cffi:mem-aref hess-buffer :float index)
-                  (coerce (aref hess row group) 'single-float)))))
+                  (objective-single-float (aref hess row group))))))
       (check-lgbm (lgbm-booster-update-one-iter-custom booster-pointer grad-buffer hess-buffer
                                                        produced)
                   "LGBM_BoosterUpdateOneIterCustom"))))

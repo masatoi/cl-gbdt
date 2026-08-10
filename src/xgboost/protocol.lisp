@@ -617,6 +617,50 @@ Does not check that the result is an `xgboost-dataset' -- `%check-xgboost-datase
 that afterward, on every element `%valid-set-name' has already let through."
   (if (consp entry) (cdr entry) entry))
 
+(defun %recheck-train-datasets (backend dataset valid-sets)
+  "Re-run `train''s own opening checks over BACKEND, DATASET and VALID-SETS, and return two
+values: DATASET's freshly read live pointer, and a fresh list of the VALID-SETS entries'.
+
+`train''s loop calls this after every `funcall' of a caller-supplied OBJECTIVE, which is the
+only point in the loop where code this library did not write runs. That code may free the
+training set -- `free-dataset' from inside the objective is the case this was found through --
+and the pointer `train' read once before the loop is then a pointer into freed memory that
+`XGBoosterTrainOneIter' takes as its DMatrix argument. Measured before this function existed:
+`Signal 7 received', a bus error killing the process rather than signalling. The checks are
+exactly the ones `train' already ran, so the caller gets `released-handle-error',
+`backend-not-open' or `wrong-backend-reference' -- the typed conditions every other freed
+handle in this library produces -- and never a fault. The RETURN VALUES are the point of the
+exercise: re-checking and then going on to use the pointers read before the loop would fix
+nothing, so `train' assigns both to the variables it reads from, and rebuilds its
+DATASET-POINTERS list out of them.
+
+The VALID-SETS entries are re-checked and returned because the same iteration hands their
+pointers to `XGBoosterEvalOneIter' through `%read-evaluation' whenever RECORD-HISTORY is true
+-- a freed DMatrix there is the identical use-after-free the training set is, which is why
+`%check-booster-datasets-live' guards both on the public `update-one-iteration' path.
+
+BACKEND itself is re-checked with `%check-backend-open' because `close-backend' unmaps the
+shared library and the objective can call it. `handle-live-pointer' already refuses a handle
+whose OWN backend has been closed, which covers the ordinary case where DATASET was built by
+BACKEND; the check here is what covers the case `%check-xgboost-dataset' documents as
+legitimate and therefore does not catch -- a dataset built by a second `xgboost-backend'
+instance over the same library, whose own backend is still open while BACKEND is not. It
+costs one slot read per iteration.
+
+Mirrors `cl-gbdt/src/lightgbm/protocol''s function of the same name, which returns the
+training pointer alone: that library's own custom update takes no DMatrix argument and its
+`%read-evaluation' takes a dataset COUNT rather than pointers, so there is nothing there for
+the validation half to be returned for."
+  (%check-backend-open backend)
+  (let ((train-data-pointer
+          (%check-xgboost-dataset backend dataset "train's dataset argument"
+                                   'xgboost-dataset)))
+    (values train-data-pointer
+            (mapcar (lambda (valid-set)
+                      (%check-xgboost-dataset backend valid-set "a train :valid-sets entry"
+                                               'xgboost-dataset))
+                    valid-sets))))
+
 (defmethod train ((backend xgboost-backend) dataset
                    &key valid-sets (num-rounds 100) parameters (record-history t)
                         early-stopping objective)
@@ -732,6 +776,14 @@ in `train' the caller's code now runs. A condition the caller's function does si
 propagates out of `train' through the OWNED dance below, freeing the raw booster handle
 rather than orphaning it, exactly as a mid-loop foreign failure does.
 
+An objective that frees a handle this loop depends on, or closes BACKEND, is caught rather
+than crashed on: `%recheck-train-datasets' re-runs this method's own opening checks the
+moment the `funcall' returns, and TRAIN-DATA-POINTER, VALID-SET-POINTERS and
+DATASET-POINTERS are all reassigned from what it returns, so nothing after the caller's code
+uses a pointer read before it. See that function for what each of the three re-checks is
+for. This is the only place the loop needs it -- the OBJECTIVE NIL branch beside it runs no
+caller code at all.
+
 Neither RECORD-HISTORY nor EARLY-STOPPING is disabled by OBJECTIVE, and neither is made
 meaningful by it: a metric configured through PARAMETERS relates to the library's own
 objective, not to the caller's, and this method neither signals nor warns about that -- see
@@ -824,6 +876,16 @@ Signals `backend-not-open' before any of that when BACKEND is not open -- see
                                               booster-pointer train-data-pointer
                                               (%dataset-num-rows train-data-pointer))))
                                  (multiple-value-bind (grad hess) (funcall objective scores)
+                                   ;; Before anything else this iteration does, and before the
+                                   ;; next one reads TRAIN-DATA-POINTER again: the caller's
+                                   ;; own code has just run and may have freed a handle this
+                                   ;; loop holds a raw pointer to. DATASET-POINTERS is rebuilt
+                                   ;; rather than left alone -- `%read-evaluation' below reads
+                                   ;; it, and it would otherwise still hold the stale ones.
+                                   (multiple-value-setq (train-data-pointer valid-set-pointers)
+                                     (%recheck-train-datasets backend dataset valid-sets))
+                                   (setf dataset-pointers
+                                         (cons train-data-pointer valid-set-pointers))
                                    (check-objective-result grad hess
                                                            (array-dimension scores 0)
                                                            (array-dimension scores 1))

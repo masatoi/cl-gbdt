@@ -13,13 +13,15 @@
 (uiop:define-package #:cl-gbdt/src/config/objective
   (:use #:cl)
   (:import-from #:cl-gbdt/src/conditions
-                #:dimension-mismatch)
+                #:dimension-mismatch
+                #:unsupported-element-type)
   ;; Imported, not reached through an export: `src/parameters' is one of the packages
   ;; `src/all.lisp' re-exports into `CL-GBDT', so exporting `parameter-name' there would
   ;; publish it as public API. Importing it here names the one file that needs it instead.
   (:import-from #:cl-gbdt/src/parameters
                 #:parameter-name)
   (:export #:check-objective-result
+           #:objective-single-float
            #:objective-parameters))
 
 (in-package #:cl-gbdt/src/config/objective)
@@ -48,15 +50,40 @@ just the offending one. With a single unlabelled shape a caller reading \"Expect
 got: NIL\" cannot tell which of the two values they got wrong, and returning one value
 instead of two is the most likely way to arrive here.
 
-Element type is not checked: `double-float' and `single-float' are both accepted, matching
-what `make-dataset' accepts for a dense matrix, and the conversion to `single-float' happens
-where the buffer is written."
+Element type is not checked here, and deliberately: `double-float', `single-float' and a
+general array whose elements are reals are all accepted -- `(make-array (list rows 1))' with
+no :ELEMENT-TYPE is what a caller most naturally writes, and it trains the same model the
+specialized pair does. What each element must be is decided one element at a time by
+`objective-single-float', where the buffer is written, so no separate validation scan is paid
+for. A separate scan here would double a per-iteration cost purely for diagnostics."
   (unless (and (arrayp grad) (equal (array-dimensions grad) (list rows groups))
                (arrayp hess) (equal (array-dimensions hess) (list rows groups)))
     (error 'dimension-mismatch
            :expected (list rows groups)
            :given (list :gradient (%array-shape grad) :hessian (%array-shape hess))))
   (values))
+
+(defun objective-single-float (value)
+  "Return VALUE as a `single-float', signalling `unsupported-element-type' unless it is a
+real.
+
+Both backends write the caller's gradient and Hessian into a `const float*' buffer one
+element at a time, coercing as they go -- see `cl-gbdt/src/lightgbm/native''s
+`%update-one-iteration-custom' and `cl-gbdt/src/xgboost/native''s
+`%train-one-iteration-custom'. This is that coercion, with the element's own check in front
+of it, which is why the check costs the loop a `realp' test per element rather than the
+extra pass a separate validation scan over both arrays would cost every iteration.
+
+`unsupported-element-type', naming the offending element's TYPE, rather than the
+`type-error' `coerce' raises for a string: it is the condition
+`cl-gbdt/src/data''s `%require-real-values' already signals for a `csr-matrix' value that is
+not a real, with the same `(type-of value)' in GIVEN, so the two places a caller's own
+numbers reach a foreign buffer refuse a non-number the same way. It is signalled while the
+foreign buffers exist -- `cffi:with-foreign-objects' has allocated them -- but before the
+library has been called at all, and that allocation is unwound with everything else."
+  (unless (realp value)
+    (error 'unsupported-element-type :given (type-of value)))
+  (coerce value 'single-float))
 
 (defparameter *objective-parameter-names*
   '("objective" "objective_type" "app" "application" "loss")

@@ -658,6 +658,44 @@ Does not check that the result is a `lightgbm-dataset' -- `%check-lightgbm-datas
 that afterward, on every element `%valid-set-name' has already let through."
   (if (consp entry) (cdr entry) entry))
 
+(defun %recheck-train-datasets (backend dataset valid-sets)
+  "Re-run `train''s own opening checks over BACKEND, DATASET and VALID-SETS, and return
+DATASET's freshly read live pointer.
+
+`train''s loop calls this after every `funcall' of a caller-supplied OBJECTIVE, which is the
+only point in the loop where code this library did not write runs. That code may free the
+training set -- `free-dataset' from inside the objective is the case this was found through --
+and the pointer `train' read once before the loop is then a pointer into freed memory that
+`LGBM_BoosterUpdateOneIterCustom' would dereference. Measured before this function existed:
+a memory fault at an arbitrary address, killing the process rather than signalling. The
+checks are exactly the ones `train' already ran, so the caller gets `released-handle-error',
+`backend-not-open' or `wrong-backend-reference' -- the typed conditions every other freed
+handle in this library produces -- and never a fault. The RETURN VALUE is the point of the
+exercise: re-checking and then going on to use the pointer read before the loop would fix
+nothing, so `train' assigns this to the variable it reads from.
+
+The VALID-SETS entries are re-checked for the same reason even though nothing here uses their
+pointers: `LGBM_BoosterGetEval', which the same iteration reaches through `%read-evaluation'
+when RECORD-HISTORY is true, evaluates each attached validation set through memory that
+dataset owns, and `LGBM_DatasetFree' clears nothing in the booster when one is freed -- see
+`%check-booster-datasets-live', which exists for that exact hazard on the public
+`update-one-iteration' path.
+
+BACKEND itself is re-checked with `%check-backend-open' because `close-backend' unmaps the
+shared library and the objective can call it. `handle-live-pointer' already refuses a handle
+whose OWN backend has been closed, which covers the ordinary case where DATASET was built by
+BACKEND; the check here is what covers the case `%check-lightgbm-dataset' documents as
+legitimate and therefore does not catch -- a dataset built by a second `lightgbm-backend'
+instance over the same library, whose own backend is still open while BACKEND is not. It
+costs one slot read per iteration."
+  (%check-backend-open backend)
+  (let ((train-data-pointer
+          (%check-lightgbm-dataset backend dataset "train's dataset argument"
+                                    'lightgbm-dataset)))
+    (dolist (valid-set valid-sets)
+      (%check-lightgbm-dataset backend valid-set "a train :valid-sets entry" 'lightgbm-dataset))
+    train-data-pointer))
+
 (defmethod train ((backend lightgbm-backend) dataset
                    &key valid-sets (num-rounds 100) parameters (record-history t)
                         early-stopping objective)
@@ -757,6 +795,13 @@ in `train' the caller's code now runs. A condition the caller's function does si
 propagates out of `train' through the OWNED dance below, freeing the raw booster handle
 rather than orphaning it, exactly as a mid-loop foreign failure does.
 
+An objective that frees a handle this loop depends on, or closes BACKEND, is caught rather
+than crashed on: `%recheck-train-datasets' re-runs this method's own opening checks the
+moment the `funcall' returns, and TRAIN-DATA-POINTER is reassigned from what it returns, so
+nothing after the caller's code uses a pointer read before it. See that function for what
+each of the three re-checks is for. This is the only place the loop needs it -- the
+OBJECTIVE NIL branch beside it runs no caller code at all.
+
 Neither RECORD-HISTORY nor EARLY-STOPPING is disabled by OBJECTIVE, and neither is made
 meaningful by it: a metric configured through PARAMETERS relates to the library's own
 objective, not to the caller's, and this method neither signals nor warns about that -- see
@@ -844,6 +889,12 @@ Signals `backend-not-open' before any of that when BACKEND is not open -- see
                                               booster-pointer
                                               (%dataset-num-rows train-data-pointer))))
                                  (multiple-value-bind (grad hess) (funcall objective scores)
+                                   ;; Before anything else this iteration does, and before the
+                                   ;; next one reads TRAIN-DATA-POINTER again: the caller's
+                                   ;; own code has just run and may have freed a handle this
+                                   ;; loop holds a raw pointer to.
+                                   (setf train-data-pointer
+                                         (%recheck-train-datasets backend dataset valid-sets))
                                    (check-objective-result grad hess
                                                            (array-dimension scores 0)
                                                            (array-dimension scores 1))

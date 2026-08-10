@@ -185,13 +185,21 @@ XGBoost's is empty because that backend signals `unsupported-argument' for a non
 `cl-gbdt/tests/functional/evaluation''s *FIXTURES* records for the same reason. NIL is
 accepted there and means the same nothing it means here.")
 
-(defun make-labelled-dataset (backend name matrix labels*)
+(defun make-labelled-dataset (backend name matrix labels* &key reference)
   "Build a dataset on BACKEND, named NAME, from MATRIX and LABELS*, passing only the
 `make-dataset' :PARAMETERS that backend accepts -- see *DATASET-PARAMETERS*. One call site
 works for both backends and for both fixtures, which is what lets every test below be
-written once."
-  (cl-gbdt:make-dataset backend matrix :label labels*
-                                       :parameters (cdr (assoc name *dataset-parameters*))))
+written once.
+
+REFERENCE, when supplied, is the dataset this one's bin mappers must align with -- what
+`LGBM_BoosterAddValidData' requires of a validation set. It reaches `make-dataset' on
+LightGBM only: XGBoost has no bin-mapper alignment and signals `unsupported-argument' for a
+non-NIL :REFERENCE, so passing it there would fail the call rather than be ignored. The same
+split, for the same reason, is what `cl-gbdt/tests/functional/evaluation''s
+`make-fixture-dataset' spells as its fixtures' :ALIGNS-BIN-MAPPERS key."
+  (apply #'cl-gbdt:make-dataset backend matrix :label labels*
+         :parameters (cdr (assoc name *dataset-parameters*))
+         (when (and reference (eq name :lightgbm)) (list :reference reference))))
 
 (defparameter *built-in-regression-parameters*
   '((:lightgbm :objective "regression" :num-leaves 7 :min-data-in-leaf 1
@@ -599,7 +607,14 @@ a true difference of about 1e-7 against a *PREDICTION-TOLERANCE* of 1e-9.
 
 Four distinct levels rather than the alternating pair `first-group-only-objective' uses:
 this objective drives a ONE-group run, where the only thing to assert is that the model moved
-at all, and four levels leave more room for a split to find gain in."
+at all, and four levels leave more room for a split to find gain in.
+
+ELEMENT-TYPE `t' is the third case the contract admits and is not merely a third float type:
+`(coerce x t)' is the identity, so the array comes back holding the RATIONALS -3/2, -1/2,
+1/2, 3/2 and the integer 1 rather than floats of any width. That is what makes it worth
+running -- \"a general array whose elements are reals\" has to mean reals of any kind, and
+`objective-single-float' is what turns each of them into the `single-float' the C buffer
+takes."
   (lambda (scores)
     (let* ((rows (array-dimension scores 0))
            (grad (make-array (list rows 1) :element-type element-type))
@@ -608,12 +623,18 @@ at all, and four levels leave more room for a split to find gain in."
       (dotimes (row rows (values grad hess))
         (setf (aref grad row 0) (coerce (- (mod row 4) 3/2) element-type))))))
 
-(deftest a-single-float-gradient-trains-the-same-model-a-double-float-one-does
-  ;; `train''s generic docstring says the objective may return `double-float' OR
-  ;; `single-float' arrays, and layer 1 pins only that `check-objective-result' ACCEPTS the
-  ;; second. This is the half that runs it through a real library: the same five exactly
-  ;; representable numbers returned as each type, trained, and compared -- within one backend,
-  ;; never across the two.
+(deftest every-element-type-the-contract-admits-trains-the-same-model
+  ;; `train''s generic docstring says the objective's two arrays may be `double-float',
+  ;; `single-float', or a general array whose elements are reals, and layer 1 pins only that
+  ;; `check-objective-result' ACCEPTS all three shapes of thing. This is the half that runs
+  ;; them through a real library: the same five exactly representable numbers returned three
+  ;; ways, trained, and compared -- within one backend, never across the two.
+  ;;
+  ;; The `t' case is the one that made the docstring wrong before this: the generic promised
+  ;; `double-float' or `single-float' and named `dimension-mismatch' for "anything else",
+  ;; while the code checked shape alone and trained a bare `(make-array (list rows 1))'
+  ;; identically. Measured on both backends, all three runs below land on the same model, so
+  ;; enforcing the documented pair would have rejected working code rather than caught a bug.
   (dolist (name '(:lightgbm :xgboost))
     (support:with-backend-library (name)
       (let ((backend (cl-gbdt:open-backend name)))
@@ -632,13 +653,69 @@ at all, and four levels leave more room for a split to find gain in."
                                           (exact-gradient-objective element-type)))
                               (cl-gbdt:predict booster matrix :kind :raw))))
                      (let ((double (raw-for 'double-float))
-                           (single (raw-for 'single-float)))
+                           (single (raw-for 'single-float))
+                           (general (raw-for t)))
                        ;; The model MOVED. Without this the equality below would be satisfied
                        ;; by two identical constants -- which is what a run whose gradient
                        ;; never reached the trees produces, and this file has seen that
                        ;; failure before.
                        (ok (> (column-spread single 0) *quiet-group-tolerance*))
-                       (ok (support:predictions-agree-p double single)))))))
+                       (ok (support:predictions-agree-p double single))
+                       (ok (support:predictions-agree-p double general)))))))
+          (cl-gbdt:close-backend backend))))))
+
+(deftest a-gradient-element-that-is-not-a-real-signals-before-the-library-sees-it
+  ;; The other half of "a general array whose elements are reals": a general array can hold
+  ;; ANYTHING, so the element check has to exist somewhere. It lives at the buffer write, one
+  ;; element at a time, rather than in a validation scan over both arrays -- see
+  ;; `objective-single-float'. Before it, this run reached `coerce' and produced a bare
+  ;; `TYPE-ERROR' ("The value \"nope\" is not of type REAL") from inside the wrapper, which
+  ;; names neither the argument nor the library and is not one of this project's conditions.
+  ;;
+  ;; The buffers exist when this signals -- `cffi:with-foreign-objects' has allocated them --
+  ;; but no library call has been made, and that allocation unwinds with everything else.
+  (dolist (name '(:lightgbm :xgboost))
+    (support:with-backend-library (name)
+      (let ((backend (cl-gbdt:open-backend name)))
+        (unwind-protect
+             (when (cl-gbdt:backend-supports-p backend :custom-objective)
+               (multiple-value-bind (matrix labels*) (regression-fixture)
+                 (cl-gbdt:with-dataset (dataset (make-labelled-dataset backend name
+                                                                       matrix labels*))
+                   (let ((condition
+                           (handler-case
+                               (progn (cl-gbdt:free-booster
+                                       (cl-gbdt:train
+                                        backend dataset :num-rounds 3
+                                        :parameters (cdr (assoc name
+                                                                *custom-regression-parameters*))
+                                        :objective
+                                        (lambda (scores)
+                                          (let ((rows (array-dimension scores 0)))
+                                            (values (make-array (list rows 1)
+                                                                :initial-element "nope")
+                                                    (make-array (list rows 1)
+                                                                :initial-element 1))))))
+                                      nil)
+                             (cl-gbdt:unsupported-element-type (c) c))))
+                     (ok condition "train signalled instead of training")
+                     ;; The condition names what was FOUND, not merely that something was
+                     ;; wrong: `(type-of "nope")' is what `%require-real-values' puts in the
+                     ;; same slot for a `csr-matrix' value that is not a real.
+                     (ok (and condition
+                              (equal (type-of "nope")
+                                     (cl-gbdt:unsupported-element-type-given condition)))
+                         (format nil "the condition named ~S"
+                                 (and condition
+                                      (cl-gbdt:unsupported-element-type-given condition)))))
+                   ;; Still usable afterwards: the failed run freed its own booster and left
+                   ;; nothing of the caller's behind.
+                   (cl-gbdt:with-booster
+                       (booster (cl-gbdt:train
+                                 backend dataset :num-rounds 2
+                                 :parameters (cdr (assoc name
+                                                         *built-in-regression-parameters*))))
+                     (ok (arrayp (cl-gbdt:predict booster matrix :kind :raw)))))))
           (cl-gbdt:close-backend backend))))))
 
 (deftest an-error-inside-the-objective-propagates-and-frees-the-booster
@@ -671,6 +748,85 @@ at all, and four levels leave more room for a split to find gain in."
                                  :parameters (cdr (assoc name
                                                          *built-in-regression-parameters*))))
                      (ok (arrayp (cl-gbdt:predict booster matrix :kind :raw)))))))
+          (cl-gbdt:close-backend backend))))))
+
+;;; Policy section 13's "released handle" line, for the handles `train''s own loop holds raw
+;;; pointers to across a call into the caller's code. `train' reads each dataset's pointer
+;;; ONCE, before the loop, and the objective is the only place in that loop where code this
+;;; library did not write runs -- so an objective that frees a dataset leaves the loop holding
+;;; a pointer into freed memory and hands it straight to C. Measured before
+;;; `%recheck-train-datasets' existed, in isolated subprocesses, on both backends: LightGBM
+;;; died with `Memory fault at 0x543447170e8a6' and XGBoost with `Signal 7 received' -- the
+;;; process, not the test. Everywhere else in this library a freed handle produces a typed
+;;; condition, and this is what makes the custom-objective loop no exception.
+;;;
+;;; `handler-case', not rove's `signals', which does not reliably catch a condition raised
+;;; inside `restart-case'; the condition TYPE is asserted, and so is the handle it names,
+;;; since a run that signalled about the wrong handle would be a run that noticed by accident.
+
+(deftest freeing-a-dataset-inside-the-objective-signals-rather-than-faulting
+  (dolist (name '(:lightgbm :xgboost))
+    (support:with-backend-library (name)
+      (let ((backend (cl-gbdt:open-backend name)))
+        (unwind-protect
+             (when (cl-gbdt:backend-supports-p backend :custom-objective)
+               (multiple-value-bind (matrix labels*) (regression-fixture)
+                 (flet ((train-freeing (victim dataset valid-sets)
+                          ;; Free VICTIM from inside the objective, then return a gradient
+                          ;; and Hessian that are in every way correct: what is under test is
+                          ;; the freed handle alone, and a wrong shape would be caught by
+                          ;; `check-objective-result' instead and prove nothing.
+                          (handler-case
+                              (progn (cl-gbdt:free-booster
+                                      (cl-gbdt:train
+                                       backend dataset :num-rounds 5 :valid-sets valid-sets
+                                       :parameters
+                                       (cdr (assoc name *custom-regression-parameters*))
+                                       :objective
+                                       (let ((gradient (squared-error-objective labels*)))
+                                         (lambda (scores)
+                                           (cl-gbdt:free-dataset victim)
+                                           (funcall gradient scores)))))
+                                     nil)
+                            (cl-gbdt:released-handle-error (c) c))))
+                   (testing (format nil "~A: freeing the TRAINING set inside the objective"
+                                    name)
+                     (cl-gbdt:with-dataset (dataset (make-labelled-dataset backend name
+                                                                           matrix labels*))
+                       (let ((condition (train-freeing dataset dataset '())))
+                         (ok condition "train signalled instead of faulting")
+                         (ok (and condition
+                                  (eq dataset
+                                      (cl-gbdt:released-handle-error-object condition)))
+                             "the condition named the training set"))))
+                   ;; The validation sets are re-checked too, and for the same reason: the
+                   ;; same iteration evaluates them through `%read-evaluation' once the
+                   ;; update returns -- LightGBM through pointers the booster stores,
+                   ;; XGBoost through the list `train' built before the loop.
+                   (testing (format nil "~A: freeing a VALIDATION set inside the objective"
+                                    name)
+                     (cl-gbdt:with-dataset (dataset (make-labelled-dataset backend name
+                                                                           matrix labels*))
+                       (cl-gbdt:with-dataset (valid-set (make-labelled-dataset
+                                                         backend name matrix labels*
+                                                         :reference dataset))
+                         (let ((condition
+                                 (train-freeing valid-set dataset (list valid-set))))
+                           (ok condition "train signalled instead of faulting")
+                           (ok (and condition
+                                    (eq valid-set
+                                        (cl-gbdt:released-handle-error-object condition)))
+                               "the condition named the validation set")))))
+                   ;; The backend is still usable afterwards, which is the observable half of
+                   ;; "the booster was freed rather than orphaned" on this path too.
+                   (cl-gbdt:with-dataset (dataset (make-labelled-dataset backend name
+                                                                         matrix labels*))
+                     (cl-gbdt:with-booster
+                         (booster (cl-gbdt:train
+                                   backend dataset :num-rounds 2
+                                   :parameters (cdr (assoc name
+                                                           *built-in-regression-parameters*))))
+                       (ok (arrayp (cl-gbdt:predict booster matrix :kind :raw))))))))
           (cl-gbdt:close-backend backend))))))
 
 (deftest a-wrong-shaped-gradient-signals-before-the-library-sees-it

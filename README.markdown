@@ -17,8 +17,8 @@ file if you have it locally).
 `make-dataset`, `dataset-num-rows`, `dataset-num-features`, `train`,
 `update-one-iteration`, `predict`, `save-model`, `load-model`, `model-to-string`,
 `feature-importance`, `evaluation`, `free-dataset` and `free-booster` -- against the real
-LightGBM and XGBoost shared libraries, exercised by 597 functional assertions across 12 test
-files (design doc section 12, layer 2), in addition to 448 assertions across 18 test files
+LightGBM and XGBoost shared libraries, exercised by 615 functional assertions across 12 test
+files (design doc section 12, layer 2), in addition to 464 assertions across 18 test files
 that need no shared library at all (layer 1). `train` also returns a `training-report` as
 its secondary value, and takes
 `:early-stopping` to end a run once a watched metric stops improving -- see
@@ -2289,9 +2289,9 @@ argument**: the booster's current raw scores for its training set, as a `(ROWS G
 `double-float` array -- the margin, before any sigmoid or softmax transform, and the same shape
 and element type `predict` returns. `GROUPS` is 1 for regression and binary classification and
 `num_class` for multiclass. It must return **two values**, the gradient and the Hessian, each a
-`(ROWS GROUPS)` array of `double-float` or `single-float`. Anything else -- the wrong rank, the
-wrong dimensions, one value instead of two -- signals `dimension-mismatch` before any foreign
-call, so a wrongly shaped array is never read as though it had the right shape:
+`(ROWS GROUPS)` array. The **shape** is what is checked -- the wrong rank, the wrong
+dimensions, or one value instead of two signals `dimension-mismatch` before any foreign call,
+so a wrongly shaped array is never read as though it had the right shape:
 
 ```lisp
 (ql:quickload '(:cl-gbdt :cl-gbdt/lightgbm) :silent t)
@@ -2331,6 +2331,17 @@ SIGNALED DIMENSION-MISMATCH
   Dimension mismatch. Expected: (8 1), got: (GRADIENT (8) HESSIAN (8 1))
 ```
 
+The **element type is not** part of that check, and deliberately. `double-float`,
+`single-float` and a general array whose elements are reals -- what `(make-array (list rows 1))`
+with no `:element-type` gives, the most natural thing to write -- are all accepted, and all
+three train the identical model on both backends, because each element is coerced to the
+`single-float` the C signature's `const float*` takes as the buffer is written. An element that
+is *not* a real -- a string, `NIL`, a complex -- signals `unsupported-element-type` naming that
+element's own type, at the write and before the library has been called: the same condition,
+with the same value in `unsupported-element-type-given`, that a `csr-matrix` holding a non-real
+value already signals from `make-csr-matrix`. Nothing scans either array a second time to say
+so; the check rides along with the coercion that was happening anyway.
+
 The two libraries want that `(ROWS GROUPS)` array flattened into their C buffers in opposite
 orders -- LightGBM **group-major** (row I of group K at `(+ (* K ROWS) I)`), XGBoost
 **row-major** (row I of group K at `(+ (* I GROUPS) K)`, what an `__array_interface__` of shape
@@ -2343,6 +2354,17 @@ under the other -- held by
 `a-gradient-in-one-output-group-moves-only-that-group` in
 `tests/functional/custom-objective.lisp`, which runs the same fixture on both backends and
 would fail if either flattening were transposed.
+
+`:objective` is the only place inside `train`'s loop where code cl-gbdt did not write runs, and
+that code can reach the handles the loop is holding: `free-dataset` on the training set, on a
+`:valid-sets` entry, or `close-backend` on the backend itself. All three are **caught**, not
+crashed on. `train` re-runs its own dataset and backend checks the moment the objective
+returns, before the iteration makes another foreign call, and reads fresh pointers from them --
+so freeing the training set from inside an objective signals `released-handle-error` naming
+that dataset, exactly as freeing it anywhere else in this library does. Without that re-check
+the loop hands a pointer into freed memory straight to C: measured, LightGBM died with
+`Memory fault at 0x543447170e8a6` and XGBoost with `Signal 7 received`, killing the process
+rather than signalling anything a caller could handle.
 
 #### LightGBM forces `objective` to `"none"`
 

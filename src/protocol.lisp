@@ -250,12 +250,22 @@ booster's current raw scores for its training set, as a (ROWS GROUPS) `double-fl
 array -- the margin, before any sigmoid or softmax, and the same shape and element type
 `predict' returns. GROUPS is 1 for regression and binary classification and `num_class'
 for multiclass. It must return two values, the gradient and the Hessian, each a (ROWS
-GROUPS) array of `double-float' or `single-float'. Anything else signals
-`dimension-mismatch' before any foreign call.
+GROUPS) array. The SHAPE is what is checked: a wrong rank, wrong dimensions, or one value
+where two were required signals `dimension-mismatch' before any foreign call. The element
+type is not: `double-float', `single-float' and a general array whose elements are reals --
+what `(make-array (list ROWS GROUPS))' gives, and the most natural thing to write -- are all
+accepted and all train the same model, each element being coerced where the buffer is
+written. An element that is not a real signals `unsupported-element-type' naming its type,
+there at the write, before the library has been called.
 
 The caller writes one array shape and it means the same thing on both backends: the two
 libraries flatten it differently -- LightGBM group-major, XGBoost row-major -- and each
 backend's own code absorbs that.
+
+A handle the objective frees, or a backend it closes, is caught the moment it returns and
+before any further foreign call: `train' re-runs its own dataset and backend checks there,
+so freeing the training set from inside an objective signals `released-handle-error' rather
+than faulting the process.
 
 On LightGBM, OBJECTIVE **overrides** any `objective' in PARAMETERS, forcing it to
 \"none\". LightGBM refuses a custom update while the booster holds an objective function

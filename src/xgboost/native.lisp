@@ -64,6 +64,8 @@
                 #:check-feature-names)
   (:import-from #:cl-gbdt/src/config/missing-value
                 #:missing-value-json)
+  (:import-from #:cl-gbdt/src/config/objective
+                #:objective-single-float)
   (:import-from #:cl-gbdt/src/data
                 #:with-foreign-matrix
                 #:write-foreign-sequence)
@@ -1114,6 +1116,12 @@ accepted in silence and trains a different model (4.13 away from the built-in ru
 downstream will report a wrong typestr, so this call site is the only thing keeping the
 buffer from being misread.
 
+The conversion goes through `objective-single-float', so an element that is not a real signals
+`unsupported-element-type' naming its type rather than a `type-error' from inside `coerce'.
+GRAD and HESS may be `double-float', `single-float' or general arrays --
+`check-objective-result' checks their shape and leaves their elements to that function, one
+element at a time as they are written, which is why nothing scans either array twice.
+
 ITERATION is the round number the C signature asks for, and `train' reads it back from
 `%boosted-rounds' at each call, the same way `%update-one-iteration' does. The REASON that
 function gives does not carry over unchanged: it reads the count back so a booster whose
@@ -1137,9 +1145,9 @@ interface it hands `XGDMatrixCreateFromDense'."
         (dotimes (group groups)
           (let ((index (+ (* row groups) group)))
             (setf (cffi:mem-aref grad-buffer :float index)
-                  (coerce (aref grad row group) 'single-float))
+                  (objective-single-float (aref grad row group)))
             (setf (cffi:mem-aref hess-buffer :float index)
-                  (coerce (aref hess row group) 'single-float)))))
+                  (objective-single-float (aref hess row group))))))
       (cffi:with-foreign-string
           (grad-json (array-interface-json grad-buffer "<f4" rows groups))
         (cffi:with-foreign-string
