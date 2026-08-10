@@ -241,7 +241,9 @@ EARLY-STOPPING at all always leaves all four NIL.
 OBJECTIVE, NIL by default, is a function that supplies the gradient and Hessian itself,
 so the run boosts against the caller's own loss rather than the library's. It requires
 the `:custom-objective' capability, which `train' re-checks and signals
-`capability-unavailable' for.
+`capability-unavailable' for. A non-NIL OBJECTIVE that is not a `function' -- a number, a
+string, or a SYMBOL naming one -- signals `unsupported-argument' naming :OBJECTIVE, before
+any foreign call and so before a booster exists to leak.
 
 It is called once per iteration, before that iteration's update, with one argument: the
 booster's current raw scores for its training set, as a (ROWS GROUPS) `double-float'

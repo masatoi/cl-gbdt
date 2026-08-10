@@ -244,10 +244,20 @@ to one of them should come off identical trees down identical paths. The toleran
 because that expectation rests on details neither library documents -- two C entry points
 accumulating in the same order for tests/functional/sparse-input.lisp, two config strings
 reaching the same code path for tests/functional/missing-value.lisp -- and a last-bit
-difference would be a true negative dressed as a failure. Those two files are the ones that
-assert equalities at all: tests/functional/categorical-features.lisp asserts only
-INEQUALITIES, where a large difference is the expectation and this is merely the floor one has
-to clear.
+difference would be a true negative dressed as a failure.
+
+FOUR files assert equalities with it. Two are the ones just named. The third is
+tests/functional/prediction-shape.lisp, whose SHAP-sum test compares a `:contrib' result's
+per-output-group sums against that same booster's `:raw' result -- a summation, so what rests
+on the tolerance there is the order the terms were added in. The fourth is
+tests/functional/custom-objective.lisp, which compares one backend's custom-objective run
+against that same backend's BUILT-IN run of the same loss -- two code paths through one
+library computing one gradient -- against its own run with that gradient returned as
+`single-float' rather than `double-float', and against its own runs naming each of LightGBM's
+five spellings of `objective' in :PARAMETERS. It asserts one inequality as well, the control
+that keeps the first of those from passing for a `train' that ignored :OBJECTIVE entirely.
+tests/functional/categorical-features.lisp is the one file that asserts only INEQUALITIES,
+where a large difference is the expectation and this is merely the floor one has to clear.
 
 It is small enough that nothing the files using it exist to catch survives it. The gaps their
 inequality assertions rest on, measured against the vendored libraries and carried over

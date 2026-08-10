@@ -58,6 +58,32 @@ where the buffer is written."
            :given (list :gradient (%array-shape grad) :hessian (%array-shape hess))))
   (values))
 
+(defparameter *objective-parameter-names*
+  '("objective" "objective_type" "app" "application" "loss")
+  "Every spelling LightGBM honours for the `objective' parameter, as `parameter-name' renders
+a key: lower case, underscores for dashes.
+
+Read off the VENDORED LightGBM 4.7.0 itself rather than off a header or a web page. That
+library exports `LGBM_DumpParamAliases', which returns its own parameter-to-alias map as JSON,
+and its `objective' entry is exactly `[\"app\", \"loss\", \"application\", \"objective_type\"]'
+-- four aliases, no more. None of the four is a parameter in its own right elsewhere in that
+map, and none is an alias of any other parameter, so dropping them here can take nothing else
+away from the caller.
+
+Re-measured through the library's BEHAVIOUR as well, the way
+`cl-gbdt/src/lightgbm/protocol''s `*categorical-feature-parameter-names*' was: each of the
+four naming \"binary\" trains the model `objective=\"binary\"' trains, element for element,
+while `obj', `objective_function', `loss_function', `app_type' and the plurals `objectives',
+`apps', `applications' and `losses' all leave the trained numbers identical to a run that
+named no objective at all. So this list can only be ENUMERATED, never prefix-matched or
+fuzzily matched: `app' is honoured and `apps' is not.
+
+A caller who names one of these while passing an objective function is in fact already
+trained correctly by LightGBM -- it resolves the canonical `objective=none' this function
+appends ahead of an alias, measured the same way. That is a precedence rule neither library
+documents and nothing here can hold to, which is why the aliases are dropped rather than left
+to lose a race.")
+
 (defun objective-parameters (parameters)
   "Return PARAMETERS with every `objective' entry replaced by one naming \"none\".
 
@@ -70,13 +96,20 @@ nothing trains.
 Existing entries are dropped rather than left in place with a second one appended, because a
 parameter string holding two `objective=' entries leaves which one wins to LightGBM. They are
 matched through `parameter-name', the same function that decides what the key would have been
-called in that string, so `:objective' and the string \"objective\" are both caught -- a key
-that renders as `objective' is an objective however the caller spelled it.
+called in that string, so `:objective' and the string \"objective\" are one key here exactly
+as they are one key to the library.
+
+Dropped by that rendering against `*objective-parameter-names*', which is the FIVE spellings
+the library honours and not the literal one alone: `objective_type', `app', `application' and
+`loss' all set the same parameter, so a plist naming any of them alongside the entry appended
+here would be the two-`objective=' string this paragraph exists to avoid. See that variable
+for where the five come from.
 
 Every other parameter passes through in its original order, `num_class' included: it is still
 what tells LightGBM how many output groups a multiclass custom objective has, and forcing the
 objective to \"none\" does not supply it."
   (append (loop :for (key value) :on parameters :by #'cddr
-                :unless (string-equal "objective" (parameter-name key))
+                :unless (member (parameter-name key) *objective-parameter-names*
+                                :test #'string=)
                   :append (list key value))
           (list :objective "none")))

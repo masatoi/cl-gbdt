@@ -14,6 +14,14 @@
 ;;;; keeps a suite in which NO backend provides the capability from passing having asserted
 ;;;; nothing.
 ;;;;
+;;;; Both vendored libraries answer that capability TRUE, so that pair's refusal branch is
+;;;; unreachable here and the gate would be a branch nobody had ever seen taken. Which is why
+;;;; `custom-objective-without-the-capability-signals' below withdraws the capability from an
+;;;; open backend and watches `train' refuse -- the same way
+;;;; tests/functional/sparse-input.lisp and tests/functional/missing-value.lisp reach their
+;;;; own gates. Deleting either backend's `%check-custom-objective' call left the whole suite
+;;;; green before that test existed.
+;;;;
 ;;;; Every other test here is guarded on the same capability and simply does nothing on a
 ;;;; backend that answers false. That is deliberate and is why the guards are written this
 ;;;; way: a backend gaining the capability starts asserting through these same tests with no
@@ -211,9 +219,19 @@ it out here is what lets the LightGBM override test below put one back and watch
 
 `num_class' is what supplies the group count on LightGBM even under the `objective=none' that
 `train' forces, which is why the LightGBM row names no objective at all -- exactly as
-*CUSTOM-REGRESSION-PARAMETERS* does, and for the same reason. XGBoost's row DOES name one:
-that backend's parameters are never rewritten by `train', so `multi:softprob' is how its
-booster comes to have three output groups to hand the objective in the first place.
+*CUSTOM-REGRESSION-PARAMETERS* does, and for the same reason.
+
+XGBoost's row DOES name one, and NOT because the group count needs it: `num_class 3' alone
+gives that backend three output groups under a custom objective, which is what
+`cl-gbdt/src/xgboost/protocol''s `train' records and what was re-measured before this
+sentence was written -- dropping `multi:softprob' from this row leaves the scores shape, the
+`:raw' shape and all three groups' spreads bit-identical, and `multi:softmax' in its place
+does the same. It is named to keep an objective FUNCTION configured on the booster while the
+custom update runs, which is the difference between the two libraries this file would
+otherwise not exercise anywhere: `LGBM_BoosterUpdateOneIterCustom' refuses to run at all in
+that state -- `Check failed: objective_function_ == nullptr' -- while
+`XGBoosterTrainOneIter' accepts it, which is why `train' rewrites the parameter on one
+backend and passes it through on the other.
 
 `learning_rate'/`eta' is 1.0 rather than either library's default so that one iteration moves
 the scores by the leaf value itself. The layout test below runs a single iteration and asks
@@ -252,14 +270,150 @@ this one is the suite's own `*prediction-tolerance*' restated rather than a new 
                                                                *custom-regression-parameters*))
                                        :objective (squared-error-objective labels*)))
                            (ok (arrayp (cl-gbdt:predict booster matrix :kind :raw)))))
-                       (ok (handler-case
-                               (progn (cl-gbdt:train
-                                       backend dataset :num-rounds 1
-                                       :objective (squared-error-objective labels*))
-                                      nil)
-                             (cl-gbdt:capability-unavailable () t))))))
+                       ;; All three assertions, not just "something signalled" -- the same
+                       ;; three `custom-objective-without-the-capability-signals' below makes,
+                       ;; since a refusal naming the wrong capability or the wrong backend is
+                       ;; a refusal a caller cannot act on. Both vendored libraries answer the
+                       ;; capability true, so nothing reaches this branch today; it is what a
+                       ;; library missing one of the C symbols would take, and the test below
+                       ;; is what actually watches the gate fire.
+                       (let ((condition
+                               (handler-case
+                                   (progn (cl-gbdt:train
+                                           backend dataset :num-rounds 1
+                                           :objective (squared-error-objective labels*))
+                                          nil)
+                                 (cl-gbdt:capability-unavailable (c) c))))
+                         (ok condition "train signalled instead of training")
+                         (ok (and condition
+                                  (eq :custom-objective
+                                      (cl-gbdt:capability-unavailable-capability condition))))
+                         (ok (and condition
+                                  (eq name (cl-gbdt:backend-error-backend condition))))))))
             (cl-gbdt:close-backend backend)))))
     (ok (plusp demonstrated))))
+
+;;; Policy section 7's central rule, watched rather than assumed: `train' re-checks the
+;;; capability itself instead of trusting the caller to have asked `backend-supports-p'
+;;; first, and signals rather than quietly boosting against the library's own objective.
+;;; Both vendored libraries provide the capability -- the test above asserts exactly that --
+;;; so the only way to reach the gate is to overwrite the probed plist, which is what a
+;;; LightGBM missing one of its three C symbols, or an XGBoost with no
+;;; `XGBoosterTrainOneIter', would have produced at `open-backend'. This is the same way
+;;; `cl-gbdt/tests/functional/sparse-input''s
+;;; `sparse-input-without-the-capability-signals' and
+;;; `cl-gbdt/tests/functional/missing-value''s `missing-value-without-the-capability-signals'
+;;; reach their own gates. Without it the whole gate is a branch nobody has seen taken:
+;;; deleting either backend's `%check-custom-objective' call left the entire suite green
+;;; before this test existed, and fails it now.
+;;;
+;;; `handler-case', not rove's `signals', which does not reliably catch a condition raised
+;;; inside `restart-case'; the condition TYPE is asserted, not merely that something
+;;; signalled, and so are the capability and the backend it names.
+
+(deftest custom-objective-without-the-capability-signals
+  (dolist (name '(:lightgbm :xgboost))
+    (support:with-backend-library (name)
+      (let ((backend (cl-gbdt:open-backend name)))
+        (unwind-protect
+             (multiple-value-bind (matrix labels*) (regression-fixture)
+               (cl-gbdt:with-dataset (dataset (make-labelled-dataset backend name
+                                                                     matrix labels*))
+                 ;; Overwritten after the dataset is built, since building it needs the
+                 ;; backend's other capabilities and this replaces the whole plist. A backend
+                 ;; that already answered false would be left exactly as it opened.
+                 (when (cl-gbdt:backend-supports-p backend :custom-objective)
+                   (setf (cl-gbdt:backend-capabilities backend) '(:custom-objective nil)))
+                 (testing (format nil "~A: train signals capability-unavailable for a ~
+                                       non-NIL :objective, naming the capability and the ~
+                                       backend" name)
+                   ;; `free-booster' on the success branch, the way
+                   ;; `sparse-input-without-the-capability-signals' frees the dataset it does
+                   ;; not expect to get: that branch is only reached if the gate has
+                   ;; regressed, and a leaked handle is a poor second failure to hand whoever
+                   ;; is already reading the first one.
+                   (let ((condition
+                           (handler-case
+                               (progn (cl-gbdt:free-booster
+                                       (cl-gbdt:train
+                                        backend dataset :num-rounds 1
+                                        :parameters (cdr (assoc name
+                                                                *custom-regression-parameters*))
+                                        :objective (squared-error-objective labels*)))
+                                      nil)
+                             (cl-gbdt:capability-unavailable (c) c))))
+                     (ok condition "train signalled instead of training")
+                     (ok (and condition
+                              (eq :custom-objective
+                                  (cl-gbdt:capability-unavailable-capability condition)))
+                         (format nil "the condition named capability ~S"
+                                 (and condition
+                                      (cl-gbdt:capability-unavailable-capability condition))))
+                     (ok (and condition
+                              (eq name (cl-gbdt:backend-error-backend condition)))
+                         (format nil "the condition named backend ~S"
+                                 (and condition
+                                      (cl-gbdt:backend-error-backend condition))))))
+                 ;; OBJECTIVE NIL reaches no check at all, so the same backend still trains
+                 ;; normally with the capability withdrawn. Without this the gate could be an
+                 ;; unconditional refusal and nothing here would notice.
+                 (cl-gbdt:with-booster
+                     (booster (cl-gbdt:train
+                               backend dataset :num-rounds 2
+                               :parameters (cdr (assoc name
+                                                       *built-in-regression-parameters*))))
+                   (ok (arrayp (cl-gbdt:predict booster matrix :kind :raw))))))
+          (cl-gbdt:close-backend backend))))))
+
+;;; The other way :OBJECTIVE can be wrong, and the one a caller is far likelier to reach: a
+;;; value that is not a function at all. It is refused beside the capability, before any
+;;; foreign call -- see either backend's `%check-custom-objective'. Left to the loop's own
+;;; `funcall' it would surface as SBCL's untyped `type-error' after the booster existed and a
+;;; score read had already happened, naming neither the argument nor the backend.
+
+(deftest a-non-function-objective-is-refused-before-any-foreign-call
+  (dolist (name '(:lightgbm :xgboost))
+    (support:with-backend-library (name)
+      (let ((backend (cl-gbdt:open-backend name)))
+        (unwind-protect
+             (when (cl-gbdt:backend-supports-p backend :custom-objective)
+               (multiple-value-bind (matrix labels*) (regression-fixture)
+                 (cl-gbdt:with-dataset (dataset (make-labelled-dataset backend name
+                                                                       matrix labels*))
+                   ;; A number, a string, and a SYMBOL naming a real function of one
+                   ;; argument. The symbol is the interesting one: `funcall' would accept it,
+                   ;; so nothing downstream would fail, and the run would boost against
+                   ;; whatever global definition that name happened to have at each
+                   ;; iteration rather than against what the caller passed.
+                   (dolist (value (list 42 "squared-error" 'squared-error-objective))
+                     (testing (format nil "~A: train signals unsupported-argument for ~
+                                           :objective ~S, naming the argument and the backend"
+                                      name value)
+                       (let ((condition
+                               (handler-case
+                                   (progn (cl-gbdt:free-booster
+                                           (cl-gbdt:train
+                                            backend dataset :num-rounds 1
+                                            :parameters
+                                            (cdr (assoc name *custom-regression-parameters*))
+                                            :objective value))
+                                          nil)
+                                 (cl-gbdt:unsupported-argument (c) c))))
+                         (ok condition "train signalled instead of training")
+                         (ok (and condition
+                                  (equal "train's :objective"
+                                         (cl-gbdt:unsupported-argument-argument condition)))
+                             (format nil "the condition named argument ~S"
+                                     (and condition
+                                          (cl-gbdt:unsupported-argument-argument condition))))
+                         (ok (and condition
+                                  (eq name
+                                      (cl-gbdt:unsupported-argument-backend condition)))
+                             (format nil "the condition named backend ~S"
+                                     (and condition
+                                          (cl-gbdt:unsupported-argument-backend
+                                           condition))))))))))
+          (cl-gbdt:close-backend backend))))))
 
 (deftest a-custom-squared-error-reproduces-the-built-in-one
   ;; Only on backends that provide the capability. The comparison is always one backend's
@@ -431,6 +585,62 @@ this one is the suite's own `*prediction-tolerance*' restated rather than a new 
                                                *quiet-group-tolerance*)))))))))
           (cl-gbdt:close-backend backend))))))
 
+(defun exact-gradient-objective (element-type)
+  "Return an objective whose gradient and Hessian are (ROWS 1) arrays of ELEMENT-TYPE.
+
+The gradient is a function of the ROW INDEX -- -1.5, -0.5, 0.5, 1.5 by `(mod row 4)' -- and
+the Hessian is 1 everywhere. Every one of those five numbers is EXACTLY representable in
+`single-float' and in `double-float' alike, which is the whole point: both backends convert
+what comes back to `single-float' before writing it into a C buffer, so the two element
+types produce byte-identical buffers here and therefore the identical model. A gradient read
+off SCORES could not promise that -- `(coerce (- a b) 'single-float)' and
+`(- (coerce a 'single-float) (coerce b 'single-float))' may differ in the last bit, which is
+a true difference of about 1e-7 against a *PREDICTION-TOLERANCE* of 1e-9.
+
+Four distinct levels rather than the alternating pair `first-group-only-objective' uses:
+this objective drives a ONE-group run, where the only thing to assert is that the model moved
+at all, and four levels leave more room for a split to find gain in."
+  (lambda (scores)
+    (let* ((rows (array-dimension scores 0))
+           (grad (make-array (list rows 1) :element-type element-type))
+           (hess (make-array (list rows 1) :element-type element-type
+                                           :initial-element (coerce 1 element-type))))
+      (dotimes (row rows (values grad hess))
+        (setf (aref grad row 0) (coerce (- (mod row 4) 3/2) element-type))))))
+
+(deftest a-single-float-gradient-trains-the-same-model-a-double-float-one-does
+  ;; `train''s generic docstring says the objective may return `double-float' OR
+  ;; `single-float' arrays, and layer 1 pins only that `check-objective-result' ACCEPTS the
+  ;; second. This is the half that runs it through a real library: the same five exactly
+  ;; representable numbers returned as each type, trained, and compared -- within one backend,
+  ;; never across the two.
+  (dolist (name '(:lightgbm :xgboost))
+    (support:with-backend-library (name)
+      (let ((backend (cl-gbdt:open-backend name)))
+        (unwind-protect
+             (when (cl-gbdt:backend-supports-p backend :custom-objective)
+               (multiple-value-bind (matrix labels*) (regression-fixture)
+                 (cl-gbdt:with-dataset (dataset (make-labelled-dataset backend name
+                                                                       matrix labels*))
+                   (flet ((raw-for (element-type)
+                            (cl-gbdt:with-booster
+                                (booster (cl-gbdt:train
+                                          backend dataset :num-rounds 4
+                                          :parameters
+                                          (cdr (assoc name *custom-regression-parameters*))
+                                          :objective
+                                          (exact-gradient-objective element-type)))
+                              (cl-gbdt:predict booster matrix :kind :raw))))
+                     (let ((double (raw-for 'double-float))
+                           (single (raw-for 'single-float)))
+                       ;; The model MOVED. Without this the equality below would be satisfied
+                       ;; by two identical constants -- which is what a run whose gradient
+                       ;; never reached the trees produces, and this file has seen that
+                       ;; failure before.
+                       (ok (> (column-spread single 0) *quiet-group-tolerance*))
+                       (ok (support:predictions-agree-p double single)))))))
+          (cl-gbdt:close-backend backend))))))
+
 (deftest an-error-inside-the-objective-propagates-and-frees-the-booster
   ;; `train' builds a raw booster handle before the loop and only takes ownership of it at the
   ;; end. A condition raised from the caller's own function must unwind through that same
@@ -503,12 +713,44 @@ this one is the suite's own `*prediction-tolerance*' restated rather than a new 
                          (cl-gbdt:dimension-mismatch () t))))))
           (cl-gbdt:close-backend backend))))))
 
+(defparameter *lightgbm-objective-keys*
+  '(:objective :objective-type :app :application :loss)
+  "Every key LightGBM reads as `objective', restated here rather than imported from
+`cl-gbdt/src/config/objective''s `*objective-parameter-names*' -- the same way
+`cl-gbdt/tests/functional/categorical-features''s `*refused-parameter-keys*' restates
+`*categorical-feature-parameter-names*'. A test that imported the source's own list would
+agree with it by construction and could never catch the list drifting away from the library.
+
+The four aliases come from the vendored LightGBM 4.7.0 itself: `LGBM_DumpParamAliases'
+returns that library's parameter-to-alias map, and its `objective' entry is exactly
+`[\"app\", \"loss\", \"application\", \"objective_type\"]'. Measured against the same
+library's behaviour before this list was written: each of the four naming \"binary\" trains
+the model `objective=\"binary\"' trains, element for element, while `obj', `apps',
+`applications', `losses', `loss_function', `objective_function' and `app_type' all leave the
+trained numbers identical to a run naming no objective at all.
+
+What this test can and cannot show, stated plainly because the two are easy to confuse.
+LightGBM resolves the canonical `objective=none' AHEAD of an alias in the same parameter
+string: measured, `app=binary objective=none' trains the custom model, and even
+`app=no-such-objective objective=none' builds a booster without complaint, where
+`app=no-such-objective' alone fails `LGBM_BoosterCreate' with `Unknown objective type name'.
+So a surviving alias is INVISIBLE from outside the library, and no run this file could write
+would tell the dropped list from the literal one. That is exactly why the aliases had to be
+dropped rather than left to win a race on an undocumented precedence rule, and it is why the
+DROP itself is pinned in layer 1, by `cl-gbdt/tests/objective''s
+`objective-parameters-drops-every-spelling-lightgbm-honours'. What the loop below pins is the
+BEHAVIOUR a caller sees -- a run naming any of the five trains the custom model -- which
+before the drop was inherited from that precedence rule and is now asserted.")
+
 (deftest lightgbm-forces-its-objective-parameter-to-none
   ;; The override, observed rather than asserted from the source: a run that names
   ;; `objective=regression' in :PARAMETERS while passing an :OBJECTIVE function must train,
   ;; and must train the same model as one that named no objective at all. Without the
   ;; override LightGBM refuses the update outright -- `Check failed: objective_function_ ==
   ;; nullptr' -- and nothing trains.
+  ;;
+  ;; Run for the canonical spelling AND for each of LightGBM's four aliases for it, since
+  ;; each is a live key in the vendored library -- see *LIGHTGBM-OBJECTIVE-KEYS*.
   (support:with-backend-library (:lightgbm)
     (let ((backend (cl-gbdt:open-backend :lightgbm)))
       (unwind-protect
@@ -520,15 +762,19 @@ this one is the suite's own `*prediction-tolerance*' restated rather than a new 
                             backend dataset :num-rounds 4
                             :parameters (cdr (assoc :lightgbm *custom-regression-parameters*))
                             :objective (squared-error-objective labels*)))
-                 (cl-gbdt:with-booster
-                     (overridden
-                      (cl-gbdt:train
-                       backend dataset :num-rounds 4
-                       :parameters (list* :objective "regression"
-                                          (cdr (assoc :lightgbm
-                                                      *custom-regression-parameters*)))
-                       :objective (squared-error-objective labels*)))
-                   (ok (support:predictions-agree-p
-                        (cl-gbdt:predict silent matrix :kind :raw)
-                        (cl-gbdt:predict overridden matrix :kind :raw)))))))
+                 (let ((expected (cl-gbdt:predict silent matrix :kind :raw)))
+                   (dolist (key *lightgbm-objective-keys*)
+                     (testing (format nil "~S in :parameters loses to the custom objective"
+                                      key)
+                       (cl-gbdt:with-booster
+                           (overridden
+                            (cl-gbdt:train
+                             backend dataset :num-rounds 4
+                             :parameters (list* key "regression"
+                                                (cdr (assoc :lightgbm
+                                                            *custom-regression-parameters*)))
+                             :objective (squared-error-objective labels*)))
+                         (ok (support:predictions-agree-p
+                              expected
+                              (cl-gbdt:predict overridden matrix :kind :raw))))))))))
         (cl-gbdt:close-backend backend)))))

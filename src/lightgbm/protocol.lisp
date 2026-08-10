@@ -402,23 +402,45 @@ never asked for the feature."
 
 (defun %check-custom-objective (backend objective)
   "Signal `capability-unavailable' when OBJECTIVE is non-NIL and BACKEND does not provide
-`:custom-objective'.
+`:custom-objective', and `unsupported-argument' when OBJECTIVE is non-NIL and is not a
+function.
 
-Only a non-NIL OBJECTIVE ever reaches the error: NIL means what every caller has always got,
-the library computing its own gradient, so a caller who passes nothing needs no capability.
+Only a non-NIL OBJECTIVE ever reaches either error: NIL means what every caller has always
+got, the library computing its own gradient, so a caller who passes nothing needs no
+capability and cannot fail the type check either.
 Policy section 7 requires the operation itself to re-check rather than trusting the caller to
 have asked `backend-supports-p' first -- the same rule `%check-sparse-input',
 `%check-missing-value' and `%check-categorical-features' above follow for their own. Mirrors
 `cl-gbdt/src/xgboost/protocol''s function of the same name.
 
-Unlike `%check-missing-value' and `%check-categorical-features', whose answers this backend
-declares unconditionally, this one's is PROBED: the three C functions `train''s custom loop
+Unlike `%check-categorical-features', whose answer this backend declares unconditionally in
+`*provided-capabilities*', this one's is PROBED: the three C functions `train''s custom loop
 needs are named in `*optional-symbols*' rather than `*required-symbols*', so a LightGBM
 missing any of them opens normally and reads false here. See that variable's own docstring
-for why the entry belongs there and not in `*provided-capabilities*'."
-  (when (and objective (not (backend-supports-p backend :custom-objective)))
-    (error 'capability-unavailable
-           :backend (backend-name backend) :capability :custom-objective)))
+for why the entry belongs there and not in `*provided-capabilities*'. `%check-missing-value'
+is a third case again, and neither of those two: `:missing-value' appears in NEITHER list on
+this backend, so its false answer is the ABSENCE of a declaration rather than a declaration --
+see `backend-supports-p', which reads a capability missing from the plist as unavailable.
+
+The type check is here, beside the capability check, rather than left to the `funcall' in
+`train''s loop. By then the booster handle exists and one iteration's scores have already
+been read out of the library, so `:objective 42' would surface as SBCL's own untyped
+`type-error' from mid-loop -- naming neither the argument nor the backend -- where every
+other malformed argument on this backend signals `unsupported-argument' before any foreign
+call. `functionp' rather than a `function' type declaration: a symbol naming a function is
+NOT accepted, since `funcall' would resolve it against whatever global definition happened to
+be in force at each iteration rather than against what the caller passed."
+  (when objective
+    (unless (backend-supports-p backend :custom-objective)
+      (error 'capability-unavailable
+             :backend (backend-name backend) :capability :custom-objective))
+    (unless (functionp objective)
+      (error 'unsupported-argument
+             :backend (backend-name backend)
+             :argument "train's :objective"
+             :reason (format nil "the custom objective must be a function of one argument, ~
+                                  or NIL for the library's own gradient -- got ~S"
+                             objective)))))
 
 ;;; ---------------------------------------------------------------------------
 ;;; Datasets

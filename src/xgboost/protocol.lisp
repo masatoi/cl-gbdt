@@ -102,6 +102,7 @@
                 #:missing-foreign-symbols
                 #:foreign-call-error
                 #:missing-training-set
+                #:unsupported-argument
                 #:capability-unavailable)
   (:import-from #:cl-gbdt/src/data
                 #:csr-matrix
@@ -330,10 +331,12 @@ who passes nothing needs no capability."
 
 (defun %check-custom-objective (backend objective)
   "Signal `capability-unavailable' when OBJECTIVE is non-NIL and BACKEND does not provide
-`:custom-objective'.
+`:custom-objective', and `unsupported-argument' when OBJECTIVE is non-NIL and is not a
+function.
 
-Only a non-NIL OBJECTIVE ever reaches the error: NIL means what every caller has always got,
-the library computing its own gradient, so a caller who passes nothing needs no capability.
+Only a non-NIL OBJECTIVE ever reaches either error: NIL means what every caller has always
+got, the library computing its own gradient, so a caller who passes nothing needs no
+capability and cannot fail the type check either.
 Policy section 7 requires the operation itself to re-check rather than trusting the caller to
 have asked `backend-supports-p' first -- the same rule `%check-sparse-input',
 `%check-missing-value' and `%check-categorical-features' above follow for their own. Mirrors
@@ -351,10 +354,29 @@ against `reg:squarederror' when they asked for their own loss, which is the sile
 policy section 7 forbids. That matters more here than on LightGBM: this backend does not
 rewrite PARAMETERS, so an ignored OBJECTIVE would leave a perfectly ordinary configured
 objective training a perfectly ordinary model, with nothing about the result to show the
-caller's function was never called."
-  (when (and objective (not (backend-supports-p backend :custom-objective)))
-    (error 'capability-unavailable
-           :backend (backend-name backend) :capability :custom-objective)))
+caller's function was never called.
+
+The type check is here, beside the capability check, rather than left to the `funcall' in
+`train''s loop. By then the booster handle exists and one iteration's scores have already
+been read out of the library -- at the cost of a full prediction pass, on this backend -- so
+`:objective 42' would surface as SBCL's own untyped `type-error' from mid-loop, naming
+neither the argument nor the backend, where every other malformed argument here signals
+`unsupported-argument' before any foreign call. `functionp' rather than a `function' type
+declaration: a symbol naming a function is NOT accepted, since `funcall' would resolve it
+against whatever global definition happened to be in force at each iteration rather than
+against what the caller passed. Mirrors `cl-gbdt/src/lightgbm/protocol''s guard exactly, down
+to the ARGUMENT string, so the two backends refuse the same value with the same report."
+  (when objective
+    (unless (backend-supports-p backend :custom-objective)
+      (error 'capability-unavailable
+             :backend (backend-name backend) :capability :custom-objective))
+    (unless (functionp objective)
+      (error 'unsupported-argument
+             :backend (backend-name backend)
+             :argument "train's :objective"
+             :reason (format nil "the custom objective must be a function of one argument, ~
+                                  or NIL for the library's own gradient -- got ~S"
+                             objective)))))
 
 ;;; ---------------------------------------------------------------------------
 ;;; Datasets
