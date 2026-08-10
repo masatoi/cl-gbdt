@@ -17,8 +17,8 @@ file if you have it locally).
 `make-dataset`, `dataset-num-rows`, `dataset-num-features`, `train`,
 `update-one-iteration`, `predict`, `save-model`, `load-model`, `model-to-string`,
 `feature-importance`, `evaluation`, `free-dataset` and `free-booster` -- against the real
-LightGBM and XGBoost shared libraries, exercised by 718 functional assertions across 13 test
-files (design doc section 12, layer 2), in addition to 477 assertions across 19 test files
+LightGBM and XGBoost shared libraries, exercised by 762 functional assertions across 13 test
+files (design doc section 12, layer 2), in addition to 488 assertions across 19 test files
 that need no shared library at all (layer 1). `train` also returns a `training-report` as
 its secondary value, and takes
 `:early-stopping` to end a run once a watched metric stops improving -- see
@@ -3041,6 +3041,47 @@ metric list for every dataset they retain, so this project's own assertion of th
 the keying is at layer 1, over a written entry list rather than a measured one
 (`check-metric-name-collision-allows-a-name-the-library-uses-elsewhere` in
 `tests/custom-metric.lisp`).
+
+`:evaluation` must return **the same name for a given index on every iteration** of the run.
+Two indices may return two different names; what is refused is one index's name changing
+between iterations. The first iteration's name is remembered per index, and a later iteration
+returning a different one for that index signals `unsupported-argument` naming `:evaluation`,
+mid-run and at the very call that changed it:
+
+```
+train's :evaluation is not supported by XGBOOST: the custom metric returned name
+"another_metric" for dataset index 0 after returning "my_logloss" for it; one name per dataset
+index is required for the whole run.
+```
+
+This is a requirement rather than a nicety, and it is what keeps `train`'s promise that
+**every series is exactly `training-report-num-rounds` long** true of a caller's own series as
+well as the library's. A series holds one value per completed iteration, keyed by the (INDEX,
+NAME) pair, so a name that varies asks for something no series can be:
+
+- Varying **without ever colliding** gives one series per name it took, each pushed only on
+  the iterations that name appeared in -- several series, all shorter than the run, each
+  misaligned with the iterations its values were measured at.
+- Varying **into the library's own name** for that index is the case the collision check
+  above cannot reach, since that check runs on the first iteration only: a caller returning a
+  safe name then and a colliding one afterwards walks straight past it. From the iteration the
+  two names meet, one key collects two values per iteration and its series comes out
+  `1 + 2(N-1)` values long over N rounds -- *longer* than `training-report-num-rounds` says the
+  run was, and silently. It would also break the "at most one entry matches a given (index,
+  metric) pair" invariant `:early-stopping` reads under: `find-if` returns the first of the
+  two, so a watcher would read one value per iteration and never learn the other existed
+  (`%find-watched-entry` in `src/training/early-stopping.lisp`).
+
+Pinning the name closes both, and closes the second without a second collision check: once
+each index's name is fixed at the first iteration, the only name that can ever reach the
+library's is the one the collision check already compared. Like the collision check it is
+backend-neutral -- `make-metric-name-pin` and `pin-metric-name`
+(`src/training/custom-metric.lisp`), one pin per `train` call.
+
+A NAME that is not a string at all, or a VALUE that is neither a real nor `NIL`, is refused
+the same way and at the same point in the run -- `custom-metric-entry`, in that same file --
+so `(values :my-metric 0.25d0)` and `(values "my_logloss" "0.25")` each signal
+`unsupported-argument` naming `:evaluation` rather than reaching the report.
 
 `:evaluation` runs inside `train`'s own floating-point-trap mask, on the same terms
 `:objective` does (see [Custom objective](#custom-objective)): the caller's own arithmetic
