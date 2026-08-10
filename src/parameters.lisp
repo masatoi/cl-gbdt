@@ -3,7 +3,8 @@
 (uiop:define-package #:cl-gbdt/src/parameters
   (:use #:cl)
   (:import-from #:cl-gbdt/src/conditions #:data-error)
-  (:export #:normalize-parameters))
+  (:export #:normalize-parameters
+           #:parameter-name))
 
 (in-package #:cl-gbdt/src/parameters)
 

@@ -203,6 +203,11 @@ caller who asked for something and would otherwise have it quietly dropped, and 
 asked for -- and a re-check added for symmetry with those four would make `predict' signal
 outright on a backend that simply has less to say.
 
+`:custom-objective' is the ninth name here, and newest: nothing re-checks it yet, because
+`train' does not yet take the `:objective' argument a false answer would refuse. The check
+arrives together with that argument, and belongs in this paragraph's count once it does --
+not before.
+
 `:evaluation-history' is true on both backends: `train' records one, and each backend names
 the capability in its own `*provided-capabilities*' rather than in `*optional-symbols*',
 because the C functions it needs are already in that backend's `*required-symbols*' and a
