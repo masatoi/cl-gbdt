@@ -36,8 +36,8 @@ over both backends.
 
 **Status: functional.** Both backends (`cl-gbdt/lightgbm`, `cl-gbdt/xgboost`) implement
 all 13 generic functions of the unified API -- `make-dataset`, `train`, `predict`, and
-the rest -- against the real shared libraries, exercised by 527 functional assertions across
-11 test files in `cl-gbdt/tests/functional` (layer 2) on top of 418 assertions across 17
+the rest -- against the real shared libraries, exercised by 564 functional assertions across
+12 test files in `cl-gbdt/tests/functional` (layer 2) on top of 433 assertions across 18
 test files that need no shared library at all (layer 1). `train` returns a `training-report`
 as its secondary value, and takes `:record-history` (default `t`) to turn the per-iteration
 recording that fills it off -- recording roughly doubles LightGBM's `train` time, and on
@@ -66,8 +66,14 @@ the backend states for the result it just wrote as a second value -- a list of i
 `:prediction-shape` capability that both backends provide; XGBoost reads its own
 `out_shape`/`out_dim` back from the library and states it verbatim, while LightGBM has no
 such call and derives what it can, stating `NIL` for `:leaf-index` -- see
-`README.markdown`'s Prediction shape section. Core `cl-gbdt` still
-loads, and is still tested, without
+`README.markdown`'s Prediction shape section. `train` also takes `:objective`, a function
+that turns the current raw scores into a gradient and a Hessian so a run boosts against the
+caller's own loss, gated on the `:custom-objective` capability that both backends provide;
+LightGBM flattens the array group-major and XGBoost row-major, the wrapper absorbing the
+difference, and on LightGBM `:objective` overrides any `objective` in `:parameters`, forcing
+it to `"none"`, since `LGBM_BoosterUpdateOneIterCustom` refuses to run while the booster
+holds an objective function at all -- see `README.markdown`'s Custom objective section. Core
+`cl-gbdt` still loads, and is still tested, without
 either `liblightgbm.so` or `libxgboost.so` present: a shared library is opened only by
 an explicit `open-backend` call, from whichever backend system you load on top of the
 core. See `README.markdown`'s Usage section for a worked example, its system table, and
