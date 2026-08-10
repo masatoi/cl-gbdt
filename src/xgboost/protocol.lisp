@@ -41,6 +41,7 @@
                 #:%resolve-num-iteration
                 #:%predict-config-json
                 #:%total-element-count
+                #:%reported-shape
                 #:%predict-ncol
                 #:%predict-from-dmatrix
                 #:%predict-from-csr
@@ -847,6 +848,21 @@ by the row count, guarded by `%predict-ncol' -- the same derivation
 tells a three-class `multi:softprob' model's predictions apart from a binary model's. Both
 entry points report it the same way, `\"strict_shape\":true' being set for both.
 
+That same report is also RETURNED, as this method's second value: `%reported-shape' reads
+`out_shape' back as a list of integers instead of only multiplying it out, and neither entry
+point interprets or reshapes it. It is never NIL here: `out_dim' was measured 2 for `:normal'
+and `:raw', 3 for `:contrib' and 4 for `:leaf-index' on both entry points, so
+`%reported-shape''s empty-loop case -- a zero DIM -- does not arise. This backend declares
+`:prediction-shape' in `*provided-capabilities*' to say so, and nothing re-checks that
+declaration: there is no argument to refuse, and what the declaration says is that the
+mechanism is present, not that the shape is non-NIL. Measured against the vendored library, the
+shape is RICHER than the first value's own dimensions for two kinds: a four-round three-class
+model over four features reports (rows 4 3 1) for `:leaf-index' where the array is rows x 12, and
+(rows 3 5) for `:contrib' where the array is rows x 15. A four-round BINARY model over three
+features reports (rows 4 1 1) and (rows 1 4) -- multidimensional there too, its one output
+group notwithstanding -- so this is not a multiclass-only difference. The first value is
+untouched by any of it.
+
 `out_result' is XGBoost's own memory, valid only until the next call into this booster,
 so every element is copied out, coerced from `single-float' to `double-float', before
 this returns.
@@ -868,9 +884,12 @@ one itself."
              (%resolve-best-num-iteration booster num-iteration "predict's :num-iteration"))))
       (when missing
         (%check-missing-value (handle-backend booster)))
-      ;; Reading `out_shape'/`out_dim'/`out_result' back into the result array is identical
-      ;; for both entry points and lives here once; CALL is the only thing that differs
-      ;; between them, which is exactly how much of this method a `csr-matrix' changes.
+      ;; Reading `out_shape'/`out_dim'/`out_result' back into the result array, and back out
+      ;; as this method's two return values, is identical for both entry points and lives
+      ;; here once; CALL is the only thing that differs between them, which is exactly how
+      ;; much of this method a `csr-matrix' changes. Both entry points report the shape the
+      ;; same way -- `"strict_shape":true' is set for both -- so neither branch special-cases
+      ;; the KIND, and the two KINDs the sparse one refuses never get here at all.
       (flet ((predict-into (nrow call)
                (cffi:with-foreign-objects ((out-shape :pointer) (out-dim :uint64)
                                            (out-result :pointer))
@@ -878,6 +897,10 @@ one itself."
                  (let* ((dim (cffi:mem-ref out-dim :uint64))
                         (shape-pointer (cffi:mem-ref out-shape :pointer))
                         (element-count (%total-element-count shape-pointer dim))
+                        ;; Read off the same pointer as the count above and before anything
+                        ;; else touches this booster: `out_shape' is XGBoost's own memory,
+                        ;; valid only until the next call into it, as `out_result' is.
+                        (shape (%reported-shape shape-pointer dim))
                         (ncol-result (%predict-ncol element-count nrow))
                         (result-buffer (cffi:mem-ref out-result :pointer))
                         (result (make-array (list nrow ncol-result)
@@ -888,7 +911,7 @@ one itself."
                              (coerce (cffi:mem-aref result-buffer :float
                                                     (+ (* row ncol-result) col))
                                      'double-float))))
-                   result))))
+                   (values result shape)))))
         (if (typep matrix 'csr-matrix)
             (progn
               (%check-sparse-input (handle-backend booster))

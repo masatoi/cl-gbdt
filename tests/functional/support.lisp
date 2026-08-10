@@ -275,17 +275,20 @@ parameters recorded, not an inventory of every gap in the suite.")
 *PREDICTION-TOLERANCE*, element for element.
 
 Signals an error when they have different SHAPES rather than answering NIL. Every COMPARISON
-caller -- every call that exists to weigh two real `cl-gbdt:predict' results against each
-other -- passes two of the same row count and the same column count. Those comparisons take
-three shapes: two boosters' answers about one matrix; one booster's answers about two forms of
-one matrix -- a dense one against its `dense-to-csr' form, a dense one against the
-`omitted-entry-csr' form tests/functional/sparse-input.lisp builds for itself, or a matrix
-holding a sentinel against one holding a NaN; and one booster's two answers about ONE matrix
-under different `cl-gbdt:predict' options -- :KIND :RAW against :NORMAL, a limited
-:NUM-ITERATION against an unlimited one, a :MISSING sentinel honoured against the same matrix
-read literally. In all of them a shape mismatch is a broken test rather than a disagreement
-about numbers, and answering NIL let `(not (predictions-agree-p ...))', which several tests
-assert, pass for the wrong reason.
+caller -- every call that exists to weigh two results against each other -- passes two of the
+same row count and the same column count. Those comparisons take four shapes: two boosters'
+answers about one matrix; one booster's answers about two forms of one matrix -- a dense one
+against its `dense-to-csr' form, a dense one against the `omitted-entry-csr' form
+tests/functional/sparse-input.lisp builds for itself, or a matrix holding a sentinel against
+one holding a NaN; one booster's two answers about ONE matrix under different `cl-gbdt:predict'
+options -- :KIND :RAW against :NORMAL, a limited :NUM-ITERATION against an unlimited one, a
+:MISSING sentinel honoured against the same matrix read literally; and, in
+tests/functional/prediction-shape.lisp's SHAP-sum test, a `:contrib' result's per-output-group
+sums against that same booster's `:raw' result -- not two calls to `cl-gbdt:predict' at all,
+but built ROWS x NUM-CLASSES to match the `:raw' shape it is compared against, so it cannot
+reach the branch either. In all of them a shape mismatch is a broken test rather than a
+disagreement about numbers, and answering NIL let `(not (predictions-agree-p ...))', which
+several tests assert, pass for the wrong reason.
 
 Measured rather than assumed, as far as a suite run can measure it: with the error branch in
 place the whole layer-2 suite is green, so no COMPARISON call in it reached the branch -- one

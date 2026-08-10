@@ -297,7 +297,7 @@ but not predict from one would have been told a half-truth. Listing both from th
 the answer never changes meaning as the sparse path grows.")
 
 (defparameter *provided-capabilities*
-  '(:evaluation-history :early-stopping :categorical-features)
+  '(:evaluation-history :early-stopping :categorical-features :prediction-shape)
   "Capabilities this backend provides unconditionally, recorded true at `open-backend'
 without being probed -- `probe-capabilities''s PROVIDED, which says why a probe cannot
 express this.
@@ -322,6 +322,30 @@ this backend's parameter string, `LGBM_DatasetCreateFromMat' and
 `LGBM_DatasetCreateFromCSR', are already accounted for -- the first in `*required-symbols*'
 above, the second in `*optional-symbols*' under `:sparse-input' -- so a library that opens
 at all can be told which of its columns hold categories.
+
+`:prediction-shape' is here for a fourth reason, and one that sets it apart from XGBoost's
+entry of the same name: this library states no shape whatsoever.
+`LGBM_BoosterCalcNumPredict' -- in `*required-symbols*' above already, `predict' having always
+sized its output buffer from it -- returns an ELEMENT COUNT and nothing more, where XGBoost's
+prediction entry points write an `out_shape'/`out_dim' pair its wrapper reads straight back. So
+`predict''s second value is DERIVED here, and what the capability says on this backend is that
+the mechanism is present, NOT that the library stated anything. Measured, and asserted kind by
+kind in tests/functional/prediction-shape.lisp: `:normal' and `:raw' come back as the result
+array's own dimensions, `:contrib' as the three axes
+`cl-gbdt/src/config/prediction-shape''s `contrib-shape' divides that element count into, and
+`:leaf-index' as NIL -- its sub-layout has no property this project can check, and a shape
+asserted without one would be a guess in a measurement's clothes. All of that is this wrapper's
+own Lisp, present in every image that has it, so a probe would have nothing to look for even
+were there a symbol to look for it in.
+
+No operation re-checks it. Nothing takes an argument asking for a shape, so a backend answering
+false returns NIL as `predict''s second value and predicts exactly as it otherwise would,
+rather than signalling. Four of the eight names in `cl-gbdt/src/backend''s
+`*known-capabilities*' ARE re-checked by the operation they gate -- `:sparse-input',
+`:missing-value' and `:categorical-features', by `%check-sparse-input',
+`%check-missing-value' and `%check-categorical-features' in `cl-gbdt/src/lightgbm/protocol',
+and `:model-slicing', by XGBoost's `slice-model' -- and the other four are re-checked nowhere.
+See `*known-capabilities*' itself, where that split is stated in full.
 
 Every name here must be registered in `cl-gbdt/src/backend''s `*known-capabilities*', or
 `backend-supports-p' would signal `unknown-capability' for a capability the plist claims;
