@@ -208,9 +208,9 @@ outright on a backend that simply has less to say.
 Where a re-checked name's answer COMES from varies and does not affect that split: a backend
 declares it in `*provided-capabilities*' when nothing is left to look up, and names its C
 functions in `*optional-symbols*' when a library that opens perfectly well can still lack
-them -- `:sparse-input', `:model-slicing' and LightGBM's `:custom-objective' are probed that
-way, `:missing-value' and `:categorical-features' declared. A false answer needs the same
-re-check either way.
+them -- `:sparse-input', `:model-slicing' and `:custom-objective' are probed that way on
+every backend providing them, `:missing-value' and `:categorical-features' declared. A false
+answer needs the same re-check either way.
 
 `:evaluation-history' is true on both backends: `train' records one, and each backend names
 the capability in its own `*provided-capabilities*' rather than in `*optional-symbols*',

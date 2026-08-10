@@ -338,45 +338,52 @@ this one is the suite's own `*prediction-tolerance*' restated rather than a new 
   ;; THE FLATTENING TEST, and the only test in this file with more than one output group. Every
   ;; other test here runs at GROUPS = 1, where `(+ (* group rows) row)' and
   ;; `(+ (* row groups) group)' are THE SAME INDEX -- so a backend that flattened the caller's
-  ;; arrays in the wrong order would pass all of them green. Three docstrings state the
-  ;; group-major layout as measured fact (`%training-scores' and `%update-one-iteration-custom'
-  ;; in src/lightgbm/native.lisp, and `train' in src/lightgbm/protocol.lisp); this is what
-  ;; holds them.
+  ;; arrays in the wrong order would pass all of them green. SIX docstrings state a layout as
+  ;; measured fact -- group-major in `%training-scores' and `%update-one-iteration-custom' in
+  ;; src/lightgbm/native.lisp and `train' in src/lightgbm/protocol.lisp, row-major in
+  ;; `%training-scores' and `%train-one-iteration-custom' in src/xgboost/native.lisp and `train'
+  ;; in src/xgboost/protocol.lisp; this is what holds all six. The two backends want OPPOSITE
+  ;; orders and the caller writes neither: OBJECTIVE is handed, and returns, a (ROWS GROUPS)
+  ;; array on both.
   ;;
   ;; The measurement that chose this gradient, taken during planning at ONE iteration on this
-  ;; fixture, `num_leaves' 7 and `learning_rate' 1.0 -- the maximum a group's raw score moved:
+  ;; fixture ON LIGHTGBM, `num_leaves' 7 and `learning_rate' 1.0 -- the maximum a group's raw
+  ;; score moved. Figures from one backend, never compared against the other's; XGBoost's own
+  ;; are its own, and the ZEROS are all this test reads either way:
   ;;
-  ;;   group-major (correct)  0.2  / 0    / 0     -- only group 0 moved
-  ;;   row-major   (broken)   0.25 / 0.25 / 0.25  -- smeared across all three
+  ;;   group-major (correct there)  0.2  / 0    / 0     -- only group 0 moved
+  ;;   row-major   (broken there)   0.25 / 0.25 / 0.25  -- smeared across all three
   ;;
   ;; The test runs two iterations rather than that one, for the reason below; the figures grow
   ;; but the zeros stay zero, which is the whole of what is asserted.
   ;;
   ;; TWO iterations, and both halves of the flattening are pinned separately. The run's OUTPUT
-  ;; pins `%update-one-iteration-custom' -- which groups the caller's gradient actually reached
-  ;; -- and the SECOND call's own SCORES argument pins `%training-scores', which is the reverse
-  ;; direction and would otherwise have nothing behind it: at iteration 1 every score is 0, so
-  ;; no single-iteration run can tell the two readings of that buffer apart.
+  ;; pins the update function -- which groups the caller's gradient actually reached -- and the
+  ;; SECOND call's own SCORES argument pins `%training-scores', which is the reverse direction
+  ;; and would otherwise have nothing behind it: at iteration 1 every score is 0, so no
+  ;; single-iteration run can tell the two readings of that buffer apart.
   ;;
-  ;; Verified to discriminate rather than assumed to. Each function's index was temporarily
-  ;; flipped to row-major in turn and the whole layer-2 suite re-run; this test failed both
-  ;; times and NOTHING ELSE IN THE SUITE DID, which is the finding that put it here.
+  ;; Verified to discriminate rather than assumed to, ON EACH BACKEND SEPARATELY. Each of that
+  ;; backend's two functions had its index temporarily flipped to the other order in turn and
+  ;; the whole layer-2 suite re-run; this test failed all four times and NOTHING ELSE IN THE
+  ;; SUITE DID, which is the finding that put it here. The two backends produced the identical
+  ;; pair of signatures, one flip for one:
   ;;
-  ;;   `%update-one-iteration-custom' flipped  both quiet-group assertions fail -- the wrong
-  ;;                                          groups were written, so both the scores read
-  ;;                                          back and the final predictions smear
-  ;;   `%training-scores' flipped              only the SCORES quiet-group assertion fails.
-  ;;                                          The predictions are untouched, because this
-  ;;                                          objective derives its gradient from the ROW
-  ;;                                          INDEX and never reads SCORES -- which is exactly
-  ;;                                          why the scores assertion is not redundant with
-  ;;                                          the prediction one and has to be made separately
+  ;;   the UPDATE function flipped   both quiet-group assertions fail -- the wrong groups were
+  ;;   (`%update-one-iteration-       written, so both the scores read back and the final
+  ;;   custom' / `%train-one-         predictions smear
+  ;;   iteration-custom')
+  ;;   `%training-scores' flipped    only the SCORES quiet-group assertion fails. The
+  ;;                                 predictions are untouched, because this objective derives
+  ;;                                 its gradient from the ROW INDEX and never reads SCORES --
+  ;;                                 which is exactly why the scores assertion is not redundant
+  ;;                                 with the prediction one and has to be made separately
   ;;
-  ;; Backend-neutral and guarded like every other test here, so it costs XGBoost nothing while
-  ;; that backend refuses the argument and covers its ROW-major absorption with no edit once it
-  ;; does not. Nothing is compared between backends: `column-spread' asks how one group varies
-  ;; across its own rows, within one booster, which is a question neither library's
-  ;; `base_score' convention enters into.
+  ;; Backend-neutral and guarded like every other test here, which is what let it cover
+  ;; XGBoost's ROW-major absorption with no edit to this form at all on the day that backend
+  ;; stopped refusing the argument. Nothing is compared between backends: `column-spread' asks
+  ;; how one group varies across its own rows, within one booster, which is a question neither
+  ;; library's `base_score' convention enters into.
   (dolist (name '(:lightgbm :xgboost))
     (support:with-backend-library (name)
       (let ((backend (cl-gbdt:open-backend name)))
