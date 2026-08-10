@@ -17,9 +17,10 @@ file if you have it locally).
 `make-dataset`, `dataset-num-rows`, `dataset-num-features`, `train`,
 `update-one-iteration`, `predict`, `save-model`, `load-model`, `model-to-string`,
 `feature-importance`, `evaluation`, `free-dataset` and `free-booster` -- against the real
-LightGBM and XGBoost shared libraries, exercised by 480 functional assertions (design doc
-section 12, layer 2), in addition to 411 assertions that need no shared library at all
-(layer 1). `train` also returns a `training-report` as its secondary value, and takes
+LightGBM and XGBoost shared libraries, exercised by 527 functional assertions across 11 test
+files (design doc section 12, layer 2), in addition to 418 assertions across 17 test files
+that need no shared library at all (layer 1). `train` also returns a `training-report` as
+its secondary value, and takes
 `:early-stopping` to end a run once a watched metric stops improving -- see
 [Training report](#training-report) below. `make-dataset` and `predict` also accept a
 `csr-matrix` wherever they accept a dense matrix -- see [Sparse
@@ -29,7 +30,12 @@ XGBoost provides -- see [Missing values](#missing-values) below. `make-dataset` 
 takes `:categorical-features`, the 0-based columns that hold categories rather than
 quantities, gated on the `:categorical-features` capability that both backends provide
 -- `predict` takes no such argument, the trained trees already carrying the category
-sets they split on -- see [Categorical features](#categorical-features) below. See
+sets they split on -- see [Categorical features](#categorical-features) below. `predict`
+also returns the SHAPE the backend states for the result it just wrote as a second value --
+a list of integers in `array-dimensions` order, or `NIL` where the backend states none --
+gated on the `:prediction-shape` capability that both backends provide; XGBoost reads its
+own `out_shape`/`out_dim` back from the library and LightGBM derives what it can, stating
+`NIL` for `:leaf-index` -- see [Prediction shape](#prediction-shape) below. See
 [Usage](#usage) below for a worked example.
 
 Loading `cl-gbdt` itself still does not require either `liblightgbm.so` or
@@ -265,16 +271,18 @@ Four things it promises, each of which is the point of it existing at all:
 ```
 
 `backend-info` reports the whole probed plist, false capabilities included, so it shows
-what was asked as well as what was answered. Six of the seven registered capabilities answer
-true somewhere today: `:model-slicing`, on XGBoost only -- see the model-slicing row in the
-table below -- plus `:evaluation-history` and `:early-stopping` on both backends, since
-`train` records a history and takes `:early-stopping` (see
+what was asked as well as what was answered. Seven of the eight registered capabilities
+answer true somewhere today: `:model-slicing`, on XGBoost only -- see the model-slicing row
+in the table below -- plus `:evaluation-history` and `:early-stopping` on both backends,
+since `train` records a history and takes `:early-stopping` (see
 [Training report](#training-report)), `:sparse-input` on both, since both libraries
 export the CSR entry points it names (see [Sparse input](#sparse-input-csr-matrices)),
-`:missing-value` on XGBoost only (see [Missing values](#missing-values)), and
-`:categorical-features` on both (see [Categorical features](#categorical-features)). The
-seventh, `:multidimensional-feature-score`, is registered and false everywhere, which says
-"not supported yet" rather than "never heard of it".
+`:missing-value` on XGBoost only (see [Missing values](#missing-values)),
+`:categorical-features` on both (see [Categorical features](#categorical-features)), and
+`:prediction-shape` on both, since `predict` states a shape for the result it just predicted
+on both libraries (see [Prediction shape](#prediction-shape)). The eighth,
+`:multidimensional-feature-score`, is registered and false everywhere, which says "not
+supported yet" rather than "never heard of it".
 
 `:evaluation-history` is true unconditionally rather than probed. The C functions behind it
 are in each backend's `*required-symbols*`, so a library missing them never opens at all
@@ -1898,6 +1906,293 @@ untouched by the corrupted row, stays bit-identical) -- a real difference, if a 
 this fixture, from the model having one fewer valid example of column 0 to learn category 0
 from. The wrapper validates the *indices* `:categorical-features` names; it never validates
 the *values* sitting in the columns those indices point at.
+
+### Prediction shape
+
+`predict` returns two values. The FIRST is exactly what it has always been -- the same
+`(simple-array double-float (* *))`, same dimensions, same elements, for every `KIND`, dense
+or sparse -- untouched by anything below. The SECOND is new: the SHAPE the backend states for
+the result it just wrote, as a list of integers in `array-dimensions` order, or `NIL` where
+the backend states none. A caller who ignores it sees behaviour identical to before this
+feature existed.
+
+`:prediction-shape` is the capability, answerable through `backend-supports-p` and true on
+both vendored backends -- but **no operation refuses on it**. There is no argument asking for
+a shape, so a false answer would mean only that the second value is always `NIL`; `predict`
+would keep predicting exactly as it does today, on every `KIND`, dense or sparse. That is not
+the general rule for a capability in this API -- four of the eight registered capabilities
+are re-checked by the operation they gate and signal `capability-unavailable` when they read
+false: `:sparse-input`, `:missing-value` and `:categorical-features` (each documented above,
+on the operation that checks it) and `:model-slicing` (see [Asking a backend what it can
+do](#asking-a-backend-what-it-can-do)). `:prediction-shape` is simply not one of those four,
+because it gates nothing a caller asks for.
+
+The two backends fill the second value from opposite directions. XGBoost's prediction entry
+points write an `out_shape`/`out_dim` pair, and `predict` reads that pair straight back and
+states exactly what the library said. LightGBM's do not -- `LGBM_BoosterCalcNumPredict`
+returns an element count and nothing else -- so LightGBM's second value is DERIVED, and only
+as far as the derivation can go: `:normal` and `:raw` state the result array's own
+`array-dimensions` (there is nothing to add to what the array already says), `:contrib` is
+derived from that element count, the row count, and a further library call this derivation
+makes, `LGBM_BoosterGetNumFeature`, and `:leaf-index` states `NIL` -- see below for why.
+
+```lisp
+(ql:quickload '(:cl-gbdt :cl-gbdt/lightgbm :cl-gbdt/xgboost) :silent t)
+
+;; Eighteen rows, four columns, three classes, six rows per class -- large enough that
+;; :leaf-index and :contrib's extra axes (rounds, output groups, features+1) are all
+;; different numbers, so a reader cannot mistake one axis for another by coincidence.
+(defparameter *shape-matrix*
+  (let* ((rows-per-class 6) (num-classes 3) (cols 4) (rows (* rows-per-class num-classes))
+         (matrix (make-array (list rows cols) :element-type 'double-float)))
+    (dotimes (row rows)
+      (let ((class (floor row rows-per-class)) (offset (mod row rows-per-class)))
+        (dotimes (col cols)
+          (setf (aref matrix row col) (coerce (+ (* class 10) offset col) 'double-float)))))
+    matrix))
+(defparameter *shape-label*
+  (let* ((rows-per-class 6) (rows (* rows-per-class 3))
+         (label (make-array rows :element-type 'single-float)))
+    (dotimes (row rows) (setf (aref label row) (coerce (floor row rows-per-class) 'single-float)))
+    label))
+
+(defun show-shapes (name backend dataset-parameters booster-parameters)
+  (format t "~A backend-supports-p :prediction-shape => ~S~%"
+          name (cl-gbdt:backend-supports-p backend :prediction-shape))
+  (cl-gbdt:with-dataset (dataset (apply #'cl-gbdt:make-dataset backend *shape-matrix*
+                                        :label *shape-label* dataset-parameters))
+    (cl-gbdt:with-booster (booster (cl-gbdt:train backend dataset :num-rounds 4
+                                                   :parameters booster-parameters))
+      (dolist (kind '(:normal :raw :leaf-index :contrib))
+        (multiple-value-bind (result shape) (cl-gbdt:predict booster *shape-matrix* :kind kind)
+          (format t "~A ~S: array-dimensions ~S, shape ~S~%"
+                  name kind (array-dimensions result) shape))))))
+
+(let ((lgbm (cl-gbdt:open-backend :lightgbm))
+      (xgb (cl-gbdt:open-backend :xgboost)))
+  (show-shapes "LightGBM" lgbm
+               '(:parameters (:min-data-in-leaf 1 :min-data-in-bin 1 :verbose -1))
+               '(:objective "multiclass" :num-class 3 :num-leaves 2 :min-data-in-leaf 1
+                 :min-data-in-bin 1 :verbose -1))
+  (show-shapes "XGBoost " xgb '()
+               '(:objective "multi:softprob" :num-class 3 :max-depth 3 :eta 0.5 :verbosity 0))
+  (cl-gbdt:close-backend lgbm)
+  (cl-gbdt:close-backend xgb))
+```
+
+Output:
+
+```
+LightGBM backend-supports-p :prediction-shape => T
+LightGBM :NORMAL: array-dimensions (18 3), shape (18 3)
+LightGBM :RAW: array-dimensions (18 3), shape (18 3)
+LightGBM :LEAF-INDEX: array-dimensions (18 12), shape NIL
+LightGBM :CONTRIB: array-dimensions (18 15), shape (18 3 5)
+XGBoost  backend-supports-p :prediction-shape => T
+XGBoost  :NORMAL: array-dimensions (18 3), shape (18 3)
+XGBoost  :RAW: array-dimensions (18 3), shape (18 3)
+XGBoost  :LEAF-INDEX: array-dimensions (18 12), shape (18 4 3 1)
+XGBoost  :CONTRIB: array-dimensions (18 15), shape (18 3 5)
+```
+
+`:normal` and `:raw` state `(18 3)` on both backends -- the array's own `array-dimensions`,
+so there is nothing here beyond what the first value already said. `:leaf-index` and
+`:contrib` are where the two backends diverge. XGBoost states four and three axes
+respectively, RICHER than the `18x12` and `18x15` arrays `predict`'s first value returns for
+them: before this branch, `predict` folded those same axes into the array's own two,
+discarding the structure the library had already reported. LightGBM's `:contrib` derives the
+identical three axes arithmetically from a count and two further numbers; its `:leaf-index`
+states `NIL` -- LightGBM's `predict` still returns the `18x12` array for it, exactly as
+before, since no operation refuses on this capability and a `NIL` second value changes
+nothing about the first.
+
+#### Binary models are multidimensional too
+
+The case a reader guesses wrong: `:leaf-index` and `:contrib`'s extra axes look like a
+multiclass artifact in the block above, where every shape happens to mention 3. They are not.
+
+```lisp
+;; A trivially separable eight-row three-column fixture, in the same spirit as
+;; tests/functional/support.lisp's make-separable-dataset -- one output group,
+;; unlike *SHAPE-MATRIX*'s three.
+(defparameter *shape-bin-matrix*
+  (let ((rows 8) (cols 3))
+    (let ((m (make-array (list rows cols) :element-type 'double-float)))
+      (dotimes (i rows)
+        (dotimes (j cols) (setf (aref m i j) (coerce (/ (+ i j) 10) 'double-float))))
+      m)))
+(defparameter *shape-bin-label*
+  (let ((rows 8))
+    (let ((l (make-array rows :element-type 'single-float)))
+      (dotimes (i rows)
+        (setf (aref l i) (if (> (aref *shape-bin-matrix* i 0) 0.35d0) 1.0 0.0)))
+      l)))
+
+(let ((xgb (cl-gbdt:open-backend :xgboost)))
+  (cl-gbdt:with-dataset (dataset (cl-gbdt:make-dataset xgb *shape-bin-matrix*
+                                                        :label *shape-bin-label*))
+    (cl-gbdt:with-booster (booster (cl-gbdt:train xgb dataset :num-rounds 4
+                                     :parameters '(:objective "binary:logistic" :max-depth 2
+                                                   :eta 0.5 :verbosity 0)))
+      (dolist (kind '(:leaf-index :contrib))
+        (multiple-value-bind (result shape)
+            (cl-gbdt:predict booster *shape-bin-matrix* :kind kind)
+          (format t "XGBoost binary model ~S: array-dimensions ~S, shape ~S~%"
+                  kind (array-dimensions result) shape)))))
+  (cl-gbdt:close-backend xgb))
+```
+
+Output:
+
+```
+XGBoost binary model :LEAF-INDEX: array-dimensions (8 4), shape (8 4 1 1)
+XGBoost binary model :CONTRIB: array-dimensions (8 4), shape (8 1 4)
+```
+
+One output group, and both shapes are still multidimensional -- `:leaf-index` four axes,
+`:contrib` three. This fixture is also where the first value alone stops being enough: at
+four rounds over three columns, `:leaf-index`'s folded width (4 rounds x 1 class) and
+`:contrib`'s (1 class x (3 features + 1)) are both 4, so the array `predict` returns is
+`8x4` for either `KIND` -- the same shape, from two calls that mean completely different
+things. The second value is what tells them apart: `(8 4 1 1)` against `(8 1 4)`, not the same
+list even though both multiply out to 4 x 8 elements.
+
+#### What backs LightGBM's derived ordering, and the view built from it
+
+`:contrib`'s three axes are `(rows classes features+1)`, CLASS-MAJOR: every output group's
+own `features+1` contributions sit together, one group after another. The arithmetic in
+`contrib-shape` divides the element count into three numbers exactly as well with the last
+two axes swapped -- `(rows features+1 classes)`, FEATURE-MAJOR -- so the ordering is a claim
+the division alone cannot support. What supports it is a property of what SHAP contributions
+mean: the contributions for one output group sum to that group's own `:raw` score. Grouped
+the way the shape claims, they should; grouped the other way, they should not.
+
+```lisp
+;; *SHAPE-MATRIX* and *SHAPE-LABEL* as defined above.
+(let ((lgbm (cl-gbdt:open-backend :lightgbm)))
+  (cl-gbdt:with-dataset (dataset (cl-gbdt:make-dataset lgbm *shape-matrix* :label *shape-label*
+                                   :parameters '(:min-data-in-leaf 1 :min-data-in-bin 1
+                                                 :verbose -1)))
+    (cl-gbdt:with-booster (booster (cl-gbdt:train lgbm dataset :num-rounds 4
+                                     :parameters '(:objective "multiclass" :num-class 3
+                                                   :num-leaves 2 :min-data-in-leaf 1
+                                                   :min-data-in-bin 1 :verbose -1)))
+      (let ((raw (cl-gbdt:predict booster *shape-matrix* :kind :raw)))
+        (multiple-value-bind (contrib shape) (cl-gbdt:predict booster *shape-matrix* :kind :contrib)
+          (format t "contrib array-dimensions ~S, derived shape ~S~%"
+                  (array-dimensions contrib) shape)
+          ;; The one-form N-dimensional view: SHAPE describes CONTRIB's own buffer, so the
+          ;; displaced array below reads it three-dimensionally without copying anything.
+          (let ((view (make-array shape :element-type 'double-float :displaced-to contrib))
+                (worst 0.0d0))
+            (destructuring-bind (rows classes width) shape
+              (dotimes (row rows)
+                (dotimes (class classes)
+                  (let ((summed (loop :for feature :below width
+                                       :sum (aref view row class feature))))
+                    (setf worst (max worst (abs (- summed (aref raw row class)))))))))
+            (format t "class-major sums vs :raw, worst absolute difference: ~,3E~%" worst))
+          ;; The control: the same buffer, read with the last two axes swapped -- what
+          ;; :contrib's shape would be if the derivation had guessed the wrong order.
+          (let* ((bad-shape (list (first shape) (third shape) (second shape)))
+                 (view (make-array bad-shape :element-type 'double-float :displaced-to contrib))
+                 (worst 0.0d0))
+            (destructuring-bind (rows width classes) bad-shape
+              (dotimes (row rows)
+                (dotimes (class classes)
+                  (let ((summed (loop :for feature :below width
+                                       :sum (aref view row feature class))))
+                    (setf worst (max worst (abs (- summed (aref raw row class)))))))))
+            (format t "feature-major control vs :raw, worst absolute difference: ~,3E~%" worst))))))
+  (cl-gbdt:close-backend lgbm))
+```
+
+Output:
+
+```
+contrib array-dimensions (18 15), derived shape (18 3 5)
+class-major sums vs :raw, worst absolute difference: 2.220d-16
+feature-major control vs :raw, worst absolute difference: 7.783d-1
+```
+
+`(make-array shape :displaced-to contrib)` is the one-form N-dimensional view: `SHAPE`
+already describes `CONTRIB`'s own storage, so the displaced array reads that same buffer
+three-dimensionally, `(aref view row class feature)` in place of hand-rolled row/column
+arithmetic on the flat array -- the point of returning a shape at all, not a footnote to it.
+Read that way, class-major reproduces the raw scores to `2.220d-16`, floating-point roundoff
+and nothing more; read the other way, the feature-major control misses every one of the 54
+`(row, class)` sums by up to `7.783d-1`, some fifteen orders of magnitude larger. That gap is
+what turns the ordering from an assumption into a measurement, held by
+`lightgbm-s-derived-contrib-shape-is-the-one-the-numbers-support` in
+`tests/functional/prediction-shape.lisp`.
+
+`:leaf-index` gets no such derivation. Its element count divides by iterations and output
+groups exactly as `:contrib`'s divides by output groups and width, but a leaf index is an
+opaque identifier -- it sums to nothing and agrees with nothing, so there is no SHAP-sum-style
+property here to check a guessed ordering against. This project has caught an unverified
+ordering claim thirteen times across three branches; asserting a shape with nothing to check
+it against would be exactly that claim again. `NIL` is what `predict`'s second value means
+everywhere a backend states none, and LightGBM's `:leaf-index` result -- the `18x12` array --
+is entirely unaffected by stating it.
+
+#### On a `csr-matrix`, XGBoost states a shape for two kinds out of four
+
+[Sparse input](#sparse-input-csr-matrices) above measures that XGBoost's sparse entry point,
+`XGBoosterPredictFromCSR`, serves only `:normal` and `:raw`, refusing `:contrib` and
+`:leaf-index` with `foreign-call-error` before either produces a result. A shape is read only
+from a call that returned one, so the same split holds here: a `csr-matrix` reaches a shape
+for the two `KIND`s that succeed, and never reaches one for the two that do not.
+
+```lisp
+;; *SHAPE-MATRIX* and *SHAPE-LABEL* as defined above.
+(defun dense-to-csr (matrix)
+  "MATRIX as a `csr-matrix' with every element stored explicitly -- see 'An absent entry
+is not a zero' above for why dropping the zeros would describe a different matrix to XGBoost."
+  (let* ((rows (array-dimension matrix 0)) (cols (array-dimension matrix 1))
+         (indptr (make-array (1+ rows))) (indices (make-array (* rows cols)))
+         (values (make-array (* rows cols))) (pos 0))
+    (dotimes (r rows)
+      (setf (aref indptr r) pos)
+      (dotimes (c cols)
+        (setf (aref indices pos) c) (setf (aref values pos) (aref matrix r c)) (incf pos)))
+    (setf (aref indptr rows) pos)
+    (cl-gbdt:make-csr-matrix :indptr indptr :indices indices :values values :num-columns cols)))
+
+(let ((xgb (cl-gbdt:open-backend :xgboost))
+      (csr (dense-to-csr *shape-matrix*)))
+  (cl-gbdt:with-dataset (dataset (cl-gbdt:make-dataset xgb *shape-matrix* :label *shape-label*))
+    (cl-gbdt:with-booster (booster (cl-gbdt:train xgb dataset :num-rounds 4
+                                     :parameters '(:objective "multi:softprob" :num-class 3
+                                                   :max-depth 3 :eta 0.5 :verbosity 0)))
+      (dolist (kind '(:normal :raw :leaf-index :contrib))
+        (handler-case
+            (multiple-value-bind (result shape) (cl-gbdt:predict booster csr :kind kind)
+              (format t "XGBoost csr-matrix ~S: array-dimensions ~S, shape ~S~%"
+                      kind (array-dimensions result) shape))
+          ;; XGBoost's message carries a multi-line stack trace; line 1 is the refusal.
+          (error (c) (let ((text (princ-to-string c)))
+                       (format t "XGBoost csr-matrix ~S: SIGNALED ~A~%  ~A~%" kind (type-of c)
+                               (subseq text 0 (position #\Newline text)))))))))
+  (cl-gbdt:close-backend xgb))
+```
+
+Output:
+
+```
+XGBoost csr-matrix :NORMAL: array-dimensions (18 3), shape (18 3)
+XGBoost csr-matrix :RAW: array-dimensions (18 3), shape (18 3)
+XGBoost csr-matrix :LEAF-INDEX: SIGNALED FOREIGN-CALL-ERROR
+  XGBoosterPredictFromCSR returned -1: [08:23:10] /__w/xgboost/xgboost/src/learner.cc:1264: Unsupported prediction type:6
+XGBoost csr-matrix :CONTRIB: SIGNALED FOREIGN-CALL-ERROR
+  XGBoosterPredictFromCSR returned -1: [08:23:10] /__w/xgboost/xgboost/src/learner.cc:1264: Unsupported prediction type:2
+```
+
+As in Sparse input above, the bracketed time in XGBoost's two messages is XGBoost's own
+wall-clock stamp, the only part of this output that differs run to run. `:normal` and `:raw`
+state `(18 3)`, identical to the dense call earlier in this section; `:leaf-index` and
+`:contrib` never reach a shape, or a result, at all. LightGBM has no such split -- its CSR
+entry point serves all four `KIND`s, and states, or declines to state, a shape for each of
+them exactly as it does on a dense matrix.
 
 ## Systems
 

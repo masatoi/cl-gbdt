@@ -36,9 +36,10 @@ over both backends.
 
 **Status: functional.** Both backends (`cl-gbdt/lightgbm`, `cl-gbdt/xgboost`) implement
 all 13 generic functions of the unified API -- `make-dataset`, `train`, `predict`, and
-the rest -- against the real shared libraries, exercised by 480 functional assertions in
-`cl-gbdt/tests/functional` (layer 2) on top of 411 assertions that need no shared
-library at all (layer 1). `train` returns a `training-report` as its secondary value, and
+the rest -- against the real shared libraries, exercised by 527 functional assertions across
+11 test files in `cl-gbdt/tests/functional` (layer 2) on top of 418 assertions across 17
+test files that need no shared library at all (layer 1). `train` returns a
+`training-report` as its secondary value, and
 takes `:record-history` (default `t`) to turn the per-iteration recording that fills it
 off -- recording roughly doubles LightGBM's `train` time, and on XGBoost it also makes a
 `:valid-sets` entry the library cannot evaluate fail `train` outright (see
@@ -60,7 +61,13 @@ categories rather than quantities, gated on the `:categorical-features` capabili
 both backends provide; `predict` takes no such argument, the trained trees already
 carrying the category sets they split on, and XGBoost's `tree_method` must be `hist` or
 `approx` since `exact` refuses categorical splits, at `train` rather than `make-dataset`
--- see `README.markdown`'s Categorical features section. Core `cl-gbdt` still
+-- see `README.markdown`'s Categorical features section. `predict` also returns the shape
+the backend states for the result it just wrote as a second value -- a list of integers in
+`array-dimensions` order, or `NIL` where the backend states none -- gated on the
+`:prediction-shape` capability that both backends provide; XGBoost reads its own
+`out_shape`/`out_dim` back from the library and states it verbatim, while LightGBM has no
+such call and derives what it can, stating `NIL` for `:leaf-index` -- see
+`README.markdown`'s Prediction shape section. Core `cl-gbdt` still
 loads, and is still tested, without
 either `liblightgbm.so` or `libxgboost.so` present: a shared library is opened only by
 an explicit `open-backend` call, from whichever backend system you load on top of the
