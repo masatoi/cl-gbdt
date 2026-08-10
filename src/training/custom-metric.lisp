@@ -37,12 +37,20 @@
 
 (in-package #:cl-gbdt/src/training/custom-metric)
 
-(defun custom-metric-entry (name value dataset-index)
+(defun custom-metric-entry (backend-name name value dataset-index)
   "Return (list DATASET-INDEX NAME VALUE), the entry one call to a caller's `:evaluation'
 function contributes to an iteration -- the exact (DATASET-INDEX METRIC-NAME VALUE) shape
 both backends' `%read-evaluation' already produce, which is what lets
 `training-report-from-history' and `observe-iteration' fold this entry in alongside the
 library's own without either needing to know it came from somewhere else.
+
+BACKEND-NAME is the keyword `train''s own backend reports through `backend-name' --
+`:lightgbm' or `:xgboost' -- passed straight through, unexamined, to every
+`unsupported-argument' this signals, exactly as `cl-gbdt/src/training/early-stopping''s
+`train-early-stopping-watcher' and `make-early-stopping-watcher' take and pass their own, so
+a caller sees the backend it actually called `train' on rather than a backend that does not
+exist. Threading a keyword this way costs nothing: both `train' methods already have
+`backend' in scope and can pass `(backend-name backend)'.
 
 Signals `unsupported-argument' naming \"train's :evaluation\" unless NAME is a `string' and
 VALUE is `(or real null)'. NAME must be a string outright, never merely coerced to one: both
@@ -55,19 +63,27 @@ improvement rather than an error, so a caller's own unreadable value is recorded
 way."
   (unless (stringp name)
     (error 'unsupported-argument
+           :backend backend-name
            :argument "train's :evaluation"
            :reason (format nil "a custom metric's name must be a string, got ~S" name)))
   (unless (or (realp value) (null value))
     (error 'unsupported-argument
+           :backend backend-name
            :argument "train's :evaluation"
            :reason (format nil "a custom metric's value must be a real number or NIL, got ~S"
                             value)))
   (list dataset-index name value))
 
-(defun check-metric-name-collision (name dataset-index library-entries)
+(defun check-metric-name-collision (backend-name name dataset-index library-entries)
   "Signal `unsupported-argument' naming \"train's :evaluation\" when LIBRARY-ENTRIES holds an
 entry whose index is DATASET-INDEX and whose name is `string=' to NAME; return (values)
 otherwise.
+
+BACKEND-NAME is the keyword `train''s own backend reports through `backend-name' --
+`:lightgbm' or `:xgboost' -- passed straight through, unexamined, to the
+`unsupported-argument' this signals, the same convention `custom-metric-entry' above and
+`cl-gbdt/src/training/early-stopping''s watcher functions follow: a caller sees the backend it
+actually called `train' on rather than a backend that does not exist.
 
 LIBRARY-ENTRIES is one iteration's worth of the library's OWN (DATASET-INDEX METRIC-NAME
 VALUE) entries -- what `%read-evaluation' returns before a caller's own metric is appended to
@@ -87,6 +103,7 @@ then."
                          (string= (second entry) name)))
                   library-entries)
     (error 'unsupported-argument
+           :backend backend-name
            :argument "train's :evaluation"
            :reason (format nil "~S already names a metric the library reports for dataset ~
                                 index ~D" name dataset-index)))
