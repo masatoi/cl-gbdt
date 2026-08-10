@@ -34,10 +34,14 @@ about LightGBM's buffer, held by the SHAP-sum test in
 tests/functional/prediction-shape.lisp -- contributions for one class sum to that class's raw
 score, and the same sum taken feature-major does not.
 
-NIL rather than a signal or a guess when the numbers do not divide: NIL is what the second
-return value of `predict' means everywhere it appears -- this backend states no shape here --
-and a derived shape that does not account for every element would be a claim about a layout
-this function has just been shown not to understand."
+NIL rather than a signal or a guess for any of four cases the arithmetic cannot make sense of:
+NUM-ROWS zero or negative, NUM-FEATURES negative, ELEMENT-COUNT not an exact multiple of
+NUM-ROWS times WIDTH, or an exact multiple whose quotient is zero -- no real model has zero
+classes, so a zero quotient is refused the same as a nonzero remainder is. NIL is what the
+second return value of `predict' means everywhere it appears -- this backend states no shape
+here -- and a derived shape that does not account for every element, or that claims a
+zero-class model, would be a claim about a layout this function has just been shown not to
+understand."
   (unless (or (<= num-rows 0) (minusp num-features))
     (let ((width (1+ num-features)))
       (multiple-value-bind (classes remainder)

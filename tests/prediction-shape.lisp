@@ -30,6 +30,14 @@
   (testing "a total smaller than one row"
     (ok (null (contrib-shape 3 18 4)) "what an undersized total derives")))
 
+(deftest contrib-shape-answers-nil-for-an-exact-division-with-zero-classes
+  ;; 0 divides evenly by 1 x (4 + 1) -- quotient 0, remainder 0 -- but no real model
+  ;; reports zero classes. This is a genuinely different branch than the two above: the
+  ;; (plusp classes) guard rejects it, not the (zerop remainder) one, since the division
+  ;; here is exact.
+  (testing "an exact division whose quotient is zero"
+    (ok (null (contrib-shape 0 1 4)) "what an exact zero-class division derives")))
+
 (deftest contrib-shape-answers-nil-for-degenerate-counts
   (testing "zero rows"
     (ok (null (contrib-shape 0 0 4)) "what zero rows derives"))
