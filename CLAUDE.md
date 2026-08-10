@@ -36,8 +36,8 @@ over both backends.
 
 **Status: functional.** Both backends (`cl-gbdt/lightgbm`, `cl-gbdt/xgboost`) implement
 all 13 generic functions of the unified API -- `make-dataset`, `train`, `predict`, and
-the rest -- against the real shared libraries, exercised by 615 functional assertions across
-12 test files in `cl-gbdt/tests/functional` (layer 2) on top of 464 assertions across 18
+the rest -- against the real shared libraries, exercised by 718 functional assertions across
+13 test files in `cl-gbdt/tests/functional` (layer 2) on top of 477 assertions across 19
 test files that need no shared library at all (layer 1). `train` returns a `training-report`
 as its secondary value, and takes `:record-history` (default `t`) to turn the per-iteration
 recording that fills it off -- recording roughly doubles LightGBM's `train` time, and on
@@ -81,7 +81,20 @@ array of reals all train the same model, and a non-real element signals
 only caller code inside `train`'s loop, `train` re-runs its own dataset and backend checks
 the moment it returns, so an objective that frees the training set gets
 `released-handle-error` instead of a memory fault -- see
-`README.markdown`'s Custom objective section. Core
+`README.markdown`'s Custom objective section. `train` also takes `:evaluation`, a function
+called once per dataset per iteration, after that iteration's update, with that dataset's
+`predict :kind :normal` scores and the dataset's index -- 0 the training set, N+1 the Nth
+`:valid-sets` entry, the numbering `:early-stopping`'s `:dataset` key already uses -- and that
+returns a metric name and a real or `NIL` value, gated on the `:custom-evaluation` capability
+that both backends provide, LightGBM out of a probe and XGBoost out of a declaration since its
+one required C function needs no optional-symbol check; the values become their own report
+series, appended after the library's own for the same iteration so `evaluation`'s own pairs
+stay a prefix of `training-report-series`, and are watchable by `:early-stopping` under the
+name `:evaluation` returned with nothing else to arrange. Refused, on both backends and before
+any foreign call, for `:record-history nil`, a non-`function` value -- a symbol included,
+since `funcall` would resolve it afresh each iteration against whatever global definition was
+then in force -- and a name colliding with a library metric at the same dataset index, caught
+at the end of the first iteration -- see `README.markdown`'s Custom evaluation section. Core
 `cl-gbdt` still loads, and is still tested, without
 either `liblightgbm.so` or `libxgboost.so` present: a shared library is opened only by
 an explicit `open-backend` call, from whichever backend system you load on top of the

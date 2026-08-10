@@ -17,8 +17,8 @@ file if you have it locally).
 `make-dataset`, `dataset-num-rows`, `dataset-num-features`, `train`,
 `update-one-iteration`, `predict`, `save-model`, `load-model`, `model-to-string`,
 `feature-importance`, `evaluation`, `free-dataset` and `free-booster` -- against the real
-LightGBM and XGBoost shared libraries, exercised by 615 functional assertions across 12 test
-files (design doc section 12, layer 2), in addition to 464 assertions across 18 test files
+LightGBM and XGBoost shared libraries, exercised by 718 functional assertions across 13 test
+files (design doc section 12, layer 2), in addition to 477 assertions across 19 test files
 that need no shared library at all (layer 1). `train` also returns a `training-report` as
 its secondary value, and takes
 `:early-stopping` to end a run once a watched metric stops improving -- see
@@ -42,7 +42,14 @@ capability that both backends provide; the two libraries flatten that array in o
 orders and the wrapper absorbs it, and on LightGBM `:objective` overrides any `objective`
 in `:parameters` -- all five spellings that library honours -- forcing it to `"none"`,
 since the library refuses the combination outright -- see [Custom
-objective](#custom-objective) below. See [Usage](#usage) below for a worked example.
+objective](#custom-objective) below. `train` also takes `:evaluation`, a function called
+once per dataset per iteration with that dataset's `predict :kind :normal` scores and the
+dataset's index -- `0` the training set, `N+1` the Nth `:valid-sets` entry -- that returns a
+metric name and a real or `NIL` value, gated on the `:custom-evaluation` capability that both
+backends provide out of different lists, LightGBM probing it and XGBoost declaring it; the
+values become their own report series, watchable by `:early-stopping` under the returned
+name, appended after the library's own series rather than replacing them -- see [Custom
+evaluation](#custom-evaluation) below. See [Usage](#usage) below for a worked example.
 
 Loading `cl-gbdt` itself still does not require either `liblightgbm.so` or
 `libxgboost.so` to be installed -- see [Systems](#systems): a shared library is opened
@@ -277,7 +284,7 @@ Four things it promises, each of which is the point of it existing at all:
 ```
 
 `backend-info` reports the whole probed plist, false capabilities included, so it shows
-what was asked as well as what was answered. Eight of the nine registered capabilities
+what was asked as well as what was answered. Nine of the ten registered capabilities
 answer true somewhere today: `:model-slicing`, on XGBoost only -- see the model-slicing row
 in the table below -- plus `:evaluation-history` and `:early-stopping` on both backends,
 since `train` records a history and takes `:early-stopping` (see
@@ -286,9 +293,11 @@ export the CSR entry points it names (see [Sparse input](#sparse-input-csr-matri
 `:missing-value` on XGBoost only (see [Missing values](#missing-values)),
 `:categorical-features` on both (see [Categorical features](#categorical-features)),
 `:prediction-shape` on both, since `predict` states a shape for the result it just predicted
-on both libraries (see [Prediction shape](#prediction-shape)), and `:custom-objective` on
+on both libraries (see [Prediction shape](#prediction-shape)), `:custom-objective` on
 both, since `train` boosts against a caller's own gradient and Hessian on both libraries (see
-[Custom objective](#custom-objective)). The ninth, `:multidimensional-feature-score`, is
+[Custom objective](#custom-objective)), and `:custom-evaluation` on both, since `train`
+records a caller-written metric per dataset on both libraries (see [Custom
+evaluation](#custom-evaluation)). The tenth, `:multidimensional-feature-score`, is
 registered and false everywhere, which says "not supported yet" rather than "never heard of
 it".
 
@@ -1930,13 +1939,14 @@ feature existed.
 both vendored backends -- but **no operation refuses on it**. There is no argument asking for
 a shape, so a false answer would mean only that the second value is always `NIL`; `predict`
 would keep predicting exactly as it does today, on every `KIND`, dense or sparse. That is not
-the general rule for a capability in this API -- five of the nine registered capabilities
+the general rule for a capability in this API -- six of the ten registered capabilities
 are re-checked by the operation they gate and signal `capability-unavailable` when they read
-false: `:sparse-input`, `:missing-value`, `:categorical-features` and `:custom-objective`
-(each documented above, on the operation that checks it -- the last of them at
-[Custom objective](#custom-objective)) and `:model-slicing` (see [Asking a backend what it
+false: `:sparse-input`, `:missing-value`, `:categorical-features`, `:custom-objective` and
+`:custom-evaluation` (each documented above, on the operation that checks it -- the last two
+at [Custom objective](#custom-objective) and [Custom evaluation](#custom-evaluation)) and
+`:model-slicing` (see [Asking a backend what it
 can do](#asking-a-backend-what-it-can-do)). `:prediction-shape` is simply not one of those
-five, because it gates nothing a caller asks for.
+six, because it gates nothing a caller asks for.
 
 The two backends fill the second value from opposite directions. XGBoost's prediction entry
 points write an `out_shape`/`out_dim` pair, and `predict` reads that pair straight back and
@@ -2597,6 +2607,603 @@ about that, the caller decides. And `:objective` is `funcall`ed inside `train`'s
 floating-point-trap mask, so the caller's Lisp arithmetic runs under the same masked convention
 the two C libraries are written against: `(/ 1.0d0 0.0d0)` yields infinity rather than
 signalling, on x86-64 as well as on aarch64.
+
+### Custom evaluation
+
+`train` also takes `:evaluation`, a function called once per dataset per iteration, after
+that iteration's update, so a run records the caller's own measure of fit beside the
+library's own metrics. It needs the `:custom-evaluation` capability, answerable through
+`backend-supports-p` and true on both vendored backends; `train` re-checks it itself and
+signals `capability-unavailable` for a non-`NIL` `:evaluation` when it reads false, before
+any foreign call.
+
+```lisp
+(ql:quickload '(:cl-gbdt :cl-gbdt/lightgbm :cl-gbdt/xgboost) :silent t)
+
+(defparameter *ce-matrix*
+  (make-array '(8 2) :element-type 'double-float
+              :initial-contents '((0.0d0 0.0d0) (0.0d0 1.0d0) (0.0d0 2.0d0)
+                                   (0.0d0 3.0d0) (5.0d0 0.0d0) (5.0d0 1.0d0)
+                                   (5.0d0 2.0d0) (5.0d0 3.0d0))))
+(defparameter *ce-label*
+  (make-array 8 :element-type 'single-float
+              :initial-contents '(0.0 0.0 0.0 0.0 1.0 1.0 1.0 1.0)))
+
+(defun my-logloss (scores index)
+  "A caller-written binary log loss over SCORES -- predict :kind :normal's probabilities, not
+the margin :objective would see. INDEX is ignored here since both datasets below share
+*CE-LABEL*."
+  (declare (ignore index))
+  (let ((rows (array-dimension scores 0)) (sum 0d0))
+    (dotimes (row rows (values "my_logloss" (/ sum rows)))
+      (let ((p (min (max (aref scores row 0) 1d-15) (- 1d0 1d-15)))
+            (y (coerce (aref *ce-label* row) 'double-float)))
+        (incf sum (- (+ (* y (log p)) (* (- 1d0 y) (log (- 1d0 p))))))))))
+
+(defun show-custom-evaluation (name backend dataset-parameters booster-parameters reference-p)
+  (cl-gbdt:with-dataset (train-set (apply #'cl-gbdt:make-dataset backend *ce-matrix*
+                                          :label *ce-label* dataset-parameters))
+    (cl-gbdt:with-dataset (valid-set (apply #'cl-gbdt:make-dataset backend *ce-matrix*
+                                            :label *ce-label*
+                                            (append (when reference-p
+                                                      (list :reference train-set))
+                                                    dataset-parameters)))
+      (multiple-value-bind (booster report)
+          (cl-gbdt:train backend train-set :num-rounds 5
+                          :valid-sets (list (cons "valid" valid-set))
+                          :parameters booster-parameters
+                          :evaluation #'my-logloss)
+        (unwind-protect
+             (dolist (series (cl-gbdt:training-report-series report))
+               (format t "~A series: index=~S metric=~S last=~S~%"
+                       name (cl-gbdt:training-series-index series)
+                       (cl-gbdt:training-series-metric series)
+                       (aref (cl-gbdt:training-series-values series) 4)))
+          (cl-gbdt:free-booster booster))))))
+
+(let ((lgbm (cl-gbdt:open-backend :lightgbm))
+      (xgb (cl-gbdt:open-backend :xgboost)))
+  (show-custom-evaluation "LightGBM" lgbm
+        '(:parameters (:min-data-in-leaf 1 :min-data-in-bin 1 :verbose -1))
+        '(:objective "binary" :num-leaves 2 :min-data-in-leaf 1 :min-data-in-bin 1
+          :verbose -1 :metric "binary_logloss")
+        t)
+  (show-custom-evaluation "XGBoost " xgb '()
+        '(:objective "binary:logistic" :max-depth 2 :eta 0.5 :verbosity 0
+          :eval-metric "logloss")
+        nil)
+  (cl-gbdt:close-backend lgbm)
+  (cl-gbdt:close-backend xgb))
+```
+
+Output:
+
+```
+LightGBM series: index=0 metric="binary_logloss" last=0.35374722486733523d0
+LightGBM series: index=1 metric="binary_logloss" last=0.35374722486733523d0
+LightGBM series: index=0 metric="my_logloss" last=0.35374722486733523d0
+LightGBM series: index=1 metric="my_logloss" last=0.35374722486733523d0
+XGBoost  series: index=0 metric="logloss" last=0.4740770012140274d0
+XGBoost  series: index=1 metric="logloss" last=0.4740770012140274d0
+XGBoost  series: index=0 metric="my_logloss" last=0.47407697467999527d0
+XGBoost  series: index=1 metric="my_logloss" last=0.47407697467999527d0
+```
+
+`MY-LOGLOSS` above reimplements the same binary log loss both libraries already compute, and
+its series lands on each backend's own to the last few digits -- not because the two are
+forced to agree, but because a caller-written metric over the same probabilities the library
+scored really does compute the same number. It also shows the ordering `training-report-series`
+holds to: the two `training-series` for `"binary_logloss"`/`"logloss"` -- one per dataset,
+library metrics first -- come before either of `"my_logloss"`'s, on both backends. `train`'s
+generic docstring states this as a guarantee rather than an accident of this example: the
+library's own series are exactly what `evaluation` already reports, in the same order, and
+`:evaluation`'s own entries are APPENDED after every one of them, so they form a PREFIX of
+`training-report-series` (`src/protocol.lisp`). The append itself happens once per
+backend, in `%custom-evaluation-entries`
+(`src/lightgbm/protocol.lisp`/`src/xgboost/protocol.lisp`), and
+`training-report-from-history` preserves first-seen order rather than sorting anything
+(`src/training/history.lisp`), which is what turns "appended last" into "prefix" once
+the whole run's history is folded. `evaluation` itself never reports a custom metric -- it
+asks the library what the library computed, and the library never computed this one
+(`src/protocol.lisp`).
+
+`:evaluation` is called with **two arguments**: SCORES, that dataset's current predictions as
+a `(ROWS GROUPS)` `double-float` array, and the dataset's **INDEX** -- `0` for the training
+set, `N+1` for the Nth `:valid-sets` entry, the same numbering `:early-stopping`'s `:dataset`
+key and `evaluation`'s own `DATASET-INDEX` already use
+(`src/protocol.lisp`). It must return **two values**, a metric NAME (a string) and a
+VALUE (a real or `NIL`); a NAME that is not a string, or a VALUE that is neither, signals
+`unsupported-argument` (`custom-metric-entry` in `src/training/custom-metric.lisp`).
+`NIL` means "not computable this iteration" -- a fold whose
+denominator was zero, a metric undefined before some minimum number of rows -- and is
+recorded in its place in the series rather than dropped, counting as no improvement to an
+`:early-stopping` watcher exactly as a value the backend itself could not report does
+(`src/protocol.lisp`).
+
+SCORES is what `predict :kind :normal` returns for that dataset, and **not** the margin
+`:objective` is handed -- with a classification objective configured, these are the
+transformed probabilities. INDEX is not decorative: `predict :kind :normal` on the trained
+booster, and the array `:evaluation` was handed for that same dataset during the run, are the
+identical array, checked below for both the training set (index 0) and the one `:valid-sets`
+entry (index 1):
+
+```lisp
+(ql:quickload '(:cl-gbdt :cl-gbdt/lightgbm) :silent t)
+
+(defparameter *ce-matrix*
+  (make-array '(8 2) :element-type 'double-float
+              :initial-contents '((0.0d0 0.0d0) (0.0d0 1.0d0) (0.0d0 2.0d0)
+                                   (0.0d0 3.0d0) (5.0d0 0.0d0) (5.0d0 1.0d0)
+                                   (5.0d0 2.0d0) (5.0d0 3.0d0))))
+(defparameter *ce-label*
+  (make-array 8 :element-type 'single-float
+              :initial-contents '(0.0 0.0 0.0 0.0 1.0 1.0 1.0 1.0)))
+
+(let ((lgbm (cl-gbdt:open-backend :lightgbm)))
+  (unwind-protect
+      (cl-gbdt:with-dataset
+          (train-set (cl-gbdt:make-dataset lgbm *ce-matrix* :label *ce-label*
+                       :parameters '(:min-data-in-leaf 1 :min-data-in-bin 1 :verbose -1)))
+        (cl-gbdt:with-dataset
+            (valid-set (cl-gbdt:make-dataset lgbm *ce-matrix* :label *ce-label*
+                         :reference train-set
+                         :parameters '(:min-data-in-leaf 1 :min-data-in-bin 1 :verbose -1)))
+          (let ((last-scores (make-array 2 :initial-element nil)))
+            (cl-gbdt:with-booster
+                (booster (cl-gbdt:train lgbm train-set :num-rounds 5
+                           :valid-sets (list valid-set)
+                           :parameters '(:objective "binary" :num-leaves 2 :min-data-in-leaf 1
+                                         :min-data-in-bin 1 :verbose -1)
+                           ;; INDEX is 0 for the training set, 1 for the first (and only)
+                           ;; :valid-sets entry -- the same numbering :early-stopping's
+                           ;; :dataset key already uses.
+                           :evaluation (lambda (scores index)
+                                         (setf (aref last-scores index) scores)
+                                         (values "captured" 0.0d0))))
+              (format t "index 0's SCORES is predict :kind :normal's: ~S~%"
+                      (equalp (aref last-scores 0)
+                              (cl-gbdt:predict booster *ce-matrix* :kind :normal)))
+              (format t "index 1's SCORES is predict :kind :normal's: ~S~%"
+                      (equalp (aref last-scores 1)
+                              (cl-gbdt:predict booster *ce-matrix* :kind :normal)))
+              (format t "index 0's SCORES is NOT predict :kind :raw's: ~S~%"
+                      (not (equalp (aref last-scores 0)
+                                   (cl-gbdt:predict booster *ce-matrix* :kind :raw))))))))
+    (cl-gbdt:close-backend lgbm)))
+```
+
+Output:
+
+```
+index 0's SCORES is predict :kind :normal's: T
+index 1's SCORES is predict :kind :normal's: T
+index 0's SCORES is NOT predict :kind :raw's: T
+```
+
+This is measured differently on each backend, and the two measurements are not the same
+kind of fact: on LightGBM, `%booster-predictions` reads `LGBM_BoosterGetPredict`, a value the
+library already holds rather than a fresh prediction, so agreeing with `predict` says two
+different C functions agree -- measured on both a 40-row training set and a 17-row
+validation set to `0.0`, and `0.706` away from `:raw` under `objective=binary`
+(`src/lightgbm/native.lisp`). On XGBoost, `%booster-predictions` runs a fresh
+`XGBoosterPredictFromDMatrix` prediction pass over that dataset's own `DMatrix`, the same
+call `predict` itself makes, so agreeing says that `DMatrix` and a fresh one built from the
+same rows answer alike -- also measured to `0.0` on both datasets, and `0.756` away from
+`:raw` under `binary:logistic` after five iterations
+(`src/xgboost/native.lisp`). Neither figure stands in for the other's,
+and the two are not compared -- policy section 13; what they share is only that both
+backends' SCORES equal `predict :kind :normal`'s. Under a custom `:objective` the two then
+part company exactly as [Custom objective](#custom-objective) already describes: LightGBM
+forces `objective=none`, so `:normal` and `:raw` coincide there and SCORES equals what
+`:objective` was handed, while XGBoost rewrites nothing, so a configured `binary:logistic`
+keeps transforming and `:evaluation` reads probabilities while `:objective` reads the margin
+behind them, in the same run.
+
+A custom metric's values become **series of their own** in the report, one per (INDEX, NAME)
+pair, indistinguishable in shape from the library's own -- so `:early-stopping` can watch one
+with nothing extra arranged for it, by giving `:metric` the name the function returns and
+`:dataset` the index it was returned for:
+
+```lisp
+(ql:quickload '(:cl-gbdt :cl-gbdt/lightgbm) :silent t)
+
+(defparameter *ce-matrix*
+  (make-array '(8 2) :element-type 'double-float
+              :initial-contents '((0.0d0 0.0d0) (0.0d0 1.0d0) (0.0d0 2.0d0)
+                                   (0.0d0 3.0d0) (5.0d0 0.0d0) (5.0d0 1.0d0)
+                                   (5.0d0 2.0d0) (5.0d0 3.0d0))))
+(defparameter *ce-label*
+  (make-array 8 :element-type 'single-float
+              :initial-contents '(0.0 0.0 0.0 0.0 1.0 1.0 1.0 1.0)))
+
+(defun stalling-metric ()
+  "3.0, 2.0, 1.0, 1.0, 1.0, ... -- ignores SCORES entirely. What is under test is that a
+caller's own metric name reaches :early-stopping at all, not that a real model produced it."
+  (let ((calls 0))
+    (lambda (scores index)
+      (declare (ignore scores index))
+      (incf calls)
+      (values "stalls" (coerce (max 1 (- 4 calls)) 'double-float)))))
+
+(let ((lgbm (cl-gbdt:open-backend :lightgbm)))
+  (unwind-protect
+      (cl-gbdt:with-dataset
+          (train-set (cl-gbdt:make-dataset lgbm *ce-matrix* :label *ce-label*
+                       :parameters '(:min-data-in-leaf 1 :min-data-in-bin 1 :verbose -1)))
+        (multiple-value-bind (booster report)
+            (cl-gbdt:train lgbm train-set :num-rounds 10
+                            ;; The library's own metric turned off, so the only series in the
+                            ;; report -- and the only thing :early-stopping could be watching --
+                            ;; is the caller's own.
+                            :parameters '(:objective "binary" :num-leaves 2 :min-data-in-leaf 1
+                                          :min-data-in-bin 1 :verbose -1 :metric "none")
+                            :evaluation (stalling-metric)
+                            :early-stopping (list :metric "stalls" :dataset 0
+                                                   :direction :lower-is-better :rounds 2))
+          (cl-gbdt:free-booster booster)
+          (format t "ran ~S of 10 rounds~%" (cl-gbdt:training-report-num-rounds report))
+          (format t "early-stopped-p: ~S~%" (cl-gbdt:training-report-early-stopped-p report))
+          (format t "best-iteration: ~S~%" (cl-gbdt:training-report-best-iteration report))
+          (format t "best-score: ~S~%" (cl-gbdt:training-report-best-score report))))
+    (cl-gbdt:close-backend lgbm)))
+```
+
+Output:
+
+```
+ran 5 of 10 rounds
+early-stopped-p: T
+best-iteration: 3
+best-score: 1.0d0
+```
+
+The value improves at iterations 1, 2 and 3 and then holds at `1.0`; improvement is strict, so
+a plateau does not count, and two consecutive non-improving iterations (`:rounds 2`) stop the
+run at iteration 5 with iteration 3 recorded best -- driven entirely by a metric that never
+reads its SCORES argument, which is the point: what reaches the watcher is the (INDEX, NAME)
+pair `:evaluation` returned, the same mechanism a library metric reaches it through, not
+anything specific to `:evaluation`.
+
+`train` refuses a non-`NIL` `:evaluation` in two more shapes, both checked before any foreign
+call. `:record-history nil` together with `:evaluation` signals `unsupported-argument`: a
+custom metric's whole result is the per-iteration series `:record-history nil` exists not to
+build, so the values would be computed at full cost and then dropped -- the same
+contradiction `:early-stopping` and `:record-history nil` already make. And `:evaluation`
+must be a `function`; a number, a string, or a **symbol** naming a real function of the right
+arity all signal `unsupported-argument` naming `:evaluation` -- the symbol deliberately,
+since `funcall` would have accepted it happily and resolved it afresh each iteration against
+whatever global definition happened to be in force, rather than against what the caller
+passed:
+
+```lisp
+(ql:quickload '(:cl-gbdt :cl-gbdt/lightgbm :cl-gbdt/xgboost) :silent t)
+
+(defparameter *ce-matrix*
+  (make-array '(8 2) :element-type 'double-float
+              :initial-contents '((0.0d0 0.0d0) (0.0d0 1.0d0) (0.0d0 2.0d0)
+                                   (0.0d0 3.0d0) (5.0d0 0.0d0) (5.0d0 1.0d0)
+                                   (5.0d0 2.0d0) (5.0d0 3.0d0))))
+(defparameter *ce-label*
+  (make-array 8 :element-type 'single-float
+              :initial-contents '(0.0 0.0 0.0 0.0 1.0 1.0 1.0 1.0)))
+
+(defparameter *ce-booster-parameters*
+  '((:lightgbm :objective "binary" :num-leaves 2 :min-data-in-leaf 1 :min-data-in-bin 1
+     :verbose -1)
+    (:xgboost :objective "binary:logistic" :max-depth 2 :eta 0.5 :verbosity 0)))
+(defparameter *ce-dataset-parameters*
+  '((:lightgbm :parameters (:min-data-in-leaf 1 :min-data-in-bin 1 :verbose -1))
+    (:xgboost)))
+
+(defun a-constant-metric (scores index)
+  "A SYMBOL naming a real function of the right arity, so `funcall' would have accepted it
+happily -- which is exactly why :evaluation refuses it explicitly rather than leaving the
+mistake to surface some other way."
+  (declare (ignore scores index))
+  (values "constant" 0.5d0))
+
+(dolist (name '(:lightgbm :xgboost))
+  (let ((backend (cl-gbdt:open-backend name)))
+    (unwind-protect
+        (cl-gbdt:with-dataset
+            (dataset (apply #'cl-gbdt:make-dataset backend *ce-matrix* :label *ce-label*
+                             (cdr (assoc name *ce-dataset-parameters*))))
+          (format t "~A :evaluation with :record-history nil:~%" name)
+          (handler-case
+              (cl-gbdt:free-booster
+               (cl-gbdt:train backend dataset :num-rounds 3 :record-history nil
+                               :parameters (cdr (assoc name *ce-booster-parameters*))
+                               :evaluation (lambda (scores index)
+                                             (declare (ignore scores index))
+                                             (values "x" 0.0d0))))
+            (error (c) (format t "  SIGNALED ~A: ~A~%" (type-of c) c)))
+          (dolist (value (list 42 'a-constant-metric))
+            (format t "~A :evaluation ~S:~%" name value)
+            (handler-case
+                (cl-gbdt:free-booster
+                 (cl-gbdt:train backend dataset :num-rounds 3
+                                 :parameters (cdr (assoc name *ce-booster-parameters*))
+                                 :evaluation value))
+              (error (c) (format t "  SIGNALED ~A: ~A~%" (type-of c) c)))))
+      (cl-gbdt:close-backend backend))))
+```
+
+Output:
+
+```
+LIGHTGBM :evaluation with :record-history nil:
+  SIGNALED UNSUPPORTED-ARGUMENT: train's :evaluation is not supported by LIGHTGBM: a custom metric is recorded per iteration, which :record-history NIL skips; pass :record-history T, or drop :evaluation.
+LIGHTGBM :evaluation 42:
+  SIGNALED UNSUPPORTED-ARGUMENT: train's :evaluation is not supported by LIGHTGBM: the custom metric must be a function of two arguments, or NIL for the library's own metrics only -- got 42.
+LIGHTGBM :evaluation A-CONSTANT-METRIC:
+  SIGNALED UNSUPPORTED-ARGUMENT: train's :evaluation is not supported by LIGHTGBM: the custom metric must be a function of two arguments, or NIL for the library's own metrics only -- got A-CONSTANT-METRIC.
+XGBOOST :evaluation with :record-history nil:
+  SIGNALED UNSUPPORTED-ARGUMENT: train's :evaluation is not supported by XGBOOST: a custom metric is recorded per iteration, which :record-history NIL skips; pass :record-history T, or drop :evaluation.
+XGBOOST :evaluation 42:
+  SIGNALED UNSUPPORTED-ARGUMENT: train's :evaluation is not supported by XGBOOST: the custom metric must be a function of two arguments, or NIL for the library's own metrics only -- got 42.
+XGBOOST :evaluation A-CONSTANT-METRIC:
+  SIGNALED UNSUPPORTED-ARGUMENT: train's :evaluation is not supported by XGBOOST: the custom metric must be a function of two arguments, or NIL for the library's own metrics only -- got A-CONSTANT-METRIC.
+```
+
+Both checks live in each backend's own `%check-custom-evaluation`
+(`src/lightgbm/protocol.lisp`/`src/xgboost/protocol.lisp`), ahead of the capability
+check that runs first; identical wording on both backends because both call the same
+backend-neutral checks underneath.
+
+A NAME colliding with one the library itself reports for the **same** dataset index signals
+`unsupported-argument` too -- checked at the end of the first iteration, the first moment
+there is a real evaluation to compare against. The pair (INDEX, NAME) is what a series is
+keyed by, so two different quantities under one pair would corrupt the series rather than
+produce two; what is compared is what this booster **actually reported**, not a list of
+well-known metric names, which is why the identical name is accepted the moment the library
+reports no metric at all:
+
+```lisp
+(ql:quickload '(:cl-gbdt :cl-gbdt/lightgbm :cl-gbdt/xgboost) :silent t)
+
+(defparameter *ce-matrix*
+  (make-array '(8 2) :element-type 'double-float
+              :initial-contents '((0.0d0 0.0d0) (0.0d0 1.0d0) (0.0d0 2.0d0)
+                                   (0.0d0 3.0d0) (5.0d0 0.0d0) (5.0d0 1.0d0)
+                                   (5.0d0 2.0d0) (5.0d0 3.0d0))))
+(defparameter *ce-label*
+  (make-array 8 :element-type 'single-float
+              :initial-contents '(0.0 0.0 0.0 0.0 1.0 1.0 1.0 1.0)))
+
+(defparameter *ce-library-metric-names*
+  '((:lightgbm . "binary_logloss") (:xgboost . "logloss")))
+
+;; One booster parameter plist per backend WITH the library's metric on, and one WITHOUT --
+;; LightGBM's own "metric none", XGBoost's own "disable_default_eval_metric 1".
+(defparameter *ce-with-metric*
+  '((:lightgbm :objective "binary" :num-leaves 2 :min-data-in-leaf 1 :min-data-in-bin 1
+     :verbose -1 :metric "binary_logloss")
+    (:xgboost :objective "binary:logistic" :max-depth 2 :eta 0.5 :verbosity 0
+     :eval-metric "logloss")))
+(defparameter *ce-without-metric*
+  '((:lightgbm :objective "binary" :num-leaves 2 :min-data-in-leaf 1 :min-data-in-bin 1
+     :verbose -1 :metric "none")
+    (:xgboost :objective "binary:logistic" :max-depth 2 :eta 0.5 :verbosity 0
+     :disable-default-eval-metric 1)))
+(defparameter *ce-dataset-parameters*
+  '((:lightgbm :parameters (:min-data-in-leaf 1 :min-data-in-bin 1 :verbose -1))
+    (:xgboost)))
+
+(dolist (name '(:lightgbm :xgboost))
+  (let ((backend (cl-gbdt:open-backend name))
+        (library-name (cdr (assoc name *ce-library-metric-names*))))
+    (unwind-protect
+        (cl-gbdt:with-dataset
+            (dataset (apply #'cl-gbdt:make-dataset backend *ce-matrix* :label *ce-label*
+                             (cdr (assoc name *ce-dataset-parameters*))))
+          (flet ((train-named (parameters)
+                   (cl-gbdt:train backend dataset :num-rounds 3 :parameters parameters
+                                   :evaluation (lambda (scores index)
+                                                 (declare (ignore scores index))
+                                                 (values library-name 0.5d0)))))
+            (format t "~A :evaluation returns ~S, the library's own name, while it is ~
+                       configured:~%" name library-name)
+            (handler-case
+                (cl-gbdt:free-booster
+                 (train-named (cdr (assoc name *ce-with-metric*))))
+              (error (c) (format t "  SIGNALED ~A: ~A~%" (type-of c) c)))
+            (format t "~A :evaluation returns ~S while the library reports no metric at ~
+                       all:~%" name library-name)
+            (multiple-value-bind (booster report)
+                (train-named (cdr (assoc name *ce-without-metric*)))
+              (cl-gbdt:free-booster booster)
+              (format t "  accepted; series pairs: ~S~%"
+                      (mapcar (lambda (series)
+                                (cons (cl-gbdt:training-series-index series)
+                                      (cl-gbdt:training-series-metric series)))
+                              (cl-gbdt:training-report-series report))))))
+      (cl-gbdt:close-backend backend))))
+```
+
+Output:
+
+```
+LIGHTGBM :evaluation returns "binary_logloss", the library's own name, while it is configured:
+  SIGNALED UNSUPPORTED-ARGUMENT: train's :evaluation is not supported by LIGHTGBM: "binary_logloss" already names a metric the library reports for dataset index 0.
+LIGHTGBM :evaluation returns "binary_logloss" while the library reports no metric at all:
+  accepted; series pairs: ((0 . "binary_logloss"))
+XGBOOST :evaluation returns "logloss", the library's own name, while it is configured:
+  SIGNALED UNSUPPORTED-ARGUMENT: train's :evaluation is not supported by XGBOOST: "logloss" already names a metric the library reports for dataset index 0.
+XGBOOST :evaluation returns "logloss" while the library reports no metric at all:
+  accepted; series pairs: ((0 . "logloss"))
+```
+
+The check itself is backend-neutral, `check-metric-name-collision`
+(`src/training/custom-metric.lisp`), given each iteration's own library entries to
+compare against rather than a static list. The same name at a **different** index does not
+collide -- not constructible against either vendored library, since both report the same
+metric list for every dataset they retain, so this project's own assertion of that half of
+the keying is at layer 1, over a written entry list rather than a measured one
+(`check-metric-name-collision-allows-a-name-the-library-uses-elsewhere` in
+`tests/custom-metric.lisp`).
+
+`:evaluation` runs inside `train`'s own floating-point-trap mask, on the same terms
+`:objective` does (see [Custom objective](#custom-objective)): the caller's own arithmetic
+does not trap, so `(/ 1.0d0 0.0d0)` yields infinity rather than signalling
+`division-by-zero`, on x86-64 as well as on aarch64. A handle it frees, or a backend it
+closes, is caught the moment it returns and before the next dataset's predictions are read --
+`%custom-evaluation-entries` re-checks between two consecutive datasets rather than once per
+iteration, which is what makes freeing a `:valid-sets` entry from inside the FIRST dataset's
+call signal `released-handle-error` naming that dataset rather than faulting the process on
+the second dataset's read.
+
+#### The measured cost
+
+A custom metric adds a `predict :kind :normal`-shaped array read plus a Lisp call, per
+dataset per iteration, on top of what `:record-history` already reads. Measured the same way
+as [that section](#turning-recording-off-record-history) -- 2000 rows x 20 columns, one
+validation set, `:record-history t` in **both** arms so the only difference is whether
+`:evaluation` is supplied:
+
+```lisp
+;;;; Same shape of fixture as the :record-history measurement above: 2000 rows x 20 columns,
+;;;; 1500 rounds, one validation set. RECORD-HISTORY is T in both arms, so the only difference
+;;;; between the two is whether :evaluation is supplied.
+
+(ql:quickload '(:cl-gbdt :cl-gbdt/lightgbm :cl-gbdt/xgboost) :silent t)
+
+(defparameter *rows* 2000)
+(defparameter *valid-rows* 500)
+(defparameter *columns* 20)
+(defparameter *rounds* 1500)
+
+(defun make-fixture-matrix (rows columns offset)
+  (let ((matrix (make-array (list rows columns) :element-type 'double-float)))
+    (dotimes (row rows matrix)
+      (dotimes (col columns)
+        (setf (aref matrix row col)
+              (coerce (mod (+ (* 7 (+ row offset)) (* 13 col)) 97) 'double-float))))))
+
+(defun make-fixture-label (rows offset)
+  (let ((label (make-array rows :element-type 'single-float)))
+    (dotimes (row rows label)
+      (setf (aref label row) (if (evenp (+ row offset)) 1.0 0.0)))))
+
+(defparameter *train-matrix* (make-fixture-matrix *rows* *columns* 0))
+(defparameter *train-label* (make-fixture-label *rows* 0))
+(defparameter *valid-matrix* (make-fixture-matrix *valid-rows* *columns* 5))
+(defparameter *valid-label* (make-fixture-label *valid-rows* 5))
+
+(defun my-metric (scores index)
+  "A representative caller-written metric: mean log loss over SCORES against this run's own
+label vector for dataset INDEX -- real arithmetic over every row, not a constant, so the
+measurement includes a Lisp-side cost proportional to row count and not just the array read."
+  (let* ((labels* (if (zerop index) *train-label* *valid-label*))
+         (rows (array-dimension scores 0))
+         (sum 0d0))
+    (dotimes (row rows)
+      (let ((p (min (max (aref scores row 0) 1d-15) (- 1d0 1d-15)))
+            (y (coerce (aref labels* row) 'double-float)))
+        (incf sum (- (+ (* y (log p)) (* (- 1d0 y) (log (- 1d0 p))))))))
+    (values "my_logloss" (/ sum rows))))
+
+(defun run-once (backend-name make-dataset-parameters booster-parameters reference-p
+                  evaluation-p)
+  "Train once and return the wall-clock seconds, :record-history T throughout. EVALUATION-P T
+supplies :EVALUATION #'MY-METRIC; NIL supplies none."
+  (let ((backend (cl-gbdt:open-backend backend-name)))
+    (unwind-protect
+         (cl-gbdt:with-dataset
+             (train-set (apply #'cl-gbdt:make-dataset backend *train-matrix*
+                                :label *train-label* make-dataset-parameters))
+           (cl-gbdt:with-dataset
+               (valid-set (apply #'cl-gbdt:make-dataset backend *valid-matrix*
+                                  :label *valid-label*
+                                  (append (when reference-p (list :reference train-set))
+                                          make-dataset-parameters)))
+             (let ((start (get-internal-real-time)))
+               (multiple-value-bind (booster report)
+                   (apply #'cl-gbdt:train backend train-set
+                          :valid-sets (list valid-set) :num-rounds *rounds*
+                          :record-history t :parameters booster-parameters
+                          (when evaluation-p (list :evaluation #'my-metric)))
+                 (declare (ignore report))
+                 (cl-gbdt:free-booster booster))
+               (/ (float (- (get-internal-real-time) start) 1d0)
+                  internal-time-units-per-second))))
+      (cl-gbdt:close-backend backend))))
+
+(defun report-timing (backend-name make-dataset-parameters booster-parameters reference-p)
+  ;; One untimed warm-up run per arm first, then 5 timed runs each, interleaved
+  ;; WITHOUT/WITH/WITHOUT/... so neither arm is systematically first or last.
+  (run-once backend-name make-dataset-parameters booster-parameters reference-p nil)
+  (run-once backend-name make-dataset-parameters booster-parameters reference-p t)
+  (let ((without '()) (with '()))
+    (dotimes (i 5)
+      (push (run-once backend-name make-dataset-parameters booster-parameters reference-p nil)
+            without)
+      (push (run-once backend-name make-dataset-parameters booster-parameters reference-p t)
+            with))
+    (setf without (nreverse without) with (nreverse with))
+    (format t "~A without :evaluation: ~{~,3F~^ ~} seconds (mean ~,3F)~%"
+            backend-name without (/ (reduce #'+ without) (length without)))
+    (format t "~A with    :evaluation: ~{~,3F~^ ~} seconds (mean ~,3F)~%"
+            backend-name with (/ (reduce #'+ with) (length with)))
+    (format t "~A ratio (with / without): ~,3F~%"
+            backend-name (/ (/ (reduce #'+ with) (length with))
+                             (/ (reduce #'+ without) (length without))))))
+
+(report-timing :lightgbm
+               '(:parameters (:min-data-in-leaf 1 :min-data-in-bin 1 :verbose -1))
+               '(:objective "binary" :num-leaves 31 :verbose -1 :metric "binary_logloss,auc"
+                 :min-data-in-leaf 1 :min-data-in-bin 1)
+               t)
+
+(report-timing :xgboost
+               '()
+               '(:objective "binary:logistic" :max-depth 6 :eta 0.3d0 :verbosity 0
+                 :eval-metric "logloss" :eval-metric "error")
+               nil)
+```
+
+Output, two independent runs:
+
+```
+LIGHTGBM without :evaluation: 2.614 2.654 2.783 2.467 2.668 seconds (mean 2.637)
+LIGHTGBM with    :evaluation: 2.946 3.053 2.790 2.946 3.025 seconds (mean 2.952)
+LIGHTGBM ratio (with / without): 1.119
+XGBOOST without :evaluation: 0.353 0.643 0.445 0.555 0.536 seconds (mean 0.506)
+XGBOOST with    :evaluation: 0.703 0.697 0.700 0.818 0.830 seconds (mean 0.750)
+XGBOOST ratio (with / without): 1.480
+```
+
+```
+LIGHTGBM without :evaluation: 2.458 2.542 2.466 2.646 2.552 seconds (mean 2.533)
+LIGHTGBM with    :evaluation: 3.062 2.899 2.811 2.983 2.831 seconds (mean 2.917)
+LIGHTGBM ratio (with / without): 1.152
+XGBOOST without :evaluation: 0.535 0.551 0.492 0.442 0.609 seconds (mean 0.526)
+XGBOOST with    :evaluation: 0.720 0.764 0.859 0.875 0.760 seconds (mean 0.796)
+XGBOOST ratio (with / without): 1.513
+```
+
+`:evaluation` added roughly **12-15%** to LightGBM's wall-clock `train` time here, and
+roughly **48-51%** to XGBoost's. The two are each this backend's own ratio and are not
+compared with one another -- policy section 13 -- and the gap between them is explained by
+the same mechanism the SCORES paragraph above already measured: LightGBM's per-dataset read
+is a cached value the booster already holds, so the added cost is close to the Lisp call and
+the array copy alone, while XGBoost's is a whole extra `XGBoosterPredictFromDMatrix` pass per
+dataset per iteration -- a real prediction, not a cached read, which is the more expensive of
+the two operations on either backend. Treat these as orders of magnitude on one machine, not
+precise figures -- run-to-run variance on the same code was as wide as 1.12-1.15 for LightGBM and
+1.48-1.51 for XGBoost across the two runs above, and an earlier pair of runs at 500 rounds
+(a fifth of the round count, and so closer to the noise floor of process startup and dataset
+construction) ranged 1.08-1.15 for LightGBM and 1.20-2.27 for XGBoost.
+
+`:custom-evaluation` is answerable through `backend-supports-p` on both backends, but the two
+true answers come out of different lists for a reason that is a fact about the two
+*libraries* rather than a difference a caller of `:evaluation` can see: LightGBM's
+per-dataset read needs three C functions, none of them in that backend's required set, so it
+is PROBED like `:custom-objective`; XGBoost's needs one, which IS required there, so it is
+DECLARED (`src/backend.lisp`). Every check `:evaluation` is put through, and
+every error it can signal, is identical prose on both backends, as the refusal output above
+shows -- so this is not a row in [the differences table](#where-the-two-backends-genuinely-differ):
+there is nothing here a caller's code, as opposed to a reader of `backend-info`'s probed
+plist, can tell apart.
 
 ## Systems
 
