@@ -801,19 +801,37 @@ RESULT is the array `predict' is about to return, ELEMENT-COUNT the count
 `LGBM_BoosterCalcNumPredict' gave for it, NROW the row count whichever entry point just ran was
 handed, and BOOSTER-POINTER the booster it ran against.
 
-Nothing is read back from the library here, because there is nothing to read: this backend's
-prediction entry points report an element count and no shape at all, where XGBoost's write an
+No SHAPE is read back from the library here, because there is no shape to read: this backend's
+prediction entry points report an element count and no axes at all, where XGBoost's write an
 `out_shape'/`out_dim' pair `cl-gbdt/src/xgboost/protocol''s `predict' hands back verbatim. Every
-value below is DERIVED, and each KIND gets only what can be derived from what is known:
+value below is DERIVED, and each KIND gets only what can be derived from what is known.
+
+That is not to say this function makes no foreign call. The `:contrib' arm calls
+`%booster-num-features' -- `LGBM_BoosterGetNumFeature' -- for the feature count it derives a
+width from. That is the one library call this function makes, and it runs inside `predict''s
+`with-foreign-float-traps-masked' body wrap, which is the whole of this function's trap
+protection: `%prediction-shape' is `%'-prefixed and named by no `:export' clause, so
+`tools/ci/check-float-traps.lisp' does not police it -- that check holds `defun's the backend's
+PUBLIC package exports, read from the second `define-package' in `src/lightgbm/all.lisp'. So the
+constraint any future change has to preserve is stated here and nowhere else: a second library
+call added below, or a caller reaching this function from outside an already-masked dynamic
+extent, must establish the mask itself, and nothing in CI will notice if it does not.
+
+What each KIND gets:
 
   `:normal', `:raw'  RESULT's own `array-dimensions'. One column per output group is the whole
                      of what these hold and the array already says so, so there is nothing
                      further to state.
   `:contrib'         `contrib-shape''s (NROW classes width), width being one contribution per
                      feature plus the bias and classes what is left of ELEMENT-COUNT once the
-                     other two divide out -- NIL when they do not divide out, which is that
-                     function's way of saying the layout is not the one this arithmetic
-                     describes. The CLASS-MAJOR ordering the shape implies does not follow from
+                     other two divide out. That function answers NIL, never signalling and never
+                     guessing, for any of the FOUR cases its own docstring enumerates: NROW zero
+                     or negative, a negative feature count, a division leaving a remainder, and
+                     an exact division whose quotient is zero. The last two are its way of
+                     saying the layout is not the one this arithmetic describes; the first two,
+                     that the inputs never described a layout at all. Read that docstring rather
+                     than this summary -- the contract is the four cases, not just the division.
+                     The CLASS-MAJOR ordering the shape implies does not follow from
                      the count, which divides identically with the last two axes swapped: it is
                      a measured claim, held by
                      `lightgbm-s-derived-contrib-shape-is-the-one-the-numbers-support' in
@@ -877,13 +895,16 @@ element count back through OUT-LEN; this is asserted equal to
 buffer was sized from the latter and a mismatch would mean either an
 under-filled result or a write past the allocated buffer going unnoticed.
 
-That count is also everything this backend ever learns about the result's SHAPE.
-`LGBM_BoosterCalcNumPredict' returns a number and nothing else, and neither entry point reports
-axes the way XGBoost's `out_shape'/`out_dim' pair does -- so this method's SECOND value is
-DERIVED rather than reported. `%prediction-shape' above is where that happens, from the element
-count, the row count and BOOSTER's own feature count, and it states a shape only for the KINDs
-those three determine one for: `:normal' and `:raw' get the result array's own dimensions,
-`:contrib' the three axes `contrib-shape' divides the count into, and `:leaf-index' NIL. This
+No prediction call here ever states the result's SHAPE, and that count is the whole of what one
+reports bearing on it: `LGBM_BoosterCalcNumPredict' returns a number and nothing else, and
+neither entry point reports axes the way XGBoost's `out_shape'/`out_dim' pair does -- so this
+method's SECOND value is DERIVED rather than reported. `%prediction-shape' above is where that
+happens, from the element count, the row count and BOOSTER's own feature count -- the last read
+by a further library call, `LGBM_BoosterGetNumFeature', which runs inside this method's own
+`with-foreign-float-traps-masked' body wrap like every other call it makes. It states a shape
+only for the KINDs those three determine one for: `:normal' and `:raw' get the result array's
+own dimensions, `:contrib' the three axes `contrib-shape' divides the count into (NIL for any
+of the four cases that function's own docstring enumerates), and `:leaf-index' NIL. This
 backend declares `:prediction-shape' in `*provided-capabilities*' to say the mechanism is here;
 nothing re-checks that declaration, there being no argument to refuse. The first value is
 untouched by all of it -- same dimensions, same elements, every KIND, either entry point.
