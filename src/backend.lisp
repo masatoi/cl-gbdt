@@ -154,7 +154,8 @@ to this function can detect it here."
     :model-slicing
     :multidimensional-feature-score
     :missing-value
-    :categorical-features)
+    :categorical-features
+    :prediction-shape)
   "Every capability name `backend-supports-p' will answer for.
 
 Policy section 7 named five as a MINIMUM -- it asks that at least those be answerable, not
@@ -175,6 +176,17 @@ finished DMatrix, and LightGBM through a `categorical_feature' key in the parame
 builds the dataset -- a key rather than a C symbol, so nothing a symbol probe can decide. It is
 a question about `make-dataset' alone: `predict' takes no such argument, the trained trees
 already carrying the category sets they split on.
+
+`:prediction-shape' is the third name past that floor, and the only one in this list that NO
+OPERATION REFUSES ON: whether the backend states the SHAPE of a result it just predicted, which
+`predict' returns as its second value -- a list of integers in `array-dimensions' order, or NIL
+where the backend states none. Every other name here gates an ARGUMENT, and a false answer
+means the operation signals `capability-unavailable' rather than accepting the argument and
+ignoring it. Nothing asks for a shape, so a false answer here means the second value is always
+NIL and `predict' otherwise behaves exactly as it always did. That is not the silent fallback
+policy section 7 forbids: section 7 protects a caller who asked for something and would
+otherwise have it quietly dropped, and there is nothing to drop. A re-check added for symmetry
+with the others would make `predict' signal outright on a backend that simply has less to say.
 
 `:evaluation-history' is true on both backends: `train' records one, and each backend names
 the capability in its own `*provided-capabilities*' rather than in `*optional-symbols*',

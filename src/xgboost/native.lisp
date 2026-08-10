@@ -102,6 +102,7 @@
            #:%resolve-num-iteration
            #:%predict-config-json
            #:%total-element-count
+           #:%reported-shape
            #:%predict-ncol
            #:%predict-from-dmatrix
            #:%predict-from-csr
@@ -321,7 +322,8 @@ but not predict from one would have been told a half-truth. Listing both from th
 the answer never changes meaning as the sparse path grows.")
 
 (defparameter *provided-capabilities*
-  '(:evaluation-history :early-stopping :missing-value :categorical-features)
+  '(:evaluation-history :early-stopping :missing-value :categorical-features
+    :prediction-shape)
   "Capabilities this backend provides unconditionally, recorded true at `open-backend'
 without being probed -- `probe-capabilities''s PROVIDED, which says why a probe cannot
 express this.
@@ -347,6 +349,16 @@ carries it, `XGDMatrixSetStrFeatureInfo', is already in `*required-symbols*' abo
 how FEATURE-NAMES has always been attached -- and marking a column categorical is the same
 call under a different field name. A library missing it never opens at all, so a probe in
 `*optional-symbols*' would have nothing left to decide.
+
+`:prediction-shape' is here for that first reason a third time, and it needs no C function of
+its own at all: the shape is the `out_shape'/`out_dim' pair `XGBoosterPredictFromDMatrix' and
+`XGBoosterPredictFromCSR' already write on every call -- both already in `*required-symbols*'
+or `*optional-symbols*' above, since `predict' cannot run without them -- read back by
+`%reported-shape' instead of only multiplied out by `%total-element-count'. There is no symbol
+whose presence or absence could make this true or false. Unlike every other name in this list,
+no operation re-checks it: nothing takes an argument asking for a shape, so a backend answering
+false returns NIL as `predict''s second value rather than signalling. See
+`cl-gbdt/src/backend''s `*known-capabilities*', where that asymmetry is stated in full.
 
 Every name here must be registered in `cl-gbdt/src/backend''s `*known-capabilities*', or
 `backend-supports-p' would signal `unknown-capability' for a capability the plist claims;
@@ -832,6 +844,20 @@ docstring."
   (let ((total 1))
     (dotimes (index dim total)
       (setf total (* total (cffi:mem-aref shape-pointer :uint64 index))))))
+
+(defun %reported-shape (shape-pointer dim)
+  "Return the DIM entries at SHAPE-POINTER as a fresh list of integers.
+
+`XGBoosterPredictFromDMatrix' writes the result's shape here -- as does `XGBoosterPredictFromCSR'
+on the sparse path, which this reads the same way -- and `%total-element-count' beside
+this reads only its product. Both are wanted: the product sizes the buffer, the shape is what
+`predict' hands back as its second value. Measured, the shape is richer than the buffer's own
+dimensions for two kinds -- a 3-class model over 4 features reports (rows 4 3 1) for
+`:leaf-index' and (rows 3 5) for `:contrib', and even a BINARY model reports (rows 4 1 1) and
+(rows 1 4) -- so folding it to [rows, total/rows], which is all this backend did before, threw
+away structure the library had already stated."
+  (loop :for index :below dim
+        :collect (cffi:mem-aref shape-pointer :uint64 index)))
 
 (defun %predict-ncol (element-count nrow)
   "Return ELEMENT-COUNT's per-row width for a matrix of NROW rows.

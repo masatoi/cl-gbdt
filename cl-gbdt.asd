@@ -91,8 +91,14 @@ guard, and have no portable fallback."
                ;; missing, and the `:missing-value' capability that gates it -- true on
                ;; XGBoost, false on LightGBM, which signals instead.
                "cl-gbdt/tests/functional/missing-value"
-               ;; The same *FIXTURES* one last time: `make-dataset''s
+               ;; The same *FIXTURES* once more: `make-dataset''s
                ;; :CATEGORICAL-FEATURES, which columns hold categories rather than
                ;; quantities, and the `:categorical-features' capability that gates it.
-               "cl-gbdt/tests/functional/categorical-features")
+               "cl-gbdt/tests/functional/categorical-features"
+               ;; The same *FIXTURES* one last time, and the only entry here about
+               ;; `predict''s SECOND return value: the shape the backend reports for the
+               ;; result it just wrote, and the `:prediction-shape' capability -- the one
+               ;; capability no operation refuses on, a false answer meaning a NIL second
+               ;; value rather than a signal.
+               "cl-gbdt/tests/functional/prediction-shape")
   :perform (test-op (op c) (symbol-call :rove :run c)))

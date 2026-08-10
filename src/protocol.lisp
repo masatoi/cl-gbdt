@@ -357,8 +357,28 @@ sentinel on the booster trained from it, so predicting with a different sentinel
 training used -- or with none -- is a call the library accepts and never reports. Keeping
 the two consistent is the caller's responsibility; nothing here detects that they are not.
 
-Returns a `(simple-array double-float (* *))', with one row per input row either way -- a
-`csr-matrix''s row count is `csr-matrix-num-rows', one less than its INDPTR's length."))
+Returns TWO values.
+
+The FIRST is a `(simple-array double-float (* *))', with one row per input row either way --
+a `csr-matrix''s row count is `csr-matrix-num-rows', one less than its INDPTR's length. It is
+exactly what it has always been: the second value was added beside it and changed neither its
+dimensions nor its elements, for any KIND, dense or sparse.
+
+The SECOND is the SHAPE the backend states for that result -- a list of integers in
+`array-dimensions' order -- or NIL where the backend states none. A NIL here is not an error
+and nothing signals: the `:prediction-shape' capability (see `backend-supports-p') is what
+says whether a backend states one, and unlike every other capability in this protocol NO
+OPERATION REFUSES ON IT. There is no argument asking for a shape, so a backend that answers
+false returns NIL here and predicts exactly as it otherwise would.
+
+A reported shape describes the same elements the first value holds, and may have MORE axes
+than the first value's two. Measured on XGBoost: `:normal' and `:raw' report exactly the first
+value's own `array-dimensions'; `:leaf-index' reports rows x iterations x output groups x
+parallel trees, and `:contrib' rows x output groups x (features + 1), both of which the first
+value folds into rows x (total element count / rows). Both stay multidimensional on a BINARY
+model -- (rows 4 1 1) and (rows 1 4) for a four-round model over three features, its single
+output group notwithstanding -- so the extra structure is not something only a multiclass
+objective produces."))
 
 (defgeneric save-model (booster path &key num-iteration)
   (:documentation "Save BOOSTER's model to PATH.
