@@ -15,15 +15,22 @@
 ;;;; keeps a suite in which NO backend provides the capability from passing having asserted
 ;;;; nothing.
 ;;;;
-;;;; THIS FILE IS ONE-SIDED TODAY, BY DESIGN. LightGBM answers the capability true; XGBoost
-;;;; declares it in neither of its capability lists and so answers false, its
-;;;; `%check-custom-evaluation' refusing every non-NIL :EVALUATION. So on XGBoost every test
-;;;; below except the first takes its `(when (cl-gbdt:backend-supports-p ...))' false branch
-;;;; and asserts nothing, and the first one asserts on that backend through its REFUSAL
-;;;; branch. That is deliberate and is why the guards are written this way: the commit that
-;;;; declares the capability on XGBoost makes every test here cover it WITH NO EDIT TO THIS
-;;;; FILE, exactly as tests/functional/custom-objective.lisp's guards did for :OBJECTIVE on
-;;;; the day that backend stopped refusing it.
+;;;; BOTH BACKENDS ANSWER THE CAPABILITY TRUE, out of different lists: LightGBM PROBES it, in
+;;;; `cl-gbdt/src/lightgbm/native''s `*optional-symbols*', since the three C functions its read
+;;;; needs are optional there; XGBoost DECLARES it, in its own `*provided-capabilities*', since
+;;;; the one C function its read needs is required there. Every
+;;;; `(when (cl-gbdt:backend-supports-p ...))' guard below therefore runs on both, and the
+;;;; guards stay rather than being deleted for the reason they were written: a backend that
+;;;; stopped providing the capability must SKIP these tests rather than fail them, and the
+;;;; first test's `demonstrated' count is what keeps such a skip from leaving this suite green
+;;;; having asserted nothing.
+;;;;
+;;;; When this file first shipped it covered LightGBM alone, XGBoost declaring the capability
+;;;; nowhere and refusing every non-NIL :EVALUATION; the commit that declared it made every
+;;;; test here cover that backend with no edit to any test form, exactly as
+;;;; tests/functional/custom-objective.lisp's guards did for :OBJECTIVE on the day that backend
+;;;; stopped refusing it. What DID have to be edited is *METRIC-TOLERANCES* below, which had
+;;;; been a single constant measured on LightGBM only -- see its docstring.
 ;;;;
 ;;;; Numbers are never compared BETWEEN backends -- policy section 13. Every comparison below
 ;;;; is one backend's caller-written metric against that SAME backend's own library metric,
@@ -123,7 +130,11 @@ The objective matters as much as the metric: the caller-written metric below rea
 the numbers `train' hands it probabilities rather than raw margins. Measured on LightGBM,
 one `objective=binary' booster over this fixture: the buffer `train' hands the caller agrees
 with `cl-gbdt:predict :kind :normal' over the same matrix to 0.0 for the 40-row training set
-AND for the 17-row validation set, while differing from `:raw' by 0.706.")
+AND for the 17-row validation set, while differing from `:raw' by 0.706. Measured again on
+XGBoost, one `objective=binary:logistic' booster over the same fixture: 0.0 for both datasets
+and 0.756 from `:raw'. The two 0.0s are each within one backend; the 0.706 and the 0.756 are
+not compared with one another and neither is a claim about the other library -- policy
+section 13.")
 
 (defparameter *no-metric-parameters*
   '((:lightgbm :objective "binary" :num-leaves 7 :min-data-in-leaf 1 :min-data-in-bin 1
@@ -185,26 +196,59 @@ would fail the call rather than be ignored. The same split, for the same reason,
 spelling of log loss: the collision test below is the one place a caller hands back a name
 the library already uses, and it must be the only place.")
 
-(defparameter *metric-tolerance* 1d-9
-  "How far the caller's own log loss may sit from the library's own and still count as the
-same number.
+(defparameter *metric-tolerances*
+  '((:lightgbm . 1d-9) (:xgboost . 1d-7))
+  "How far each backend's caller-written log loss may sit from that SAME backend's own and
+still count as the same number.
+
+Per backend, like *DATASET-PARAMETERS*, *METRIC-PARAMETERS* and *LIBRARY-METRIC-NAMES* above,
+and for a reason of the same kind rather than as a convenience: THE TWO LIBRARIES COMPUTE LOG
+LOSS IN DIFFERENT PRECISIONS, so no one number bounds both. This was a single 1d-9 constant
+while only LightGBM provided the capability, and the commit that declared it on XGBoost is
+what found that 1d-9 was a LightGBM measurement all along.
 
 The two sums are of the same per-row terms over the same rows, from the identical
 `double-float' probabilities -- `train' hands the caller the very buffer the library
-evaluated -- but they are computed by different code in different languages, and neither
-accumulates in an order the other can be held to. So they agree to the LAST BITS rather than
-exactly: measured on LightGBM over five iterations, the largest difference across the whole
-series was 6.66d-16 at dataset index 0 and 1.11d-16 at index 1. `=' would be a true negative
-dressed as a failure.
+evaluated, which the `predict :kind :normal' assertions below hold to exactly 0.0 on both
+backends -- but they are computed by different code in different languages, and neither
+accumulates in an order the other can be held to. So they agree to the last bits their
+arithmetic HAS rather than exactly, and how many bits that is differs:
 
-Six orders of magnitude of headroom is what the number is chosen for, in both directions:
-nothing this file exists to catch survives 1d-9 either. A metric that ignored SCORES
+  - LightGBM computes `binary_logloss' in double throughout, so a caller reimplementing it in
+    Lisp double arithmetic lands within the last bits. Measured over five iterations, the
+    largest difference across the whole series was 6.66d-16 at dataset index 0 and 1.11d-16 at
+    index 1.
+  - XGBoost evaluates each ROW's `logloss' term in SINGLE precision -- `bst_float', in its own
+    `EvalRowLogLoss' -- and only accumulates the mean in double, so a caller computing that
+    same sum in double cannot land nearer than single precision allows. Measured over five
+    iterations on this fixture, the largest difference was 1.35d-8 across both datasets: four
+    orders of magnitude wider than LightGBM's, and the reason 1d-9 fails there for a reason
+    that has nothing to do with the array the caller was handed.
+
+That XGBoost's gap is a precision floor and not a wrong array is measured directly rather than
+inferred, which is what makes 1d-7 a floor with an order of magnitude of headroom rather than a
+tolerance widened until the test passed: a Lisp reimplementation that evaluates each row in
+`single-float' and accumulates in `double' reproduces XGBoost's own published value EXACTLY --
+difference 0.0d0 at every one of five rounds -- off the very array `logloss-evaluation' is
+handed here. The one below evaluates in double, as any natural Lisp caller would, and is left
+that way deliberately: what this file tests is a caller's own ordinary metric, not a
+bit-for-bit reimplementation of one library's arithmetic.
+
+Neither number is compared against the other, and neither is a claim about the other backend --
+policy section 13. What each bounds is one backend's own two readings of one run.
+
+Headroom in the other direction is what both are chosen for, and 1d-7 still keeps six orders of
+magnitude of it: nothing this file exists to catch survives it. A metric that ignored SCORES
 entirely -- the control below, which returns a flat 0.5 -- sits about 0.19 away from a
-library series measured between 0.682 and 0.698, and a validation set whose bin mappers were
+library series measured between 0.681 and 0.698, and a validation set whose bin mappers were
 never aligned moves the predictions themselves by 0.136. It is
 `cl-gbdt/tests/functional/support''s *PREDICTION-TOLERANCE* restated rather than a new idea,
 and is not imported from there only because what it bounds is a metric rather than a
 prediction.")
+
+(defun metric-tolerance (name)
+  "Return backend NAME's own agreement tolerance -- see *METRIC-TOLERANCES*."
+  (cdr (assoc name *metric-tolerances*)))
 
 (defun logloss-evaluation (label-vectors)
   "Return an :EVALUATION function computing binary log loss over the probabilities it is
@@ -249,11 +293,11 @@ NIL and it discriminates nothing."
                          (cl-gbdt:training-report-series report))))
     (and series (cl-gbdt:training-series-values series))))
 
-(defun series-agree-p (left right)
+(defun series-agree-p (left right tolerance)
   "True when LEFT and RIGHT, two series' value vectors, are the same length and differ
-nowhere by more than *METRIC-TOLERANCE*."
+nowhere by more than TOLERANCE -- the calling backend's own, from `metric-tolerance'."
   (and (= (length left) (length right))
-       (every (lambda (a b) (and (realp a) (realp b) (<= (abs (- a b)) *metric-tolerance*)))
+       (every (lambda (a b) (and (realp a) (realp b) (<= (abs (- a b)) tolerance)))
               left right)))
 
 (defun report-pairs (report)
@@ -553,7 +597,9 @@ number or a string fails somewhere no matter what; a symbol quietly works, wrong
                                (ok mine (format nil "index ~D has the caller's series" index))
                                (ok theirs (format nil "index ~D has the library's series"
                                                   index))
-                               (ok (and mine theirs (series-agree-p mine theirs))
+                               (ok (and mine theirs
+                                        (series-agree-p mine theirs
+                                                        (metric-tolerance name)))
                                    (format nil "index ~D: ~S against ~S" index mine theirs))))
                            ;; And the array itself is `predict :kind :normal''s for THAT
                            ;; dataset, which is what `train''s generic docstring and
@@ -591,7 +637,9 @@ number or a string fails somewhere no matter what; a symbol quietly works, wrong
                          (dolist (index '(0 1))
                            (let ((mine (series-values report index *custom-metric-name*))
                                  (theirs (series-values report index (library-metric name))))
-                             (ok (and mine theirs (not (series-agree-p mine theirs)))
+                             (ok (and mine theirs
+                                      (not (series-agree-p mine theirs
+                                                           (metric-tolerance name))))
                                  (format nil "index ~D: the control must not agree"
                                          index))))))))))
           (cl-gbdt:close-backend backend))))))

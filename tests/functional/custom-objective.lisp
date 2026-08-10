@@ -503,8 +503,10 @@ this one is the suite's own `*prediction-tolerance*' restated rather than a new 
   ;; arrays in the wrong order would pass all of them green. SIX docstrings state a layout as
   ;; measured fact -- group-major in `%booster-predictions' and `%update-one-iteration-custom' in
   ;; src/lightgbm/native.lisp and `train' in src/lightgbm/protocol.lisp, row-major in
-  ;; `%training-scores' and `%train-one-iteration-custom' in src/xgboost/native.lisp and `train'
-  ;; in src/xgboost/protocol.lisp; this is what holds all six. The two backends want OPPOSITE
+  ;; `%booster-predictions' and `%train-one-iteration-custom' in src/xgboost/native.lisp and
+  ;; `train' in src/xgboost/protocol.lisp; this is what holds all six. The two score readers
+  ;; share one NAME across the two files and disagree about the layout, which is not a
+  ;; contradiction: each states its own library's buffer. The two backends want OPPOSITE
   ;; orders and the caller writes neither: OBJECTIVE is handed, and returns, a (ROWS GROUPS)
   ;; array on both.
   ;;
@@ -521,8 +523,8 @@ this one is the suite's own `*prediction-tolerance*' restated rather than a new 
   ;;
   ;; TWO iterations, and both halves of the flattening are pinned separately. The run's OUTPUT
   ;; pins the update function -- which groups the caller's gradient actually reached -- and the
-  ;; SECOND call's own SCORES argument pins the score READER -- LightGBM's
-  ;; `%booster-predictions', XGBoost's `%training-scores' -- which is the reverse direction
+  ;; SECOND call's own SCORES argument pins the score READER -- each backend's own
+  ;; `%booster-predictions' -- which is the reverse direction
   ;; and would otherwise have nothing behind it: at iteration 1 every score is 0, so no
   ;; single-iteration run can tell the two readings of that buffer apart.
   ;;
@@ -537,8 +539,8 @@ this one is the suite's own `*prediction-tolerance*' restated rather than a new 
   ;;   custom' / `%train-one-         predictions smear
   ;;   iteration-custom')
   ;;   the score READER flipped      only the SCORES quiet-group assertion fails. The
-  ;;   (`%booster-predictions' /     predictions are untouched, because this objective derives
-  ;;   `%training-scores')           its gradient from the ROW INDEX and never reads SCORES --
+  ;;   (either backend's             predictions are untouched, because this objective derives
+  ;;   `%booster-predictions')       its gradient from the ROW INDEX and never reads SCORES --
   ;;                                 which is exactly why the scores assertion is not redundant
   ;;                                 with the prediction one and has to be made separately
   ;;

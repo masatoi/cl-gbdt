@@ -459,8 +459,8 @@ no capability and cannot fail either check. Policy section 7 requires the operat
 re-check rather than trusting the caller to have asked `backend-supports-p' first -- the same
 rule `%check-sparse-input', `%check-missing-value', `%check-categorical-features' and
 `%check-custom-objective' above follow for their own. Mirrors
-`cl-gbdt/src/xgboost/protocol''s function of the same name, which refuses every non-NIL
-EVALUATION at the capability check because that backend declares the capability nowhere.
+`cl-gbdt/src/xgboost/protocol''s function of the same name, which reads the same capability
+out of that backend's `*provided-capabilities*' rather than out of a probe.
 
 Like `:custom-objective''s, this backend's answer is PROBED rather than declared: the three
 C functions `%booster-predictions' makes are named in `*optional-symbols*' rather than

@@ -46,7 +46,7 @@
                 #:%predict-ncol
                 #:%predict-from-dmatrix
                 #:%predict-from-csr
-                #:%training-scores
+                #:%booster-predictions
                 #:%train-one-iteration-custom
                 #:%save-model
                 #:%load-model
@@ -121,6 +121,9 @@
   ;; second symbol would leave an unused name suggesting otherwise.
   (:import-from #:cl-gbdt/src/config/objective
                 #:check-objective-result)
+  (:import-from #:cl-gbdt/src/training/custom-metric
+                #:custom-metric-entry
+                #:check-metric-name-collision)
   (:import-from #:cl-gbdt/src/training/history
                 #:training-report-from-history)
   (:import-from #:cl-gbdt/src/training/early-stopping
@@ -395,19 +398,33 @@ rule `%check-sparse-input', `%check-missing-value', `%check-categorical-features
 `cl-gbdt/src/lightgbm/protocol''s function of the same name, down to the ARGUMENT string, so
 the two backends refuse the same value with the same report.
 
-TODAY ONLY THE FIRST OF THE THREE IS REACHABLE HERE, and that is the honest state rather than
-a stub: this backend names `:custom-evaluation' in NEITHER `*provided-capabilities*' NOR
-`*optional-symbols*', so `backend-supports-p' reads a capability missing from the plist as
-unavailable and every non-NIL EVALUATION is refused before the RECORD-HISTORY and `functionp'
-checks can run. That is the same shape LightGBM's `:missing-value' answer has -- the ABSENCE
-of a declaration rather than a declaration of absence. The two later checks are written now,
-in the order and wording LightGBM's are, so that the commit which declares the capability
-makes them live rather than having to invent them.
+UNLIKE `%check-custom-objective' beside it, and unlike LightGBM's function of this name, the
+capability this reads is DECLARED rather than probed: `XGBoosterPredictFromDMatrix' -- all
+`%booster-predictions' needs -- is in `*required-symbols*', so `:custom-evaluation' is named
+in `*provided-capabilities*' and no open XGBoost reads false here. See that variable's own
+docstring for why, and for why the sibling backend answering the same capability out of its
+`*optional-symbols*' is not a disagreement between the two. The check is not thereby redundant:
+it is what keeps the two backends' code saying the same thing, the same reasoning
+`%check-missing-value' and `%check-categorical-features' above carry for their own
+unconditionally-true capabilities, and it is reachable -- a caller who overwrites
+`backend-capabilities' gets this refusal, which is how
+`withdrawing-the-capability-makes-train-refuse' in tests/functional/custom-evaluation.lisp
+reaches it on both backends.
 
-The argument is accepted by `train''s lambda list rather than being absent from it: `train'
-is one generic function, so a method that did not take the keyword at all would answer a
-caller who named it with SBCL's `unknown-keyword-argument' rather than with the typed
-`capability-unavailable' every other unavailable capability on this backend answers with."
+RECORD-HISTORY NIL is refused rather than silently ignored, for exactly the reason
+`train-early-stopping-watcher' refuses the same pair: a custom metric's whole result is the
+per-iteration series RECORD-HISTORY NIL exists not to build, and the values would be computed
+at full cost -- a prediction pass per dataset per iteration on this backend -- and then
+dropped.
+
+The type check is here, beside the capability check, rather than left to the `funcall' in
+`train''s loop, for the same reason `%check-custom-objective' gives: by then a booster handle
+exists and one dataset's predictions have already been read out of the library, so
+`:evaluation 42' would surface as SBCL's own untyped `type-error' from mid-loop, naming
+neither the argument nor the backend. `functionp' rather than a `function' type declaration:
+a symbol naming a function is NOT accepted, since `funcall' would resolve it against whatever
+global definition happened to be in force at each iteration rather than against what the
+caller passed."
   (when evaluation
     (unless (backend-supports-p backend :custom-evaluation)
       (error 'capability-unavailable
@@ -670,8 +687,9 @@ that afterward, on every element `%valid-set-name' has already let through."
   "Re-run `train''s own opening checks over BACKEND, DATASET and VALID-SETS, and return two
 values: DATASET's freshly read live pointer, and a fresh list of the VALID-SETS entries'.
 
-`train''s loop calls this after every `funcall' of a caller-supplied OBJECTIVE, which is the
-only point in the loop where code this library did not write runs. That code may free the
+`train''s loop calls this after every `funcall' of a caller-supplied OBJECTIVE and after every
+`funcall' of a caller-supplied EVALUATION, which are the only points in the loop where code
+this library did not write runs. That code may free the
 training set -- `free-dataset' from inside the objective is the case this was found through --
 and the pointer `train' read once before the loop is then a pointer into freed memory that
 `XGBoosterTrainOneIter' takes as its DMatrix argument. Measured before this function existed:
@@ -687,6 +705,11 @@ The VALID-SETS entries are re-checked and returned because the same iteration ha
 pointers to `XGBoosterEvalOneIter' through `%read-evaluation' whenever RECORD-HISTORY is true
 -- a freed DMatrix there is the identical use-after-free the training set is, which is why
 `%check-booster-datasets-live' guards both on the public `update-one-iteration' path.
+`XGBoosterPredictFromDMatrix', which `%custom-evaluation-entries' below reaches through
+`%booster-predictions' with each dataset's own pointer in turn, dereferences that pointer the
+same way and is covered by exactly the same re-check -- which is why that function calls this
+one between two consecutive datasets' reads rather than only once per iteration, and uses the
+list this returns for the next read rather than the one it was handed.
 
 BACKEND itself is re-checked with `%check-backend-open' because `close-backend' unmaps the
 shared library and the objective can call it. `handle-live-pointer' already refuses a handle
@@ -697,9 +720,11 @@ instance over the same library, whose own backend is still open while BACKEND is
 costs one slot read per iteration.
 
 Mirrors `cl-gbdt/src/lightgbm/protocol''s function of the same name, which returns the
-training pointer alone: that library's own custom update takes no DMatrix argument and its
-`%read-evaluation' takes a dataset COUNT rather than pointers, so there is nothing there for
-the validation half to be returned for."
+training pointer alone: that library's own custom update takes no DMatrix argument, its
+`%read-evaluation' takes a dataset COUNT rather than pointers, and its `%booster-predictions'
+addresses a dataset by LightGBM's own `data_idx' rather than by pointer -- so there is nothing
+there for the validation half to be returned for. Every one of the three has a pointer
+argument here, which is why this returns both halves and every caller reassigns from them."
   (%check-backend-open backend)
   (let ((train-data-pointer
           (%check-xgboost-dataset backend dataset "train's dataset argument"
@@ -709,6 +734,70 @@ the validation half to be returned for."
                       (%check-xgboost-dataset backend valid-set "a train :valid-sets entry"
                                                'xgboost-dataset))
                     valid-sets))))
+
+(defun %custom-evaluation-entries (backend evaluation booster-pointer dataset valid-sets
+                                    dataset-pointers row-counts library-entries
+                                    check-collisions-p)
+  "Call EVALUATION once for each of BOOSTER-POINTER's datasets and return two values: the
+(DATASET-INDEX METRIC-NAME VALUE) entries the calls produced, in dataset-index order, and a
+freshly re-read DATASET-POINTERS list.
+
+DATASET-POINTERS is the training DMatrix's pointer followed by each VALID-SETS entry's, the
+same list `train' hands `%read-evaluation', and ROW-COUNTS is those same datasets' row counts
+in the same order. ROW-COUNTS is what says how many datasets there are as well as how wide
+each one's prediction array is; `train' reads it once before its loop rather than per
+iteration, since a built DMatrix's row count cannot change -- `XGDMatrixCreateFromDense' and
+`XGDMatrixCreateFromCSR' each build a finished matrix and this API has no entry point that
+appends rows to one -- and an integer read before the loop cannot go stale into a fault the
+way a pointer can.
+
+Each dataset's predictions come from `%booster-predictions' at `:normal', handed that
+dataset's OWN pointer and OWN row count -- the 40-row training set's and the 17-row validation
+set's are different arrays, and deriving one from the other would silently mis-shape what the
+caller's function is handed. `:normal' rather than the `:raw' `train''s OBJECTIVE branch reads
+through the same function: what a metric is handed is that dataset's prediction, the number
+`predict' returns for the same rows. See `%booster-predictions', which records both
+measurements.
+
+EVALUATION is called with that array and the dataset's index, and must return two values, a
+metric name and a value; `custom-metric-entry' checks both and builds the entry. The SECOND
+value returned here is the point of the re-check that follows every call: EVALUATION is caller
+code and may free a dataset or close BACKEND, so `%recheck-train-datasets' runs the moment it
+returns -- before the NEXT dataset's `XGBoosterPredictFromDMatrix', and before `train' uses any
+of these pointers again -- and both this loop and `train' read the list it returns rather than
+the one they started with. That matters more here than on LightGBM, whose reader addresses a
+dataset by `data_idx' and so holds no pointer to go stale. See `%recheck-train-datasets' for
+what each of its three re-checks covers.
+
+CHECK-COLLISIONS-P runs `check-metric-name-collision' against LIBRARY-ENTRIES, this
+iteration's own `%read-evaluation' result. `train' passes true on the first iteration only:
+what the library reports cannot be known before a booster has produced one real evaluation,
+and after that first one the name set does not change. The check runs AFTER
+`custom-metric-entry' rather than before it, and the order is load-bearing:
+`check-metric-name-collision' compares with `string=', which signals a bare `type-error' for a
+name that is not a string designator at all, while `custom-metric-entry' is what turns that
+same name into this library's own `unsupported-argument'.
+
+Mirrors `cl-gbdt/src/lightgbm/protocol''s function of the same name, down to the argument
+order and the order of the three steps inside the loop, differing only in taking and returning
+a pointer list where that one takes neither: it addresses each dataset by index and returns the
+training pointer alone."
+  (let ((entries '())
+        (pointers dataset-pointers))
+    (loop :for index :from 0
+          :for rows :in row-counts
+          :do (let ((predictions (%booster-predictions booster-pointer (nth index pointers)
+                                                        rows :normal)))
+                (multiple-value-bind (name value) (funcall evaluation predictions index)
+                  (multiple-value-bind (train-data-pointer valid-set-pointers)
+                      (%recheck-train-datasets backend dataset valid-sets)
+                    (setf pointers (cons train-data-pointer valid-set-pointers)))
+                  (let ((entry (custom-metric-entry (backend-name backend) name value index)))
+                    (when check-collisions-p
+                      (check-metric-name-collision (backend-name backend) name index
+                                                    library-entries))
+                    (push entry entries)))))
+    (values (nreverse entries) pointers)))
 
 (defmethod train ((backend xgboost-backend) dataset
                    &key valid-sets (num-rounds 100) parameters (record-history t)
@@ -800,8 +889,8 @@ The generic function's docstring states this as the caller's decision; nothing h
 or warns about it. `num_class' is likewise just another parameter, and 3 of it alone gives
 three output groups -- no `multi:*' objective is needed for a multiclass custom-objective run.
 
-Each iteration reads the booster's current raw scores with `%training-scores' -- an
-`XGBoosterPredictFromDMatrix' margin prediction over the training DMatrix, this library
+Each iteration reads the booster's current raw scores with `%booster-predictions' at `:raw' --
+an `XGBoosterPredictFromDMatrix' margin prediction over the training DMatrix, this library
 having no counterpart to LightGBM's `LGBM_BoosterGetPredict' that hands back scores it
 already holds. It costs a prediction pass per iteration, which that backend's loop does not
 pay. The result reaches OBJECTIVE as a (ROWS GROUPS) `double-float' array, where ROWS comes
@@ -813,9 +902,9 @@ shapes with the same `dimension-mismatch' -- and only then flattened into the C 
 ROW-MAJOR on this backend (row I of group K at `(+ (* I GROUPS) K)', which is what an
 `__array_interface__' of shape `[ROWS, GROUPS]' means) and converted to `single-float'. Both
 the flattening and the score layout are measured; see `%train-one-iteration-custom' and
-`%training-scores'. The flattening is this method's business and not the caller's: OBJECTIVE
-is handed, and returns, a (ROWS GROUPS) array whichever order the library underneath wants it
-in -- LightGBM wants the other one.
+`%booster-predictions'. The flattening is this method's business and not the caller's:
+OBJECTIVE is handed, and returns, a (ROWS GROUPS) array whichever order the library underneath
+wants it in -- LightGBM wants the other one.
 
 OBJECTIVE is funcalled inside this method's own `with-foreign-float-traps-masked' body wrap,
 so the caller's Lisp arithmetic runs under the masked convention on x86-64 as well as on
@@ -843,15 +932,38 @@ generic function, so a method that did not take the keyword at all would answer 
 named it with SBCL's `unknown-keyword-argument' rather than with the typed condition every
 other unavailable capability on this backend answers with.
 
-EVALUATION is REFUSED here, and that is all this method does with it today: this backend
-declares `:custom-evaluation' in neither of its two capability lists, so
-`%check-custom-evaluation' above signals `capability-unavailable' for every non-NIL value
-before any foreign call, and no per-dataset metric is computed or recorded. The argument is
-in this lambda list for the same reason OBJECTIVE's paragraph just above gives for its own --
-`train' is one generic function and every method must accept every key -- and refusing it is
-what policy section 7 requires of a capability this backend does not have, rather than
-accepting it and silently recording only the library's own metrics. See the `train' generic
-function's docstring for the contract a backend that DOES provide the capability implements.
+EVALUATION adds the caller's own metric to what each iteration records, one call per dataset
+per iteration -- see the `train' generic function's docstring for what that function is called
+with and what it must return. Signals `capability-unavailable' naming `:custom-evaluation'
+when the capability reads false, and `unsupported-argument' naming \"train's :evaluation\" for
+RECORD-HISTORY NIL or for a non-function, all three before any foreign call: see
+`%check-custom-evaluation' above, and `*provided-capabilities*' for why the answer here is
+DECLARED where LightGBM's is probed. EVALUATION NIL, the default, reaches no check and records
+exactly what this method has always recorded.
+
+The calls happen after this iteration's own `%read-evaluation' and BEFORE the history push
+and the watcher, in `%custom-evaluation-entries' -- so the entries the history keeps and the
+entries the watcher sees are one list, and `:early-stopping' can watch a custom metric with
+nothing here to arrange it. The custom entries are APPENDED after every library entry, which
+is what makes `training-report-from-history''s first-seen ordering put the library's series
+first, as a prefix, exactly where `evaluation' reports them; a custom metric never reaches
+`evaluation' at all, that method reading only `XGBoosterEvalOneIter'.
+
+Each dataset's predictions are read with `%booster-predictions' at `:normal', over that
+dataset's OWN DMatrix pointer and OWN row count -- a fresh `XGBoosterPredictFromDMatrix' pass
+per dataset per iteration, this library having nothing that hands back predictions it already
+holds. They are `predict :kind :normal''s numbers and not the `:raw' margin OBJECTIVE is
+handed, which on this backend are genuinely different numbers in the same run: `train'
+rewrites no parameter, so a configured objective's transform stays in effect for both. Both
+facts are measured; see `%booster-predictions'. ROW-COUNTS is read once before the loop, from
+the same pointers this method already validated, and only when EVALUATION is non-NIL, so a run
+that asks for no custom metric makes no extra foreign call at all.
+
+An EVALUATION that frees a handle this loop depends on, or closes BACKEND, is caught the same
+way an OBJECTIVE is: `%custom-evaluation-entries' calls `%recheck-train-datasets' the moment
+each `funcall' returns -- between two consecutive datasets' reads, not once per iteration --
+and TRAIN-DATA-POINTER, VALID-SET-POINTERS and DATASET-POINTERS are all reassigned from the
+list it returns, exactly as they are on the OBJECTIVE path.
 
 DATASET and every VALID-SETS entry's dataset half are each run through
 `%check-xgboost-dataset' before any foreign call. `train' dispatches on BACKEND, not on
@@ -903,6 +1015,12 @@ Signals `backend-not-open' before any of that when BACKEND is not open -- see
                      valid-sets))
            (dataset-pointers (cons train-data-pointer valid-set-pointers))
            (dataset-names (cons nil valid-set-names))
+           ;; Read once, and only for a run that actually has a custom metric to hand
+           ;; predictions to: a built DMatrix's row count cannot change, and an integer read
+           ;; here cannot go stale into a fault the way a pointer can. NIL otherwise, so a
+           ;; run without EVALUATION makes not one extra foreign call.
+           (row-counts (when evaluation
+                         (mapcar #'%dataset-num-rows dataset-pointers)))
            ;; Built before `XGBoosterCreate', so a malformed spec -- or one asking for early
            ;; stopping with RECORD-HISTORY NIL -- signals with no raw booster handle in
            ;; existence yet to unwind. NIL when EARLY-STOPPING is NIL, which is what the
@@ -932,9 +1050,10 @@ Signals `backend-not-open' before any of that when BACKEND is not open -- see
                                ;; branch beside this one -- see that function for why the
                                ;; count is not tracked locally. ROUND is 1-based and belongs
                                ;; to the report and the early-stopping watcher, not to C.
-                               (let ((scores (%training-scores
+                               (let ((scores (%booster-predictions
                                               booster-pointer train-data-pointer
-                                              (%dataset-num-rows train-data-pointer))))
+                                              (%dataset-num-rows train-data-pointer)
+                                              :raw :training t)))
                                  (multiple-value-bind (grad hess) (funcall objective scores)
                                    ;; Before anything else this iteration does, and before the
                                    ;; next one reads TRAIN-DATA-POINTER again: the caller's
@@ -959,6 +1078,21 @@ Signals `backend-not-open' before any of that when BACKEND is not open -- see
                            (let ((entries (when record-history
                                             (%read-evaluation booster-pointer
                                                               dataset-pointers))))
+                             ;; Appended after every library entry, and before the push and
+                             ;; the watcher, so the history and the watcher see one list. All
+                             ;; three pointer variables are reassigned from what the call
+                             ;; returns: the caller's own code has just run, and the next
+                             ;; iteration's update and `%read-evaluation' both dereference
+                             ;; them.
+                             (when evaluation
+                               (multiple-value-bind (custom pointers)
+                                   (%custom-evaluation-entries
+                                    backend evaluation booster-pointer dataset valid-sets
+                                    dataset-pointers row-counts entries (= round 1))
+                                 (setf entries (append entries custom)
+                                       dataset-pointers pointers
+                                       train-data-pointer (first pointers)
+                                       valid-set-pointers (rest pointers))))
                              (when record-history
                                (push entries history))
                              (when (and watcher (observe-iteration watcher entries round))
