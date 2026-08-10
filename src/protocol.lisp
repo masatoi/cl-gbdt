@@ -366,10 +366,13 @@ dimensions nor its elements, for any KIND, dense or sparse.
 
 The SECOND is the SHAPE the backend states for that result -- a list of integers in
 `array-dimensions' order -- or NIL where the backend states none. A NIL here is not an error
-and nothing signals: the `:prediction-shape' capability (see `backend-supports-p') is what
-says whether a backend states one, and unlike every other capability in this protocol NO
-OPERATION REFUSES ON IT. There is no argument asking for a shape, so a backend that answers
-false returns NIL here and predicts exactly as it otherwise would.
+and nothing signals: the `:prediction-shape' capability (see `backend-supports-p') is what says
+whether a backend states one, and NO OPERATION REFUSES ON IT. The three capabilities this
+protocol's operations do refuse on -- `:sparse-input', `:missing-value' and
+`:categorical-features', each documented above on the operation that checks it -- gate an
+ARGUMENT, and refusing is how a caller learns the argument will not be honoured. There is no
+argument asking for a shape, so a backend that answers false returns NIL here and predicts
+exactly as it otherwise would.
 
 A reported shape describes the same elements the first value holds, and may have MORE axes
 than the first value's two. Measured on XGBoost: `:normal' and `:raw' report exactly the first

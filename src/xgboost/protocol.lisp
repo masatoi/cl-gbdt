@@ -850,14 +850,18 @@ entry points report it the same way, `\"strict_shape\":true' being set for both.
 
 That same report is also RETURNED, as this method's second value: `%reported-shape' reads
 `out_shape' back as a list of integers instead of only multiplying it out, and neither entry
-point interprets or reshapes it. This backend provides `:prediction-shape' unconditionally
-(`*provided-capabilities*'), so the second value is a list on every call here, never NIL, and
-nothing re-checks the capability -- there is no argument to refuse. Measured against the
-vendored library, it is RICHER than the first value's own dimensions for two kinds: a 3-class
-model over 4 features at 4 rounds reports (rows 4 3 1) for `:leaf-index' where the array is
-rows x 12, and (rows 3 5) for `:contrib' where the array is rows x 15. A BINARY model reports
-(rows 4 1 1) and (rows 1 4) -- multidimensional there too, its one output group notwithstanding
--- so this is not a multiclass-only difference. The first value is untouched by any of it.
+point interprets or reshapes it. It is never NIL here, and what makes that so is
+`\"strict_shape\":true' rather than the capability declaration: `%reported-shape' would answer
+NIL for a zero DIM, and strict shape is what keeps `out_dim' off zero on both entry points --
+measured 2 for `:normal' and `:raw', 3 for `:contrib' and 4 for `:leaf-index'. This backend
+declares `:prediction-shape' in `*provided-capabilities*' to say so, and nothing re-checks that
+declaration: there is no argument to refuse. Measured against the vendored library, the shape is
+RICHER than the first value's own dimensions for two kinds: a four-round three-class model over
+four features reports (rows 4 3 1) for `:leaf-index' where the array is rows x 12, and
+(rows 3 5) for `:contrib' where the array is rows x 15. A four-round BINARY model over three
+features reports (rows 4 1 1) and (rows 1 4) -- multidimensional there too, its one output
+group notwithstanding -- so this is not a multiclass-only difference. The first value is
+untouched by any of it.
 
 `out_result' is XGBoost's own memory, valid only until the next call into this booster,
 so every element is copied out, coerced from `single-float' to `double-float', before
