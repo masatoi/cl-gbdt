@@ -326,14 +326,15 @@ but not predict from one would have been told a half-truth. Listing both from th
 the answer never changes meaning as the sparse path grows.
 
 `:custom-objective' names ONE function where LightGBM's entry of the same name needs three:
-`XGBoosterTrainOneIter' takes the caller's gradient and Hessian, and the other two things one
-iteration of `train''s custom loop needs are already required here. The scores the caller's
+`XGBoosterTrainOneIter' takes the caller's gradient and Hessian, and everything else one
+iteration of `train''s custom loop calls is already required here. The scores the caller's
 function is handed come from `XGBoosterPredictFromDMatrix' -- `%training-scores' below is a
 margin prediction over the training DMatrix, not a separate score-reading entry point the way
-LightGBM's `LGBM_BoosterGetPredict' is -- and the output-group count is not read from the
-library at all but divided out of that prediction's own element count by `%predict-ncol'. Both
-sit under `XGBoosterPredictFromDMatrix', which is in `*required-symbols*' above, so neither
-adds a name here.
+LightGBM's `LGBM_BoosterGetPredict' is -- the output-group count is not read from the library
+at all but divided out of that prediction's own element count by `%predict-ncol', and the round
+number the update is given comes from `XGBoosterBoostedRounds', through `%boosted-rounds', the
+same way the built-in `%update-one-iteration' gets its own. Both of those C names are in
+`*required-symbols*' above, so neither adds a name here.
 
 It belongs HERE and not in `*provided-capabilities*' below: `XGBoosterTrainOneIter' is NOT in
 `*required-symbols*' above, so an XGBoost too old to export it opens perfectly well and simply
@@ -845,10 +846,31 @@ something else."
 protocol."
   (or num-iteration 0))
 
-(defun %predict-config-json (predict-type iteration-end &key (missing nil missing-supplied-p))
+(defun %predict-config-json (predict-type iteration-end
+                             &key (training nil) (missing nil missing-supplied-p))
   "Return the JSON config `XGBoosterPredictFromDMatrix' expects for PREDICT-TYPE (already
 mapped by `%predict-type') and ITERATION-END (already resolved by
 `%resolve-num-iteration').
+
+TRAINING renders the `\"training\"' key, which is always present: false by default, true when
+this argument is. The key is required -- omitting it entirely returns -1, `Argument
+`training` is required for `XGBoosterPredictFromDMatrix`', confirmed against the vendored
+library -- so what this argument decides is the VALUE, never whether the key appears, which is
+the opposite of MISSING below.
+
+What the value means is documented in the vendored header
+(`ffi-spec/xgboost/include/xgboost/c_api.h:1180-1191'), against this very config: prediction
+runs in one of two scenarios, obtaining `y_pred' from the model, or \"obtain[ing] the
+prediction for computing gradients\", and \"the second scenario applies when you are defining a
+custom objective function\". So false is right for `predict', whose caller asked for a
+prediction, and true is right for `%training-scores', whose result exists only to be handed to
+a caller's objective function -- see that function, which is the only caller passing true.
+
+The two are NOT interchangeable in general, whatever a `gbtree' measurement suggests: the same
+header names DART's training-time dropout as the case where they differ, \"the prediction
+result will be different from the one obtained by normal inference step due to dropped trees\".
+`:booster \"dart\"' reaches `%set-parameters' untouched, so that configuration is reachable
+from the unified API.
 
 `\"strict_shape\":true' always: without it, XGBoost's non-strict mode squeezes away a
 single-class model's trailing dimension inconsistently with a multi-class model's --
@@ -870,9 +892,9 @@ key -- a DMatrix settled its own missing sentinel when it was built, out of the 
 prediction with no DMatrix behind it and therefore nothing to have settled one: confirmed
 against the vendored library, that call refuses outright without the key (\"Argument
 `missing` is required\"), rather than assuming a default."
-  (format nil "{\"type\":~D,\"training\":false,\"iteration_begin\":0,~
+  (format nil "{\"type\":~D,\"training\":~A,\"iteration_begin\":0,~
 \"iteration_end\":~D,\"strict_shape\":true~A}"
-          predict-type iteration-end
+          predict-type (if training "true" "false") iteration-end
           (if missing-supplied-p
               (format nil ",\"missing\":~A" (missing-value-json missing :xgboost))
               "")))
@@ -1016,11 +1038,28 @@ returns -- none of which differs between the two entry points."
 `double-float' array.
 
 A margin prediction over the training DMatrix -- `%predict-config-json' with `:raw''s
-predict type, ITERATION-END 0 for every iteration the booster has so far, used exactly as
-`predict' uses the same pair. That builder already emits `\"training\":false', which the
-library requires: omitting the key entirely returns -1, `Argument `training` is required
-for `XGBoosterPredictFromDMatrix`'. Measured against the vendored library, `false' and
-`true' train identical models here, so this feature adds no key and no second builder.
+predict type and ITERATION-END 0, every iteration the booster has so far. `predict' builds
+its config through the same function, differing in that it resolves ITERATION-END through
+`%resolve-num-iteration' from a caller's :NUM-ITERATION where this passes the literal 0, and
+in the TRAINING flag below.
+
+`\"training\":true', which is what makes this a second caller of that builder rather than a
+reuse of `predict''s exact string. The key itself is required either way -- omitting it
+returns -1, `Argument `training` is required for `XGBoosterPredictFromDMatrix`' -- and TRUE
+is the value the vendored header asks for here: it names two prediction scenarios
+(`ffi-spec/xgboost/include/xgboost/c_api.h:1180-1191'), obtaining `y_pred' and \"obtain[ing]
+the prediction for computing gradients\", and says \"the second scenario applies when you are
+defining a custom objective function\", which is the only thing this function's result is
+ever used for.
+
+Nothing existing moves when that flag changes value, and that is measured rather than
+assumed: on the default `gbtree' booster, `false' and `true' train identical models here.
+Where they are NOT identical is the case the same header names -- DART, whose training-time
+dropout means \"the prediction result will be different from the one obtained by normal
+inference step due to dropped trees\". That difference is the header's statement, NOT a
+measurement taken here; what a `:booster \"dart\"' run does under this flag has not been
+measured. It is reachable, though: PARAMETERS reach `%set-parameters' untouched, so sending
+`false' would hand such a caller's objective the full undropped ensemble.
 
 The buffer is read ROW-MAJOR -- row I of output group K at `(+ (* I GROUPS) K)' -- which is
 how `cl-gbdt/src/xgboost/protocol''s `predict' already reads the identical buffer from the
@@ -1042,7 +1081,7 @@ effect and `:normal' would hand the caller probabilities. See
 OUT-RESULT is XGBoost's own memory, valid only until the next call into this booster, so
 every element is copied out and coerced to `double-float' before this returns -- the same
 lifetime `predict' works to."
-  (let ((config (%predict-config-json (%predict-type :raw) 0)))
+  (let ((config (%predict-config-json (%predict-type :raw) 0 :training t)))
     (cffi:with-foreign-objects ((out-shape :pointer) (out-dim :uint64) (out-result :pointer))
       (cffi:with-foreign-string (config-string config)
         (check-xgb (%predict-from-dmatrix booster-pointer dmatrix-pointer config-string
@@ -1076,10 +1115,16 @@ downstream will report a wrong typestr, so this call site is the only thing keep
 buffer from being misread.
 
 ITERATION is the round number the C signature asks for, and `train' reads it back from
-`%boosted-rounds' at each call exactly as `%update-one-iteration' does -- see that function
-for why the count is read from the booster rather than tracked locally. Measured, it does
-not affect the result: 0-based, always-zero and 1-based all reproduce the built-in run
-exactly. It is sent honestly rather than relied on.
+`%boosted-rounds' at each call, the same way `%update-one-iteration' does. The REASON that
+function gives does not carry over unchanged: it reads the count back so a booster whose
+rounds did not start at 0 cannot have a local counter repeat rounds already boosted, whereas
+the vendored header says of THIS entry point's `iter' that \"when training continuation is
+used, the count should restart\" (`ffi-spec/xgboost/include/xgboost/c_api.h:1099-1100'), which
+is a restarting local counter. The two conventions agree here only because `train' always
+builds a fresh booster, so `%boosted-rounds' runs 0, 1, 2, ... -- a future entry point that
+continued training an existing booster would have to choose between them. Measured, the value
+does not affect the result at all: 0-based, always-zero and 1-based all reproduce the built-in
+run exactly. It is sent honestly rather than relied on.
 
 Both buffers only need to stay alive for the duration of this call: `XGBoosterTrainOneIter'
 reads them and returns, exactly the lifetime `%create-dmatrix' relies on for the array
