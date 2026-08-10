@@ -327,7 +327,7 @@ backend can take a `csr-matrix' at all, and a caller told \"yes\" who could buil
 but not predict from one would have been told a half-truth. Listing both from the start means
 the answer never changes meaning as the sparse path grows.
 
-`:custom-objective' names ONE function where LightGBM's entry of the same name needs three:
+`:custom-objective' names ONE function where LightGBM's entry of the same name needs four:
 `XGBoosterTrainOneIter' takes the caller's gradient and Hessian, and everything else one
 iteration of `train''s custom loop calls is already required here. The scores the caller's
 function is handed come from `XGBoosterPredictFromDMatrix' -- `%booster-predictions' below is

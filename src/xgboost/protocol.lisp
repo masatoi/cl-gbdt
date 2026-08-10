@@ -773,10 +773,22 @@ what each of its three re-checks covers.
 CHECK-COLLISIONS-P runs `check-metric-name-collision' against LIBRARY-ENTRIES, this
 iteration's own `%read-evaluation' result. `train' passes true on the first iteration only:
 what the LIBRARY reports cannot be known before a booster has produced one real evaluation,
-and after that first one the library's own name set does not change. The CALLER's names are
-a separate question and are not covered by that -- an EVALUATION returning a safe name on
-iteration 1 and a colliding one afterwards would pass this check -- which is what NAME-PIN
-below answers.
+and after that first one the library's own name set does not change.
+
+THAT SECOND HALF IS THE HINGE, and it is worth meeting here rather than deducing later,
+because it is what makes ONE comparison cover a whole run. On this backend it is a property
+of where the names come from and not of anything this code does: `%read-evaluation' parses
+them out of `XGBoosterEvalOneIter''s own formatted line, through `%parse-eval-result' and
+`%split-eval-label', and what that line names is the booster's configured `eval_metric' --
+set once through `%set-parameters' before the loop and given no per-iteration input.
+NOTHING ASSERTS IT -- it is a fact about the vendored library, not about this library, so a
+green suite says nothing about it. An editor moving this check off round 1, or reaching an
+XGBoost whose reported names could vary within a run, is changing what makes round 1
+sufficient.
+
+The CALLER's names are a separate question and are not covered by that -- an EVALUATION
+returning a safe name on iteration 1 and a colliding one afterwards would pass this check --
+which is what NAME-PIN below answers.
 
 NAME-PIN is the run's `make-metric-name-pin' table, threaded straight through from `train'
 so it outlives the iteration. `pin-metric-name' records each index's name on the first
@@ -784,7 +796,9 @@ iteration and refuses a different one on every later iteration, which is what ho
 to one name per dataset index for the whole run and so keeps every series exactly as long as
 the run. It also subsumes the round-2 collision case rather than needing a second check of
 its own: with each index's name fixed at the first iteration, the only name that can ever
-reach the library's is the one CHECK-COLLISIONS-P already compared.
+reach the library's is the one CHECK-COLLISIONS-P already compared. That argument INHERITS
+the dependency above rather than standing free of it -- \"the one already compared\" is the
+only one there is precisely because the library's own names do not change either.
 
 Both checks run AFTER `custom-metric-entry' rather than before it, and the order is
 load-bearing: each compares with `string=', which signals a bare `type-error' for a name that is

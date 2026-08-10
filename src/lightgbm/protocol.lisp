@@ -795,10 +795,21 @@ re-checks covers.
 CHECK-COLLISIONS-P runs `check-metric-name-collision' against LIBRARY-ENTRIES, this
 iteration's own `%read-evaluation' result. `train' passes true on the first iteration only:
 what the LIBRARY reports cannot be known before a booster has produced one real evaluation,
-and after that first one the library's own name set does not change. The CALLER's names are
-a separate question and are not covered by that -- an EVALUATION returning a safe name on
-iteration 1 and a colliding one afterwards would pass this check -- which is what NAME-PIN
-below answers.
+and after that first one the library's own name set does not change.
+
+THAT SECOND HALF IS THE HINGE, and it is worth meeting here rather than deducing later,
+because it is what makes ONE comparison cover a whole run. On this backend it is a property
+of where the names come from and not of anything this code does: `%read-evaluation' pairs
+each dataset's values with the ONE name list `%booster-eval-names' reads out of
+`LGBM_BoosterGetEvalNames', which `LGBM_BoosterCreate' fixes from the `metric' parameter and
+which takes no per-iteration input at all. NOTHING ASSERTS IT -- it is a fact about the
+vendored library, not about this library, so a green suite says nothing about it. An editor
+moving this check off round 1, or reaching a LightGBM whose reported names could vary within
+a run, is changing what makes round 1 sufficient.
+
+The CALLER's names are a separate question and are not covered by that -- an EVALUATION
+returning a safe name on iteration 1 and a colliding one afterwards would pass this check --
+which is what NAME-PIN below answers.
 
 NAME-PIN is the run's `make-metric-name-pin' table, threaded straight through from `train'
 so it outlives the iteration. `pin-metric-name' records each index's name on the first
@@ -806,7 +817,9 @@ iteration and refuses a different one on every later iteration, which is what ho
 to one name per dataset index for the whole run and so keeps every series exactly as long as
 the run. It also subsumes the round-2 collision case rather than needing a second check of
 its own: with each index's name fixed at the first iteration, the only name that can ever
-reach the library's is the one CHECK-COLLISIONS-P already compared.
+reach the library's is the one CHECK-COLLISIONS-P already compared. That argument INHERITS
+the dependency above rather than standing free of it -- \"the one already compared\" is the
+only one there is precisely because the library's own names do not change either.
 
 Both checks run AFTER `custom-metric-entry' rather than before it, and the order is
 load-bearing: each compares with `string=', which signals a bare `type-error' for a name that is
@@ -817,7 +830,9 @@ this library's own `unsupported-argument'."
         ;; pointer even when ROW-COUNTS is empty and the loop below never runs. `train' always
         ;; passes at least the training set's count today, but it assigns TRAIN-DATA-POINTER
         ;; from this value unconditionally, and a NIL reaching `%dataset-num-rows' next
-        ;; iteration is a worse failure than the two slot reads this costs.
+        ;; iteration is a worse failure than this costs: one backend check plus one handle
+        ;; check per dataset -- the training set and every VALID-SETS entry -- and not one
+        ;; foreign call among them.
         (train-data-pointer (%recheck-train-datasets backend dataset valid-sets)))
     (loop :for index :from 0
           :for rows :in row-counts
