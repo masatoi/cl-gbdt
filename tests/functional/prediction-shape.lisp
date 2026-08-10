@@ -110,10 +110,12 @@ before `the-first-value-is-unchanged' was given its `predictions-match-labels-p'
   "Backend name to the booster parameters that train a *NUM-CLASSES*-class model on it.
 
 This file's own table rather than an import, because *FIXTURES* carries only a BINARY booster
-for each backend and a binary model is the one case that would let this feature look
-multiclass-only -- see `a-binary-model-also-reports-more-than-two-dimensions'. Everything else
-each backend needs, the dataset parameters included, still comes from *FIXTURES* through
-`make-fixture-dataset'.
+for each backend, and this file needs both kinds of model: a multiclass one to show the
+reported shape is richer than the result array's own dimensions, and a single-output one to
+show that richness is not something only a multiclass objective produces -- see
+`a-binary-model-also-reports-more-than-two-dimensions', which uses the binary booster
+*FIXTURES* does carry. Everything else each backend needs, the dataset parameters included,
+still comes from *FIXTURES* through `make-fixture-dataset'.
 
 As with that table, the two plists are not translations of each other: each is the parameter
 vocabulary its own library documents. `:num-class' must equal *NUM-CLASSES* in both.")
@@ -211,9 +213,9 @@ asserted by name in `xgboost-reports-the-library-s-own-shape' below."
 ;;; The capability this task ships
 ;;;
 ;;; Policy section 7 registers `:prediction-shape' as a question `cl-gbdt:backend-supports-p'
-;;; answers: whether this backend states the shape of a prediction it just made. It is the one
-;;; capability in this suite that NO operation re-checks -- see this file's header for why a
-;;; check added for symmetry would be a regression rather than a tightening.
+;;; answers: whether this backend states the shape of a prediction it just made. NO operation
+;;; re-checks it -- see this file's header for why a check added for symmetry with the
+;;; capabilities that do refuse would be a regression rather than a tightening.
 ;;;
 ;;; The capability assertion and a real non-NIL shape are deliberately in ONE test rather than
 ;;; two. This project has twice shipped a feature whose capability keyword stayed false --
@@ -221,7 +223,7 @@ asserted by name in `xgboost-reports-the-library-s-own-shape' below."
 ;;; works and the assertion that the backend admits to it lived in different tests and only the
 ;;; first was written.
 ;;;
-;;; The DEMONSTRATED assertion after the loop closes the remaining hole, the one the
+;;; The DEMONSTRATED assertion after the loop closes the remaining hole, which the
 ;;; missing-value review found: every per-backend assertion here is reached only on a backend
 ;;; that reported a shape, so dropping the capability from every backend that has it would
 ;;; leave this test green with nothing asserted. DEMONSTRATED is the assertion no capability

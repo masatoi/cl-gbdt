@@ -97,8 +97,8 @@ guard, and have no portable fallback."
                "cl-gbdt/tests/functional/categorical-features"
                ;; The same *FIXTURES* one last time, and the only entry here about
                ;; `predict''s SECOND return value: the shape the backend reports for the
-               ;; result it just wrote, and the `:prediction-shape' capability -- the one
-               ;; capability no operation refuses on, a false answer meaning a NIL second
-               ;; value rather than a signal.
+               ;; result it just wrote, and the `:prediction-shape' capability, which no
+               ;; operation refuses on -- a false answer means a NIL second value rather
+               ;; than a signal.
                "cl-gbdt/tests/functional/prediction-shape")
   :perform (test-op (op c) (symbol-call :rove :run c)))
