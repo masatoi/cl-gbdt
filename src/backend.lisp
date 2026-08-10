@@ -191,36 +191,38 @@ run boosts against the caller's own loss rather than one built into the library.
 
 `:custom-evaluation' is the fifth name past that floor: whether `train' accepts an
 `:evaluation' function that turns one dataset's current predictions into a named metric
-value, recorded per iteration alongside the library's own metrics. Registered here before
-either backend answers it, exactly as `:multidimensional-feature-score' was: `train' does not
-yet take the `:evaluation' argument that would give a backend something to answer true to, so
-both currently read false.
+value, recorded per iteration alongside the library's own metrics. LightGBM answers it true,
+probing the three C functions its per-dataset prediction read needs; XGBoost declares it in
+neither of its lists and so reads false, which its `%check-custom-evaluation' refuses every
+non-NIL `:evaluation' on.
 
-It is not the odd member of an otherwise uniform list. FIVE of the ten names here are
+It is not the odd member of an otherwise uniform list. SIX of the ten names here are
 re-checked by the operation they gate, each signalling `capability-unavailable' for an argument
-it cannot honour: `:sparse-input', `:missing-value', `:categorical-features' and
-`:custom-objective', in both backends' `protocol.lisp' -- the last of them by
-`%check-custom-objective', off `train''s :OBJECTIVE -- and `:model-slicing', in XGBoost's
-`slice-model'. Those five are the whole of it -- `:evaluation-history', `:early-stopping',
-`:multidimensional-feature-score' and `:custom-evaluation' are re-checked nowhere either (the
-third has no backend answering it true at all, and `%check-feature-score-dim', which is where
-a multidimensional score is rejected, signals `unsupported-argument' off what the library
-reported at runtime rather than off the capability; the fourth because `train' does not yet
-take the `:evaluation' argument a re-check would gate -- nothing calls `backend-supports-p'
-with it yet, at this commit).
+it cannot honour: `:sparse-input', `:missing-value', `:categorical-features',
+`:custom-objective' and `:custom-evaluation', in both backends' `protocol.lisp' -- the last two
+by `%check-custom-objective' and `%check-custom-evaluation', off `train''s :OBJECTIVE and
+:EVALUATION -- and `:model-slicing', in XGBoost's `slice-model'. Those six are the whole of
+it -- `:evaluation-history', `:early-stopping' and `:multidimensional-feature-score' are
+re-checked nowhere (the third has no backend answering it true at all, and
+`%check-feature-score-dim', which is where a multidimensional score is rejected, signals
+`unsupported-argument' off what the library reported at runtime rather than off the
+capability).
 `:prediction-shape' has no argument to refuse at all: nothing asks for a shape, so a false
 answer means the second value is always NIL while `predict' otherwise behaves exactly as it
 always did. That is not the silent fallback policy section 7 forbids -- section 7 protects a
 caller who asked for something and would otherwise have it quietly dropped, and here nothing was
-asked for -- and a re-check added for symmetry with those five would make `predict' signal
+asked for -- and a re-check added for symmetry with those six would make `predict' signal
 outright on a backend that simply has less to say.
 
 Where a re-checked name's answer COMES from varies and does not affect that split: a backend
 declares it in `*provided-capabilities*' when nothing is left to look up, and names its C
 functions in `*optional-symbols*' when a library that opens perfectly well can still lack
-them -- `:sparse-input', `:model-slicing' and `:custom-objective' are probed that way on
-every backend providing them, `:missing-value' and `:categorical-features' declared. A false
-answer needs the same re-check either way.
+them -- `:sparse-input', `:model-slicing', `:custom-objective' and `:custom-evaluation' are
+probed that way on every backend providing them, `:missing-value' and
+`:categorical-features' declared. A false answer needs the same re-check either way, and a
+backend naming a capability in NEITHER list reads false for a third reason again -- the
+absence of any declaration, which is XGBoost's `:custom-evaluation' answer and LightGBM's
+`:missing-value' one.
 
 `:evaluation-history' is true on both backends: `train' records one, and each backend names
 the capability in its own `*provided-capabilities*' rather than in `*optional-symbols*',

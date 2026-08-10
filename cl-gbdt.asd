@@ -107,5 +107,12 @@ guard, and have no portable fallback."
                ;; objective's claim is that it reproduces a built-in one exactly, so it
                ;; states a deterministic fixture of its own. `train''s :OBJECTIVE, and the
                ;; `:custom-objective' capability that gates it.
-               "cl-gbdt/tests/functional/custom-objective")
+               "cl-gbdt/tests/functional/custom-objective"
+               ;; Nor does this one, and for a related reason: `train''s :EVALUATION, and
+               ;; the `:custom-evaluation' capability that gates it. A caller-written metric
+               ;; claims to reproduce a library one exactly, so it too states a
+               ;; deterministic fixture of its own -- with a validation block of a DIFFERENT
+               ;; height from its training block, which is what makes a per-dataset read
+               ;; distinguishable from a training-set read.
+               "cl-gbdt/tests/functional/custom-evaluation")
   :perform (test-op (op c) (symbol-call :rove :run c)))

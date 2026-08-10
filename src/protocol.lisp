@@ -154,7 +154,7 @@ Free the result with `free-dataset' or wrap it in `with-dataset'."))
 
 (defgeneric train (backend dataset
                     &key valid-sets num-rounds parameters record-history early-stopping
-                         objective)
+                         objective evaluation)
   (:documentation "Train a BACKEND model on DATASET and return two values: a booster and
 a `training-report' of the run.
 
@@ -284,10 +284,79 @@ arithmetic does not trap: `(/ 1.0d0 0.0d0)' yields infinity rather than signalli
 x86-64 as well as on aarch64. The mask is what makes the two platforms agree here, and it
 agrees on the masked convention the two C libraries are written against.
 
+EVALUATION, NIL by default, is a function that turns one dataset's current predictions into
+a named metric value, so the run records the caller's own measure of fit beside the
+library's. It requires the `:custom-evaluation' capability, which `train' re-checks and
+signals `capability-unavailable' for. Until XGBoost declares that capability, that backend
+refuses every non-NIL EVALUATION there and nothing else about it is decided by this
+docstring.
+
+It is called ONCE PER DATASET PER ITERATION, after that iteration's update, with two
+arguments: SCORES, that dataset's current predictions as a (ROWS GROUPS) `double-float'
+array, and the dataset's INDEX. It must return two values, a metric NAME -- a string -- and
+a VALUE, a real number or NIL. A NAME that is not a string, or a VALUE that is neither,
+signals `unsupported-argument' naming :EVALUATION.
+
+INDEX numbers the datasets exactly as EARLY-STOPPING's :DATASET and the report's
+`training-series-index' do: 0 is the training set, and N+1 is the Nth :VALID-SETS entry.
+ROWS is THAT dataset's own row count -- a validation set shorter than the training set is
+handed its own shorter array, not a padded or truncated view of the training set's.
+
+SCORES is what `predict :kind :normal' returns for that dataset, and NOT the margin
+OBJECTIVE is handed: with a classification objective configured, these are the transformed
+probabilities. Measured against both vendored libraries' cached predictions, for a training
+set and for a validation set alike. Under a custom OBJECTIVE on LightGBM the two coincide,
+`objective=none' leaving no transform to apply, so :NORMAL and :RAW are then the same
+numbers -- that is the divergence OBJECTIVE's own paragraphs above already describe,
+inherited here rather than introduced.
+
+A NIL VALUE means \"not computable this iteration\" -- a fold whose denominator was zero,
+a metric undefined before some minimum number of rows has a prediction. It is recorded in
+its place in the series rather than dropped, exactly as a value the backend itself could not
+report is, and it counts as NO IMPROVEMENT to an EARLY-STOPPING watcher, which cannot
+compare against something it cannot read.
+
+The values join the secondary value as SERIES OF THEIR OWN, one per (INDEX, NAME) pair,
+indistinguishable in shape from the library's own -- so `training-report-series' answers
+for them, and EARLY-STOPPING can watch one by giving :METRIC the name the function returns
+and :DATASET the index it was returned for. Nothing else is needed to make a custom metric
+watchable.
+
+The library's own series remain exactly what they were, and come FIRST: EVALUATION's
+entries are appended after every library entry of the same iteration, so the pairs
+`evaluation' reports for the trained booster are a PREFIX of `training-report-series', in
+the same order, and a caller who could find a library series before can still find it the
+same way. `evaluation' itself never reports a custom metric: it asks the library what the
+library computed, and the library never computed this one.
+
+EVALUATION together with RECORD-HISTORY NIL signals `unsupported-argument': a custom
+metric's whole result is the per-iteration series RECORD-HISTORY NIL exists not to build, so
+the values would be computed at full cost and then dropped. This is the same pair, and the
+same refusal, EARLY-STOPPING and RECORD-HISTORY NIL already make.
+
+A NAME colliding with one the library itself reports for the SAME index signals
+`unsupported-argument' too, at the end of the FIRST iteration -- the first moment there is a
+real evaluation to compare the name against, exactly as a :METRIC no booster reports is
+caught there. The pair (INDEX, NAME) is what a series is keyed by, so two different
+quantities under one pair would corrupt the series rather than produce two. The same NAME at
+a DIFFERENT index does not collide, and neither does a name the library does not report at
+all -- what is checked is what this booster actually reported, not a list of well-known
+metric names.
+
+The function runs inside `train''s foreign-float-trap mask, on the same terms OBJECTIVE
+does: the caller's own arithmetic does not trap, so `(/ 1.0d0 0.0d0)' yields infinity rather
+than signalling `division-by-zero' on x86-64 as well as on aarch64. A handle it frees, or a
+backend it closes, is caught the moment it returns and before the next dataset is read, the
+same way OBJECTIVE's is.
+
 The secondary value is a `training-report'. Its `training-report-series' is a list of
 `training-series', one per metric per dataset -- the same (DATASET-INDEX, METRIC-NAME)
 pairs `evaluation' reports for the trained booster, in the same order, so a series can be
-found by the index and metric name a caller already knows. Each series carries
+found by the index and metric name a caller already knows. A run given EVALUATION carries
+that function's own pairs as well, appended after all of those, which is why the
+`evaluation' pairs are described above as a PREFIX of this list rather than the whole of it.
+
+Each series carries
 `training-series-values', one element per completed iteration in order: a `double-float',
 or NIL where the backend reported a value that could not be read as a real. The last
 element of a series is what `evaluation' answers for that pair immediately after `train'
@@ -326,7 +395,10 @@ signal `unsupported-argument' rather than assume a default when it is NIL.
 LightGBM's `metric=none', XGBoost's `disable_default_eval_metric=1' -- and when
 RECORD-HISTORY is NIL. An empty series list is not an error and says nothing about whether
 training succeeded; NUM-ROUNDS iterations still ran, and `training-report-num-rounds' still
-says so.
+says so. A run given EVALUATION on a booster with no metric configured is the one case where
+the first of those two no longer empties the list: the library contributes nothing and the
+caller's function contributes every series there is. RECORD-HISTORY NIL cannot combine with
+EVALUATION at all, so the second case is unchanged.
 
 Every series carries `training-series-index'; a series carries a non-NIL
 `training-series-name' only for a dataset named through :VALID-SETS. The training set is

@@ -379,6 +379,55 @@ to the ARGUMENT string, so the two backends refuse the same value with the same 
                              objective)))))
 
 ;;; ---------------------------------------------------------------------------
+;;; The `:custom-evaluation' gate
+
+(defun %check-custom-evaluation (backend evaluation record-history)
+  "Signal `capability-unavailable' when EVALUATION is non-NIL and BACKEND does not provide
+`:custom-evaluation', and `unsupported-argument' when EVALUATION is non-NIL and either
+RECORD-HISTORY is NIL or EVALUATION is not a function.
+
+Only a non-NIL EVALUATION ever reaches any of the three: NIL means what every caller has
+always got, the library's own metrics and nothing else, so a caller who passes nothing needs
+no capability and cannot fail either check. Policy section 7 requires the operation itself to
+re-check rather than trusting the caller to have asked `backend-supports-p' first -- the same
+rule `%check-sparse-input', `%check-missing-value', `%check-categorical-features' and
+`%check-custom-objective' above follow for their own. Mirrors
+`cl-gbdt/src/lightgbm/protocol''s function of the same name, down to the ARGUMENT string, so
+the two backends refuse the same value with the same report.
+
+TODAY ONLY THE FIRST OF THE THREE IS REACHABLE HERE, and that is the honest state rather than
+a stub: this backend names `:custom-evaluation' in NEITHER `*provided-capabilities*' NOR
+`*optional-symbols*', so `backend-supports-p' reads a capability missing from the plist as
+unavailable and every non-NIL EVALUATION is refused before the RECORD-HISTORY and `functionp'
+checks can run. That is the same shape LightGBM's `:missing-value' answer has -- the ABSENCE
+of a declaration rather than a declaration of absence. The two later checks are written now,
+in the order and wording LightGBM's are, so that the commit which declares the capability
+makes them live rather than having to invent them.
+
+The argument is accepted by `train''s lambda list rather than being absent from it: `train'
+is one generic function, so a method that did not take the keyword at all would answer a
+caller who named it with SBCL's `unknown-keyword-argument' rather than with the typed
+`capability-unavailable' every other unavailable capability on this backend answers with."
+  (when evaluation
+    (unless (backend-supports-p backend :custom-evaluation)
+      (error 'capability-unavailable
+             :backend (backend-name backend) :capability :custom-evaluation))
+    (unless record-history
+      (error 'unsupported-argument
+             :backend (backend-name backend)
+             :argument "train's :evaluation"
+             :reason (format nil "a custom metric is recorded per iteration, which ~
+                                  :record-history NIL skips; pass :record-history T, or ~
+                                  drop :evaluation")))
+    (unless (functionp evaluation)
+      (error 'unsupported-argument
+             :backend (backend-name backend)
+             :argument "train's :evaluation"
+             :reason (format nil "the custom metric must be a function of two arguments, ~
+                                  or NIL for the library's own metrics only -- got ~S"
+                             evaluation)))))
+
+;;; ---------------------------------------------------------------------------
 ;;; Datasets
 
 (defun %creation-function-name (matrix)
@@ -663,7 +712,7 @@ the validation half to be returned for."
 
 (defmethod train ((backend xgboost-backend) dataset
                    &key valid-sets (num-rounds 100) parameters (record-history t)
-                        early-stopping objective)
+                        early-stopping objective evaluation)
   "Train an XGBoost booster on DATASET for up to NUM-ROUNDS boosting iterations, and
 return it and a `training-report' of the run.
 
@@ -794,6 +843,16 @@ generic function, so a method that did not take the keyword at all would answer 
 named it with SBCL's `unknown-keyword-argument' rather than with the typed condition every
 other unavailable capability on this backend answers with.
 
+EVALUATION is REFUSED here, and that is all this method does with it today: this backend
+declares `:custom-evaluation' in neither of its two capability lists, so
+`%check-custom-evaluation' above signals `capability-unavailable' for every non-NIL value
+before any foreign call, and no per-dataset metric is computed or recorded. The argument is
+in this lambda list for the same reason OBJECTIVE's paragraph just above gives for its own --
+`train' is one generic function and every method must accept every key -- and refusing it is
+what policy section 7 requires of a capability this backend does not have, rather than
+accepting it and silently recording only the library's own metrics. See the `train' generic
+function's docstring for the contract a backend that DOES provide the capability implements.
+
 DATASET and every VALID-SETS entry's dataset half are each run through
 `%check-xgboost-dataset' before any foreign call. `train' dispatches on BACKEND, not on
 DATASET, so unlike `dataset-num-rows' or `free-dataset' there is no CLOS specializer here
@@ -829,6 +888,7 @@ Signals `backend-not-open' before any of that when BACKEND is not open -- see
   (with-foreign-float-traps-masked
     (%check-backend-open backend)
     (%check-custom-objective backend objective)
+    (%check-custom-evaluation backend evaluation record-history)
     (let* ((valid-set-entries (copy-list valid-sets))
            (train-data-pointer
              (%check-xgboost-dataset backend dataset "train's dataset argument"
