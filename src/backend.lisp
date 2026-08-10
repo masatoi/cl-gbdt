@@ -177,25 +177,25 @@ builds the dataset -- a key rather than a C symbol, so nothing a symbol probe ca
 a question about `make-dataset' alone: `predict' takes no such argument, the trained trees
 already carrying the category sets they split on.
 
-`:prediction-shape' is the third name past that floor, and the one name here whose answer says
-what a RETURNED VALUE IS rather than whether a call will be accepted: whether the backend
-states the SHAPE of a result it just predicted, which `predict' returns as its second value --
-a list of integers in `array-dimensions' order, or NIL where the backend states none. NO
-OPERATION REFUSES ON IT, and that is deliberate.
+`:prediction-shape' is the third name past that floor: whether the backend states the SHAPE of
+a result it just predicted, which `predict' returns as its second value -- a list of integers
+in `array-dimensions' order, or NIL where the backend states none. Its answer says what that
+second value CONTAINS rather than whether a call will be accepted, and NO OPERATION REFUSES ON
+IT, which is deliberate.
 
-It is also not the odd member of an otherwise uniform list. FOUR of the names here are
-re-checked by the operation they gate, each signalling `capability-unavailable' for an argument
-it cannot honour: `:sparse-input', `:missing-value' and `:categorical-features', in both
-backends' `protocol.lisp', and `:model-slicing', in XGBoost's `slice-model'. Those four are the
-whole of it -- `:evaluation-history', `:early-stopping' and `:multidimensional-feature-score'
-are re-checked nowhere either (the last has no backend answering it true at all, and
-`%check-feature-score-dim', the only guard near it, signals `unsupported-argument' off what the
-library reported at runtime rather than off the capability). What is particular to
-`:prediction-shape' is that there is no argument to refuse AT ALL: nothing asks for a shape, so
-a false answer means the second value is always NIL while `predict' otherwise behaves exactly
-as it always did. That is not the silent fallback policy section 7 forbids -- section 7 protects
-a caller who asked for something and would otherwise have it quietly dropped, and here nothing
-was asked for -- and a re-check added for symmetry with those four would make `predict' signal
+It is not the odd member of an otherwise uniform list. FOUR of the names here are re-checked by
+the operation they gate, each signalling `capability-unavailable' for an argument it cannot
+honour: `:sparse-input', `:missing-value' and `:categorical-features', in both backends'
+`protocol.lisp', and `:model-slicing', in XGBoost's `slice-model'. Those four are the whole of
+it -- `:evaluation-history', `:early-stopping' and `:multidimensional-feature-score' are
+re-checked nowhere either (the last has no backend answering it true at all, and
+`%check-feature-score-dim', which is where a multidimensional score is rejected, signals
+`unsupported-argument' off what the library reported at runtime rather than off the capability).
+`:prediction-shape' has no argument to refuse at all: nothing asks for a shape, so a false
+answer means the second value is always NIL while `predict' otherwise behaves exactly as it
+always did. That is not the silent fallback policy section 7 forbids -- section 7 protects a
+caller who asked for something and would otherwise have it quietly dropped, and here nothing was
+asked for -- and a re-check added for symmetry with those four would make `predict' signal
 outright on a backend that simply has less to say.
 
 `:evaluation-history' is true on both backends: `train' records one, and each backend names

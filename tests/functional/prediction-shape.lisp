@@ -7,13 +7,14 @@
 ;;;; the wrapper read only their product and folded every result into [rows, total/rows],
 ;;;; throwing away structure the library had already stated.
 ;;;;
-;;;; The capability is `:prediction-shape', and unlike every other capability this suite
-;;;; exercises, NO OPERATION REFUSES ON IT. There is no argument asking for a shape, so a
-;;;; backend that answers false returns NIL as its second value rather than signalling --
-;;;; which is why there is no `...-without-the-capability-signals' test here to match the ones
-;;;; in tests/functional/missing-value.lisp and tests/functional/sparse-input.lisp. A check
-;;;; added for symmetry with those would break `cl-gbdt:predict' outright on a backend that
-;;;; simply has less to say.
+;;;; The capability is `:prediction-shape', and NO OPERATION REFUSES ON IT. There is no
+;;;; argument asking for a shape, so a backend that answers false returns NIL as its second
+;;;; value rather than signalling -- which is why there is no
+;;;; `...-without-the-capability-signals' test here to match the ones in
+;;;; tests/functional/missing-value.lisp and tests/functional/sparse-input.lisp, whose two
+;;;; capabilities do gate an argument and do refuse when they read false. A check added for
+;;;; symmetry with those would break `cl-gbdt:predict' outright on a backend that simply has
+;;;; less to say.
 ;;;;
 ;;;; Like tests/functional/evaluation.lisp, sparse-input.lisp, missing-value.lisp and
 ;;;; categorical-features.lisp beside it, the two backend-neutral tests below run over that
