@@ -402,6 +402,115 @@ conses, in the order that function reports them."
           (cl-gbdt:close-backend backend))))))
 
 ;;; ---------------------------------------------------------------------------
+;;; The other two things `%check-custom-evaluation' refuses before any foreign call
+
+;;; The capability is only the first of three checks that function makes, and the other two
+;;; are reachable on any backend that HAS the capability -- so they are the two a caller is
+;;; far likelier to hit than a missing C symbol. Both were unasserted when this file first
+;;; shipped: deleting either branch left the whole suite green, and each failure it prevents
+;;; is one the caller would otherwise have had to diagnose from a symptom rather than from a
+;;; condition. :RECORD-HISTORY NIL would have recorded nothing at all while still paying for
+;;; every metric call, and a non-function would have surfaced as SBCL's own untyped
+;;; `type-error' from mid-loop, after the booster existed and one dataset's predictions had
+;;; already been read, naming neither the argument nor the backend.
+;;;
+;;; Both are modelled on the sibling suites that already assert the identical shapes for the
+;;; identical reasons -- `early-stopping-with-record-history-nil-signals' in
+;;; tests/functional/early-stopping.lisp and
+;;; `a-non-function-objective-is-refused-before-any-foreign-call' in
+;;; tests/functional/custom-objective.lisp -- and both are guarded on the capability like
+;;; everything else here, so Task 3's flip covers XGBoost with no edit.
+
+(deftest evaluation-with-record-history-nil-signals
+  ;; The same contradiction :EARLY-STOPPING and :RECORD-HISTORY NIL make: a custom metric's
+  ;; whole result is the per-iteration series :RECORD-HISTORY NIL exists not to build, and
+  ;; the values would be computed at full cost and then dropped. Accepting the pair and
+  ;; quietly recording after all, or accepting it and recording nothing, would each be a
+  ;; different answer than the one asked for.
+  (dolist (name '(:lightgbm :xgboost))
+    (support:with-backend-library (name)
+      (let ((backend (cl-gbdt:open-backend name)))
+        (unwind-protect
+             (when (cl-gbdt:backend-supports-p backend :custom-evaluation)
+               (multiple-value-bind (matrix labels*) (binary-fixture *rows* 0)
+                 (cl-gbdt:with-dataset (dataset (make-labelled-dataset backend name
+                                                                       matrix labels*))
+                   (testing (format nil "~A: :evaluation with :record-history NIL signals ~
+                                         unsupported-argument, naming the argument and the ~
+                                         backend" name)
+                     (let ((condition
+                             (handler-case
+                                 (progn (cl-gbdt:free-booster
+                                         (cl-gbdt:train
+                                          backend dataset :num-rounds 3 :record-history nil
+                                          :parameters (cdr (assoc name *metric-parameters*))
+                                          :evaluation (logloss-evaluation (vector labels*))))
+                                        nil)
+                               (cl-gbdt:unsupported-argument (c) c))))
+                       (ok condition "train accepted :evaluation with :record-history NIL")
+                       (ok (and condition
+                                (equal "train's :evaluation"
+                                       (cl-gbdt:unsupported-argument-argument condition)))
+                           (format nil "the condition named argument ~S"
+                                   (and condition
+                                        (cl-gbdt:unsupported-argument-argument condition))))
+                       (ok (and condition
+                                (eq name (cl-gbdt:unsupported-argument-backend condition)))
+                           (format nil "the condition named backend ~S"
+                                   (and condition
+                                        (cl-gbdt:unsupported-argument-backend condition)))))))))
+          (cl-gbdt:close-backend backend))))))
+
+(defun constant-metric (scores index)
+  "An :EVALUATION function of the right arity returning a constant, defined only so the test
+below has a SYMBOL naming a real one to hand `train'.
+
+That case is the interesting one of the three: `funcall' accepts a symbol happily, so nothing
+downstream would fail, and the run would compute its metric from whatever global definition
+that name happened to have at each iteration rather than from what the caller passed. A
+number or a string fails somewhere no matter what; a symbol quietly works, wrongly."
+  (declare (ignore scores index))
+  (values *custom-metric-name* 0.5d0))
+
+(deftest a-non-function-evaluation-is-refused-before-any-foreign-call
+  (dolist (name '(:lightgbm :xgboost))
+    (support:with-backend-library (name)
+      (let ((backend (cl-gbdt:open-backend name)))
+        (unwind-protect
+             (when (cl-gbdt:backend-supports-p backend :custom-evaluation)
+               (multiple-value-bind (matrix labels*) (binary-fixture *rows* 0)
+                 (cl-gbdt:with-dataset (dataset (make-labelled-dataset backend name
+                                                                       matrix labels*))
+                   (dolist (value (list 42 "my_logloss" 'constant-metric))
+                     (testing (format nil "~A: train signals unsupported-argument for ~
+                                           :evaluation ~S, naming the argument and the ~
+                                           backend" name value)
+                       (let ((condition
+                               (handler-case
+                                   (progn (cl-gbdt:free-booster
+                                           (cl-gbdt:train
+                                            backend dataset :num-rounds 3
+                                            :parameters (cdr (assoc name
+                                                                    *metric-parameters*))
+                                            :evaluation value))
+                                          nil)
+                                 (cl-gbdt:unsupported-argument (c) c))))
+                         (ok condition "train signalled instead of recording")
+                         (ok (and condition
+                                  (equal "train's :evaluation"
+                                         (cl-gbdt:unsupported-argument-argument condition)))
+                             (format nil "the condition named argument ~S"
+                                     (and condition
+                                          (cl-gbdt:unsupported-argument-argument condition))))
+                         (ok (and condition
+                                  (eq name (cl-gbdt:unsupported-argument-backend condition)))
+                             (format nil "the condition named backend ~S"
+                                     (and condition
+                                          (cl-gbdt:unsupported-argument-backend
+                                           condition))))))))))
+          (cl-gbdt:close-backend backend))))))
+
+;;; ---------------------------------------------------------------------------
 ;;; What the function is handed, and what it produces
 
 (deftest a-custom-metric-agrees-with-the-library-metric-it-reimplements

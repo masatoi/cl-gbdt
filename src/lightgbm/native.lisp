@@ -384,13 +384,14 @@ were there a symbol to look for it in.
 
 No operation re-checks it. Nothing takes an argument asking for a shape, so a backend answering
 false returns NIL as `predict''s second value and predicts exactly as it otherwise would,
-rather than signalling. Five of the nine names in `cl-gbdt/src/backend''s
+rather than signalling. Six of the ten names in `cl-gbdt/src/backend''s
 `*known-capabilities*' ARE re-checked by the operation they gate -- `:sparse-input',
-`:missing-value', `:categorical-features' and `:custom-objective', by `%check-sparse-input',
-`%check-missing-value', `%check-categorical-features' and `%check-custom-objective' in
+`:missing-value', `:categorical-features', `:custom-objective' and `:custom-evaluation', by
+`%check-sparse-input', `%check-missing-value', `%check-categorical-features',
+`%check-custom-objective' and `%check-custom-evaluation' in
 `cl-gbdt/src/lightgbm/protocol', and `:model-slicing', by XGBoost's `slice-model' -- and the
-other four are re-checked nowhere. See `*known-capabilities*' itself, where that split is
-stated in full.
+other four, this one among them, are re-checked nowhere. See `*known-capabilities*' itself,
+where that split is stated in full.
 
 Every name here must be registered in `cl-gbdt/src/backend''s `*known-capabilities*', or
 `backend-supports-p' would signal `unknown-capability' for a capability the plist claims;

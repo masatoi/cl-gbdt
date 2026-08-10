@@ -304,8 +304,10 @@ handed its own shorter array, not a padded or truncated view of the training set
 
 SCORES is what `predict :kind :normal' returns for that dataset, and NOT the margin
 OBJECTIVE is handed: with a classification objective configured, these are the transformed
-probabilities. Measured against both vendored libraries' cached predictions, for a training
-set and for a validation set alike. Under a custom OBJECTIVE on LightGBM the two coincide,
+probabilities. Measured against the vendored LIGHTGBM's cached predictions, for a training
+set and for a validation set alike -- the one backend that implements this argument as this
+sentence is written; a backend that gains it later states its own measurement rather than
+inheriting this one. Under a custom OBJECTIVE on LightGBM the two coincide,
 `objective=none' leaving no transform to apply, so :NORMAL and :RAW are then the same
 numbers -- that is the divergence OBJECTIVE's own paragraphs above already describe,
 inherited here rather than introduced.
