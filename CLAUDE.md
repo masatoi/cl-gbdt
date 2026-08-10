@@ -36,8 +36,8 @@ over both backends.
 
 **Status: functional.** Both backends (`cl-gbdt/lightgbm`, `cl-gbdt/xgboost`) implement
 all 13 generic functions of the unified API -- `make-dataset`, `train`, `predict`, and
-the rest -- against the real shared libraries, exercised by 564 functional assertions across
-12 test files in `cl-gbdt/tests/functional` (layer 2) on top of 433 assertions across 18
+the rest -- against the real shared libraries, exercised by 563 functional assertions across
+12 test files in `cl-gbdt/tests/functional` (layer 2) on top of 432 assertions across 18
 test files that need no shared library at all (layer 1). `train` returns a `training-report`
 as its secondary value, and takes `:record-history` (default `t`) to turn the per-iteration
 recording that fills it off -- recording roughly doubles LightGBM's `train` time, and on
