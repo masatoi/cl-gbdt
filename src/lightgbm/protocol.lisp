@@ -100,6 +100,8 @@
                 #:csr-matrix-num-rows)
   (:import-from #:cl-gbdt/src/config/categorical-features
                 #:categorical-feature-string)
+  (:import-from #:cl-gbdt/src/config/prediction-shape
+                #:contrib-shape)
   (:import-from #:cl-gbdt/src/parameters
                 #:normalize-parameters)
   (:import-from #:cl-gbdt/src/training/history
@@ -791,6 +793,48 @@ reasoning applies here."
 ;;; ---------------------------------------------------------------------------
 ;;; Inference
 
+(defun %prediction-shape (kind result element-count nrow booster-pointer)
+  "Return the shape `predict' states for its KIND result -- a list of integers in
+`array-dimensions' order -- or NIL where this backend states none.
+
+RESULT is the array `predict' is about to return, ELEMENT-COUNT the count
+`LGBM_BoosterCalcNumPredict' gave for it, NROW the row count whichever entry point just ran was
+handed, and BOOSTER-POINTER the booster it ran against.
+
+Nothing is read back from the library here, because there is nothing to read: this backend's
+prediction entry points report an element count and no shape at all, where XGBoost's write an
+`out_shape'/`out_dim' pair `cl-gbdt/src/xgboost/protocol''s `predict' hands back verbatim. Every
+value below is DERIVED, and each KIND gets only what can be derived from what is known:
+
+  `:normal', `:raw'  RESULT's own `array-dimensions'. One column per output group is the whole
+                     of what these hold and the array already says so, so there is nothing
+                     further to state.
+  `:contrib'         `contrib-shape''s (NROW classes width), width being one contribution per
+                     feature plus the bias and classes what is left of ELEMENT-COUNT once the
+                     other two divide out -- NIL when they do not divide out, which is that
+                     function's way of saying the layout is not the one this arithmetic
+                     describes. The CLASS-MAJOR ordering the shape implies does not follow from
+                     the count, which divides identically with the last two axes swapped: it is
+                     a measured claim, held by
+                     `lightgbm-s-derived-contrib-shape-is-the-one-the-numbers-support' in
+                     tests/functional/prediction-shape.lisp, whose feature-major arm is the
+                     control that makes it a measurement rather than a restatement.
+  `:leaf-index'      NIL. ELEMENT-COUNT divides by iterations and output groups much as
+                     `:contrib''s divides by output groups and width, but this project has no
+                     property that tells the resulting orderings apart -- a leaf index is an
+                     opaque identifier, summing to nothing and agreeing with nothing -- and an
+                     ordering asserted without one is a guess. NIL means what it means
+                     everywhere `predict''s second value appears: no shape is stated. It is not
+                     an error and nothing signals.
+
+NROW rather than RESULT's first dimension, though the two are equal, because it is the count
+the entry point that just ran was handed and the one ELEMENT-COUNT was computed against --
+which for a `csr-matrix' is `csr-matrix-num-rows' and not any dimension of MATRIX."
+  (ecase kind
+    ((:normal :raw) (array-dimensions result))
+    (:contrib (contrib-shape element-count nrow (%booster-num-features booster-pointer)))
+    (:leaf-index nil)))
+
 (defmethod predict ((booster lightgbm-booster) matrix
                     &key (kind :normal) num-iteration missing)
   "Predict on MATRIX with BOOSTER -- a dense matrix via `LGBM_BoosterPredictForMat', a
@@ -833,6 +877,17 @@ element count back through OUT-LEN; this is asserted equal to
 buffer was sized from the latter and a mismatch would mean either an
 under-filled result or a write past the allocated buffer going unnoticed.
 
+That count is also everything this backend ever learns about the result's SHAPE.
+`LGBM_BoosterCalcNumPredict' returns a number and nothing else, and neither entry point reports
+axes the way XGBoost's `out_shape'/`out_dim' pair does -- so this method's SECOND value is
+DERIVED rather than reported. `%prediction-shape' above is where that happens, from the element
+count, the row count and BOOSTER's own feature count, and it states a shape only for the KINDs
+those three determine one for: `:normal' and `:raw' get the result array's own dimensions,
+`:contrib' the three axes `contrib-shape' divides the count into, and `:leaf-index' NIL. This
+backend declares `:prediction-shape' in `*provided-capabilities*' to say the mechanism is here;
+nothing re-checks that declaration, there being no argument to refuse. The first value is
+untouched by all of it -- same dimensions, same elements, every KIND, either entry point.
+
 Deliberately does not scan the result for NaN or infinity -- see
 `cl-gbdt/src/xgboost/protocol''s `predict' for the identical reasoning, which
 applies here unchanged: `with-foreign-float-traps-masked' restores the C
@@ -868,7 +923,11 @@ counts as a valid model output."
                          (setf (aref result row col)
                                (cffi:mem-aref buffer :double
                                               (+ (* row ncol-result) col)))))))
-                 result)))
+                 ;; The second value. Derived from ELEMENT-COUNT and NROW, both of which this
+                 ;; method already held for its buffer sizing, plus BOOSTER's own feature
+                 ;; count -- nothing about how MATRIX is laid out enters into it, which is why
+                 ;; one call here serves both entry points. See `%prediction-shape' above.
+                 (values result (%prediction-shape kind result element-count nrow pointer)))))
         (if (typep matrix 'csr-matrix)
             (progn
               (%check-sparse-input (handle-backend booster))

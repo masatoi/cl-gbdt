@@ -374,14 +374,28 @@ ARGUMENT, and refusing is how a caller learns the argument will not be honoured.
 argument asking for a shape, so a backend that answers false returns NIL here and predicts
 exactly as it otherwise would.
 
-A reported shape describes the same elements the first value holds, and may have MORE axes
+A stated shape describes the same elements the first value holds, and may have MORE axes
 than the first value's two. Measured on XGBoost: `:normal' and `:raw' report exactly the first
 value's own `array-dimensions'; `:leaf-index' reports rows x iterations x output groups x
 parallel trees, and `:contrib' rows x output groups x (features + 1), both of which the first
 value folds into rows x (total element count / rows). Both stay multidimensional on a BINARY
 model -- (rows 4 1 1) and (rows 1 4) for a four-round model over three features, its single
 output group notwithstanding -- so the extra structure is not something only a multiclass
-objective produces."))
+objective produces.
+
+On LightGBM the same second value is DERIVED rather than reported, that library stating no
+shape anywhere: `LGBM_BoosterCalcNumPredict' gives an element count and no axes at all.
+`:normal' and `:raw' state the first value's own `array-dimensions'; `:contrib' states
+rows x output groups x (features + 1), the three axes the element count, the row count and the
+booster's feature count determine between them; and `:leaf-index' states NIL, its sub-layout
+having no property this project can check and an unchecked ordering being a guess rather than a
+measurement. `:contrib''s CLASS-MAJOR ordering is checked, and that is why it is stated at all:
+contributions grouped that way sum to their output group's `:raw' score and grouped the other
+way do not -- measured against both libraries, and asserted on LightGBM by
+`lightgbm-s-derived-contrib-shape-is-the-one-the-numbers-support' in
+tests/functional/prediction-shape.lisp, whose feature-major arm is the control. Both backends
+therefore answer `:prediction-shape' true, and on this one the keyword says the mechanism is
+present rather than that the library said anything."))
 
 (defgeneric save-model (booster path &key num-iteration)
   (:documentation "Save BOOSTER's model to PATH.

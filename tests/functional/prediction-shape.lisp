@@ -7,6 +7,15 @@
 ;;;; the wrapper read only their product and folded every result into [rows, total/rows],
 ;;;; throwing away structure the library had already stated.
 ;;;;
+;;;; LightGBM states no shape at all -- `LGBM_BoosterCalcNumPredict' returns an element count
+;;;; and nothing else -- so its second value is DERIVED where the arithmetic supports one and
+;;;; NIL where it does not. Measured, and pinned kind by kind by the three LightGBM-named tests
+;;;; at the foot of this file: `:normal' and `:raw' state the result array's own dimensions,
+;;;; `:contrib' the three-axis (rows classes features+1) `cl-gbdt/src/config/prediction-shape'
+;;;; derives, and `:leaf-index' NIL, its sub-layout having no property this project can check.
+;;;; Both backends therefore answer `:prediction-shape' true, and what the keyword says is that
+;;;; the mechanism is there -- not that either library stated anything.
+;;;;
 ;;;; The capability is `:prediction-shape', and NO OPERATION REFUSES ON IT. There is no
 ;;;; argument asking for a shape, so a backend that answers false returns NIL as its second
 ;;;; value rather than signalling -- which is why there is no
@@ -19,9 +28,10 @@
 ;;;; Like tests/functional/evaluation.lisp, sparse-input.lisp, missing-value.lisp and
 ;;;; categorical-features.lisp beside it, the two backend-neutral tests below run over that
 ;;;; first file's *FIXTURES*, once per backend, so the two backends cannot drift apart in
-;;;; shape or meaning without one of them failing here. The two remaining tests name XGBoost
-;;;; outright, the way `sparse-prediction-kind-support-is-what-each-library-offers' names both
-;;;; backends in sparse-input.lisp: a shape read from a library is what THAT library reports,
+;;;; shape or meaning without one of them failing here. The five remaining tests -- two naming
+;;;; XGBoost, three naming LightGBM -- name their backend outright, the way
+;;;; `sparse-prediction-kind-support-is-what-each-library-offers' names both backends in
+;;;; sparse-input.lisp: what a backend states about a prediction is what THAT backend states,
 ;;;; and weakening the assertion into something every backend can satisfy would test nothing
 ;;;; on any of them.
 ;;;;
@@ -54,6 +64,7 @@
                 #:make-multiclass-dataset
                 #:make-separable-dataset
                 #:predictions-match-labels-p
+                #:predictions-agree-p
                 #:dense-to-csr)
   ;; The fixture table and its dataset builder come from evaluation.lisp rather than being
   ;; restated here, for the reason that file's own export comment gives: a second table saying
@@ -208,6 +219,54 @@ asserted by name in `xgboost-reports-the-library-s-own-shape' below."
        (every (lambda (axis) (and (integerp axis) (plusp axis))) shape)
        (= (reduce #'* shape) (array-total-size result))
        (= (first shape) (array-dimension result 0))))
+
+(defun summed-contributions (contrib num-classes width &key feature-major)
+  "Return a fresh ROWS x NUM-CLASSES `double-float' array of per-output-group sums taken over
+CONTRIB, one `:contrib' prediction result of ROWS x (NUM-CLASSES * WIDTH).
+
+WIDTH is one contribution per feature plus the bias. Class-major by default: output group C's
+contributions are the WIDTH consecutive elements starting at C * WIDTH, which is what a shape
+of (rows NUM-CLASSES WIDTH) claims the buffer holds. FEATURE-MAJOR reads the same elements the
+other way round -- position P's are the NUM-CLASSES consecutive elements starting at
+P * NUM-CLASSES -- which is what a shape of (rows WIDTH NUM-CLASSES) would claim instead.
+
+Both groupings visit every element of a row exactly once and total to the same number over the
+whole row, so a check that summed a row entire could not tell them apart. What tells them apart
+is the PER-GROUP sum, which is why this returns one entry per output group: SHAP contributions
+for one output group sum to that group's raw score, and which elements belong to that group is
+exactly the claim a derived shape makes."
+  (let* ((rows (array-dimension contrib 0))
+         (sums (make-array (list rows num-classes) :element-type 'double-float)))
+    (dotimes (row rows)
+      (dotimes (class num-classes)
+        (setf (aref sums row class)
+              (loop :for position :below width
+                    :sum (aref contrib row (if feature-major
+                                               (+ (* position num-classes) class)
+                                               (+ (* class width) position)))))))
+    sums))
+
+(defun worst-difference (left right)
+  "Return the largest absolute elementwise difference between LEFT and RIGHT, two arrays of the
+same total size.
+
+Used only in the assertion descriptions of the SHAP-sum test below. `predictions-agree-p' is
+what decides those assertions; this says by HOW MUCH, which is the one number a reader wants and
+which printing two nine-by-three arrays in full buries under fifty lines of `format' output."
+  (loop :for index :below (array-total-size left)
+        :maximize (abs (- (row-major-aref left index) (row-major-aref right index)))))
+
+(defun matrix-forms (matrix)
+  "Return MATRIX and its `dense-to-csr' form as a list of (DESCRIPTION INPUT) pairs, for the
+LightGBM tests below that assert the same thing on both of `cl-gbdt:predict''s input forms.
+
+Both entry points, `LGBM_BoosterPredictForMat' and `LGBM_BoosterPredictForCSR', reach the same
+buffer-sizing and shape code in `cl-gbdt/src/lightgbm/protocol''s `predict', and a shape derived
+from the DENSE matrix's own row count rather than from the row count that code was handed would
+look correct on the first form and wrong on the second. DESCRIPTION goes into the assertion
+description so a failure names which of the two produced it."
+  (list (list "a dense matrix" matrix)
+        (list "a csr-matrix" (dense-to-csr matrix))))
 
 ;;; ---------------------------------------------------------------------------
 ;;; The capability this task ships
@@ -434,4 +493,114 @@ asserted by name in `xgboost-reports-the-library-s-own-shape' below."
                              (format nil "~D dimensions reported for an array of ~D"
                                      (length shape)
                                      (length (array-dimensions result))))))))))
+          (cl-gbdt:close-backend backend))))))
+
+;;; ---------------------------------------------------------------------------
+;;; What LightGBM derives, and what it declines to
+;;;
+;;; Named for that backend for the reason this file's header gives, and pinned KIND BY KIND
+;;; across the three tests below rather than left to `shape-describes-p'. That helper is an
+;;; AGGREGATE: it is asserted only over the kinds that came back with a shape at all, so a
+;;; backend stating one kind and NIL for three would satisfy it with three quarters of its
+;;; answer unexamined. On this backend three of the four kinds are exactly the cases it cannot
+;;; speak for -- `:leaf-index' states NIL, and `:normal' and `:raw' state nothing the result
+;;; array's own dimensions do not already say -- so each of the four is asserted by name below
+;;; instead.
+;;;
+;;; `LGBM_BoosterCalcNumPredict' returns an element count and no shape, so every shape here is
+;;; this wrapper's own arithmetic rather than the library's word. That is what makes the
+;;; class-major ORDERING a claim needing a measurement rather than a docstring: (rows classes
+;;; features+1) divides an element count out exactly as well with its last two axes swapped,
+;;; and no count can tell the two apart. The measurement is in the first test, and its FEATURE-
+;;; MAJOR arm is the control -- without it the test passes on a derivation ordered backwards.
+;;;
+;;; Policy section 13 asks for shape, order and meaning rather than numeric agreement, so the
+;;; SHAP-sum property is asserted here WITHIN LightGBM: contributions against that same
+;;; booster's own raw scores, never against XGBoost's. It holds on XGBoost too -- measured,
+;;; class-major reproducing its raw scores to 5.4d-8 where feature-major misses every one by up
+;;; to 1.65 -- but that backend needs no derivation to be checked, since
+;;; `xgboost-reports-the-library-s-own-shape' above reads the library's own answer instead.
+
+(deftest lightgbm-s-derived-contrib-shape-is-the-one-the-numbers-support
+  (with-backend-library (:lightgbm)
+    (multiple-value-bind (matrix labels) (multiclass-fixture)
+      (let ((fixture (find :lightgbm *fixtures* :key (lambda (entry) (getf entry :backend))))
+            (backend (cl-gbdt:open-backend :lightgbm))
+            (rows (array-dimension matrix 0))
+            (features (array-dimension matrix 1)))
+        (unwind-protect
+             (cl-gbdt:with-booster (booster (train-multiclass fixture backend matrix labels))
+               (let ((expected (list rows *num-classes* (1+ features))))
+                 (dolist (form (matrix-forms matrix))
+                   (destructuring-bind (description input) form
+                     (let ((shape (nth-value 1 (cl-gbdt:predict booster input :kind :contrib))))
+                       (testing (format nil "lightgbm: :kind :contrib on ~A derives ~S"
+                                        description expected)
+                         (ok (equal expected shape) (format nil "derived ~S" shape)))))))
+               ;; The measurement that shape rests on, and the control that makes it one.
+               ;; Measured against the vendored library over this fixture: grouped class-major
+               ;; the contributions reproduce all 27 raw scores to within 4.5d-16, and grouped
+               ;; feature-major they miss every one of the 27, by up to 0.778 -- nearly nine
+               ;; orders of magnitude above *PREDICTION-TOLERANCE*, the 1d-9
+               ;; `predictions-agree-p' applies, and which the class-major arm clears by seven.
+               (let* ((raw (cl-gbdt:predict booster matrix :kind :raw))
+                      (contrib (cl-gbdt:predict booster matrix :kind :contrib))
+                      (class-major (summed-contributions contrib *num-classes* (1+ features)))
+                      (feature-major (summed-contributions contrib *num-classes* (1+ features)
+                                                           :feature-major t)))
+                 (testing "lightgbm: contributions grouped class-major sum to the raw scores"
+                   (ok (predictions-agree-p class-major raw)
+                       (format nil "class-major sums differ from the raw scores by at most ~,3E"
+                               (worst-difference class-major raw))))
+                 (testing "lightgbm: and grouped feature-major they do not"
+                   (ok (not (predictions-agree-p feature-major raw))
+                       (format nil "feature-major sums differ from the raw scores by up to ~,3E"
+                               (worst-difference feature-major raw))))))
+          (cl-gbdt:close-backend backend))))))
+
+(deftest lightgbm-states-no-shape-for-leaf-index
+  (with-backend-library (:lightgbm)
+    (multiple-value-bind (matrix labels) (multiclass-fixture)
+      (let ((fixture (find :lightgbm *fixtures* :key (lambda (entry) (getf entry :backend))))
+            (backend (cl-gbdt:open-backend :lightgbm)))
+        (unwind-protect
+             (cl-gbdt:with-booster (booster (train-multiclass fixture backend matrix labels))
+               (dolist (form (matrix-forms matrix))
+                 (destructuring-bind (description input) form
+                   (let ((shape (nth-value 1 (cl-gbdt:predict booster input :kind :leaf-index))))
+                     (testing (format nil "lightgbm: :kind :leaf-index on ~A states no shape"
+                                      description)
+                       ;; NIL, not merely something false: `(null 0)' is false, so a later code
+                       ;; path answering 0 -- or any other non-NIL stand-in for "nothing to
+                       ;; say" -- fails here, and the description names what came back instead
+                       ;; of leaving a reader to guess which falsity it was.
+                       (ok (null shape) (format nil "the second value was ~S" shape)))))))
+          (cl-gbdt:close-backend backend))))))
+
+(deftest lightgbm-states-the-result-array-s-own-dimensions-for-normal-and-raw
+  (with-backend-library (:lightgbm)
+    (multiple-value-bind (matrix labels) (multiclass-fixture)
+      (let ((fixture (find :lightgbm *fixtures* :key (lambda (entry) (getf entry :backend))))
+            (backend (cl-gbdt:open-backend :lightgbm))
+            (rows (array-dimension matrix 0)))
+        (unwind-protect
+             (cl-gbdt:with-booster (booster (train-multiclass fixture backend matrix labels))
+               (let ((expected (list rows *num-classes*)))
+                 (dolist (kind '(:normal :raw))
+                   (dolist (form (matrix-forms matrix))
+                     (destructuring-bind (description input) form
+                       (multiple-value-bind (result shape)
+                           (cl-gbdt:predict booster input :kind kind)
+                         (testing (format nil "lightgbm: :kind ~S on ~A states ~S"
+                                          kind description expected)
+                           ;; Two assertions about two different pairings, neither implying the
+                           ;; other. The first pins the NUMBERS against the fixture's own row
+                           ;; and class counts, so it cannot be satisfied by returning whatever
+                           ;; the result array happens to say; the second pins the RELATIONSHIP
+                           ;; this test is named for, that nothing was added to what the array
+                           ;; already states.
+                           (ok (equal expected shape) (format nil "stated ~S" shape))
+                           (ok (equal (array-dimensions result) shape)
+                               (format nil "the result array's own dimensions are ~S"
+                                       (array-dimensions result))))))))))
           (cl-gbdt:close-backend backend))))))
