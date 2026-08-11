@@ -370,9 +370,44 @@ README内のassertion件数のdocument driftは **解消済み** (243 / 106 で�
 
 Phase 4完了時点で判明している残件を記録する。いずれもどのphaseの完了条件でもない。実利用要求が出た時点で、§17の分類と§13のテスト方針に従い一件ずつ着手する。まとめて一つのphaseに束ねない。
 
-- **file input** — `make-dataset` の `MATRIX` がpathnameも受け、libraryが自らファイルを読む形 (`LGBM_DatasetCreateFromFile`、`XGDMatrixCreateFromURI`)。どちらも通常のin-memory datasetを作るので、これはexternal memoryではなく、別capability `:file-input` になる。設計のみ済み、未実装。
+- **file input** — libraryが自らデータファイルを読む形 (`LGBM_DatasetCreateFromFile`、`XGDMatrixCreateFromURI`)。どちらも通常のin-memory datasetを作るので、これはexternal memoryではない。**共通APIには載せず、両backendのLayer 1として公開する。** 根拠は下記「file inputを共通APIに載せない理由」。未実装。
 - **shapeを保持するXGBoost feature score** — Phase 2の「最初の公開対象」に挙げたまま未実装。`:multidimensional-feature-score` は `*known-capabilities*` に登録済みだが全backendでfalseであり、「未対応であること自体は答えられる」状態で止まっている。
 - **LightGBM rollback / refit / reset parameter** — 同じくPhase 2の一覧の未実装項目。`LGBM_BoosterRollbackOneIter`、`LGBM_BoosterRefit`、`LGBM_BoosterResetParameter` はbindingには存在し、Layer 1として公開していない。
+
+### file inputを共通APIに載せない理由
+
+当初は `make-dataset` の `MATRIX` がpathnameも受ける共通形として設計していた。実測 (vendored LightGBM v4.7.0 / XGBoost v3.3.0、Linux aarch64、2026-08-11) の結果、**同一ファイルに対する両者の要求と既定値が一致せず、共通の意味を約束できない**ことが分かったため、Layer 1へ降ろした。ヘッダを読むだけでは出てこない事実なので、測定を残す。4行3列・label `(1 0 1 0)` の同じデータを、libsvmとCSVで書いて与えた結果である。
+
+| 与えたもの | LightGBM | XGBoost |
+|---|---|---|
+| libsvm、既定のまま | 4行3列、label一致 | `?format=libsvm` が必須。4行3列、label一致。ただし実行時に `Text file input has been deprecated since 3.1` を警告する |
+| formatを言わない | そもそもキーが無く、推論する | エラー `URI parameter 'format' is required for loading text data` |
+| CSV (ヘッダ無し)、既定のまま | 4行3列、label一致 (`label_column=0` が既定) | **4行4列、labelなし** — label列を特徴量として読む |
+| CSV (ヘッダ無し)、明示 | `header=false label_column=0` で同じ | `?format=csv&label_column=0` で4行3列、label一致 |
+| CSV (ヘッダ有り)、言わない | Fatal `Unknown token label in data file` | **5行4列** — ヘッダ行をデータとして黙って読む |
+| CSV (ヘッダ有り)、言う | `header=true` で4行3列 | **相当するキーが無い** |
+| 自身のbinary dataset | 同じ入口が自動判別して読む | formatを付けなければ読む |
+
+さらにXGBoostでは、**`format` とファイルの中身が矛盾しても検査されない**。各ケースを別プロセスで実行した結果:
+
+- `train.csv?format=libsvm` と `train.xgbbin?format=libsvm` は **SIGSEGVでプロセスごと落ちる**。dmlcのパーサスレッド (非Lispスレッド) で落ちるため、conditionとして捕捉できない。
+- `train.libsvm?format=csv` は status 0 で4行1列、`train.xgbbin?format=csv` は status 0 で5行0列を返す。どちらも誤りを報告しない。
+
+この六点が結論を決める。
+
+1. `:format` はXGBoostでは必須、LightGBMでは "Unknown parameter" と警告されて無視される。共通引数として同じ意味を持たない。
+2. 同じCSVに対する既定の解釈が違う (4×3 と 4×4)。揃えるにはlabel列の概念を各backendのパラメータ構文へ翻訳する必要があり、それは§15が明示した非目標そのものである。
+3. header行はXGBoostに概念が無い。揃えるにはwrapperが自分でファイルを読むしかなく、それは「libraryに読ませる」というこの機能の趣旨と矛盾する。
+4. 必須の `:format` は、誤指定でプロセスを殺す。typed conditionの規律をこの経路では守れない。
+5. XGBoostのtext入力は上流が3.1で非推奨にしている。§2の測定が示した「使用関数を安定した部分集合に保つほど可搬性が上がる」に反する。
+6. LightGBMの `parameters` と `reference` (bin mapper整合) は、XGBoostのconfig (`uri`、`silent`、`data_split_mode`) では表現できない。共通形にすると片側の情報が落ちる。
+
+したがって§17の締めのとおり、情報を減らした共通APIではなく、完全な情報を保つbackend固有APIとして公開する。
+
+- `cl-gbdt/lightgbm` — `LGBM_DatasetCreateFromFile` を filename / parameters / reference のまま。
+- `cl-gbdt/xgboost` — `XGDMatrixCreateFromURI` を URI と config のまま。加えて、名乗ったformatと中身が食い違うときにSIGSEGVではなく型付きconditionになるよう、**wrapper側で最低限の照合を行うことをこのAPIの要件とする**。
+
+両者が完全に一致したのは、libsvmを既定で読む場合だけである。将来Layer 2へ昇格させるなら、その一形式に限り、上のdeprecationを承知の上で行うこと。
 
 ## 13. テスト方針
 
