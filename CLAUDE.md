@@ -52,8 +52,9 @@ loads `/unified`; loading only Layer 1 and calling a portable generic signals
 `tools/ci/check-layer-separation.lisp` fails the build if a Layer 1 file's dependency closure
 ever reaches `cl-gbdt/src/protocol`, the training files, or the bare `cl-gbdt`. A Layer 1
 caller still cannot build a dataset -- `make-dataset` exists only as a unified-API method --
-which is a known and deliberate limitation, closed by planned follow-up work, not an
-oversight.
+which is a known and deliberate limitation, closed by planned follow-up work tracked as the
+first bullet of `docs/cl-gbdt-layered-api-implementation-policy.md`'s フォローアップ section,
+not an oversight.
 
 `train` returns a `training-report`
 as its secondary value, and takes `:record-history` (default `t`) to turn the per-iteration
@@ -163,6 +164,38 @@ worth stating explicitly rather than leaving them to be rediscovered:
   bindings"). This is already enforced by `tests/bindings.lisp`'s
   `committed-bindings-match-their-committed-spec` test, which re-emits from the
   committed c2ffi spec and compares the result to the committed file byte-for-byte.
+
+### The handle layer, and `with-pointer-ownership`
+
+`src/handle.lisp` wraps every foreign dataset and booster pointer in a CLOS object
+(`dataset`, `booster`), so free-once, use-after-free detection and the unfreed-handle
+finalizer are written once rather than twice per backend. `make-handle` is what takes
+ownership of a raw pointer; `release-handle` frees it exactly once and cancels the
+finalizer.
+
+**`with-pointer-ownership` is a public macro covering the window before `make-handle`
+runs.** A creation call such as `LGBM_DatasetCreateFromMat` returns a live foreign
+resource, but the code that follows it typically has more to do -- attaching a label, a
+weight, feature names -- before a Lisp object exists to own the pointer. In that window
+nothing in Lisp references the resource, so nothing will ever free it and no finalizer
+will ever fire for it: a body that leaves by signalling, by `throw`, by `return-from`, or
+simply by returning without taking ownership orphans it outright. The macro closes exactly
+that gap, calling the free function it was given unless the body handed the pointer to a
+handle:
+
+```lisp
+(with-pointer-ownership (raw #'%free-dataset-unchecked take-ownership)
+  (%set-info-field raw "label" label)
+  (take-ownership 'lightgbm-dataset backend :dataset))
+```
+
+It is an implementor's tool, not part of the everyday API -- a caller who only trains and
+predicts never reaches for it. It is on `cl-gbdt`'s public surface all the same, via
+`src/all.lisp`'s re-export-every-top-level-file rule, and policy section 14 makes anything
+on that surface a compatibility obligation. A new backend, or any new code that builds a
+handle from a fresh foreign pointer, should use it rather than an ad-hoc
+`unwind-protect`. Any error the free function itself signals is discarded, so a failing
+cleanup cannot replace the condition that caused the unwind (policy section 10).
 
 ### Floating-point trap masking around every foreign call
 

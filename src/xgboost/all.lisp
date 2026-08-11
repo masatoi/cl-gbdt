@@ -98,11 +98,12 @@
 ;;; `tools/ci/check-float-traps.lisp' reads exactly this `:export' to decide which `defun's
 ;;; are entry points reached without a `defmethod' to inherit a float-trap mask from, so a
 ;;; public `defun' that appeared here only by way of `:use-reexport' would slip that check
-;;; silently. That scan no longer reaches `slice-model' itself, though: its
-;;; +BACKEND-FILE-PATTERNS+ globs `src/*/native.lisp' and `src/*/protocol.lisp' only, so a
-;;; public `defun' in `classes.lisp' is named here but matched nowhere until that list grows
-;;; a `src/*/classes.lisp' entry. A future Layer 1 addition is listed here for the same
-;;; reasons; a CLOS class such as `xgboost-backend' needs no entry, having no body to mask.
+;;; silently. That scan does reach `slice-model' itself: its +BACKEND-FILE-PATTERNS+ globs
+;;; `src/*/classes.lisp' alongside `src/*/native.lisp' and `src/*/protocol.lisp', so a public
+;;; `defun' in `classes.lisp' is both named here and matched there -- the scan reports that
+;;; file as "2 defmethods, 1 public defun, 0 unmasked". A future Layer 1 addition is listed
+;;; here for the same reasons; a CLOS class such as `xgboost-backend' needs no entry, having
+;;; no body to mask.
 ;;; None of Task 7's additions are `defun's in THIS file either -- `open-backend' and
 ;;; `close-backend' are `defun's in `src/backend.lisp', outside the check's own file-pattern
 ;;; glob, and the condition accessors `:use-reexport'ed from `cl-gbdt/src/conditions' are

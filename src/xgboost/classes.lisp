@@ -23,9 +23,12 @@
 ;;;; `with-foreign-float-traps-masked', for the reason `cl-gbdt/src/xgboost/protocol''s
 ;;;; "Floating-point trap safety" comment gives. Moving a form between files never removes
 ;;;; that wrap -- but it can move a form out from under the check that verifies it, and it did
-;;;; here: `tools/ci/check-float-traps.lisp''s +BACKEND-FILE-PATTERNS+ names `src/*/native.lisp'
-;;;; and `src/*/protocol.lisp' only, so `slice-model''s wrap, which that scan counted while the
-;;;; function lived in `protocol.lisp', is held by reading alone until this path is added there.
+;;;; here for a while: `tools/ci/check-float-traps.lisp''s +BACKEND-FILE-PATTERNS+ named
+;;;; `src/*/native.lisp' and `src/*/protocol.lisp' only, so `slice-model''s wrap, which that
+;;;; scan counted while the function lived in `protocol.lisp', was held by reading alone. That
+;;;; glob now carries `src/*/classes.lisp' too, and the scan reports this file as "2 defmethods,
+;;;; 1 public defun, 0 unmasked" -- `slice-model' is checked again, and a wrap dropped from
+;;;; anything here fails the build rather than waiting for a reviewer.
 
 (uiop:define-package #:cl-gbdt/src/xgboost/classes
   (:use #:cl)

@@ -178,7 +178,9 @@ open:            NIL
 unified-API method today, so there is no Layer 1 way to get a `lightgbm-dataset` -- and with
 no dataset there is nothing to train or predict on either. That is a known and deliberate
 limitation of this split rather than an oversight -- bringing dataset construction down to
-Layer 1 is planned follow-up work, not something this layering claims to have delivered.
+Layer 1 is planned follow-up work, recorded as the first bullet of
+`docs/cl-gbdt-layered-api-implementation-policy.md`'s フォローアップ section, not something
+this layering claims to have delivered.
 Until it lands, a Layer 1 system is for opening a library, asking it
 what it can do, and calling that backend's own operations on handles the unified API made.
 
@@ -3382,8 +3384,10 @@ name it because they use symbols from it directly.
 today, so a program that loads `cl-gbdt/lightgbm` and nothing else can open the library, ask
 what it supports and close it again, but has no way to construct the `lightgbm-dataset` that
 `booster-eval` and the rest need. This is a known and deliberate limitation of the split;
-closing it -- bringing dataset construction down to Layer 1 -- is planned follow-up work, and
-this layering should not be read as already delivering a standalone library.
+closing it -- bringing dataset construction down to Layer 1 -- is planned follow-up work,
+tracked as the first bullet of `docs/cl-gbdt-layered-api-implementation-policy.md`'s
+フォローアップ section, and this layering should not be read as already delivering a
+standalone library.
 
 Each Layer 1 backend system (`cl-gbdt/lightgbm` depends on `cl-gbdt/src/lightgbm/all`,
 `cl-gbdt/xgboost` on `cl-gbdt/src/xgboost/all`) depends on `cffi`, its own generated
