@@ -5,10 +5,14 @@
 ;;;; lifetime. This file is what a caller of `cl-gbdt/lightgbm' actually invokes -- operations
 ;;;; that take a backend or a handle, do the whole job, and hand back a handle or a result.
 ;;;;
-;;;; Every function here reaches the shared library, so every one wraps its whole body in
+;;;; Every OPERATION here reaches the shared library, so every one wraps its whole body in
 ;;;; `with-foreign-float-traps-masked' -- see `protocol.lisp''s header for why, and
 ;;;; `tools/ci/check-float-traps.lisp', which scans this file and holds every name the sibling
-;;;; `all.lisp' exports to that rule.
+;;;; `all.lisp' exports to that rule. The `%'-prefixed helpers are not separately wrapped and
+;;;; are not policed by that check: each runs inside the body wrap of the one operation that
+;;;; calls it -- `%dataset-pointer' inside `create-dataset', `%prediction-shape' inside
+;;;; `predict' -- and each says so where it is defined, since nothing in CI would notice a
+;;;; future caller reaching it from outside an already-masked extent.
 ;;;;
 ;;;; Nothing here may depend on `cl-gbdt/src/protocol' or the training files: this file is Layer 1,
 ;;;; and `tools/ci/check-layer-separation.lisp' fails the build if it ever does. That is not a
@@ -27,18 +31,26 @@
                 #:lightgbm-dataset)
   (:import-from #:cl-gbdt/src/lightgbm/native
                 #:%add-valid-data
+                #:%booster-num-features
+                #:%calc-num-predict
                 #:%check-backend-open
                 #:%check-booster-datasets-live
                 #:%check-lightgbm-dataset
                 #:%create-booster
                 #:%create-dataset
                 #:%create-dataset-from-csr
+                #:%data-type
                 #:%free-booster
                 #:%free-booster-unchecked
                 #:%free-dataset
                 #:%free-dataset-unchecked
                 #:%parameter-string
+                #:%predict-for-csr
+                #:%predict-for-mat
+                #:%predict-ncol
+                #:%predict-type
                 #:%reference-pointer
+                #:%resolve-num-iteration
                 #:%set-feature-names
                 #:%set-group-field
                 #:%set-info-field
@@ -50,12 +62,16 @@
   (:import-from #:cl-gbdt/src/conditions
                 #:capability-unavailable
                 #:foreign-call-error)
+  (:import-from #:cl-gbdt/src/config/prediction-shape
+                #:contrib-shape)
   (:import-from #:cl-gbdt/src/data
                 #:csr-matrix
                 #:csr-matrix-indices
                 #:csr-matrix-indptr
                 #:csr-matrix-num-columns
-                #:csr-matrix-values)
+                #:csr-matrix-num-rows
+                #:csr-matrix-values
+                #:with-foreign-matrix)
   (:import-from #:cl-gbdt/src/foreign
                 #:with-foreign-float-traps-masked)
   (:import-from #:cl-gbdt/src/handle
@@ -64,11 +80,11 @@
                 #:handle-released-p
                 #:release-handle
                 #:with-pointer-ownership)
-  (:export #:%check-sparse-input
-           #:create-booster
+  (:export #:create-booster
            #:create-dataset
            #:free-booster
            #:free-dataset
+           #:predict
            #:update-one-iteration))
 
 (in-package #:cl-gbdt/src/lightgbm/api)
@@ -83,9 +99,13 @@ Policy section 7 requires the operation itself to re-check a capability rather t
 the caller to have asked `backend-supports-p' first, so a caller who never asked gets a typed
 condition instead of a missing-symbol crash. Both operations this backend gates on
 `:sparse-input' call this -- `%dataset-pointer' below, on `create-dataset''s behalf, and
-`cl-gbdt/src/lightgbm/protocol''s `predict', which imports it from here and is the reason this
-otherwise-internal name is exported at all -- so the two cannot come to disagree about which
-capability they name or which backend they blame.
+`predict' at the end of this file -- so the two cannot come to disagree about which capability
+they name or which backend they blame.
+
+Not exported, unlike every other name this file defines that a caller reaches. It was, while
+`cl-gbdt/src/lightgbm/protocol''s `predict' held the prediction procedure and imported this
+gate from here; that procedure is now `predict' below, both call sites are in this file, and
+an export nothing outside it needs is one more claim to keep true.
 
 Only a `csr-matrix' argument ever reaches this. A dense matrix needs neither
 `LGBM_DatasetCreateFromCSR' nor `LGBM_BoosterPredictForCSR' to exist, and must keep working
@@ -315,3 +335,178 @@ the macro whose `unwind-protect' calls this one."
           (unless already-released
             (warn "Freeing a LightGBM booster after its backend was closed: the foreign ~
                    booster was not freed and its memory is leaked."))))))
+
+;;; ---------------------------------------------------------------------------
+;;; Inference
+
+(defun %prediction-shape (kind result element-count nrow booster-pointer)
+  "Return the shape `predict' states for its KIND result -- a list of integers in
+`array-dimensions' order -- or NIL where this backend states none.
+
+RESULT is the array `predict' is about to return, ELEMENT-COUNT the count
+`LGBM_BoosterCalcNumPredict' gave for it, NROW the row count whichever entry point just ran was
+handed, and BOOSTER-POINTER the booster it ran against.
+
+No SHAPE is read back from the library here, because there is no shape to read: this backend's
+prediction entry points report an element count and no axes at all, where XGBoost's write an
+`out_shape'/`out_dim' pair `cl-gbdt/src/xgboost/protocol''s `predict' hands back verbatim. Every
+value below is DERIVED, and each KIND gets only what can be derived from what is known.
+
+That is not to say this function makes no foreign call. The `:contrib' arm calls
+`%booster-num-features' -- `LGBM_BoosterGetNumFeature' -- for the feature count it derives a
+width from. That is the one library call this function makes, and it runs inside `predict''s
+`with-foreign-float-traps-masked' body wrap, which is the whole of this function's trap
+protection: `%prediction-shape' is `%'-prefixed and named by no `:export' clause, so
+`tools/ci/check-float-traps.lisp' does not police it -- that check holds `defun's the backend's
+PUBLIC package exports, read from the second `define-package' in `src/lightgbm/all.lisp'. So the
+constraint any future change has to preserve is stated here and nowhere else: a second library
+call added below, or a caller reaching this function from outside an already-masked dynamic
+extent, must establish the mask itself, and nothing in CI will notice if it does not.
+
+What each KIND gets:
+
+  `:normal', `:raw'  RESULT's own `array-dimensions'. One column per output group is the whole
+                     of what these hold and the array already says so, so there is nothing
+                     further to state.
+  `:contrib'         `contrib-shape''s (NROW classes width), width being one contribution per
+                     feature plus the bias and classes what is left of ELEMENT-COUNT once the
+                     other two divide out. That function answers NIL, never signalling and never
+                     guessing, for any of the FOUR cases its own docstring enumerates: NROW zero
+                     or negative, a negative feature count, a division leaving a remainder, and
+                     an exact division whose quotient is zero. The last two are its way of
+                     saying the layout is not the one this arithmetic describes; the first two,
+                     that the inputs never described a layout at all. Read that docstring rather
+                     than this summary -- the contract is the four cases, not just the division.
+                     The CLASS-MAJOR ordering the shape implies does not follow from
+                     the count, which divides identically with the last two axes swapped: it is
+                     a measured claim, held by
+                     `lightgbm-s-derived-contrib-shape-is-the-one-the-numbers-support' in
+                     tests/functional/prediction-shape.lisp, whose feature-major arm is the
+                     control that makes it a measurement rather than a restatement.
+  `:leaf-index'      NIL. ELEMENT-COUNT divides by iterations and output groups much as
+                     `:contrib''s divides by output groups and width, but this project has no
+                     property that tells the resulting orderings apart -- a leaf index is an
+                     opaque identifier, summing to nothing and agreeing with nothing -- and an
+                     ordering asserted without one is a guess. NIL means what it means
+                     everywhere `predict''s second value appears: no shape is stated. It is not
+                     an error and nothing signals.
+
+NROW rather than RESULT's first dimension, though the two are equal, because it is the count
+the entry point that just ran was handed and the one ELEMENT-COUNT was computed against --
+which for a `csr-matrix' is `csr-matrix-num-rows' and not any dimension of MATRIX."
+  (ecase kind
+    ((:normal :raw) (array-dimensions result))
+    (:contrib (contrib-shape element-count nrow (%booster-num-features booster-pointer)))
+    (:leaf-index nil)))
+
+(defun predict (booster matrix &key (kind :normal) num-iteration)
+  "Predict on MATRIX with BOOSTER, returning two values: the result array and the SHAPE this
+backend states for it.
+
+MATRIX is a dense matrix -- predicted through `LGBM_BoosterPredictForMat' -- or a `csr-matrix',
+through `LGBM_BoosterPredictForCSR'. KIND is `:normal', `:raw', `:leaf-index' or `:contrib',
+mapped onto LightGBM's own `C_API_PREDICT_*' constant by `%predict-type', which signals for
+anything else. Predictions start from iteration 0; nothing here exposes a start-iteration
+override.
+
+NUM-ITERATION is a positive integer, or NIL for every iteration -- which LightGBM spells as 0,
+and `%resolve-num-iteration' is what writes it that way. It does NOT accept :BEST: only `train'
+writes a booster's `best-iteration', and a booster built by `create-booster' has none, so at
+this layer the keyword would name an empty slot. `cl-gbdt/src/lightgbm/protocol''s `predict'
+method is where :BEST is resolved -- by `%resolve-best-num-iteration', which signals
+`unsupported-argument' when the booster has no best iteration to resolve it against -- and it
+calls this with the integer that resolution produced.
+
+Signals `capability-unavailable' naming `:sparse-input' when MATRIX is a `csr-matrix' and that
+capability reads false -- see `%check-sparse-input' above, which checks it before any foreign
+call. Everything else means exactly what it means for a dense matrix: both entry points take
+the same PREDICT-TYPE, the same START-ITERATION/NUM-ITERATION pair and the same parameter
+string, and both fill the same buffer in the same row-major order, so KIND and NUM-ITERATION
+are honoured identically on either path -- all four KINDs included, unlike
+`cl-gbdt/src/xgboost/protocol''s `predict', whose sparse entry point is XGBoost's inplace
+prediction and covers only two of them. A `csr-matrix' whose NUM-COLUMNS is not BOOSTER's own
+feature count is LightGBM's own mistake to catch, and it does, with a clean nonzero return this
+reports as `foreign-call-error' (\"The number of features in data (N) is not the same as it was
+in training data (M).\"); nothing here pre-empts that check.
+
+Signals `released-handle-error' for a freed BOOSTER, and `backend-not-open' when its backend
+has since been closed -- see `handle-live-pointer', which is read before anything is allocated.
+
+The output buffer's element count comes from `LGBM_BoosterCalcNumPredict', not from the row
+count alone: the row count is only correct for a single-class objective. That count is read the
+same way for either matrix kind -- it depends on BOOSTER, the row count, KIND and
+NUM-ITERATION, and on nothing about how the rows are laid out. The second array dimension is
+that count divided by the row count, guarded by `%predict-ncol'. Whichever entry point ran also
+writes its own element count back through OUT-LEN; this is asserted equal to
+`LGBM_BoosterCalcNumPredict''s count rather than trusted silently, since the buffer was sized
+from the latter and a mismatch would mean either an under-filled result or a write past the
+allocated buffer going unnoticed.
+
+No prediction call here ever states the result's SHAPE, and that count is the whole of what one
+reports bearing on it: `LGBM_BoosterCalcNumPredict' returns a number and nothing else, and
+neither entry point reports axes the way XGBoost's `out_shape'/`out_dim' pair does -- so the
+SECOND value is DERIVED rather than reported. `%prediction-shape' above is where that happens,
+from the element count, the row count and BOOSTER's own feature count -- the last read by a
+further library call, `LGBM_BoosterGetNumFeature', which runs inside this function's own
+`with-foreign-float-traps-masked' body wrap like every other call it makes. It states a shape
+only for the KINDs those three determine one for: `:normal' and `:raw' get the result array's
+own dimensions, `:contrib' the three axes `contrib-shape' divides the count into (NIL for any
+of the four cases that function's own docstring enumerates), and `:leaf-index' NIL. This
+backend declares `:prediction-shape' in `*provided-capabilities*' to say the mechanism is here;
+nothing re-checks that declaration, there being no argument to refuse. The first value is
+untouched by all of it -- same dimensions, same elements, every KIND, either entry point.
+
+Deliberately does not scan the result for NaN or infinity -- see
+`cl-gbdt/src/xgboost/protocol''s `predict' for the identical reasoning, which applies here
+unchanged: `with-foreign-float-traps-masked' restores the C calling convention around this
+call, it does not and should not decide what counts as a valid model output."
+  (with-foreign-float-traps-masked
+    (let ((pointer (handle-live-pointer booster))
+          (predict-type (%predict-type kind))
+          (iteration-count (%resolve-num-iteration num-iteration)))
+      ;; The buffer sizing, the OUT-LEN check and the copy-out are identical for both entry
+      ;; points and live here once; CALL is the only thing that differs between them, which
+      ;; is exactly how much of this function a `csr-matrix' changes.
+      (flet ((predict-into (nrow function-name call)
+               (let* ((element-count
+                        (%calc-num-predict pointer nrow predict-type 0 iteration-count))
+                      (ncol-result (%predict-ncol element-count nrow))
+                      (result (make-array (list nrow ncol-result)
+                                          :element-type 'double-float)))
+                 (cffi:with-foreign-string (parameter-cstring "")
+                   (cffi:with-foreign-objects ((out-len :int64)
+                                               (buffer :double element-count))
+                     (funcall call parameter-cstring out-len buffer)
+                     (assert (= element-count (cffi:mem-ref out-len :int64)) ()
+                             "~A wrote ~D elements, expected ~D from ~
+                              LGBM_BoosterCalcNumPredict"
+                             function-name (cffi:mem-ref out-len :int64) element-count)
+                     (dotimes (row nrow)
+                       (dotimes (col ncol-result)
+                         (setf (aref result row col)
+                               (cffi:mem-aref buffer :double
+                                              (+ (* row ncol-result) col)))))))
+                 ;; The second value. Derived from ELEMENT-COUNT and NROW, both of which this
+                 ;; function already held for its buffer sizing, plus BOOSTER's own feature
+                 ;; count -- nothing about how MATRIX is laid out enters into it, which is why
+                 ;; one call here serves both entry points. See `%prediction-shape' above.
+                 (values result (%prediction-shape kind result element-count nrow pointer)))))
+        (if (typep matrix 'csr-matrix)
+            (progn
+              (%check-sparse-input (handle-backend booster))
+              (predict-into (csr-matrix-num-rows matrix) "LGBM_BoosterPredictForCSR"
+                            (lambda (parameter-cstring out-len buffer)
+                              (%predict-for-csr pointer
+                                                (csr-matrix-indptr matrix)
+                                                (csr-matrix-indices matrix)
+                                                (csr-matrix-values matrix)
+                                                (csr-matrix-num-columns matrix)
+                                                predict-type iteration-count
+                                                parameter-cstring out-len buffer))))
+            (with-foreign-matrix (data-pointer nrow ncol element-type) matrix
+              (predict-into nrow "LGBM_BoosterPredictForMat"
+                            (lambda (parameter-cstring out-len buffer)
+                              (%predict-for-mat pointer data-pointer
+                                                (%data-type element-type) nrow ncol
+                                                predict-type iteration-count
+                                                parameter-cstring out-len buffer)))))))))

@@ -49,26 +49,35 @@
 ;;; public surface by accident -- exactly what this task's brief warns an accidental export
 ;;; becomes: a compatibility obligation.
 ;;;
-;;; Eight symbols so far, each pulled explicitly by name. `lightgbm-backend' from `classes' is
-;;; the CLOS class a caller can specialize methods on or check with `typep'; `booster-eval-names'
-;;; and `booster-eval' from `native' are Phase 2's first LightGBM-specific safe API
+;;; Nine symbols from those three packages, each pulled explicitly by name. `lightgbm-backend'
+;;; from `classes' is the CLOS class a caller can specialize methods on or check with `typep';
+;;; `booster-eval-names' and `booster-eval' from `native' are Phase 2's first
+;;; LightGBM-specific safe API
 ;;; (docs/superpowers/specs/2026-08-06-evaluation-api-design.md, policy section 3's Layer 1);
-;;; `create-dataset', `free-dataset', `create-booster', `update-one-iteration' and
+;;; `create-dataset', `free-dataset', `create-booster', `update-one-iteration', `predict' and
 ;;; `free-booster' from `api' are the finished operations -- the procedure that used to sit
 ;;; inside `cl-gbdt/src/lightgbm/protocol''s methods of those names, which now check their
-;;; portable arguments and call these. Together they are a whole training run at this layer:
-;;; build a dataset, build a booster on it, advance it, free both. `create-booster' is the one
-;;; with no caller inside this library -- `train' builds its own booster, for the reason its
-;;; creation call records -- so it is published on the strength of its own contract rather than
-;;; of a method that exercises it. `free-dataset', `free-booster' and `update-one-iteration'
-;;; here are NOT `cl-gbdt''s generics of those names: they are plain functions and different
-;;; symbols, so a caller who has both packages in an image must name which one they mean,
-;;; exactly as they already must for anything else two packages export under one name.
+;;; portable arguments and call these. Together they are a whole training run at this layer,
+;;; and now the inference that follows it: build a dataset, build a booster on it, advance it,
+;;; score with it, free both. `create-booster' is the one with no caller inside this library --
+;;; `train' builds its own booster, for the reason its creation call records -- so it is
+;;; published on the strength of its own contract rather than of a method that exercises it.
+;;; `free-dataset', `free-booster', `update-one-iteration' and `predict' here are NOT
+;;; `cl-gbdt''s generics of those names: they are plain functions and different symbols, so a
+;;; caller who has both packages in an image must name which one they mean, exactly as they
+;;; already must for anything else two packages export under one name.
 ;;;
-;;; `api' is `:import-from'ed rather than `:use-reexport'ed for the reason `classes' is: it
-;;; also exports `%check-sparse-input', an internal capability gate that exists at that layer
-;;; only because `protocol.lisp''s `predict' calls it too, and re-exporting the package whole
-;;; would put it on this public surface by accident.
+;;; `api' is `:import-from'ed rather than `:use-reexport'ed for the reason `classes' is, and
+;;; the reason survives that package's `:export' clause holding nothing but those six
+;;; operations today: `:use-reexport' would publish whatever that clause grows next
+;;; automatically, and the `:export' clause below is what `tools/ci/check-float-traps.lisp'
+;;; reads to decide which `defun's are entry points -- see the paragraph on that check below,
+;;; which is why a name arriving here without being written here is a hazard rather than a
+;;; convenience. `%check-sparse-input' is the name that used to make this concrete: `api'
+;;; exported it while `protocol.lisp''s `predict' called it from the other file, and
+;;; `:use-reexport' would have put an internal capability gate on this public surface. That
+;;; procedure is now `api''s own `predict', both of the gate's call sites are in that file, and
+;;; the name is no longer exported at all.
 ;;;
 ;;; This published `lightgbm-backend' by way of `:use-reexport #:cl-gbdt/src/lightgbm/protocol'
 ;;; until the split, that package having re-exported the one symbol and nothing else. `classes'
@@ -97,14 +106,26 @@
 ;;; `probe-foreign-symbols' and `probe-capabilities' from `backend'; `make-handle',
 ;;; `release-handle', `handle-pointer' and `handle-live-pointer' from `handle' -- and
 ;;; re-exporting either package whole would put every one of those on this surface by accident,
-;;; the identical hazard already described above. `csr-matrix' and the rest of
-;;; `cl-gbdt/src/data' still stay out, though the reason has changed: dataset construction is
-;;; now at this layer, and `create-dataset' below does take a `csr-matrix', so a Layer 1
-;;; caller who wants the sparse path has to reach `cl-gbdt:make-csr-matrix' -- which means
-;;; loading the unified core -- or name `cl-gbdt/src/data' directly. Publishing that
-;;; constructor here is a decision about the SPARSE surface, not a side effect of moving
-;;; `make-dataset''s procedure down, so it is left to be made deliberately. The dense path,
-;;; which is every ordinary array, needs nothing from `cl-gbdt/src/data' at all.
+;;; the identical hazard already described above.
+;;;
+;;; The sparse surface is that deliberate decision, taken now rather than left open: both
+;;; `create-dataset' and `predict' accept a `csr-matrix' wherever they accept a dense matrix,
+;;; and until this form named it, a Layer 1 caller could reach the sparse half of either only
+;;; by loading the unified core for `cl-gbdt:make-csr-matrix' or by naming the internal
+;;; `cl-gbdt/src/data' directly -- so half of two published contracts was unreachable from the
+;;; package that publishes them. `make-csr-matrix', the `csr-matrix' structure type and its
+;;; five readers are named; `foreign-matrix', `with-foreign-matrix' and the rest of that package
+;;; stay out, being the plumbing a dense matrix is handed to C through and not something a
+;;; caller builds. The dense path, which is every ordinary array, still needs none of it.
+;;; `booster-training-set' and `booster-validation-sets' from `handle' are here for the same
+;;; reason: `create-booster' retains both, and without these a caller who built a booster at
+;;; this layer could not read back what it attached -- `handle-released-p', already published,
+;;; is what makes the answer worth having, since a retained dataset can have been freed.
+;;;
+;;; None of those nine is a symbol of this package's own: they are the very symbols
+;;; `cl-gbdt/src/data' and `cl-gbdt/src/handle' define, so unlike `predict' and the three
+;;; other doubled operation names above, a caller holding both `cl-gbdt' and `cl-gbdt/lightgbm'
+;;; sees one symbol reached two ways and has nothing to disambiguate.
 ;;;
 ;;; The `:export' clause names all of them because `:import-from' imports without exporting, so
 ;;; it is now the only thing publishing any of them. It carries a second job as well --
@@ -132,8 +153,18 @@
                 #:backend-version
                 #:close-backend
                 #:open-backend)
+  (:import-from #:cl-gbdt/src/data
+                #:csr-matrix
+                #:csr-matrix-indices
+                #:csr-matrix-indptr
+                #:csr-matrix-num-columns
+                #:csr-matrix-num-rows
+                #:csr-matrix-values
+                #:make-csr-matrix)
   (:import-from #:cl-gbdt/src/handle
                 #:booster
+                #:booster-training-set
+                #:booster-validation-sets
                 #:dataset
                 #:handle-backend
                 #:handle-released-p)
@@ -147,6 +178,7 @@
                 #:create-dataset
                 #:free-booster
                 #:free-dataset
+                #:predict
                 #:update-one-iteration)
   (:export #:lightgbm-backend
            #:booster-eval-names
@@ -155,7 +187,17 @@
            #:create-dataset
            #:free-booster
            #:free-dataset
+           #:predict
            #:update-one-iteration
+           #:csr-matrix
+           #:csr-matrix-indices
+           #:csr-matrix-indptr
+           #:csr-matrix-num-columns
+           #:csr-matrix-num-rows
+           #:csr-matrix-values
+           #:make-csr-matrix
+           #:booster-training-set
+           #:booster-validation-sets
            #:*known-capabilities*
            #:backend-capabilities
            #:backend-info
@@ -181,4 +223,8 @@
 ;;; itself already `:import-from's `cl-gbdt/src/backend', `cl-gbdt/src/handle' and
 ;;; `cl-gbdt/src/conditions' (see its own package form), so loading `cl-gbdt/src/lightgbm/all'
 ;;; -- which the first form's `:use-reexport' of `classes' already requires -- transitively
-;;; loads all three ASDF systems before this second form is ever read.
+;;; loads all three ASDF systems before this second form is ever read. The
+;;; `cl-gbdt/src/data' clause added for the sparse surface is the same case one package
+;;; further out: `api', which the first form does `:use-reexport', `:import-from's that package
+;;; itself -- it has to, `create-dataset' and `predict' both branching on `csr-matrix' -- so
+;;; the system is loaded by the time this form is read, and the first form needs no edit.
