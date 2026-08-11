@@ -333,7 +333,7 @@ README内のassertion件数のdocument driftは **解消済み** (243 / 106 で�
 4. best iterationをprediction / persistenceと接続する。
 5. validation set namingを定義する。
 
-### Phase 4: Dataとpredictionの拡張
+### Phase 4: Dataとpredictionの拡張 — 完了
 
 優先度と実利用要求に応じて、以下をcapability-gated APIとして追加する。
 
@@ -345,6 +345,18 @@ README内のassertion件数のdocument driftは **解消済み** (243 / 106 で�
 
 すべてを同時に実装しようとしてはならない。各機能について、Layer 1 contract、Layer 2に含める可否、capability、functional testを一組として実装する。
 
+この一組という単位は最後まで守られ、一覧の各項目がそれぞれ独立したPRとして入った。external memoryは下記の理由で一覧から外したため、**この時点でPhase 4に未実装の項目はない**。
+
+| 一覧の項目 | 実装 | capability | PR | functional test |
+|---|---|---|---|---|
+| sparse input | dense matrixを受ける位置で `make-dataset` と `predict` が `csr-matrix` も受ける | `:sparse-input` (両backend) | #18 | `tests/functional/sparse-input.lisp` |
+| missing value option | `make-dataset` と `predict` の `:missing` | `:missing-value` (XGBoostのみ真) | #19 | `tests/functional/missing-value.lisp` |
+| categorical metadata | `make-dataset` の `:categorical-features` | `:categorical-features` (両backend) | #20 | `tests/functional/categorical-features.lisp` |
+| multidimensional prediction result | `predict` が第二値として返すshape | `:prediction-shape` (両backend) | #22 | `tests/functional/prediction-shape.lisp` |
+| custom objective / evaluation | `train` の `:objective` と `:evaluation` | `:custom-objective` / `:custom-evaluation` (両backend) | #23 / #24 | `tests/functional/custom-objective.lisp` / `custom-evaluation.lisp` |
+
+以後この一覧へ項目を足さない。新しいdata / prediction機能は、phaseの続きではなく下記のフォローアップとして扱う。
+
 ### external memoryを一覧から外した理由
 
 当初この一覧にはexternal memoryも含めていたが、vendoredヘッダを読んだ結果、**両backendとも、このwrapperがexternal memoryと呼べるものを、対応するdataset構築の入口では提供していない**ことが分かったため外した。同じ調査を繰り返さないよう、根拠を残す。
@@ -353,6 +365,14 @@ README内のassertion件数のdocument driftは **解消済み** (243 / 106 で�
 - **LightGBM**には該当する機能がない。`LGBM_DatasetCreateFromFile`は "Load dataset from file (like LightGBM CLI version does)" で、できあがる`Dataset`はbin化された形で全量メモリに載る。`LGBM_DatasetInitStreaming`とその周辺は、複数スレッドから行を流し込む**構築**の機構であって、データをメモリ外に置く機構ではない。
 
 したがって実装するとすれば、このプロジェクト初のC→Lisp callbackを導入し、上流自身がexperimentalと呼ぶAPIに乗り、片側のbackendでのみ真となるcapabilityを足すことになる。§7が要求するportable contractに載せられる形ではない。将来この判断を覆すなら、上記の三点が変わったことを先に確認すること。
+
+### フォローアップ
+
+Phase 4完了時点で判明している残件を記録する。いずれもどのphaseの完了条件でもない。実利用要求が出た時点で、§17の分類と§13のテスト方針に従い一件ずつ着手する。まとめて一つのphaseに束ねない。
+
+- **file input** — `make-dataset` の `MATRIX` がpathnameも受け、libraryが自らファイルを読む形 (`LGBM_DatasetCreateFromFile`、`XGDMatrixCreateFromURI`)。どちらも通常のin-memory datasetを作るので、これはexternal memoryではなく、別capability `:file-input` になる。設計のみ済み、未実装。
+- **shapeを保持するXGBoost feature score** — Phase 2の「最初の公開対象」に挙げたまま未実装。`:multidimensional-feature-score` は `*known-capabilities*` に登録済みだが全backendでfalseであり、「未対応であること自体は答えられる」状態で止まっている。
+- **LightGBM rollback / refit / reset parameter** — 同じくPhase 2の一覧の未実装項目。`LGBM_BoosterRollbackOneIter`、`LGBM_BoosterRefit`、`LGBM_BoosterResetParameter` はbindingには存在し、Layer 1として公開していない。
 
 ## 13. テスト方針
 
