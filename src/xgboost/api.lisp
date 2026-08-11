@@ -35,8 +35,16 @@
 ;;;; the image, and these functions are the whole of what they can call.
 ;;;;
 ;;;; Loads after `classes.lisp' and cannot precede it: every operation below takes or returns an
-;;;; `xgboost-dataset' or an `xgboost-booster', and `make-handle' is handed a class name as a
-;;;; symbol.
+;;;; `xgboost-dataset' or an `xgboost-booster', and `make-handle' and `%check-handle-class' are
+;;;; each handed a class name as a symbol.
+;;;;
+;;;; Every operation below that takes a caller-supplied HANDLE checks its kind before letting
+;;;; its pointer reach C, and none of them may skip that: each was a `defmethod' specialized on
+;;;; `xgboost-dataset' or `xgboost-booster' before the Layer 1 split, and that specializer WAS
+;;;; the check. A plain `defun' takes whatever it is given. `%check-xgboost-dataset' and
+;;;; `%check-xgboost-booster' are what the operations that require a LIVE handle use;
+;;;; `%check-handle-class' below is what the two frees use, they being the two that must keep
+;;;; working on a handle that is neither.
 
 (uiop:define-package #:cl-gbdt/src/xgboost/api
   (:use #:cl)
@@ -80,7 +88,8 @@
   (:import-from #:cl-gbdt/src/conditions
                 #:capability-unavailable
                 #:foreign-call-error
-                #:missing-training-set)
+                #:missing-training-set
+                #:wrong-backend-reference)
   (:import-from #:cl-gbdt/src/data
                 #:csr-matrix
                 #:csr-matrix-indices
@@ -137,6 +146,50 @@ library that has neither."
   (unless (backend-supports-p backend :sparse-input)
     (error 'capability-unavailable
            :backend (backend-name backend) :capability :sparse-input)))
+
+;;; ---------------------------------------------------------------------------
+;;; The frees' handle-kind gate
+
+(defun %check-handle-class (object class noun argument-description)
+  "Signal `wrong-backend-reference' unless OBJECT is of type CLASS, reporting NOUN as the kind
+of handle that was wanted and ARGUMENT-DESCRIPTION as the argument OBJECT came from. Returns
+no useful value, and reads nothing else about OBJECT at all.
+Mirrors `cl-gbdt/src/lightgbm/api''s function of the same name, which carries the same
+reasoning for its own library's two frees.
+
+`free-dataset' and `free-booster' are the only callers, and this exists because neither can
+use `%check-xgboost-dataset' or `%check-xgboost-booster', which every other operation in this
+file uses: both of those end in `handle-live-pointer', so both REQUIRE the handle to be
+unreleased and its backend still open. Those are precisely the two states a free is documented
+to tolerate -- freeing an already-freed handle is a no-op, and freeing one whose backend has
+since been closed `warn's the memory leaked and returns -- so routing either free through a
+check that signals `released-handle-error' or `backend-not-open' would break both promises for
+the sake of the kind check. This checks the kind and nothing else.
+
+A `typep' against the CONCRETE class subsumes kind and backend together, where
+`cl-gbdt/src/handle''s `%check-handle-kind' needs a (kind, backend-name) pair: that function
+takes the backend-agnostic `dataset'/`booster' classes because `native.lisp' may not depend on
+`classes.lisp' (policy section 11), whereas this file already names `xgboost-dataset' and
+`xgboost-booster' -- and an `xgboost-dataset' is by construction a dataset built by XGBoost,
+no other backend's operations building one.
+
+NOUN is passed rather than derived from CLASS: `wrong-backend-reference''s report reads \"~A
+must be a ~A built by ~A itself\", where the class name would make it \"must be an
+xgboost-dataset built by XGBOOST\" and say the backend twice.
+
+Without this the two frees hand the pointer of whatever handle they are given straight to
+`XGDMatrixFree' or `XGBoosterFree'. Measured with the check removed, an `xgboost-booster'
+passed to `free-dataset' faulted inside the library; see the sibling's function of the same
+name for the fuller measurement and for why the SPREAD of outcomes, rather than any one of
+them, is the argument for checking in Lisp. Both frees were `defmethod's specialized on the
+concrete class before the Layer 1 split, and that specializer was this check; a plain `defun'
+makes it here or nowhere."
+  (unless (typep object class)
+    (error 'wrong-backend-reference
+           :backend :xgboost
+           :given (class-name (class-of object))
+           :argument argument-description
+           :expected noun)))
 
 ;;; ---------------------------------------------------------------------------
 ;;; Datasets
@@ -274,6 +327,12 @@ orphaning it."
   "Free DATASET via `XGDMatrixFree'. Does nothing if it was already freed, and returns no
 useful value.
 
+Signals `wrong-backend-reference' when DATASET is not an `xgboost-dataset' -- a booster, a
+dataset built by another backend, or not a handle at all -- before anything is read from it
+and before any foreign call. This function dispatches on nothing, so `%check-handle-class' is
+the only thing between a wrong-kind pointer and `XGDMatrixFree' dereferencing it; see that
+function for why the frees cannot use the same check the rest of this file uses.
+
 Unlike every other operation that reads an existing handle -- `free-booster' below excepted,
 which takes this same path for this same reason -- this does not go through
 `handle-live-pointer' and so does not signal `backend-not-open' when DATASET's backend has
@@ -288,6 +347,8 @@ library may no longer be mapped into the process, so that call cannot be trusted
 -- and a `warn' reports the foreign memory as leaked, since it is genuinely unreclaimable at
 that point."
   (with-foreign-float-traps-masked
+    (%check-handle-class dataset 'xgboost-dataset "dataset"
+                         "free-dataset's dataset argument")
     (if (backend-open-p (handle-backend dataset))
         (release-handle dataset (lambda (pointer) (%free-dmatrix pointer)))
         (let ((already-released (handle-released-p dataset)))
@@ -429,25 +490,43 @@ call and whose docstring measures why the two kinds are not the same hazard: a f
 set faults inside the library, since its handle is what this call passes to C, while a freed
 VALIDATION set is refused on contract rather than for safety, that array not being consulted
 here at all. Signals `missing-training-set' when
-BOOSTER has no training set at all. Signals `released-handle-error' for a freed BOOSTER, and
-`backend-not-open' when its backend has since been closed -- see `handle-live-pointer'."
+BOOSTER has no training set at all.
+
+Signals `wrong-backend-reference' when BOOSTER is not a booster built by this backend -- a
+dataset, a LightGBM booster, or not a handle at all -- and this function dispatches on
+nothing, so `%check-xgboost-booster' is the only thing between such a handle's pointer and
+`XGBoosterUpdateOneIter'. Signals `released-handle-error' for a freed BOOSTER, and
+`backend-not-open' when its backend has since been closed -- both from the
+`handle-live-pointer' inside `%check-xgboost-booster', which is why the kind check is first: a
+handle this backend never built is the wrong handle whatever its state, and both
+`%check-booster-datasets-live' and the `booster-training-set' read below would otherwise take
+slots off it before anything questioned what it was."
   (with-foreign-float-traps-masked
-    (%check-booster-datasets-live booster)
-    (let ((training-set (booster-training-set booster)))
-      (unless training-set
-        (error 'missing-training-set :booster booster))
-      (%update-one-iteration (handle-live-pointer booster) (handle-live-pointer training-set)))
+    (let ((booster-pointer
+            (%check-xgboost-booster booster "update-one-iteration's booster argument")))
+      (%check-booster-datasets-live booster)
+      (let ((training-set (booster-training-set booster)))
+        (unless training-set
+          (error 'missing-training-set :booster booster))
+        (%update-one-iteration booster-pointer (handle-live-pointer training-set))))
     t))
 
 (defun free-booster (booster)
   "Free BOOSTER via `XGBoosterFree'. Does nothing if it was already freed, and returns no
 useful value.
 
+Signals `wrong-backend-reference' when BOOSTER is not an `xgboost-booster' -- a dataset, a
+booster built by another backend, or not a handle at all -- before anything is read from it
+and before any foreign call, for the reason `free-dataset' above states and by the same
+`%check-handle-class'.
+
 See `free-dataset' above for why this does not signal `backend-not-open' when BOOSTER's
 backend has already been closed, but marks the handle released and `warn's the foreign memory
 leaked instead -- the same cleanup-form reasoning applies here, whether the `unwind-protect'
 is the caller's own or the one inside `cl-gbdt''s `with-booster'."
   (with-foreign-float-traps-masked
+    (%check-handle-class booster 'xgboost-booster "booster"
+                         "free-booster's booster argument")
     (if (backend-open-p (handle-backend booster))
         (release-handle booster (lambda (pointer) (%free-booster pointer)))
         (let ((already-released (handle-released-p booster)))
@@ -510,10 +589,16 @@ Signals `capability-unavailable' naming `:sparse-input' when MATRIX is a `csr-ma
 capability reads false -- see `%check-sparse-input' above, which checks it before any foreign
 call.
 
+Signals `wrong-backend-reference' when BOOSTER is not a booster built by this backend -- a
+dataset, a LightGBM booster, or not a handle at all. This function dispatches on nothing, so
+`%check-xgboost-booster' is the only thing between such a handle's pointer and
+`XGBoosterPredictFromDMatrix' or `XGBoosterPredictFromCSR'.
+
 Signals `released-handle-error' for a freed BOOSTER, and `backend-not-open' when its backend
-has since been closed -- see `handle-live-pointer', which is read before anything is
-allocated, and before NUM-ITERATION is examined, so a freed booster handed :BEST is reported
-as freed rather than as having passed a keyword this layer refuses.
+has since been closed -- both from the `handle-live-pointer' inside `%check-xgboost-booster',
+which is read before anything is allocated, and before NUM-ITERATION is examined, so a freed
+booster handed :BEST is reported as freed rather than as having passed a keyword this layer
+refuses.
 
 A dense MATRIX is built into a transient DMatrix via `%create-dmatrix' first --
 `XGBoosterPredictFromDMatrix' takes a DMatrix handle, unlike LightGBM's
@@ -589,10 +674,11 @@ reported failure -- a caller that cannot tolerate a non-finite prediction should
 one itself."
   (with-foreign-float-traps-masked
     ;; BOOSTER-POINTER is bound first, and a `let' evaluates its init forms left to right, so
-    ;; a freed BOOSTER is refused by `handle-live-pointer' before `%reject-best-num-iteration'
-    ;; can report a :BEST it would also have refused -- the same precedence the `predict'
-    ;; method above this layer keeps between a freed handle and its own argument checks.
-    (let ((booster-pointer (handle-live-pointer booster))
+    ;; a wrong-kind or freed BOOSTER is refused by `%check-xgboost-booster' before
+    ;; `%reject-best-num-iteration' can report a :BEST it would also have refused -- the same
+    ;; precedence the `predict' method above this layer keeps between a bad handle and its own
+    ;; argument checks.
+    (let ((booster-pointer (%check-xgboost-booster booster "predict's booster argument"))
           (predict-type (%predict-type kind))
           (iteration-end
             (%resolve-num-iteration
