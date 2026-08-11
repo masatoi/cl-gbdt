@@ -21,6 +21,18 @@
   ;; real caller would. Not `all': since the Layer 1 split that is Layer 1 alone, and
   ;; `train' below would find no applicable method.
   (:import-from #:cl-gbdt/src/lightgbm/unified)
+  ;; Zero symbols, same load-time reason as the clause above, for the other backend:
+  ;; `lightgbm-api-layer-1-refuses-the-other-backends-handles' needs real XGBoost handles to
+  ;; hand LightGBM's Layer 1 operations, and `(cl-gbdt:open-backend :xgboost)' signals
+  ;; `unknown-backend' unless something has loaded that backend's `register-backend' call.
+  ;; That one test is this file's only XGBoost reference and it is still a LightGBM test -- it
+  ;; asserts that *LightGBM's* entry points reject a foreign handle, which is why it belongs
+  ;; here rather than in the backend-neutral `cl-gbdt/tests/functional/evaluation', whose own
+  ;; package form carries both clauses for the different reason that it runs the same
+  ;; assertions against both backends. `unified' for the same reason as the clause above: that
+  ;; test builds its XGBoost handles through `cl-gbdt:make-dataset' and `cl-gbdt:train'. This
+  ;; mirrors `cl-gbdt/tests/functional/xgboost-api''s identical clause for the other direction.
+  (:import-from #:cl-gbdt/src/xgboost/unified)
   ;; Zero symbols, same reasoning as the `#:cl-gbdt' clause above: every reference below is
   ;; package-qualified, `cl-gbdt/lightgbm:booster-eval-names' and `cl-gbdt/lightgbm:booster-eval'.
   ;; Declared anyway so this file's dependency on Task 2's new public functions is explicit
@@ -1253,3 +1265,71 @@ Matches `lightgbm-api-round-trip''s round count; nothing about the comparison ne
             (when layer-1-dataset (cl-gbdt/lightgbm:free-dataset layer-1-dataset))
             (when unified-dataset (cl-gbdt:free-dataset unified-dataset))
             (cl-gbdt:close-backend backend)))))))
+
+;;; The wrong-BACKEND half of the guard tests/functional/lightgbm-standalone.lisp's
+;;; `layer-1-alone-refuses-a-wrong-kind-handle' covers from the other side. Both are about the
+;;; same defect: `free-dataset', `free-booster', `predict' and `update-one-iteration' were
+;;; `defmethod's specialized on `lightgbm-dataset' or `lightgbm-booster' until Task 4 made them
+;;; plain `defun's in src/lightgbm/api.lisp, and that specializer WAS the type check, so for a
+;;; while each of the four handed whatever handle it was given straight to a LightGBM C entry
+;;; point. What that produces is not stable and that is the point of asserting it here rather
+;;; than trusting the library to complain: measured with the checks removed, an
+;;; `xgboost-dataset' given to `free-dataset' faulted at #xFFFFFFFFFFFFFFF8 in one run and
+;;; RETURNED SILENTLY in another, and an `xgboost-booster' given to `predict' has been seen
+;;; both to fault and to take the process down with a bus error. All four assertions below
+;;; redden either way, which is what a test can hold; none of the failure modes is something a
+;;; caller could have handled.
+;;;
+;;; It sits here, and not in the standalone file, because it needs BOTH backends in one image
+;;; and that file's whole claim is that it has only one. It sits here rather than in the
+;;; backend-neutral `cl-gbdt/tests/functional/evaluation' because it is not a portable contract
+;;; asserted against both backends: it is about *LightGBM's* four entry points refusing a
+;;; foreign handle, exactly as `xgboost-api-slice-model-rejects-a-lightgbm-booster' in
+;;; tests/functional/xgboost-api.lisp is about XGBoost's. That file carries this test's mirror.
+;;;
+;;; Only the XGBoost library is opened, and that is part of what this asserts: all four checks
+;;; run before any LightGBM call, so they signal with that library never opened at all.
+
+(deftest lightgbm-api-layer-1-refuses-the-other-backends-handles
+  (with-backend-library (:xgboost)
+    (multiple-value-bind (matrix label-vector) (make-separable-dataset)
+      (let ((xgboost (cl-gbdt:open-backend :xgboost))
+            (xgboost-set nil)
+            (xgboost-booster nil))
+        (unwind-protect
+             (progn
+               (setf xgboost-set (cl-gbdt:make-dataset xgboost matrix :label label-vector))
+               (setf xgboost-booster
+                     (cl-gbdt:train xgboost xgboost-set :num-rounds 1
+                                    :parameters '(:objective "binary:logistic"
+                                                  :max-depth 2 :eta 0.5 :verbosity 0)))
+               ;; `handler-case', not rove's `signals', which does not reliably catch a
+               ;; condition raised inside `restart-case'. On the condition TYPE throughout:
+               ;; the report's wording is not what a caller dispatches on.
+               (testing "free-dataset rejects an XGBoost dataset"
+                 (ok (handler-case
+                         (progn (cl-gbdt/lightgbm:free-dataset xgboost-set) nil)
+                       (cl-gbdt:wrong-backend-reference () t))
+                     "LightGBM's free-dataset accepted an XGBoost dataset"))
+               (testing "free-booster rejects an XGBoost booster"
+                 (ok (handler-case
+                         (progn (cl-gbdt/lightgbm:free-booster xgboost-booster) nil)
+                       (cl-gbdt:wrong-backend-reference () t))
+                     "LightGBM's free-booster accepted an XGBoost booster"))
+               (testing "predict rejects an XGBoost booster"
+                 (ok (handler-case
+                         (progn (cl-gbdt/lightgbm:predict xgboost-booster matrix) nil)
+                       (cl-gbdt:wrong-backend-reference () t))
+                     "LightGBM's predict accepted an XGBoost booster"))
+               (testing "update-one-iteration rejects an XGBoost booster"
+                 (ok (handler-case
+                         (progn (cl-gbdt/lightgbm:update-one-iteration xgboost-booster) nil)
+                       (cl-gbdt:wrong-backend-reference () t))
+                     "LightGBM's update-one-iteration accepted an XGBoost booster")))
+          ;; Freed through the unified API, which dispatches on the concrete class and so
+          ;; reaches XGBoost's own frees. That these still work is the other half of the two
+          ;; refusals above: LightGBM's frees left both handles exactly as they found them.
+          (progn
+            (when xgboost-booster (cl-gbdt:free-booster xgboost-booster))
+            (when xgboost-set (cl-gbdt:free-dataset xgboost-set))
+            (cl-gbdt:close-backend xgboost)))))))

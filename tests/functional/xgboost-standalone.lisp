@@ -445,3 +445,62 @@ compared."
             (progn
               (cl-gbdt/xgboost:free-booster other-booster)
               (cl-gbdt/xgboost:free-dataset data))))))))
+
+;;; The mirror of tests/functional/lightgbm-standalone.lisp's
+;;; `layer-1-alone-refuses-a-wrong-kind-handle', for the same reason and against the same four
+;;; operations: `free-dataset', `free-booster', `predict' and `update-one-iteration' were
+;;; `defmethod's specialized on `xgboost-dataset' or `xgboost-booster' until Task 4 made them
+;;; the plain `defun's a standalone caller reaches here, and that specializer WAS the type
+;;; check. A `defun' takes whatever it is given, and every one of these C entry points
+;;; dereferences the pointer it is handed as a handle of the kind it expected. Measured with
+;;; the checks removed, all four assertions below redden and three of them do so through an
+;;; SBCL CORRUPTION WARNING -- memory faults at the DMatrix's own address, at #x10 and at NIL
+;;; -- rather than through anything either library reported. The image survived that run and
+;;; the sibling's did not, which is the spread `%check-handle-class' in src/xgboost/api.lisp
+;;; points at: what a wrong handle does in C is not a property a caller can be told to handle.
+;;;
+;;; The wrong-KIND half needs one backend and so belongs in this file, which has exactly one;
+;;; the wrong-BACKEND half needs both libraries in one image, which this file may not have, and
+;;; lives in tests/functional/xgboost-api.lisp as
+;;; `xgboost-api-layer-1-refuses-the-other-backends-handles'.
+
+(deftest layer-1-alone-refuses-a-wrong-kind-handle
+  (testing "every handle-taking operation checks the kind before any foreign call"
+    (with-open-backend (backend)
+      (multiple-value-bind (matrix label-vector) (fixture)
+        (let* ((data (cl-gbdt/xgboost:create-dataset backend matrix :label label-vector))
+               (booster (cl-gbdt/xgboost:create-booster backend data
+                                                        :parameters *parameters*)))
+          (unwind-protect
+               (progn
+                 ;; `handler-case', not rove's `signals', which does not reliably catch a
+                 ;; condition raised inside `restart-case'. On the condition TYPE throughout:
+                 ;; the report's wording is not what a caller dispatches on.
+                 (ok (handler-case (progn (cl-gbdt/xgboost:free-dataset booster) nil)
+                       (cl-gbdt/xgboost:wrong-backend-reference () t))
+                     "free-dataset accepted a booster")
+                 ;; And it refused before doing anything at all. `release-handle' marks a
+                 ;; handle released whichever way the free itself goes, so a kind check placed
+                 ;; after it would leave this booster unusable AND unfreeable while still
+                 ;; signalling -- an assertion on the condition alone cannot tell the two
+                 ;; orders apart. The cleanup form below is what then frees it for real.
+                 (ok (not (cl-gbdt/xgboost:handle-released-p booster))
+                     "free-dataset released the booster before refusing it")
+                 (ok (handler-case (progn (cl-gbdt/xgboost:free-booster data) nil)
+                       (cl-gbdt/xgboost:wrong-backend-reference () t))
+                     "free-booster accepted a dataset")
+                 (ok (handler-case (progn (cl-gbdt/xgboost:predict data matrix) nil)
+                       (cl-gbdt/xgboost:wrong-backend-reference () t))
+                     "predict accepted a dataset as its booster")
+                 ;; `update-one-iteration' is the one of the four whose check had to move
+                 ;; rather than merely appear: `%check-booster-datasets-live' and the
+                 ;; `booster-training-set' read both used to run first, and both take slots
+                 ;; off whatever they are handed, so a DATASET reached them and failed with a
+                 ;; bare CLOS no-applicable-method error instead of this typed condition. This
+                 ;; assertion is what pins the order.
+                 (ok (handler-case (progn (cl-gbdt/xgboost:update-one-iteration data) nil)
+                       (cl-gbdt/xgboost:wrong-backend-reference () t))
+                     "update-one-iteration accepted a dataset as its booster"))
+            (progn
+              (cl-gbdt/xgboost:free-booster booster)
+              (cl-gbdt/xgboost:free-dataset data))))))))

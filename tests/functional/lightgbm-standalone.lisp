@@ -308,3 +308,64 @@ compared."
             (progn
               (cl-gbdt/lightgbm:free-booster other-booster)
               (cl-gbdt/lightgbm:free-dataset data))))))))
+
+;;; Four of the operations this file calls -- `free-dataset', `free-booster', `predict' and
+;;; `update-one-iteration' -- were `defmethod's specialized on `lightgbm-dataset' or
+;;; `lightgbm-booster' until Task 4 made them the plain `defun's a standalone caller reaches
+;;; here. That specializer WAS the type check, and a `defun' takes whatever it is given: for a
+;;; while after the split each of the four handed a caller's pointer to a C entry point that
+;;; dereferences it as a handle of the kind it was expecting. Measured with the checks removed,
+;;; this test does not merely redden: the first assertion below faults at #xFFFFFFFFFFFFFFF8
+;;; inside `LGBM_DatasetFree', and the image then aborts -- glibc's "free(): invalid pointer",
+;;; SIGABRT -- when the cleanup form goes on to free that same booster properly, so the other
+;;; three assertions never get to run. `%check-handle-class' in src/lightgbm/api.lisp carries
+;;; the rest of that measurement.
+;;;
+;;; This test covers the wrong-KIND half -- a booster where a dataset was wanted and the other
+;;; way round -- which needs one backend, and so belongs in this file, which has exactly one.
+;;; The wrong-BACKEND half, an XGBoost handle reaching these same four, needs both libraries in
+;;; one image; that is the one thing this file may not have, so it lives in
+;;; tests/functional/lightgbm-api.lisp as
+;;; `lightgbm-api-layer-1-refuses-the-other-backends-handles'. The two halves are one defect and
+;;; the check that stops them is one `typep' either way; only the fixture differs.
+
+(deftest layer-1-alone-refuses-a-wrong-kind-handle
+  (testing "every handle-taking operation checks the kind before any foreign call"
+    (with-open-backend (backend)
+      (multiple-value-bind (matrix label-vector) (fixture)
+        (let* ((data (cl-gbdt/lightgbm:create-dataset backend matrix :label label-vector
+                                                      :parameters *parameters*))
+               (booster (cl-gbdt/lightgbm:create-booster backend data
+                                                         :parameters *parameters*)))
+          (unwind-protect
+               (progn
+                 ;; `handler-case', not rove's `signals', which does not reliably catch a
+                 ;; condition raised inside `restart-case'. On the condition TYPE throughout:
+                 ;; the report's wording is not what a caller dispatches on.
+                 (ok (handler-case (progn (cl-gbdt/lightgbm:free-dataset booster) nil)
+                       (cl-gbdt/lightgbm:wrong-backend-reference () t))
+                     "free-dataset accepted a booster")
+                 ;; And it refused before doing anything at all. `release-handle' marks a
+                 ;; handle released whichever way the free itself goes, so a kind check placed
+                 ;; after it would leave this booster unusable AND unfreeable while still
+                 ;; signalling -- an assertion on the condition alone cannot tell the two
+                 ;; orders apart. The cleanup form below is what then frees it for real.
+                 (ok (not (cl-gbdt/lightgbm:handle-released-p booster))
+                     "free-dataset released the booster before refusing it")
+                 (ok (handler-case (progn (cl-gbdt/lightgbm:free-booster data) nil)
+                       (cl-gbdt/lightgbm:wrong-backend-reference () t))
+                     "free-booster accepted a dataset")
+                 (ok (handler-case (progn (cl-gbdt/lightgbm:predict data matrix) nil)
+                       (cl-gbdt/lightgbm:wrong-backend-reference () t))
+                     "predict accepted a dataset as its booster")
+                 ;; `update-one-iteration' is the one of the four whose check had to move
+                 ;; rather than merely appear: `%check-booster-datasets-live' used to run
+                 ;; first, and it reads `booster-training-set' off whatever it is handed, so a
+                 ;; DATASET reached it and failed with a bare CLOS no-applicable-method error
+                 ;; instead of this typed condition. This assertion is what pins the order.
+                 (ok (handler-case (progn (cl-gbdt/lightgbm:update-one-iteration data) nil)
+                       (cl-gbdt/lightgbm:wrong-backend-reference () t))
+                     "update-one-iteration accepted a dataset as its booster"))
+            (progn
+              (cl-gbdt/lightgbm:free-booster booster)
+              (cl-gbdt/lightgbm:free-dataset data))))))))
