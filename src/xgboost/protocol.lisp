@@ -1,9 +1,19 @@
 ;;;; protocol.lisp --- XGBoost backend, Layer 2: all thirteen methods of the unified API's
 ;;;; protocol, each delegating its C calls to `cl-gbdt/src/xgboost/native'.
 ;;;;
-;;;; The backend's CLOS classes, the `initialize-backend'/`shutdown-backend' pair that opens
-;;;; and closes the shared library, and `slice-model' are Layer 1, not Layer 2, and live in
-;;;; `cl-gbdt/src/xgboost/classes' -- see that file's header for why.
+;;;; The backend's CLOS classes and the `initialize-backend'/`shutdown-backend' pair that opens
+;;;; and closes the shared library are Layer 1, not Layer 2, and live in
+;;;; `cl-gbdt/src/xgboost/classes' -- see that file's header for why. `slice-model' is Layer 1
+;;;; as well and lives in `cl-gbdt/src/xgboost/api' beside the other finished operations.
+;;;;
+;;;; A method here owns the PORTABLE CONTRACT and nothing else: the checks and translations
+;;;; that exist because a unified generic promised a portable argument. The procedure a
+;;;; finished operation performs is Layer 1 and lives in `cl-gbdt/src/xgboost/api' -- so far
+;;;; `make-dataset', which checks :MISSING and :CATEGORICAL-FEATURES, refuses :REFERENCE and
+;;;; :PARAMETERS, renders the feature-type strings and then calls that file's `create-dataset',
+;;;; and `free-dataset', whose whole body was procedure and delegates entirely. A caller who
+;;;; loaded `cl-gbdt/xgboost' alone reaches those functions with no method here in the image at
+;;;; all.
 
 (uiop:define-package #:cl-gbdt/src/xgboost/protocol
   (:use #:cl)
@@ -13,13 +23,7 @@
                 #:%check-xgboost-dataset
                 #:%check-unsupported
                 #:%create-dmatrix
-                #:%create-dmatrix-from-csr
-                #:%set-info-field
-                #:%set-group-field
-                #:%set-feature-names
-                #:%set-feature-types
                 #:%free-dmatrix
-                #:%free-dmatrix-unchecked
                 #:%dataset-num-rows
                 #:%dataset-num-features
                 #:%create-booster
@@ -52,6 +56,14 @@
                 #:xgboost-backend
                 #:xgboost-dataset
                 #:xgboost-booster)
+  ;; Layer 1's finished dataset operations. `free-dataset' is deliberately absent from this
+  ;; clause: the `:import-from #:cl-gbdt/src/protocol' below names a GENERIC FUNCTION of the
+  ;; same name, and the two are different symbols -- importing both would be a name conflict,
+  ;; not a re-import. The one method that needs the Layer 1 function names it in full.
+  (:import-from #:cl-gbdt/src/xgboost/api
+                #:%check-sparse-input
+                #:%creation-function-name
+                #:create-dataset)
   (:import-from #:cl-gbdt/src/backend
                 #:backend-name
                 #:backend-supports-p
@@ -126,10 +138,14 @@
 ;;;
 ;;; Every method below that reaches into libxgboost.so -- all thirteen protocol methods --
 ;;; wraps its entire body in `with-foreign-float-traps-masked'. `initialize-backend'
-;;; (`XGBoostVersion'), `shutdown-backend' (closing the library can run its own static
-;;; finalizers) and the public `slice-model' are wrapped exactly the same way in
-;;; `cl-gbdt/src/xgboost/classes', where they live; this rule is the backend's, not this
-;;; file's. See that macro's docstring in `cl-gbdt/src/foreign' for why: SBCL enables
+;;; (`XGBoostVersion') and `shutdown-backend' (closing the library can run its own static
+;;; finalizers) are wrapped exactly the same way in `cl-gbdt/src/xgboost/classes', and every
+;;; Layer 1 operation in `cl-gbdt/src/xgboost/api' -- `create-dataset', `free-dataset' and the
+;;; public `slice-model' -- the same way again, where they live; this rule is the backend's,
+;;; not this file's. A method that now delegates its procedure to `api' keeps its own wrap
+;;; regardless: the two nest harmlessly, and dropping it would make the wrap depend on what the
+;;; callee happens to do today.
+;;; See that macro's docstring in `cl-gbdt/src/foreign' for why: SBCL enables
 ;;; floating-point traps by default on x86-64 and not on aarch64, and XGBoost's own numeric
 ;;; code -- confirmed for the softmax normalization behind a `multi:softprob' prediction --
 ;;; was written and tested against the C convention of those traps staying masked.
@@ -139,40 +155,18 @@
 ;;; method body, not inside that file -- see its own header.
 
 ;;; ---------------------------------------------------------------------------
-;;; The `:sparse-input' gate
-
-(defun %check-sparse-input (backend)
-  "Signal `capability-unavailable' when BACKEND's `:sparse-input' capability reads false.
-
-Policy section 7 requires the operation itself to re-check a capability rather than trusting
-the caller to have asked `backend-supports-p' first, so a caller who never asked gets a typed
-condition instead of a missing-symbol crash -- the same rule `cl-gbdt/src/xgboost/classes''s
-`slice-model' follows for `:model-slicing'. Both operations this backend gates on
-`:sparse-input' call this -- `%dataset-pointer' below, on `make-dataset''s behalf, and
-`predict' -- so the two cannot come to disagree about which capability they name or which
-backend they blame.
-Mirrors `cl-gbdt/src/lightgbm/protocol''s function of the same name.
-
-Only a `csr-matrix' argument ever reaches this. A dense matrix needs neither
-`XGDMatrixCreateFromCSR' nor `XGBoosterPredictFromCSR' to exist, and must keep working on a
-library that has neither."
-  (unless (backend-supports-p backend :sparse-input)
-    (error 'capability-unavailable
-           :backend (backend-name backend) :capability :sparse-input)))
-
-;;; ---------------------------------------------------------------------------
 ;;; The `:missing-value' gate
 
 (defun %check-missing-value (backend)
   "Signal `capability-unavailable' when BACKEND's `:missing-value' capability reads false.
 
 Policy section 7 requires the operation itself to re-check a capability rather than trusting
-the caller to have asked `backend-supports-p' first -- the same rule `%check-sparse-input'
-above follows for `:sparse-input'. This backend answers true unconditionally, which does not
-make the check redundant: it is what keeps the two backends' code saying the same thing, so
-`make-dataset' here and `make-dataset' in `cl-gbdt/src/lightgbm/protocol' gate the argument
-identically and neither has to be read to know what the other does. Mirrors that file's
-function of the same name.
+the caller to have asked `backend-supports-p' first -- the same rule
+`cl-gbdt/src/xgboost/api''s `%check-sparse-input' follows for `:sparse-input'. This backend
+answers true unconditionally, which does not make the check redundant: it is what keeps the
+two backends' code saying the same thing, so `make-dataset' here and `make-dataset' in
+`cl-gbdt/src/lightgbm/protocol' gate the argument identically and neither has to be read to
+know what the other does. Mirrors that file's function of the same name.
 
 Only a non-NIL :MISSING ever reaches this. NIL means the backend's own default sentinel --
 what every caller has always got -- so a caller who passes nothing needs no capability at
@@ -189,11 +183,12 @@ all."
 false.
 
 Policy section 7 requires the operation itself to re-check a capability rather than trusting
-the caller to have asked `backend-supports-p' first -- the same rule `%check-sparse-input' and
-`%check-missing-value' above follow for their own. This backend answers true unconditionally,
-which does not make the check redundant: it is what keeps the two backends' code saying the
-same thing, so `make-dataset' here and `make-dataset' in `cl-gbdt/src/lightgbm/protocol' gate
-the argument identically and neither has to be read to know what the other does.
+the caller to have asked `backend-supports-p' first -- the same rule `%check-missing-value'
+above and `cl-gbdt/src/xgboost/api''s `%check-sparse-input' follow for their own. This backend
+answers true unconditionally, which does not make the check redundant: it is what keeps the
+two backends' code saying the same thing, so `make-dataset' here and `make-dataset' in
+`cl-gbdt/src/lightgbm/protocol' gate the argument identically and neither has to be read to
+know what the other does.
 
 Only a non-NIL :CATEGORICAL-FEATURES ever reaches this. NIL means what every caller has always
 got -- no feature-type vector attached at all, every column read as a quantity -- so a caller
@@ -214,9 +209,9 @@ Only a non-NIL OBJECTIVE ever reaches either error: NIL means what every caller 
 got, the library computing its own gradient, so a caller who passes nothing needs no
 capability and cannot fail the type check either.
 Policy section 7 requires the operation itself to re-check rather than trusting the caller to
-have asked `backend-supports-p' first -- the same rule `%check-sparse-input',
-`%check-missing-value' and `%check-categorical-features' above follow for their own. Mirrors
-`cl-gbdt/src/lightgbm/protocol''s function of the same name.
+have asked `backend-supports-p' first -- the same rule `%check-missing-value' and
+`%check-categorical-features' above, and `cl-gbdt/src/xgboost/api''s `%check-sparse-input',
+follow for their own. Mirrors `cl-gbdt/src/lightgbm/protocol''s function of the same name.
 
 Like LightGBM's, this backend's answer is PROBED rather than declared: `XGBoosterTrainOneIter'
 -- the entry point `train''s custom loop makes its update through -- is named in
@@ -266,8 +261,8 @@ Only a non-NIL EVALUATION ever reaches any of the three: NIL means what every ca
 always got, the library's own metrics and nothing else, so a caller who passes nothing needs
 no capability and cannot fail either check. Policy section 7 requires the operation itself to
 re-check rather than trusting the caller to have asked `backend-supports-p' first -- the same
-rule `%check-sparse-input', `%check-missing-value', `%check-categorical-features' and
-`%check-custom-objective' above follow for their own. Mirrors
+rule `%check-missing-value', `%check-categorical-features' and `%check-custom-objective'
+above, and `cl-gbdt/src/xgboost/api''s `%check-sparse-input', follow for their own. Mirrors
 `cl-gbdt/src/lightgbm/protocol''s function of the same name, down to the ARGUMENT string, so
 the two backends refuse the same value with the same report.
 
@@ -320,49 +315,6 @@ caller passed."
 ;;; ---------------------------------------------------------------------------
 ;;; Datasets
 
-(defun %creation-function-name (matrix)
-  "Return the name of the C entry point a DMatrix would be built from MATRIX with:
-`XGDMatrixCreateFromCSR' for a `csr-matrix', `XGDMatrixCreateFromDense' for anything
-`with-foreign-matrix' accepts.
-
-Separate from `%dataset-pointer', which returns the same string alongside the pointer it
-built, because `make-dataset' refuses :PARAMETERS before any pointer exists and its refusal
-has to name the call the caller's own arguments would have reached. Telling a caller who
-passed a `csr-matrix' about `XGDMatrixCreateFromDense''s config JSON names a function that
-call was never going to make."
-  (if (typep matrix 'csr-matrix) "XGDMatrixCreateFromCSR" "XGDMatrixCreateFromDense"))
-
-(defun %dataset-pointer (backend matrix missing)
-  "Return two values: the raw DMatrix pointer built from MATRIX, and the name of the C
-function that produced it, for the null-handle check `make-dataset' makes afterward.
-
-MATRIX is either a `csr-matrix' -- `XGDMatrixCreateFromCSR', through
-`%create-dmatrix-from-csr' -- or anything `with-foreign-matrix' accepts --
-`XGDMatrixCreateFromDense', through `%create-dmatrix'. MISSING, the value that means
-*missing*, or NIL for this backend's own default, reaches both entry points identically:
-it is a key in the creation config JSON either way, and means nothing different for a
-sparse matrix than for a dense one.
-
-The `:sparse-input' capability is re-checked on the sparse branch rather than assumed --
-`%check-sparse-input' above, which carries the reasoning. `:missing-value' is checked by
-`make-dataset' itself rather than here, since MISSING reaches both branches alike and there
-is no branch for its check to belong to.
-
-A `defun', not a second `make-dataset' method specialized on `csr-matrix' -- see
-`cl-gbdt/src/lightgbm/protocol''s function of the same name and purpose, which this
-mirrors, for why."
-  (let ((function-name (%creation-function-name matrix)))
-    (if (typep matrix 'csr-matrix)
-        (progn
-          (%check-sparse-input backend)
-          (values (%create-dmatrix-from-csr (csr-matrix-indptr matrix)
-                                            (csr-matrix-indices matrix)
-                                            (csr-matrix-values matrix)
-                                            (csr-matrix-num-columns matrix)
-                                            missing)
-                  function-name))
-        (values (%create-dmatrix matrix missing) function-name))))
-
 (defmethod make-dataset ((backend xgboost-backend) matrix
                           &key label weight group feature-names parameters reference missing
                             categorical-features)
@@ -373,11 +325,11 @@ FEATURE-NAMES with `XGDMatrixSetStrFeatureInfo' when supplied. See the `make-dat
 generic function's docstring for what each argument means.
 
 Signals `capability-unavailable' when MATRIX is a `csr-matrix' and this backend's
-`:sparse-input' capability reads false -- see `%dataset-pointer', which checks it. LABEL,
-WEIGHT, GROUP and FEATURE-NAMES behave identically either way: they are attached to the
-finished DMatrix by the calls below, which never see which entry point built it. REFERENCE
-and PARAMETERS are refused for a `csr-matrix' exactly as they are for a dense matrix, and
-for the same reasons, spelled out below.
+`:sparse-input' capability reads false -- see `cl-gbdt/src/xgboost/api''s `%dataset-pointer',
+which checks it. LABEL, WEIGHT, GROUP and FEATURE-NAMES behave identically either way: they
+are attached to the finished DMatrix by `create-dataset', which never sees which entry point
+built it. REFERENCE and PARAMETERS are refused for a `csr-matrix' exactly as they are for a
+dense matrix, and for the same reasons, spelled out below.
 
 MISSING, the value that means *missing*, becomes the `\"missing\"' key of whichever creation
 config JSON MATRIX's form reaches. It needs this backend's `:missing-value' capability, which
@@ -399,7 +351,7 @@ than trusting the caller to have asked, and it signals `unsupported-argument' na
 last column, or was named twice. NIL, the default, attaches no `\"feature_type\"' at all --
 exactly what every call sent before the argument existed, not a vector of `\"q\"'.
 
-The list is rendered from the CALLER's MATRIX, before `%dataset-pointer' builds anything, so a
+The list is rendered from the CALLER's MATRIX, before `create-dataset' builds anything, so a
 bad index signals with no DMatrix yet allocated and the range check is made against the same
 count `cl-gbdt/src/lightgbm/protocol''s `make-dataset' checks against. The attachment then has
 to wait until after creation, `XGDMatrixSetStrFeatureInfo' needing a handle -- which is also
@@ -431,25 +383,31 @@ drop one layer deeper, into C, instead of fixing it. The same holds for a `csr-m
 header documents `XGDMatrixCreateFromCSR''s config by cross-reference to
 `XGDMatrixCreateFromDense', so it is the same three keys either way, and the refusal below
 names whichever of the two the caller's own MATRIX would have reached -- see
-`%creation-function-name'. Either PARAMETERS or REFERENCE accepted and discarded here would
-let a caller move a working `make-dataset' call from LightGBM to XGBoost and get a dataset
-that looks fine but was not built the way the caller asked, which is exactly the failure
-mode this project keeps finding.
+`cl-gbdt/src/xgboost/api''s `%creation-function-name', which words that name where the calls
+it names are made. Either PARAMETERS or REFERENCE accepted and discarded here would let a
+caller move a working `make-dataset' call from LightGBM to XGBoost and get a dataset that
+looks fine but was not built the way the caller asked, which is exactly the failure mode this
+project keeps finding.
 
 Signals `foreign-call-error' when dataset creation reports success but writes a null
 handle -- a library-contract violation, but one every later call through this handle would
 otherwise dereference blindly.
 
-The raw DMatrix handle exists in C from the moment the creation call returns, but
-`make-handle' does not take ownership of it until the very end -- attaching LABEL, WEIGHT,
-GROUP, FEATURE-NAMES or the rendered feature types can each signal first (a wrong-length
-`:label' is the commonest way). `with-pointer-ownership' spans exactly that gap: the pointer
-is owned by nobody inside its body, and any exit that has not called TAKE-OWNERSHIP frees the
-raw DMatrix here instead of orphaning it.
-
 Signals `backend-not-open' before any of that when BACKEND is not open -- see
-`%check-backend-open'."
+`%check-backend-open'.
+
+The procedure itself is Layer 1 and lives in `cl-gbdt/src/xgboost/api''s `create-dataset':
+building the pointer, attaching LABEL, WEIGHT, GROUP, FEATURE-NAMES and the rendered feature
+types in that order, and the ownership dance that frees the raw DMatrix when one of those
+signals. What is left here is the portable contract -- the three capability checks above, the
+two refusals, and rendering CATEGORICAL-FEATURES into the feature-type strings this backend
+states them as. Everything the paragraphs above promise about a null handle and about the raw
+handle's ownership is that function's doing; see its own docstring."
   (with-foreign-float-traps-masked
+    ;; Checked here as well as inside `create-dataset', which cannot omit it either: this
+    ;; method's contract is that a closed BACKEND is refused BEFORE the argument checks
+    ;; below, so a caller who closed the backend and also passed a bad :CATEGORICAL-FEATURES
+    ;; index still gets `backend-not-open' rather than `unsupported-argument'.
     (%check-backend-open backend)
     (when missing
       (%check-missing-value backend))
@@ -466,28 +424,14 @@ Signals `backend-not-open' before any of that when BACKEND is not open -- see
              (%creation-function-name matrix)))
     ;; Rendered before creation, attached after: the renderer takes the caller's own MATRIX,
     ;; so a bad index signals here with nothing yet allocated, while the attachment needs a
-    ;; DMatrix handle to attach to. See this method's docstring.
+    ;; DMatrix handle to attach to. See this method's docstring. `create-dataset' below is
+    ;; handed the finished strings: they are this backend's own vocabulary by then, and Layer
+    ;; 1 neither knows nor translates them.
     (let ((feature-types (categorical-feature-types categorical-features matrix
                                                     (backend-name backend))))
-      (multiple-value-bind (dataset-pointer function-name)
-          (%dataset-pointer backend matrix missing)
-        (when (cffi:null-pointer-p dataset-pointer)
-          (error 'foreign-call-error
-                 :function-name function-name
-                 :code 0
-                 :message "reported success but returned a null dataset handle"))
-        (with-pointer-ownership (dataset-pointer #'%free-dmatrix-unchecked take-ownership)
-          (when label
-            (%set-info-field dataset-pointer "label" label))
-          (when weight
-            (%set-info-field dataset-pointer "weight" weight))
-          (when group
-            (%set-group-field dataset-pointer group))
-          (when feature-names
-            (%set-feature-names dataset-pointer feature-names))
-          (when feature-types
-            (%set-feature-types dataset-pointer feature-types))
-          (take-ownership 'xgboost-dataset backend :dataset))))))
+      (create-dataset backend matrix :label label :weight weight :group group
+                                     :feature-names feature-names
+                                     :missing missing :feature-types feature-types))))
 
 (defmethod dataset-num-rows ((dataset xgboost-dataset))
   "Return DATASET's row count, read via `XGDMatrixNumRow'."
@@ -506,19 +450,20 @@ Unlike every other operation in this file, this does not go through `handle-live
 and so does not signal `backend-not-open' when DATASET's backend has already been closed
 -- see `cl-gbdt/src/lightgbm/protocol''s `free-dataset' for why: this runs from
 `with-dataset''s `unwind-protect' cleanup form, and signalling there would replace whatever
-condition is already unwinding the stack instead of letting it propagate. So when the
-backend is closed, the handle is instead marked released without calling `XGDMatrixFree' --
-the shared library may no longer be mapped into the process, so that call cannot be
-trusted not to crash -- and a `warn' reports the foreign memory as leaked, since it is
-genuinely unreclaimable at that point."
+condition is already unwinding the stack instead of letting it propagate. It `warn's instead,
+the foreign memory being genuinely unreclaimable by then.
+
+This method's whole body was procedure -- there was no portable argument here to check or
+translate -- so all of it is `cl-gbdt/src/xgboost/api''s `free-dataset', which is where the
+closed-backend branch and the reasoning behind it now live."
   (with-foreign-float-traps-masked
-    (if (backend-open-p (handle-backend dataset))
-        (release-handle dataset (lambda (pointer) (%free-dmatrix pointer)))
-        (let ((already-released (handle-released-p dataset)))
-          (release-handle dataset (lambda (pointer) (declare (ignore pointer))))
-          (unless already-released
-            (warn "Freeing an XGBoost dataset after its backend was closed: the foreign ~
-                   dataset was not freed and its memory is leaked."))))))
+    ;; Named in full, not imported: `cl-gbdt/src/protocol''s `free-dataset', the generic
+    ;; this method is defined on, is a DIFFERENT symbol of the same name, and this file
+    ;; imports that one. The `with-foreign-float-traps-masked' wrap stays even though the
+    ;; callee establishes its own -- the masks nest harmlessly, and every `defmethod' in
+    ;; this file carries one by the rule the header states, checked by
+    ;; `tools/ci/check-float-traps.lisp'.
+    (cl-gbdt/src/xgboost/api:free-dataset dataset)))
 
 ;;; ---------------------------------------------------------------------------
 ;;; Training
