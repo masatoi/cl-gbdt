@@ -127,12 +127,13 @@ can now legitimately live in either. The layer-separation branch then added
 out of this scan's sight -- five already-wrapped forms went unchecked for exactly as long
 as this list was one entry short, which is the whole argument for keeping it current and
 the reason a file move should always be read as a question about this parameter.
-`backend.lisp' is still listed even
-though neither backend has one anymore: a future backend added under that older
-convention should still be caught by this scan rather than silently exempted from it. A
-backend split under some other naming convention entirely would still silently not be
-scanned -- extend this list rather than assume it stays accurate on its own, the same
-caveat `tools/ci/check-leaf-systems.lisp''s +LEAF-ROOTS+ carries for the same reason.")
+
+`backend.lisp' is still listed even though neither backend has one anymore: a future
+backend added under that older convention should still be caught by this scan rather than
+silently exempted from it. A backend split under some other naming convention entirely
+would still silently not be scanned -- extend this list rather than assume it stays
+accurate on its own, the same caveat `tools/ci/check-leaf-systems.lisp''s +LEAF-ROOTS+
+carries for the same reason.")
 
 (defun backend-files ()
   "Return the sorted list of pathnames matching any of +BACKEND-FILE-PATTERNS+."

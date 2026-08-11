@@ -3,6 +3,8 @@
 ;;;; Usage:
 ;;;;   ros run -- --non-interactive --load tools/ci/check-layer-separation.lisp
 ;;;;
+;;;; Run it from the repository root; see THE FLOOR below for what happens if you do not.
+;;;;
 ;;;; `cl-gbdt/lightgbm' and `cl-gbdt/xgboost' are each meant to be usable on their own,
 ;;;; without the unified API. A caller who wants only LightGBM's own surface -- its backend
 ;;;; class, the library's lifetime, `booster-eval' -- should not have to load the thirteen
@@ -20,24 +22,49 @@
 ;;;;
 ;;;; HOW IT DECIDES
 ;;;;
-;;;; It reads the FIRST `uiop:define-package' form of each file -- the same form ASDF's
-;;;; package-inferred-system infers dependencies from -- and walks the graph itself rather
-;;;; than asking ASDF, so it reports what the source says, not what a previously-loaded image
-;;;; happens to contain. Nothing is loaded, compiled or evaluated: `read', with `*read-eval*'
-;;;; bound to NIL so a stray `#.' cannot run code either, is all that touches the source.
+;;;; It reads the first DEFPACKAGE form of each file -- the same form, found the same way,
+;;;; that ASDF's package-inferred-system infers dependencies from -- and walks the graph
+;;;; itself rather than asking ASDF, so it reports what the source says, not what a
+;;;; previously-loaded image happens to contain. Nothing is loaded, compiled or evaluated:
+;;;; `read', with `*read-eval*' bound to NIL so a stray `#.' cannot run code either, is all
+;;;; that touches the source.
 ;;;;
-;;;; The FIRST form specifically, because each backend's `all.lisp' holds two: the internal
-;;;; aggregation ASDF names the system after, and the reviewed public package
+;;;; The first DEFPACKAGE form, not the first form: `package-form' skips whatever precedes
+;;;; it, exactly as ASDF's `stream-defpackage-form' does. Reading the first form
+;;;; unconditionally instead is fail-open, and was: one `(defparameter cl-user::*harmless* 1)'
+;;;; prepended to `src/lightgbm/native.lisp' took that closure from 13 packages to 8 and still
+;;;; printed PASS -- and went on printing PASS with a real `:import-from
+;;;; #:cl-gbdt/src/protocol' sitting in the package form it had stopped reading.
+;;;;
+;;;; The FIRST such form specifically, because each backend's `all.lisp' holds two: the
+;;;; internal aggregation ASDF names the system after, and the reviewed public package
 ;;;; (`cl-gbdt/lightgbm', `cl-gbdt/xgboost') carrying the export list. ASDF reads only the
 ;;;; first, so this reads only the first. The public package's name has no file of its own,
-;;;; which is why `package-file' returning NIL is a normal answer here rather than an error:
-;;;; a package with no file declares no dependencies to walk.
+;;;; which is why `package-file' returning NIL is a normal answer for a non-root name rather
+;;;; than an error: a package with no file declares no dependencies to walk.
 ;;;;
-;;;; `clause-packages' recognises the same clauses ASDF's own `package-dependencies' does --
-;;;; `:use', `:mix', `:reexport', `:use-reexport', `:mix-reexport', `:import-from',
-;;;; `:shadowing-import-from' and `:local-nicknames'. Recognising fewer would be the one bug
-;;;; that makes this check quietly vacuous: the missed clause is exactly the one a future
-;;;; violation would be written with, and a check that cannot see it still prints PASS.
+;;;; THE BARE NAME `cl-gbdt'
+;;;;
+;;;; `cl-gbdt' is a dependency like any other, and the most damaging one on this list: ASDF's
+;;;; `package-name-system' falls back to the same-named system, so `(:import-from #:cl-gbdt
+;;;; #:train)' in a Layer 1 file pulls in `cl-gbdt.asd''s primary system -- which is
+;;;; `src/all.lisp', which is the entire unified core. It is deliberately matched separately
+;;;; from the `cl-gbdt/' prefix, because it has no slash and a prefix test written with one
+;;;; discards it. That is not hypothetical: this check shipped with exactly that bug, and
+;;;; reported 13 packages and PASS on a tree where `(ql:quickload "cl-gbdt/lightgbm")'
+;;;; demonstrably defined `CL-GBDT/SRC/PROTOCOL' and `CL-GBDT/SRC/TRAINING-REPORT'.
+;;;;
+;;;; THE FLOOR
+;;;;
+;;;; A check that resolves paths against the current directory reports a clean PASS when it
+;;;; finds no files at all -- every closure is the root alone, no closure contains a Layer 2
+;;;; package, exit 0. Printing the closure sizes makes that visible to a human reading the
+;;;; output, but exit 0 is what CI consults, and a human is not who this runs for. So the
+;;;; sizes are a floor, not a note: a root whose file cannot be found, or whose closure is one
+;;;; package, fails. That covers being run from the wrong directory, a typo or rename in
+;;;; +LAYER-1-ROOTS+, and an `all.lisp' that moved -- each of which otherwise passes silently,
+;;;; and each of which turns the two failures above into loud ones too. The sibling
+;;;; `tools/ci/check-abi-blacklist.lisp' carries an empty-parse guard for the same reason.
 ;;;;
 ;;;; WHAT THIS CANNOT CATCH
 ;;;;
@@ -52,21 +79,38 @@
 ;;;;     `src/training/*.lisp' needs a line added here, and nothing but review notices if it
 ;;;;     does not get one.
 ;;;;   - A third backend, or any Layer 1 root not named in +LAYER-1-ROOTS+. Only the two roots
-;;;;     listed there are walked.
+;;;;     listed there are walked -- though a root that stops resolving now fails rather than
+;;;;     passing vacuously, per THE FLOOR.
 ;;;;   - Anything about the other direction, or about Layer 2's internal shape. Layer 2 is
 ;;;;     expected to depend on Layer 1; that is not a finding.
+;;;;   - A dependency introduced by a clause under a reader conditional this implementation
+;;;;     excludes. `read' honours `#+'/`#-' with this host's own features, which is the right
+;;;;     answer for the host ASDF will infer on, and the wrong one for every other host.
 
 (require :asdf)
+
+(define-condition malformed-source (error)
+  ((path :initarg :path :reader malformed-source-path)
+   (detail :initarg :detail :reader malformed-source-detail))
+  (:report (lambda (condition stream)
+             (format stream "~A: ~A" (malformed-source-path condition)
+                     (malformed-source-detail condition))))
+  (:documentation "Signalled when a file cannot be read the way package-inferred-system
+would read it -- no defpackage form at all, or a clause whose dependency contribution this
+script cannot classify. Both are reported as failures rather than skipped, because either
+one silently subtracts from what the walk can see."))
 
 (defparameter +layer-1-roots+
   '("cl-gbdt/src/lightgbm/all" "cl-gbdt/src/xgboost/all")
   "The package each backend's Layer 1 system depends on.
 
 `cl-gbdt.asd' names exactly these two as `cl-gbdt/lightgbm''s and `cl-gbdt/xgboost''s sole
-dependency, so walking them is walking those systems.")
+dependency, so walking them is walking those systems. Each must resolve to a real file --
+see `check-root' -- so a rename here fails loudly instead of checking nothing.")
 
 (defparameter +layer-2-packages+
-  '("cl-gbdt/src/protocol"
+  '("cl-gbdt"
+    "cl-gbdt/src/protocol"
     "cl-gbdt/src/training-report"
     "cl-gbdt/src/training/history"
     "cl-gbdt/src/training/early-stopping"
@@ -77,60 +121,149 @@ dependency, so walking them is walking those systems.")
 report, the history, the early-stopping watcher and the custom-metric entry, all of which
 exist to serve `train''s contract and none of which a backend-specific caller needs.
 
+`cl-gbdt' -- the bare name, no slash -- is the primary system in `cl-gbdt.asd', whose sole
+dependency is `cl-gbdt/src/all'. Depending on it pulls in the whole unified core in one
+clause, which makes it the worst entry on this list rather than an edge case; see this
+file's header for why it needs matching separately from the `cl-gbdt/' prefix.
+
 Aggregates such as `cl-gbdt/src/all' are deliberately absent: they reach these packages
-themselves, so the walk finds the violation through them without their being listed.")
+themselves, so the walk finds the violation through them without their being listed.
 
-(defun package-file (package-name)
-  "Return the pathname PACKAGE-NAME's file would have, or NIL when there is none.
+`cl-gbdt/src/config/categorical-features' and `cl-gbdt/src/config/prediction-shape' are
+absent deliberately too, and for a different reason: today only `protocol.lisp' reaches
+them, but `src/config/' is a mixed directory -- `feature-names', `objective' and
+`missing-value' from the same directory are already in both Layer 1 closures -- and those
+two files hold argument validation, not unified-API code. A Layer 1 file that grew a
+`:categorical-features' argument of its own would import one legitimately. They are Layer 2
+by current usage, not by content, and this list is about content.")
 
-A package named `cl-gbdt/src/lightgbm/all' lives in `src/lightgbm/all.lisp'. Names with no
-file -- `cl-gbdt/lightgbm', the public package defined as a second form in `all.lisp' -- have
-no dependencies of their own to walk."
+(defparameter +dependency-clauses+
+  '(:use :mix :reexport :use-reexport :mix-reexport)
+  "Clauses whose every argument names a package depended upon.")
+
+(defparameter +dependency-first-argument-clauses+
+  '(:import-from :shadowing-import-from)
+  "Clauses whose FIRST argument names a package depended upon; the rest name symbols.")
+
+(defparameter +dependency-free-clauses+
+  '(:nicknames :documentation :shadow :export :intern :unintern :recycle :size :lock)
+  "Clauses that introduce no dependency, enumerated rather than assumed.
+
+Listing these explicitly is what lets an UNRECOGNISED clause be a failure instead of a
+silent no-op. A clause nobody classified is precisely the one a future violation gets
+written with -- that is how `:local-nicknames' was missed on this script's first pass --
+so it fails and asks to be classified, the same posture ASDF takes when its own
+`package-dependencies' meets an option it does not know (a continuable error, which is
+fatal in a non-interactive build).
+
+`:lock' and `:size' are SBCL's and CL's respectively; ASDF classifies `:lock' the same
+way and does not know `:size' at all.")
+
+(defun package-relative-path (package-name)
+  "Return the repository-relative path PACKAGE-NAME's file would have, or NIL for a name
+that owns no file.
+
+A package named `cl-gbdt/src/lightgbm/all' lives in `src/lightgbm/all.lisp'. Two kinds of
+name own no file and yield NIL: the bare `cl-gbdt', which `cl-gbdt.asd' defines directly,
+and `cl-gbdt/lightgbm', the public package defined as a second form inside `all.lisp'."
   (let ((prefix "cl-gbdt/"))
     (when (and (> (length package-name) (length prefix))
                (string= prefix package-name :end2 (length prefix)))
-      (let ((path (format nil "~A.lisp" (subseq package-name (length prefix)))))
-        (probe-file (merge-pathnames path (uiop:getcwd)))))))
+      (format nil "~A.lisp" (subseq package-name (length prefix))))))
 
-(defun clause-packages (clause)
-  "Return the package designators CLAUSE names, as lower-case strings.
+(defun package-file (package-name)
+  "Return the existing pathname of PACKAGE-NAME's file, or NIL when there is none.
 
-The clause set is ASDF's, not a subset of it: `package-dependencies' in
-`asdf/package-inferred-system' derives a file's dependencies from exactly these, and a
-clause this function does not recognise is a dependency this check cannot see."
-  (flet ((name (designator) (string-downcase (string designator))))
-    (case (first clause)
-      ((:use :mix :reexport :use-reexport :mix-reexport) (mapcar #'name (rest clause)))
-      ((:import-from :shadowing-import-from) (list (name (second clause))))
-      ;; `(:local-nicknames (#:nick #:actual) ...)': the nickname is local to the file, the
-      ;; second element of each pair is the real package and the real dependency.
-      ((:local-nicknames) (loop :for pair :in (rest clause)
-                                :when (consp pair)
-                                  :collect (name (second pair))))
-      (t nil))))
+NIL means either that PACKAGE-NAME owns no file (see `package-relative-path') or that its
+file is not where the current directory says it should be. Those are the same answer here
+because a package with no readable file declares no dependencies this script can walk; for
+a name in +LAYER-1-ROOTS+ the difference matters and `check-root' refuses to treat NIL as
+an answer at all."
+  (let ((path (package-relative-path package-name)))
+    (when path
+      (probe-file (merge-pathnames path (uiop:getcwd))))))
+
+(defun defpackage-form-p (form)
+  "True when FORM is a `defpackage' or `uiop:define-package' form.
+
+Matched by symbol NAME rather than identity, so a form read into this script's reader
+package still matches -- the same convention `tools/ci/check-float-traps.lisp' uses. ASDF
+compares against `*defpackage-forms*', which holds exactly these two symbols."
+  (and (consp form)
+       (symbolp (car form))
+       (member (symbol-name (car form)) '("DEFPACKAGE" "DEFINE-PACKAGE") :test #'string=)))
 
 (defun package-form (file)
-  "Return FILE's first top-level form, read as data.
+  "Return FILE's first `defpackage'/`uiop:define-package' form, read as data.
+
+Skips whatever precedes it, exactly as ASDF's `stream-defpackage-form' does: a comment, a
+`declaim', an `in-package', anything. Taking the first form unconditionally instead is
+fail-open -- see this file's header for the measurement.
 
 `*read-eval*' is NIL so a `#.' in the source cannot run code, and `*package*' is CL-USER
 because every package designator in these forms is written `#:like-this' -- uninterned, and
 so harmless to read anywhere. `uiop:define-package' itself is the one qualified symbol, and
-`(require :asdf)' above has already made UIOP exist to intern it against."
+`(require :asdf)' above has already made UIOP exist to intern it against.
+
+Signals `malformed-source' when FILE contains no such form: package-inferred-system could
+not name a system after that file either, so silently returning no dependencies would hide
+a broken file behind a passing check."
   (with-open-file (stream file)
     (let ((*package* (find-package :cl-user))
           (*read-eval* nil))
-      (read stream nil nil))))
+      (or (loop :for form := (read stream nil nil)
+                :while form
+                :when (defpackage-form-p form)
+                  :return form)
+          (error 'malformed-source
+                 :path (enough-namestring file (uiop:getcwd))
+                 :detail "contains no defpackage form")))))
+
+(defun clause-packages (clause file)
+  "Return the package designators CLAUSE names, as lower-case strings.
+
+FILE is used only for reporting. Signals `malformed-source' for a clause head this script
+cannot classify -- see +DEPENDENCY-FREE-CLAUSES+ for why an unknown clause fails rather
+than contributing nothing."
+  (flet ((name (designator) (string-downcase (string designator))))
+    (let ((head (first clause)))
+      (cond
+        ((member head +dependency-clauses+) (mapcar #'name (rest clause)))
+        ((member head +dependency-first-argument-clauses+) (list (name (second clause))))
+        ;; `(:local-nicknames (#:nick #:actual) ...)': the nickname is local to the file, the
+        ;; second element of each pair is the real package and the real dependency.
+        ((eq head :local-nicknames)
+         (loop :for pair :in (rest clause)
+               :when (consp pair)
+                 :collect (name (second pair))))
+        ;; SBCL's `:implement' depends on every package it names -- implementing a package
+        ;; that does not exist yet is not meaningful -- and ASDF infers it the same way.
+        ((eq head :implement) (mapcar #'name (rest clause)))
+        ((member head +dependency-free-clauses+) nil)
+        (t (error 'malformed-source
+                  :path file
+                  :detail (format nil "unclassified package clause ~S; add it to ~
+                                       +DEPENDENCY-CLAUSES+ or +DEPENDENCY-FREE-CLAUSES+"
+                                  head)))))))
+
+(defun cl-gbdt-package-p (name)
+  "True when NAME is this project's own package: the bare `cl-gbdt' or anything under it.
+
+The bare name is tested separately because it carries no slash, and a `cl-gbdt/' prefix
+test -- which is what this script shipped with -- silently discards it. See this file's
+header."
+  (or (string= name "cl-gbdt")
+      (uiop:string-prefix-p "cl-gbdt/" name)))
 
 (defun direct-dependencies (package-name)
   "Return the cl-gbdt packages PACKAGE-NAME's own file declares."
   (let ((file (package-file package-name)))
     (when file
-      (let ((form (package-form file)))
-        (remove-if-not
-         (lambda (name) (uiop:string-prefix-p "cl-gbdt/" name))
-         (loop :for clause :in (cddr form)
-               :when (consp clause)
-                 :append (clause-packages clause)))))))
+      (let ((relative (enough-namestring file (uiop:getcwd))))
+        (remove-if-not #'cl-gbdt-package-p
+                       (loop :for clause :in (cddr (package-form file))
+                             :when (consp clause)
+                               :append (clause-packages clause relative)))))))
 
 (defun closure (root)
   "Return every cl-gbdt package reachable from ROOT, ROOT included, sorted."
@@ -142,26 +275,61 @@ so harmless to read anywhere. `uiop:define-package' itself is the one qualified 
       (walk root))
     (sort (loop :for name :being :the :hash-keys :of seen :collect name) #'string<)))
 
+(defparameter +minimum-closure-size+ 1
+  "A closure this size or smaller is treated as nothing having been walked.
+
+One means the root reached nothing at all, which no `all.lisp' in this repository can
+honestly produce -- each re-exports at least two packages. The floor is deliberately not
+set higher: a tighter bound would encode a guess about future file layout and fail on a
+legitimate reorganisation, while this one only ever fires on a walk that did not happen.")
+
 (defun check-root (root)
-  "Report on ROOT. Returns true when its closure contains no Layer 2 package.
+  "Report on ROOT. Returns true when ROOT resolves to a file, reaches a plausible number of
+packages, and reaches no Layer 2 package.
 
-The closure's size is printed on every run, passing or failing. A walker that stopped at the
-root would report 1 or 2 packages and then find no violation, printing the same PASS a real
-walk prints -- the count is what tells a reader which of the two just happened."
-  (let* ((reached (closure root))
-         (violations (remove-if-not (lambda (name) (member name +layer-2-packages+
-                                                           :test #'string=))
-                                    reached)))
-    (format t "~&~A: ~D packages in its closure~%" root (length reached))
-    (dolist (violation violations)
-      (format t "  FAIL: reaches ~A, which is Layer 2~%" violation))
-    (null violations)))
+The first two conditions are the floor described in this file's header: without them, a run
+that finds no files prints the same PASS a clean run prints, and exit 0 is what CI reads."
+  (let ((file (package-file root)))
+    (cond
+      ((null file)
+       (format t "~&~A: FAIL: no file for this package~@[ (expected ~A)~]~%"
+               root (package-relative-path root))
+       (format t "  Packages resolve against the current directory, which is ~A.~%"
+               (uiop:getcwd))
+       (format t "  Run this check from the repository root, or fix +LAYER-1-ROOTS+ if the ~
+                  file moved.~%")
+       nil)
+      (t
+       (let* ((reached (closure root))
+              (violations (remove-if-not (lambda (name)
+                                           (member name +layer-2-packages+ :test #'string=))
+                                         reached)))
+         (format t "~&~A: ~D packages in its closure~%" root (length reached))
+         (cond
+           ((<= (length reached) +minimum-closure-size+)
+            (format t "  FAIL: nothing was walked -- a closure of ~D cannot be right for an ~
+                       all.lisp.~%" (length reached))
+            nil)
+           (violations
+            (dolist (violation violations)
+              (format t "  FAIL: reaches ~A, which is Layer 2~%" violation))
+            nil)
+           (t t)))))))
 
-(let ((ok t))
-  (dolist (root +layer-1-roots+)
-    (unless (check-root root) (setf ok nil)))
-  (if ok
-      (format t "~&PASS: no Layer 1 system reaches the unified API~%")
-      (format t "~&FAIL: a Layer 1 system reaches the unified API~%"))
-  (finish-output)
-  (uiop:quit (if ok 0 1)))
+(handler-case
+    (let ((ok t))
+      (dolist (root +layer-1-roots+)
+        (unless (check-root root) (setf ok nil)))
+      ;; The failure line is deliberately vaguer than the passing one. Not every failure
+      ;; here is a layering violation -- an unresolvable root reaches nothing at all -- and a
+      ;; summary claiming Layer 2 was reached would be a false report of the finding above
+      ;; it.
+      (if ok
+          (format t "~&PASS: no Layer 1 system reaches the unified API~%")
+          (format t "~&FAIL: the Layer 1 / Layer 2 separation is not verified -- see above~%"))
+      (finish-output)
+      (uiop:quit (if ok 0 1)))
+  (malformed-source (condition)
+    (format t "~&FAIL: ~A~%" condition)
+    (finish-output)
+    (uiop:quit 1)))
