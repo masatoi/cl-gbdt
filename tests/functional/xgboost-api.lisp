@@ -33,7 +33,9 @@
   ;; trains its LightGBM booster through `cl-gbdt:train'.
   (:import-from #:cl-gbdt/src/lightgbm/unified)
   ;; Zero symbols, same reasoning as the `#:cl-gbdt' clause above: every reference below is
-  ;; package-qualified, `cl-gbdt/xgboost:evaluate-one-iteration'. Declared anyway so this file's
+  ;; package-qualified, `cl-gbdt/xgboost:evaluate-one-iteration' and, at the end of this file,
+  ;; the `create-dataset'/`create-booster'/`update-one-iteration'/`predict' quartet the
+  ;; agreement test drives its Layer 1 arm with. Declared anyway so this file's
   ;; dependency on Task 3's new public function is explicit rather than riding along on
   ;; `#:cl-gbdt/src/xgboost/unified' above, which exists here only for its load-time side
   ;; effects, not for anything it exports. Matches
@@ -46,7 +48,12 @@
                 #:predictions-separate-p
                 #:make-multiclass-dataset
                 #:predictions-match-labels-p
-                #:within-group-strictly-increasing-p))
+                #:within-group-strictly-increasing-p
+                ;; Adopted for `xgboost-api-create-booster-and-train-agree' at the end of
+                ;; this file, the only test here that weighs two boosters' answers about one
+                ;; matrix against each other rather than judging one booster's answers on
+                ;; their own.
+                #:predictions-agree-p))
 
 (in-package #:cl-gbdt/tests/functional/xgboost-api)
 
@@ -1511,3 +1518,106 @@ closed [BEGIN, END] reading would make this 6.")
                              'cl-gbdt/xgboost:gbdt-error)
                    "the condition hierarchy is reachable from this package too"))
           (cl-gbdt/xgboost:close-backend backend))))))
+
+;;; Task 8 (.superpowers/sdd/2026-08-11-layer1-training-slice): `create-booster' is the one
+;;; Layer 1 operation with no caller inside this library. `train' does NOT delegate to it --
+;;; see the comment at `train''s own `%create-booster' call in src/xgboost/protocol.lisp for
+;;; the two measured reasons, a `:reader'-only `best-iteration' slot that can only be set at
+;;; construction and an ownership form that has to free the raw pointer if the loop signals --
+;;; so the two are separate copies of one procedure: build the array of DMatrix handles with
+;;; the training set first, hand it to `XGBoosterCreate', apply the parameters afterwards one
+;;; `XGBoosterSetParam' at a time, drive `XGBoosterUpdateOneIter'. Every other test in this
+;;; file exercises `train''s copy and none exercises `create-booster''s alongside it, so
+;;; nothing held the two together; the pair could drift and both halves stay green. This is
+;;; what notices, and it is the exact counterpart of
+;;; `lightgbm-api-create-booster-and-train-agree' in tests/functional/lightgbm-api.lisp.
+;;;
+;;; It belongs with tests/functional/xgboost-standalone.lisp, which is what proves
+;;; `create-booster' trains at all -- but that file may not have the unified API in its image,
+;;; that absence being the very property it exists to prove, and this comparison needs both
+;;; APIs at once. So it lives here instead, in a file that already loads both. That file's
+;;; header carries the other half of this note.
+;;;
+;;; Both arms share *AGREEMENT-PARAMETERS* and the same round count, so the only difference
+;;; between them is which API drove the run -- XGBoost trains deterministically from fixed
+;;; data, so agreement here is exact equality up to *PREDICTION-TOLERANCE* rather than a
+;;; statistical claim. Neither arm passes dataset parameters, because there are none to pass:
+;;; XGBoost's `make-dataset' refuses :PARAMETERS outright and its `create-dataset' has no such
+;;; argument at all, so there is no XGBoost analogue of the sibling's *DATASET-PARAMETERS*.
+
+(defparameter *agreement-rounds* 5
+  "Boosting iterations each arm of `xgboost-api-create-booster-and-train-agree' runs --
+`train''s :NUM-ROUNDS on one side, the `update-one-iteration' loop's count on the other.")
+
+(defparameter *agreement-parameters*
+  '(:objective "binary:logistic" :max-depth 2 :eta 0.5 :min-child-weight 0 :verbosity 0)
+  "*BOOSTER-PARAMETERS* plus `min_child_weight 0', for
+`xgboost-api-create-booster-and-train-agree' alone.
+
+The added key is what makes that test's control able to move, and it is XGBoost's own
+counterpart of the `min_data_in_leaf 1' the sibling LightGBM tests need for the same
+eight-row fixture: measured against the vendored library with *BOOSTER-PARAMETERS* as it
+stands, the default `min_child_weight' of 1 exceeds the hessian sum either child of this
+fixture has after the FIRST round, so rounds 2 through 5 can find no permitted split and each
+add a stump worth zero. Both arms then agree -- but they would agree just as well had they run
+one round, and a sixth iteration moves nothing, so the control could not distinguish a working
+`update-one-iteration' from a no-op one. With `min_child_weight 0' every round does work and
+it can.
+
+Not folded into *BOOSTER-PARAMETERS* itself: the guard tests that use it only need a booster
+to exist, and changing the model they train to serve a test at the end of this file would put
+their measurements out of date for no gain.")
+
+(deftest xgboost-api-create-booster-and-train-agree
+  (with-backend-library (:xgboost)
+    (multiple-value-bind (matrix label-vector) (make-separable-dataset)
+      (let ((backend (cl-gbdt:open-backend :xgboost))
+            (layer-1-dataset nil)
+            (layer-1-booster nil)
+            (unified-dataset nil)
+            (unified-booster nil))
+        (unwind-protect
+             (progn
+               ;; Layer 1: the dataset, the booster and the loop, all from `cl-gbdt/xgboost'.
+               (setf layer-1-dataset (cl-gbdt/xgboost:create-dataset
+                                      backend matrix :label label-vector))
+               (setf layer-1-booster (cl-gbdt/xgboost:create-booster
+                                      backend layer-1-dataset
+                                      :parameters *agreement-parameters*))
+               (dotimes (round *agreement-rounds*)
+                 (cl-gbdt/xgboost:update-one-iteration layer-1-booster))
+               ;; Layer 2: the same fixture, the same parameters, the same number of rounds,
+               ;; through the unified API -- whose `train' builds and advances its booster
+               ;; itself rather than calling either function above.
+               (setf unified-dataset (cl-gbdt:make-dataset
+                                      backend matrix :label label-vector))
+               (setf unified-booster (cl-gbdt:train backend unified-dataset
+                                                    :num-rounds *agreement-rounds*
+                                                    :parameters *agreement-parameters*))
+               (let ((layer-1-predictions (cl-gbdt/xgboost:predict layer-1-booster matrix))
+                     (unified-predictions (cl-gbdt:predict unified-booster matrix)))
+                 (testing "create-booster plus an update loop trains the model train trains"
+                   (ok (predictions-agree-p layer-1-predictions unified-predictions)
+                       (format nil "layer 1: ~S~%unified: ~S"
+                               layer-1-predictions unified-predictions)))
+                 (testing "and the agreement is not vacuous: one more iteration changes it"
+                   ;; The control, scoped to what it actually guards: were
+                   ;; `update-one-iteration' a no-op on both paths -- or this fixture and
+                   ;; these parameters ones where every round produced the same model -- the
+                   ;; assertion above would hold for two boosters that had never trained. It
+                   ;; does not extend to a `create-booster' that ignored its parameters:
+                   ;; measured, dropping :PARAMETERS from the Layer 1 arm reddens the
+                   ;; assertion above and leaves this one green, which is the right division
+                   ;; of labour between them. A sixth iteration on the Layer 1 booster has to
+                   ;; move its predictions away from the five-round unified run.
+                   (cl-gbdt/xgboost:update-one-iteration layer-1-booster)
+                   (ok (not (predictions-agree-p
+                             (cl-gbdt/xgboost:predict layer-1-booster matrix)
+                             unified-predictions))
+                       "a sixth iteration moved the predictions"))))
+          (progn
+            (when layer-1-booster (cl-gbdt/xgboost:free-booster layer-1-booster))
+            (when unified-booster (cl-gbdt:free-booster unified-booster))
+            (when layer-1-dataset (cl-gbdt/xgboost:free-dataset layer-1-dataset))
+            (when unified-dataset (cl-gbdt:free-dataset unified-dataset))
+            (cl-gbdt:close-backend backend)))))))
