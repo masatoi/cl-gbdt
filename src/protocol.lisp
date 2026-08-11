@@ -679,14 +679,35 @@ this is checked before any foreign call rather than left to crash -- and
 ;;; Each is specialized on a base class -- `backend', `dataset', `booster' -- so a real
 ;;; backend's own method is strictly more specific and always wins. Nothing here fires in
 ;;; a program that loaded `cl-gbdt/<backend>/unified'.
+;;;
+;;; The six that take keyword arguments spell out the generic function's own keyword list
+;;; rather than saying `&key &allow-other-keys', and that is load-bearing rather than
+;;; cosmetic. Being specialized on a base class does not make a fallback INAPPLICABLE next
+;;; to a backend's own method -- the base class is a superclass of the concrete one, so
+;;; both are applicable and only the ORDER differs -- and CLHS 7.6.5 says a generic
+;;; function accepts every keyword as soon as ANY applicable method has
+;;; `&allow-other-keys'. Written that way, these fallbacks silently widened six of the
+;;; thirteen generics for every caller: `(make-dataset backend matrix :totally-bogus 1)'
+;;; stopped signalling and started returning a dataset, a typo'd `:parameters' or
+;;; `:num-rounds' trained a differently configured model with nothing raised, and SBCL's
+;;; compile-time warning for a misspelled keyword went quiet. Listing the keywords
+;;; explicitly satisfies the congruence rules -- the list IS the generic function's own,
+;;; which is also what every concrete method declares -- and moves the set of accepted
+;;; keywords nowhere. Adding a keyword to one of these generics means adding it here too.
 
-(defmethod make-dataset ((backend backend) matrix &key &allow-other-keys)
-  (declare (ignore matrix))
+(defmethod make-dataset ((backend backend) matrix
+                         &key label weight group feature-names parameters reference missing
+                           categorical-features)
+  (declare (ignore matrix label weight group feature-names parameters reference missing
+                   categorical-features))
   (error 'backend-methods-not-loaded
          :backend (backend-name backend) :generic-function 'make-dataset))
 
-(defmethod train ((backend backend) dataset &key &allow-other-keys)
-  (declare (ignore dataset))
+(defmethod train ((backend backend) dataset
+                  &key valid-sets num-rounds parameters record-history early-stopping
+                       objective evaluation)
+  (declare (ignore dataset valid-sets num-rounds parameters record-history early-stopping
+                   objective evaluation))
   (error 'backend-methods-not-loaded
          :backend (backend-name backend) :generic-function 'train))
 
@@ -715,24 +736,26 @@ this is checked before any foreign call rather than left to crash -- and
          :backend (backend-name (handle-backend booster))
          :generic-function 'update-one-iteration))
 
-(defmethod predict ((booster booster) matrix &key &allow-other-keys)
-  (declare (ignore matrix))
+(defmethod predict ((booster booster) matrix &key kind num-iteration missing)
+  (declare (ignore matrix kind num-iteration missing))
   (error 'backend-methods-not-loaded
          :backend (backend-name (handle-backend booster))
          :generic-function 'predict))
 
-(defmethod save-model ((booster booster) path &key &allow-other-keys)
-  (declare (ignore path))
+(defmethod save-model ((booster booster) path &key num-iteration)
+  (declare (ignore path num-iteration))
   (error 'backend-methods-not-loaded
          :backend (backend-name (handle-backend booster))
          :generic-function 'save-model))
 
-(defmethod model-to-string ((booster booster) &key &allow-other-keys)
+(defmethod model-to-string ((booster booster) &key num-iteration)
+  (declare (ignore num-iteration))
   (error 'backend-methods-not-loaded
          :backend (backend-name (handle-backend booster))
          :generic-function 'model-to-string))
 
-(defmethod feature-importance ((booster booster) &key &allow-other-keys)
+(defmethod feature-importance ((booster booster) &key kind num-iteration)
+  (declare (ignore kind num-iteration))
   (error 'backend-methods-not-loaded
          :backend (backend-name (handle-backend booster))
          :generic-function 'feature-importance))
