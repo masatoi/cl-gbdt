@@ -44,8 +44,9 @@
 ;;;;     discriminate: XGBoost sets it to the MAXIMUM column count over the whole creation
 ;;;;     array, so a five-column validation set beside a two-column training set makes it 5
 ;;;;     where the same booster built without that entry has 2. Measured against the vendored
-;;;;     library, from both sides -- see
-;;;;     `layer-1-alone-puts-a-validation-set-in-the-creation-array'.
+;;;;     library, from both sides, and read off the same pair of validation sets attached in
+;;;;     both orders so that the claim is about EVERY entry rather than about one -- see
+;;;;     `layer-1-alone-puts-every-validation-set-in-the-creation-array'.
 ;;;;
 ;;;; What this file deliberately does NOT assert: that Layer 1's `create-booster' plus a loop
 ;;;; of `update-one-iteration' produces the same model as `cl-gbdt:train'. That comparison
@@ -133,10 +134,11 @@ The width is the whole point and the only thing this fixture is for. XGBoost's `
 is the maximum column count over the array of DMatrix handles `XGBoosterCreate' was given, so
 a booster that put this dataset in that array reports 5 and one that dropped it reports 2 --
 the one property of a validation set that is observable from outside this library at all. See
-`layer-1-alone-puts-a-validation-set-in-the-creation-array', which reads that number back two
-different ways, and note that a booster built over this pair CANNOT BE TRAINED: XGBoost
-requires `num_feature' to EQUAL the training matrix's own column count for an update, which is
-why this fixture cannot simply be folded into `validation-fixture' above."
+`layer-1-alone-puts-every-validation-set-in-the-creation-array', which reads that number back
+two different ways off this dataset attached both before and after `validation-fixture''s, and
+note that a booster built over this pair CANNOT BE TRAINED: XGBoost requires `num_feature' to
+EQUAL the training matrix's own column count for an update, which is why this fixture cannot
+simply be folded into `validation-fixture' above."
   (let ((matrix (make-array '(4 5) :element-type 'double-float))
         (label-vector (make-array 4 :element-type 'double-float)))
     (dotimes (row 4)
@@ -296,13 +298,19 @@ compared."
                    ;; handed the TRAINING DMatrix alone -- see `update-one-iteration' in
                    ;; src/xgboost/api.lisp -- so the foreign call has no occasion to look at a
                    ;; validation set at all, and its status code cannot report on one.
-                   ;; `%check-booster-datasets-live' is what does the noticing, and its own
-                   ;; docstring carries why the check must precede the call rather than follow
-                   ;; it. This holds `create-booster''s retained snapshot to the standard
-                   ;; `train''s already meets: a booster refuses to advance once anything it
-                   ;; was built over has been freed. Measured by mutation: dropping that
-                   ;; function's `booster-validation-sets' loop reddens this assertion and
-                   ;; nothing else in this file.
+                   ;; `%check-booster-datasets-live' is what does the noticing, and what it is
+                   ;; worth differs between the two kinds of dataset it walks. For the TRAINING
+                   ;; set the check averts undefined behaviour, that pointer being handed
+                   ;; straight to C. For a VALIDATION set it does not: measured by mutation,
+                   ;; and deterministically rather than flakily, dropping that function's
+                   ;; `booster-validation-sets' loop reddens this assertion and nothing else in
+                   ;; this file, and the update then returns NORMALLY -- XGBoost holds its own
+                   ;; reference to each DMatrix it was given at creation, so freeing this one
+                   ;; here did not leave the library holding a dangling pointer. What the check
+                   ;; buys for a validation set is a uniform promise instead, and the one
+                   ;; `train''s own boosters already keep: a booster refuses to advance once
+                   ;; ANYTHING it was built over has been freed, rather than silently carrying
+                   ;; on with a dependency the caller has destroyed.
                    (cl-gbdt/xgboost:free-dataset valid-2)
                    ;; `handler-case', not rove's `signals', which does not reliably catch a
                    ;; condition raised inside `restart-case'.
@@ -315,65 +323,94 @@ compared."
                 (cl-gbdt/xgboost:free-dataset valid-1)
                 (cl-gbdt/xgboost:free-dataset data)))))))))
 
-(deftest layer-1-alone-puts-a-validation-set-in-the-creation-array
-  (testing "a :valid-sets entry reaches XGBoosterCreate's own handle array, not just the booster"
+(deftest layer-1-alone-puts-every-validation-set-in-the-creation-array
+  (testing "every :valid-sets entry reaches XGBoosterCreate's handle array, wherever it sits"
     (with-open-backend (backend)
       (multiple-value-bind (matrix label-vector) (fixture)
-        (multiple-value-bind (wide-matrix wide-label-vector) (wide-validation-fixture)
-          (let* ((data (cl-gbdt/xgboost:create-dataset backend matrix :label label-vector))
-                 (wide-valid (cl-gbdt/xgboost:create-dataset backend wide-matrix
-                                                             :label wide-label-vector))
-                 ;; Two boosters over one training set, differing in nothing but whether
-                 ;; WIDE-VALID was passed. Neither is trained: `num_feature' is settled by
-                 ;; `XGBoosterCreate' from the array it was given, and the assertions below
-                 ;; read it off boosters of zero rounds precisely so that nothing about the
-                 ;; MODEL can be confused for the property under test.
-                 (attached (cl-gbdt/xgboost:create-booster backend data
-                                                           :valid-sets (list wide-valid)
-                                                           :parameters *parameters*))
-                 (unattached (cl-gbdt/xgboost:create-booster backend data
-                                                             :parameters *parameters*)))
-            (unwind-protect
-                 (progn
-                   ;; `num_feature' read from the inference side, where XGBoost requires it
-                   ;; to be at least the matrix's own column count. ATTACHED accepts five
-                   ;; columns, so its `num_feature' is 5 -- a number that exists nowhere in
-                   ;; its training set and could only have come from WIDE-VALID being in the
-                   ;; creation array.
-                   (ok (equal '(4 1)
-                              (array-dimensions (cl-gbdt/xgboost:predict attached wide-matrix)))
-                       "the attached booster predicts a five-column matrix")
-                   ;; The control, and the half that makes the assertion above discriminating
-                   ;; rather than merely true: the same call on the booster built WITHOUT
-                   ;; that entry is refused by the library, `num_feature' there being the
-                   ;; training set's own 2. Measured by mutation: a `create-booster' that
-                   ;; hands `%create-booster' the training pointer alone makes both boosters
-                   ;; this one, reddening the first and third assertions here and leaving
-                   ;; every other assertion in this file -- the whole retention test above
-                   ;; included, which is what shows the two tests are not doing one job
-                   ;; twice -- green.
-                   (ok (handler-case
-                           (progn (cl-gbdt/xgboost:predict unattached wide-matrix) nil)
-                         (cl-gbdt/xgboost:foreign-call-error () t))
-                       "the unattached booster refused a five-column matrix")
-                   ;; The same number read from the training side, and the reason this test
-                   ;; needs its own boosters at all: an update requires `num_feature' to
-                   ;; EQUAL the training matrix's column count, so ATTACHED cannot be
-                   ;; trained. XGBoost says so in as many words -- measured, the message is
-                   ;; "Check failed: learner_model_param_.num_feature ==
-                   ;; p_fmat->Info().num_col_ (5 vs. 2)". A caller who attaches a validation
-                   ;; set of a different width therefore gets a booster that predicts but
-                   ;; never trains; that is XGBoost's rule, not this wrapper's, and it is
-                   ;; asserted here so that it is recorded rather than rediscovered.
-                   (ok (handler-case
-                           (progn (cl-gbdt/xgboost:update-one-iteration attached) nil)
-                         (cl-gbdt/xgboost:foreign-call-error () t))
-                       "a five-column validation set left the booster trainable"))
-              (progn
-                (cl-gbdt/xgboost:free-booster attached)
-                (cl-gbdt/xgboost:free-booster unattached)
-                (cl-gbdt/xgboost:free-dataset wide-valid)
-                (cl-gbdt/xgboost:free-dataset data)))))))))
+        (multiple-value-bind (narrow-matrix narrow-label-vector) (validation-fixture)
+          (multiple-value-bind (wide-matrix wide-label-vector) (wide-validation-fixture)
+            (let* ((data (cl-gbdt/xgboost:create-dataset backend matrix :label label-vector))
+                   (narrow-valid (cl-gbdt/xgboost:create-dataset backend narrow-matrix
+                                                                 :label narrow-label-vector))
+                   (wide-valid (cl-gbdt/xgboost:create-dataset backend wide-matrix
+                                                               :label wide-label-vector))
+                   ;; Three boosters over one training set, differing in nothing but their
+                   ;; :VALID-SETS. The first two hold the SAME PAIR in the two possible
+                   ;; ORDERS, which is what makes this test about the whole array rather than
+                   ;; about one entry: WIDE-VALID is the number-carrying one, so an attach
+                   ;; loop that kept only the head would lose it from WIDE-LAST and one that
+                   ;; kept only the tail would lose it from WIDE-FIRST. A single-entry test
+                   ;; catches neither -- measured, and the reason this test has this shape:
+                   ;; `(cons train-data-pointer (last valid-set-pointers))' in
+                   ;; `create-booster', a version that silently discards every validation set
+                   ;; but the last, left every assertion in both this file and
+                   ;; tests/functional/xgboost-api.lisp green while it attached one entry
+                   ;; here. `create-booster''s docstring promises "the training set first,
+                   ;; then each validation set in the order given"; this is the assertion
+                   ;; that holds it to the word EACH, as the sibling's index-2 `booster-eval'
+                   ;; read does for LightGBM.
+                   ;;
+                   ;; None of the three is trained: `num_feature' is settled by
+                   ;; `XGBoosterCreate' from the array it was given, and the assertions below
+                   ;; read it off boosters of zero rounds precisely so that nothing about the
+                   ;; MODEL can be confused for the property under test.
+                   (wide-first (cl-gbdt/xgboost:create-booster
+                                backend data :valid-sets (list wide-valid narrow-valid)
+                                :parameters *parameters*))
+                   (wide-last (cl-gbdt/xgboost:create-booster
+                               backend data :valid-sets (list narrow-valid wide-valid)
+                               :parameters *parameters*))
+                   (unattached (cl-gbdt/xgboost:create-booster backend data
+                                                               :parameters *parameters*)))
+              (unwind-protect
+                   (progn
+                     ;; `num_feature' read from the inference side, where XGBoost requires it
+                     ;; to be at least the matrix's own column count. Both boosters accept
+                     ;; five columns, so both have a `num_feature' of 5 -- a number that
+                     ;; exists neither in their training set nor in NARROW-VALID, and so one
+                     ;; that could only have come from WIDE-VALID reaching the creation array
+                     ;; from the position it was given in.
+                     (ok (equal '(4 1)
+                                (array-dimensions
+                                 (cl-gbdt/xgboost:predict wide-first wide-matrix)))
+                         "the booster given the wide set FIRST predicts five columns")
+                     (ok (equal '(4 1)
+                                (array-dimensions
+                                 (cl-gbdt/xgboost:predict wide-last wide-matrix)))
+                         "the booster given the wide set LAST predicts five columns")
+                     ;; The control, and the half that makes the two assertions above
+                     ;; discriminating rather than merely true: the same call on the booster
+                     ;; built with no validation set at all is refused by the library,
+                     ;; `num_feature' there being the training set's own 2. Measured by
+                     ;; mutation: a `create-booster' that hands `%create-booster' the training
+                     ;; pointer alone makes all three boosters this one, reddening the two
+                     ;; assertions above and the one below while leaving every other assertion
+                     ;; in this file -- the whole retention test included, which is what shows
+                     ;; the two tests are not doing one job twice -- green.
+                     (ok (handler-case
+                             (progn (cl-gbdt/xgboost:predict unattached wide-matrix) nil)
+                           (cl-gbdt/xgboost:foreign-call-error () t))
+                         "the unattached booster refused a five-column matrix")
+                     ;; The same number read from the training side, and the reason this test
+                     ;; needs its own boosters at all: an update requires `num_feature' to
+                     ;; EQUAL the training matrix's column count, so neither booster above can
+                     ;; be trained. XGBoost says so in as many words -- measured, the message
+                     ;; is "Check failed: learner_model_param_.num_feature ==
+                     ;; p_fmat->Info().num_col_ (5 vs. 2)". A caller who attaches a validation
+                     ;; set of a different width therefore gets a booster that predicts but
+                     ;; never trains; that is XGBoost's rule, not this wrapper's, and it is
+                     ;; asserted here so that it is recorded rather than rediscovered.
+                     (ok (handler-case
+                             (progn (cl-gbdt/xgboost:update-one-iteration wide-first) nil)
+                           (cl-gbdt/xgboost:foreign-call-error () t))
+                         "a five-column validation set left the booster trainable"))
+                (progn
+                  (cl-gbdt/xgboost:free-booster wide-first)
+                  (cl-gbdt/xgboost:free-booster wide-last)
+                  (cl-gbdt/xgboost:free-booster unattached)
+                  (cl-gbdt/xgboost:free-dataset wide-valid)
+                  (cl-gbdt/xgboost:free-dataset narrow-valid)
+                  (cl-gbdt/xgboost:free-dataset data))))))))))
 
 (deftest layer-1-alone-refuses-a-bad-validation-set-entry
   (testing "create-booster checks each :valid-sets entry before any foreign call"
