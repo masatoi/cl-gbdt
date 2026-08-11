@@ -412,7 +412,24 @@ for a freed BOOSTER, and `backend-not-open' when its backend has since been clos
 from the `handle-live-pointer' inside `%check-lightgbm-booster', which is why the kind check
 is first: a handle this backend never built is the wrong handle whatever its state, and
 `%check-booster-datasets-live' would otherwise read slots off it before anything questioned
-what it was."
+what it was.
+
+PRECEDENCE, when more than one of those is true at once. BOOSTER's own state is examined
+before its datasets', so a fault in the booster or its backend WINS over a freed training set.
+Measured against the vendored library, before and after the kind check moved ahead of
+`%check-booster-datasets-live':
+
+  booster freed + training set freed   was `released-handle-error' naming the DATASET,
+                                       is `released-handle-error' naming the BOOSTER
+  training set freed + backend closed  was `released-handle-error' naming the dataset,
+                                       is `backend-not-open'
+  training set freed alone             `released-handle-error' naming the dataset, unchanged
+
+Both changes are deliberate and neither is a widening: a released handle, or a shared library
+`close-backend' has unmapped, is a more fundamental fault than the dataset a still-usable
+booster points at, and reporting the dataset while the booster itself was unusable named the
+lesser of the two. `cl-gbdt/src/xgboost/api''s `update-one-iteration' records the same
+precedence and one further row of its own."
   (with-foreign-float-traps-masked
     (let ((pointer (%check-lightgbm-booster booster "update-one-iteration's booster argument")))
       (%check-booster-datasets-live booster)

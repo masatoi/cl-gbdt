@@ -153,37 +153,23 @@ library that has neither."
 (defun %check-handle-class (object class noun argument-description)
   "Signal `wrong-backend-reference' unless OBJECT is of type CLASS, reporting NOUN as the kind
 of handle that was wanted and ARGUMENT-DESCRIPTION as the argument OBJECT came from. Returns
-no useful value, and reads nothing else about OBJECT at all.
-Mirrors `cl-gbdt/src/lightgbm/api''s function of the same name, which carries the same
-reasoning for its own library's two frees.
+no useful value, and reads nothing else about OBJECT at all. `free-dataset' and `free-booster'
+are the only callers, and this is what stands between a wrong-kind pointer and `XGDMatrixFree'
+or `XGBoosterFree' dereferencing it -- both were `defmethod's specialized on the concrete
+class before the Layer 1 split, and that specializer was this check.
 
-`free-dataset' and `free-booster' are the only callers, and this exists because neither can
-use `%check-xgboost-dataset' or `%check-xgboost-booster', which every other operation in this
-file uses: both of those end in `handle-live-pointer', so both REQUIRE the handle to be
-unreleased and its backend still open. Those are precisely the two states a free is documented
-to tolerate -- freeing an already-freed handle is a no-op, and freeing one whose backend has
-since been closed `warn's the memory leaked and returns -- so routing either free through a
-check that signals `released-handle-error' or `backend-not-open' would break both promises for
-the sake of the kind check. This checks the kind and nothing else.
+The mirror of `cl-gbdt/src/lightgbm/api''s function of the same name, WHICH CARRIES THE WHOLE
+ARGUMENT: why the two frees cannot use `%check-xgboost-dataset' or `%check-xgboost-booster'
+the way every other operation in this file does, why a `typep' against the CONCRETE class
+subsumes kind and backend where `cl-gbdt/src/handle''s `%check-handle-kind' needs a pair, why
+NOUN is passed rather than derived from CLASS, and what the two libraries measurably did
+without the check. None of it is repeated here: the reasoning is identical for both backends
+-- it is about the shape of a free and of a package-inferred dependency edge, not about either
+C API -- so a second copy would be a second thing to keep true. Read it there.
 
-A `typep' against the CONCRETE class subsumes kind and backend together, where
-`cl-gbdt/src/handle''s `%check-handle-kind' needs a (kind, backend-name) pair: that function
-takes the backend-agnostic `dataset'/`booster' classes because `native.lisp' may not depend on
-`classes.lisp' (policy section 11), whereas this file already names `xgboost-dataset' and
-`xgboost-booster' -- and an `xgboost-dataset' is by construction a dataset built by XGBoost,
-no other backend's operations building one.
-
-NOUN is passed rather than derived from CLASS: `wrong-backend-reference''s report reads \"~A
-must be a ~A built by ~A itself\", where the class name would make it \"must be an
-xgboost-dataset built by XGBOOST\" and say the backend twice.
-
-Without this the two frees hand the pointer of whatever handle they are given straight to
-`XGDMatrixFree' or `XGBoosterFree'. Measured with the check removed, an `xgboost-booster'
-passed to `free-dataset' faulted inside the library; see the sibling's function of the same
-name for the fuller measurement and for why the SPREAD of outcomes, rather than any one of
-them, is the argument for checking in Lisp. Both frees were `defmethod's specialized on the
-concrete class before the Layer 1 split, and that specializer was this check; a plain `defun'
-makes it here or nowhere."
+The two definitions are structurally forced even though the reasoning is not: each names its
+own backend's concrete classes, and `src/lightgbm/api.lisp' and this file depend on neither
+each other nor any shared file that could hold one copy."
   (unless (typep object class)
     (error 'wrong-backend-reference
            :backend :xgboost
@@ -500,7 +486,28 @@ nothing, so `%check-xgboost-booster' is the only thing between such a handle's p
 `handle-live-pointer' inside `%check-xgboost-booster', which is why the kind check is first: a
 handle this backend never built is the wrong handle whatever its state, and both
 `%check-booster-datasets-live' and the `booster-training-set' read below would otherwise take
-slots off it before anything questioned what it was."
+slots off it before anything questioned what it was.
+
+PRECEDENCE, when more than one of those is true at once. BOOSTER's own state is examined
+before its datasets' and before the question of whether it has one, so a fault in the booster
+or its backend WINS over both. Measured against the vendored library, before and after the
+kind check moved ahead of the other two:
+
+  booster freed + training set freed   was `released-handle-error' naming the DATASET,
+                                       is `released-handle-error' naming the BOOSTER
+  training set freed + backend closed  was `released-handle-error' naming the dataset,
+                                       is `backend-not-open'
+  freed booster with NO training set   was `missing-training-set',
+                                       is `released-handle-error'
+  training set freed alone             `released-handle-error' naming the dataset, unchanged
+
+All three changes are deliberate and none is a widening: a released handle, or a shared
+library `close-backend' has unmapped, is a more fundamental fault than the dataset a
+still-usable booster points at, and the third row was reading a RELEASED booster's slots in
+order to discover that it had no training set -- answering a question about a handle that
+should not have been read at all. The third row has no LightGBM counterpart, that backend
+having no `missing-training-set' guard; `cl-gbdt/src/lightgbm/api''s `update-one-iteration'
+records the other two."
   (with-foreign-float-traps-masked
     (let ((booster-pointer
             (%check-xgboost-booster booster "update-one-iteration's booster argument")))

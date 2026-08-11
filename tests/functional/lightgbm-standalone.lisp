@@ -355,6 +355,12 @@ compared."
                  (ok (handler-case (progn (cl-gbdt/lightgbm:free-booster data) nil)
                        (cl-gbdt/lightgbm:wrong-backend-reference () t))
                      "free-booster accepted a dataset")
+                 ;; The same order, pinned for the other free too. Nothing below covers it:
+                 ;; `predict' and `update-one-iteration' check the kind BEFORE they check
+                 ;; liveness, so a DATA wrongly marked released here would still answer
+                 ;; `wrong-backend-reference' and leave both of them green.
+                 (ok (not (cl-gbdt/lightgbm:handle-released-p data))
+                     "free-booster released the dataset before refusing it")
                  (ok (handler-case (progn (cl-gbdt/lightgbm:predict data matrix) nil)
                        (cl-gbdt/lightgbm:wrong-backend-reference () t))
                      "predict accepted a dataset as its booster")
