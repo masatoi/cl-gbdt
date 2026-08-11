@@ -1,6 +1,9 @@
-;;;; protocol.lisp --- LightGBM backend, Layer 2: the classes and all fifteen methods of
-;;;; the unified API's protocol, each delegating its C calls to
-;;;; `cl-gbdt/src/lightgbm/native'.
+;;;; protocol.lisp --- LightGBM backend, Layer 2: all thirteen methods of the unified
+;;;; API's protocol, each delegating its C calls to `cl-gbdt/src/lightgbm/native'.
+;;;;
+;;;; The backend's CLOS classes and the `initialize-backend'/`shutdown-backend' pair that
+;;;; opens and closes the shared library are Layer 1, not Layer 2, and live in
+;;;; `cl-gbdt/src/lightgbm/classes' -- see that file's header for why.
 
 (uiop:define-package #:cl-gbdt/src/lightgbm/protocol
   (:use #:cl)
@@ -40,27 +43,15 @@
                 #:%feature-importance-type
                 #:%booster-num-features
                 #:%feature-importance
-                #:%read-evaluation
-                #:*library-env-var*
-                #:*vendor-library-directory*
-                #:*vendor-library-pattern*
-                #:*default-library-name*
-                #:*required-symbols*
-                #:*optional-symbols*
-                #:*provided-capabilities*)
+                #:%read-evaluation)
+  (:import-from #:cl-gbdt/src/lightgbm/classes
+                #:lightgbm-backend
+                #:lightgbm-dataset
+                #:lightgbm-booster)
   (:import-from #:cl-gbdt/src/backend
-                #:backend
                 #:backend-name
-                #:backend-library-path
-                #:backend-version
-                #:backend-capabilities
                 #:backend-supports-p
-                #:backend-open-p
-                #:probe-foreign-symbols
-                #:probe-capabilities
-                #:register-backend
-                #:initialize-backend
-                #:shutdown-backend)
+                #:backend-open-p)
   (:import-from #:cl-gbdt/src/protocol
                 #:make-dataset
                 #:dataset-num-rows
@@ -76,10 +67,8 @@
                 #:evaluation
                 #:free-booster)
   (:import-from #:cl-gbdt/src/handle
-                #:dataset
-                #:booster
-                #:make-handle
                 #:release-handle
+                #:with-pointer-ownership
                 #:handle-live-pointer
                 #:handle-released-p
                 #:handle-backend
@@ -88,7 +77,6 @@
                 #:%resolve-best-num-iteration
                 #:%reject-best-num-iteration)
   (:import-from #:cl-gbdt/src/conditions
-                #:missing-foreign-symbols
                 #:foreign-call-error
                 #:unsupported-argument
                 #:capability-unavailable)
@@ -122,8 +110,6 @@
                 #:check-metric-name-collision
                 #:make-metric-name-pin
                 #:pin-metric-name)
-  (:import-from #:cl-gbdt/src/library
-                #:resolve-and-load-library)
   (:import-from #:cl-gbdt/src/foreign
                 #:with-foreign-float-traps-masked)
   (:export #:lightgbm-backend))
@@ -134,8 +120,10 @@
 ;;; Floating-point trap safety
 ;;;
 ;;; Every method below that reaches into lib_lightgbm.so -- all thirteen protocol
-;;; methods plus `initialize-backend' and `shutdown-backend', which load and unload
-;;; the library itself -- wraps its entire body in `with-foreign-float-traps-masked'.
+;;; methods -- wraps its entire body in `with-foreign-float-traps-masked'.
+;;; `initialize-backend' and `shutdown-backend', which load and unload the library
+;;; itself, are wrapped exactly the same way in `cl-gbdt/src/lightgbm/classes', where
+;;; they live; this rule is the backend's, not this file's.
 ;;; See that macro's docstring in `cl-gbdt/src/foreign' for why, and
 ;;; `cl-gbdt/src/xgboost/protocol''s identical commentary for the concrete case
 ;;; (XGBoost's `multi:softprob' softmax) that surfaced this: LightGBM has not tripped
@@ -146,111 +134,6 @@
 ;;; method below makes goes through `cl-gbdt/src/lightgbm/native', but the mask is
 ;;; established here, around the whole method body, not inside that file -- see its
 ;;; own header.
-
-;;; ---------------------------------------------------------------------------
-;;; The backend class
-
-(defclass lightgbm-backend (backend)
-  ((foreign-library :initform nil
-                     :accessor %lightgbm-foreign-library
-                     :documentation "The `cffi:foreign-library' `initialize-backend'
-loaded, kept so `shutdown-backend' can close exactly this one."))
-  (:documentation "A connection to the LightGBM shared library, implementing
-cl-gbdt's unified backend protocol."))
-
-(register-backend :lightgbm 'lightgbm-backend)
-
-;;; Handles must be subclassed per backend, not shared. `make-dataset' and `train'
-;;; dispatch on the backend, so they would be unambiguous either way -- but
-;;; `dataset-num-rows', `predict', `free-dataset' and `free-booster' dispatch on the
-;;; HANDLE. A method on the core `dataset' class would be replaced, not specialized,
-;;; the moment the XGBoost backend defined its own, and the failure would be a
-;;; LightGBM dataset silently answering through XGBoost's C API.
-
-(defclass lightgbm-dataset (dataset) ()
-  (:documentation "A dataset held by the LightGBM library."))
-
-(defclass lightgbm-booster (booster) ()
-  (:documentation "A booster held by the LightGBM library."))
-
-(defmethod initialize-backend ((backend lightgbm-backend) &key path)
-  "Load LightGBM's shared library and record its capabilities on BACKEND.
-
-Discovery order: PATH, then *library-env-var*, then the vendored directory under
-*vendor-library-directory*, then CFFI's system library search for
-*default-library-name* -- see `resolve-and-load-library' for the exact rules and
-the conditions each failure mode signals.
-
-Once a library is loaded, every name in *required-symbols* must resolve via
-`probe-foreign-symbols', passed the `cffi:foreign-library' just loaded as
-:LIBRARY -- see that function's docstring for the SBCL caveat: it validates
-the library argument but, on this platform, cannot actually scope the symbol
-search to it -- or this signals `missing-foreign-symbols' -- the
-version-mismatch check that function exists for. Only once that required check
-has passed does this probe *optional-symbols* via `probe-capabilities' and
-record the result on `backend-capabilities' -- unlike a missing required
-symbol, a missing optional one never signals; it only makes
-`backend-supports-p' answer NIL for the capability that symbol backs.
-*provided-capabilities* goes to the same call as :PROVIDED, recording the
-capabilities this backend provides unconditionally -- nothing is probed for
-them, because the C functions they need are in *required-symbols* and the probe
-above has already passed.
-
-LightGBM's C API has no runtime version query, so `backend-version' is left
-NIL rather than guessed --
-and, unlike `cl-gbdt/src/xgboost/protocol''s `initialize-backend', this never
-calls `cl-gbdt/src/version''s `check-backend-version': with nothing to read, a
-call here could never confirm compatibility, only ever warn on every single
-open, which is not a check worth leaving in. See `*lightgbm-version-range*''s
-docstring for the fuller explanation of this asymmetry between the backends.
-
-`open-backend' only marks a backend open -- and so only calls `close-backend' on
-it -- once this method returns normally. So if the symbol probe (or anything
-else after the library loads) signals, the library is closed right here before
-the condition propagates; otherwise it would stay mapped into the process with
-BACKEND dropped and nothing left able to close it."
-  (with-foreign-float-traps-masked
-    (multiple-value-bind (library library-path)
-        (resolve-and-load-library backend :path path
-                                           :env-var *library-env-var*
-                                           :directory *vendor-library-directory*
-                                           :pattern *vendor-library-pattern*
-                                           :default-name *default-library-name*)
-      (let ((succeeded nil))
-        (unwind-protect
-             (progn
-               (setf (%lightgbm-foreign-library backend) library)
-               (setf (backend-library-path backend) library-path)
-               (let ((missing (probe-foreign-symbols *required-symbols* :library library)))
-                 (when missing
-                   (error 'missing-foreign-symbols
-                          :backend (backend-name backend) :names missing)))
-               (setf (backend-capabilities backend)
-                     (probe-capabilities *optional-symbols*
-                                         :provided *provided-capabilities*
-                                         :library library))
-               (setf (backend-version backend) nil)
-               (setf succeeded t))
-          (unless succeeded
-            (handler-case (cffi:close-foreign-library library)
-              (error () nil))
-            (setf (%lightgbm-foreign-library backend) nil)))
-        backend))))
-
-(defmethod shutdown-backend ((backend lightgbm-backend))
-  "Close LightGBM's shared library.
-
-`cffi:close-foreign-library' drops cl-gbdt's own reference and, on platforms
-where the C loader honors `dlclose' reference counting, may unmap the library;
-POSIX does not guarantee an actual unload, so this cannot promise the library's
-code and data are gone from the process afterward -- only that cl-gbdt no
-longer holds it open."
-  (with-foreign-float-traps-masked
-    (let ((library (%lightgbm-foreign-library backend)))
-      (when library
-        (cffi:close-foreign-library library)
-        (setf (%lightgbm-foreign-library backend) nil)))
-    backend))
 
 ;;; ---------------------------------------------------------------------------
 ;;; The `:sparse-input' gate
@@ -602,8 +485,9 @@ been closed -- see `%reference-pointer'.
 The raw dataset handle exists in C from the moment the creation call returns, but
 `make-handle' does not take ownership of it until the very end -- attaching LABEL,
 WEIGHT, GROUP or FEATURE-NAMES can each signal first (a wrong-length `:label' is the
-commonest way). OWNED tracks whether `make-handle' ran; when it did not, the raw dataset
-is freed here instead of orphaned.
+commonest way). `with-pointer-ownership' spans exactly that gap: the pointer is owned by
+nobody inside its body, and any exit that has not called TAKE-OWNERSHIP frees the raw
+dataset here instead of orphaning it.
 
 Signals `backend-not-open' before any of that when BACKEND is not open -- see
 `%check-backend-open'."
@@ -638,23 +522,16 @@ Signals `backend-not-open' before any of that when BACKEND is not open -- see
                  :function-name function-name
                  :code 0
                  :message "reported success but returned a null dataset handle"))
-        (let ((owned nil))
-          (unwind-protect
-               (progn
-                 (when label
-                   (%set-info-field dataset-pointer "label" label))
-                 (when weight
-                   (%set-info-field dataset-pointer "weight" weight))
-                 (when group
-                   (%set-group-field dataset-pointer group))
-                 (when feature-names
-                   (%set-feature-names dataset-pointer feature-names))
-                 (prog1
-                     (make-handle 'lightgbm-dataset dataset-pointer backend :dataset)
-                   (setf owned t)))
-            (unless owned
-              (handler-case (%free-dataset-unchecked dataset-pointer)
-                (error () nil)))))))))
+        (with-pointer-ownership (dataset-pointer #'%free-dataset-unchecked take-ownership)
+          (when label
+            (%set-info-field dataset-pointer "label" label))
+          (when weight
+            (%set-info-field dataset-pointer "weight" weight))
+          (when group
+            (%set-group-field dataset-pointer group))
+          (when feature-names
+            (%set-feature-names dataset-pointer feature-names))
+          (take-ownership 'lightgbm-dataset backend :dataset))))))
 
 (defmethod dataset-num-rows ((dataset lightgbm-dataset))
   "Return DATASET's row count, read via `LGBM_DatasetGetNumData'."
@@ -896,7 +773,8 @@ report it still returns as its secondary value has an empty series list over the
 NUM-ROUNDS -- `training-report-from-history' over an empty history, the same shape a run
 with `metric=none' produces.
 
-A read that fails propagates, freeing the booster through the OWNED dance below rather
+A read that fails propagates, freeing the booster through the `with-pointer-ownership'
+form below rather
 than returning a report whose series are shorter than the run: a short series is
 indistinguishable from one a buggy loop recorded, and \"one value per iteration\" is the
 invariant a caller reading the report relies on.
@@ -950,8 +828,8 @@ so the caller's Lisp arithmetic runs under the masked convention on x86-64 as we
 aarch64 -- `(/ 1.0d0 0.0d0)' yields infinity there rather than signalling
 `division-by-zero'. Nothing about that is specific to a custom objective; it is simply where
 in `train' the caller's code now runs. A condition the caller's function does signal
-propagates out of `train' through the OWNED dance below, freeing the raw booster handle
-rather than orphaning it, exactly as a mid-loop foreign failure does.
+propagates out of `train' through the `with-pointer-ownership' form below, freeing the raw
+booster handle rather than orphaning it, exactly as a mid-loop foreign failure does.
 
 An objective that frees a handle this loop depends on, or closes BACKEND, is caught rather
 than crashed on: `%recheck-train-datasets' re-runs this method's own opening checks the
@@ -1025,9 +903,10 @@ Free the result with `free-booster' or wrap it in `with-booster'.
 
 The raw booster handle exists in C from the moment `LGBM_BoosterCreate' returns,
 but `make-handle' does not take ownership of it until the very end -- a stale
-VALID-SETS entry or a mid-loop failure can each signal first. OWNED tracks
-whether `make-handle' ran; when it did not, the raw booster is freed here
-instead of orphaned.
+VALID-SETS entry or a mid-loop failure can each signal first.
+`with-pointer-ownership' spans exactly that gap: the pointer is owned by nobody
+inside its body, and any exit that has not called TAKE-OWNERSHIP frees the raw
+booster here instead of orphaning it.
 
 Signals `backend-not-open' before any of that when BACKEND is not open -- see
 `%check-backend-open'."
@@ -1078,62 +957,55 @@ Signals `backend-not-open' before any of that when BACKEND is not open -- see
               (%create-booster train-data-pointer
                                (%parameter-string
                                 (if objective (objective-parameters parameters) parameters)))))
-        (let ((owned nil))
-          (unwind-protect
-               (progn
-                 (%add-valid-data booster-pointer valid-set-pointers)
-                 ;; ROUND is 1-based, which is the numbering `observe-iteration' answers
-                 ;; `watcher-best-iteration' in and the report publishes.
-                 (loop :for round :from 1 :to num-rounds
-                       :do (if objective
-                               (let ((scores (%booster-predictions
-                                              booster-pointer 0
-                                              (%dataset-num-rows train-data-pointer))))
-                                 (multiple-value-bind (grad hess) (funcall objective scores)
-                                   ;; Before anything else this iteration does, and before the
-                                   ;; next one reads TRAIN-DATA-POINTER again: the caller's
-                                   ;; own code has just run and may have freed a handle this
-                                   ;; loop holds a raw pointer to.
-                                   (setf train-data-pointer
-                                         (%recheck-train-datasets backend dataset valid-sets))
-                                   (check-objective-result grad hess
-                                                           (array-dimension scores 0)
-                                                           (array-dimension scores 1))
-                                   (%update-one-iteration-custom booster-pointer grad hess)))
-                               (%update-one-iteration booster-pointer))
-                           (incf completed-rounds)
-                           (let ((entries (when record-history
-                                            (%read-evaluation booster-pointer dataset-count))))
-                             ;; Appended after every library entry, and before the push and
-                             ;; the watcher, so the history and the watcher see one list.
-                             (when evaluation
-                               (multiple-value-bind (custom pointer)
-                                   (%custom-evaluation-entries
-                                    backend evaluation booster-pointer dataset valid-sets
-                                    row-counts entries (= round 1) name-pin)
-                                 (setf entries (append entries custom)
-                                       train-data-pointer pointer)))
-                             (when record-history
-                               (push entries history))
-                             (when (and watcher (observe-iteration watcher entries round))
-                               (return))))
-                 (let* ((best-iteration (and watcher (watcher-best-iteration watcher)))
-                        (report (training-report-from-history
-                                 (reverse history) completed-rounds dataset-names
-                                 :best-iteration best-iteration
-                                 :best-score (and watcher (watcher-best-score watcher))
-                                 :early-stopped-p (and watcher (watcher-stopped-p watcher)
-                                                   (< completed-rounds num-rounds)))))
-                   (multiple-value-prog1
-                       (values (make-handle 'lightgbm-booster booster-pointer backend :booster
-                                            :training-set dataset
-                                            :validation-sets valid-sets
-                                            :best-iteration best-iteration)
-                               report)
-                     (setf owned t))))
-            (unless owned
-              (handler-case (%free-booster-unchecked booster-pointer)
-                (error () nil)))))))))
+        (with-pointer-ownership (booster-pointer #'%free-booster-unchecked take-ownership)
+          (%add-valid-data booster-pointer valid-set-pointers)
+          ;; ROUND is 1-based, which is the numbering `observe-iteration' answers
+          ;; `watcher-best-iteration' in and the report publishes.
+          (loop :for round :from 1 :to num-rounds
+                :do (if objective
+                        (let ((scores (%booster-predictions
+                                       booster-pointer 0
+                                       (%dataset-num-rows train-data-pointer))))
+                          (multiple-value-bind (grad hess) (funcall objective scores)
+                            ;; Before anything else this iteration does, and before the
+                            ;; next one reads TRAIN-DATA-POINTER again: the caller's
+                            ;; own code has just run and may have freed a handle this
+                            ;; loop holds a raw pointer to.
+                            (setf train-data-pointer
+                                  (%recheck-train-datasets backend dataset valid-sets))
+                            (check-objective-result grad hess
+                                                    (array-dimension scores 0)
+                                                    (array-dimension scores 1))
+                            (%update-one-iteration-custom booster-pointer grad hess)))
+                        (%update-one-iteration booster-pointer))
+                    (incf completed-rounds)
+                    (let ((entries (when record-history
+                                     (%read-evaluation booster-pointer dataset-count))))
+                      ;; Appended after every library entry, and before the push and
+                      ;; the watcher, so the history and the watcher see one list.
+                      (when evaluation
+                        (multiple-value-bind (custom pointer)
+                            (%custom-evaluation-entries
+                             backend evaluation booster-pointer dataset valid-sets
+                             row-counts entries (= round 1) name-pin)
+                          (setf entries (append entries custom)
+                                train-data-pointer pointer)))
+                      (when record-history
+                        (push entries history))
+                      (when (and watcher (observe-iteration watcher entries round))
+                        (return))))
+          (let* ((best-iteration (and watcher (watcher-best-iteration watcher)))
+                 (report (training-report-from-history
+                          (reverse history) completed-rounds dataset-names
+                          :best-iteration best-iteration
+                          :best-score (and watcher (watcher-best-score watcher))
+                          :early-stopped-p (and watcher (watcher-stopped-p watcher)
+                                            (< completed-rounds num-rounds)))))
+            (values (take-ownership 'lightgbm-booster backend :booster
+                                    :training-set dataset
+                                    :validation-sets valid-sets
+                                    :best-iteration best-iteration)
+                    report)))))))
 
 (defmethod update-one-iteration ((booster lightgbm-booster))
   "Advance BOOSTER by one boosting iteration via `LGBM_BoosterUpdateOneIter'.
@@ -1366,8 +1238,8 @@ documentation -- since PATH names a model, not a dataset.
 
 The raw booster handle exists in C from the moment `LGBM_BoosterCreateFromModelfile'
 returns, but `make-handle' does not take ownership of it until it also succeeds --
-mirroring `cl-gbdt/src/xgboost/protocol''s `load-model', which has the identical
-OWNED/`unwind-protect' pattern for the same reason: nothing here guarantees
+mirroring `cl-gbdt/src/xgboost/protocol''s `load-model', which reaches for the same
+`with-pointer-ownership' macro for the same reason: nothing here guarantees
 `make-handle' cannot signal, and a raw handle it never took ownership of would
 otherwise be orphaned rather than freed.
 
@@ -1385,14 +1257,8 @@ see `%check-backend-open'."
                :function-name "LGBM_BoosterCreateFromModelfile"
                :code 0
                :message "reported success but returned a null booster handle"))
-      (let ((owned nil))
-        (unwind-protect
-             (prog1
-                 (make-handle 'lightgbm-booster booster-pointer backend :booster)
-               (setf owned t))
-          (unless owned
-            (handler-case (%free-booster-unchecked booster-pointer)
-              (error () nil))))))))
+      (with-pointer-ownership (booster-pointer #'%free-booster-unchecked take-ownership)
+        (take-ownership 'lightgbm-booster backend :booster)))))
 
 (defmethod model-to-string ((booster lightgbm-booster) &key num-iteration)
   "Return BOOSTER's model as a string via `LGBM_BoosterSaveModelToString'.

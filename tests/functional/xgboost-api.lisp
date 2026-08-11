@@ -11,14 +11,16 @@
 (uiop:define-package #:cl-gbdt/tests/functional/xgboost-api
   (:use #:cl #:rove)
   (:import-from #:cl-gbdt)
-  ;; Zero symbols: nothing below refers to this package by name. Its only job is to
-  ;; run at load time and register :xgboost with `open-backend' -- see
-  ;; `register-backend' near the top of src/xgboost/protocol.lisp. Without this
-  ;; clause, package-inferred-system has no edge to that file at all, and
+  ;; Zero symbols: nothing below refers to this package by name. Its job is to run at load
+  ;; time, registering :xgboost with `open-backend' -- see `register-backend' near the top
+  ;; of src/xgboost/classes.lisp -- and defining XGBoost's methods on `cl-gbdt''s generics.
+  ;; Without this clause, package-inferred-system has no edge to those files at all, and
   ;; `(cl-gbdt:open-backend :xgboost)' below would signal `unknown-backend'. Depends on
-  ;; `all', the leaf `cl-gbdt/xgboost' itself depends on, rather than `protocol'
-  ;; directly, so this exercises the same load path a real caller would.
-  (:import-from #:cl-gbdt/src/xgboost/all)
+  ;; `unified', the aggregation the leaf `cl-gbdt/xgboost/unified' itself depends on, rather
+  ;; than `protocol' directly, so this exercises the same load path a real caller would. Not
+  ;; `all': since the Layer 1 split that is Layer 1 alone, and `train' below would find no
+  ;; applicable method.
+  (:import-from #:cl-gbdt/src/xgboost/unified)
   ;; Zero symbols, same load-time reason as the clause above, for the other backend:
   ;; `xgboost-api-slice-model-rejects-a-lightgbm-booster' needs a real LightGBM booster to
   ;; hand `slice-model', and `(cl-gbdt:open-backend :lightgbm)' signals `unknown-backend'
@@ -27,13 +29,14 @@
   ;; *XGBoost's* entry point rejects a foreign handle, which is why it belongs here rather
   ;; than in the backend-neutral `cl-gbdt/tests/functional/evaluation', whose own package
   ;; form carries both clauses for the different reason that it runs the same assertions
-  ;; against both backends.
-  (:import-from #:cl-gbdt/src/lightgbm/all)
+  ;; against both backends. `unified' for the same reason as the clause above: that test
+  ;; trains its LightGBM booster through `cl-gbdt:train'.
+  (:import-from #:cl-gbdt/src/lightgbm/unified)
   ;; Zero symbols, same reasoning as the `#:cl-gbdt' clause above: every reference below is
   ;; package-qualified, `cl-gbdt/xgboost:evaluate-one-iteration'. Declared anyway so this file's
   ;; dependency on Task 3's new public function is explicit rather than riding along on
-  ;; `#:cl-gbdt/src/xgboost/all' above, which exists here only for its `register-backend'
-  ;; load-time side effect, not for anything it exports. Matches
+  ;; `#:cl-gbdt/src/xgboost/unified' above, which exists here only for its load-time side
+  ;; effects, not for anything it exports. Matches
   ;; `cl-gbdt/tests/functional/lightgbm-api''s identical clause for Task 2's
   ;; `cl-gbdt/lightgbm'.
   (:import-from #:cl-gbdt/xgboost)
@@ -171,7 +174,7 @@ binary, so COLUMN is always 0, but the shape still has to be unpacked by hand."
           (ng (cl-gbdt:backend-open-p backend)))))))
 
 ;;; Task 3 wired `check-backend-version' into this backend's `initialize-backend' --
-;;; see `cl-gbdt/src/xgboost/protocol''s `initialize-backend' and
+;;; see `cl-gbdt/src/xgboost/classes''s `initialize-backend' and
 ;;; `cl-gbdt/src/version''s `*xgboost-version-range*'. The vendored library here is
 ;;; 3.3.0, XGBoost's own recorded VERIFIED point and *XGBOOST-VERSION-RANGE*'s
 ;;; INFERRED-HIGH -- inside the range by construction. A warning here would mean the
@@ -442,7 +445,7 @@ two groups.")
             (cl-gbdt:close-backend backend)))))))
 
 ;;; `train' copies VALID-SETS -- see `%create-booster' -- rather than storing the
-;;; caller's own list, for the identical reason `cl-gbdt/src/lightgbm/backend''s
+;;; caller's own list, for the identical reason `cl-gbdt/src/lightgbm/protocol''s
 ;;; `train' does: a caller who destructively truncates their own list after `train'
 ;;; returns must not silently remove a dataset from the booster's own view of what it
 ;;; depends on. This proves the guard still fires once the caller's own list has been
@@ -520,7 +523,7 @@ two groups.")
 
 ;;; `close-backend' calls `cffi:close-foreign-library', which may unmap the shared
 ;;; library from the process; POSIX does not guarantee it, but does not forbid it
-;;; either -- see `cl-gbdt/src/lightgbm/backend''s identical commentary above its own
+;;; either -- see `cl-gbdt/tests/functional/lightgbm-api''s identical commentary above its own
 ;;; version of this test. `handle-live-pointer' checks `backend-open-p' before
 ;;; returning a pointer, turning what would otherwise be a call into a library that
 ;;; might no longer be mapped into `backend-not-open'. This proves it does, using
@@ -558,7 +561,7 @@ two groups.")
 ;;; `make-dataset', `train' and `load-model' each create a brand-new handle directly
 ;;; from a backend, unlike every other operation in this file, which reads an
 ;;; existing handle and so is already covered by `handle-live-pointer''s
-;;; `backend-open-p' check -- see `cl-gbdt/src/lightgbm/backend''s identical F2
+;;; `backend-open-p' check -- see `cl-gbdt/tests/functional/lightgbm-api''s identical F2
 ;;; commentary. This proves each of the three signals `backend-not-open' instead of
 ;;; reaching its first foreign call against a library that might no longer be
 ;;; mapped, one entry point per test.
@@ -1482,3 +1485,29 @@ closed [BEGIN, END] reading would make this 6.")
             (when booster (cl-gbdt:free-booster booster))
             (when train-set (cl-gbdt:free-dataset train-set))
             (cl-gbdt:close-backend backend)))))))
+
+;;; Task 7 (docs/superpowers/sdd/2026-08-11-layer1-separation): `cl-gbdt/xgboost' now
+;;; re-exports the shared-basis symbols -- `open-backend', `backend-open-p', `backend-name',
+;;; `backend-supports-p', `close-backend' and the whole `cl-gbdt/src/conditions' hierarchy --
+;;; that a caller who loads this backend ALONE, never `cl-gbdt' itself, needs to work with it
+;;; and catch what it signals without naming an internal package. Every other test in this
+;;; file goes through `cl-gbdt:', proving the unified API; this one goes through
+;;; `cl-gbdt/xgboost:' throughout, proving the standalone surface added by this task instead.
+;;; No `:path' is passed to `open-backend' here, matching every other test above: this test's
+;;; own `with-backend-library' has already loaded the vendored library via
+;;; `cffi:load-foreign-library', so CFFI's own default resolution finds it without one.
+
+(deftest the-backend-package-publishes-what-a-standalone-caller-needs
+  (testing "opening, asking and closing are all reachable without naming an internal package"
+    (with-backend-library (:xgboost)
+      (let ((backend (cl-gbdt/xgboost:open-backend :xgboost)))
+        (unwind-protect
+             (progn
+               (ok (cl-gbdt/xgboost:backend-open-p backend) "the backend reports itself open")
+               (ok (eq :xgboost (cl-gbdt/xgboost:backend-name backend)) "and names itself")
+               (ok (typep (cl-gbdt/xgboost:backend-supports-p backend :sparse-input) 'boolean)
+                   "a capability question answers")
+               (ok (subtypep 'cl-gbdt/xgboost:capability-unavailable
+                             'cl-gbdt/xgboost:gbdt-error)
+                   "the condition hierarchy is reachable from this package too"))
+          (cl-gbdt/xgboost:close-backend backend))))))

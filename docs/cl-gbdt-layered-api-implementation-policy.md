@@ -368,8 +368,9 @@ README内のassertion件数のdocument driftは **解消済み** (243 / 106 で�
 
 ### フォローアップ
 
-Phase 4完了時点で判明している残件を記録する。いずれもどのphaseの完了条件でもない。実利用要求が出た時点で、§17の分類と§13のテスト方針に従い一件ずつ着手する。まとめて一つのphaseに束ねない。
+Phase 4完了時点、およびその後のLayer 1 / Layer 2分離作業で判明している残件を記録する。いずれもどのphaseの完了条件でもない。まとめて一つのphaseに束ねない。二件目以降は、実利用要求が出た時点で、§17の分類と§13のテスト方針に従い一件ずつ着手する。
 
+- **Layer 1でのdataset / booster構築** — 他の三件と違い、これは新機能ではなくLayer 1 / Layer 2分離が残した負債である。したがって実利用要求を待たず、層分離の次段の最初の項目としてこれを閉じる。`make-dataset` はunified APIのmethodとしてしか存在せず、Layer 1に対応する構築APIがない。そのため `cl-gbdt/lightgbm` だけを読み込んだcallerは、libraryを開き、capabilityを問い、閉じることはできるが、datasetを構築できない。dataset / booster handleを要求するLayer 1操作へ、そのcallerは自力で到達できないということである。これを閉じることで、§3の「Layer 2の各methodは、可能な限りLayer 1のbackend-specific safe APIへ委譲する」という要求も果たされる。現在のLayer 2の `make-dataset` は、Layer 1の公開APIではなく `native.lisp` の `%` 付き内部関数へ直接降りているためである。
 - **file input** — `make-dataset` の `MATRIX` がpathnameも受け、libraryが自らファイルを読む形 (`LGBM_DatasetCreateFromFile`、`XGDMatrixCreateFromURI`)。どちらも通常のin-memory datasetを作るので、これはexternal memoryではなく、別capability `:file-input` になる。設計のみ済み、未実装。
 - **shapeを保持するXGBoost feature score** — Phase 2の「最初の公開対象」に挙げたまま未実装。`:multidimensional-feature-score` は `*known-capabilities*` に登録済みだが全backendでfalseであり、「未対応であること自体は答えられる」状態で止まっている。
 - **LightGBM rollback / refit / reset parameter** — 同じくPhase 2の一覧の未実装項目。`LGBM_BoosterRollbackOneIter`、`LGBM_BoosterRefit`、`LGBM_BoosterResetParameter` はbindingには存在し、Layer 1として公開していない。

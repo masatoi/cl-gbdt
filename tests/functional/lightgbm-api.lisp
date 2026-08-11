@@ -11,19 +11,21 @@
 (uiop:define-package #:cl-gbdt/tests/functional/lightgbm-api
   (:use #:cl #:rove)
   (:import-from #:cl-gbdt)
-  ;; Zero symbols: nothing below refers to this package by name. Its only job is to
-  ;; run at load time and register :lightgbm with `open-backend' -- see
-  ;; `register-backend' near the top of src/lightgbm/protocol.lisp. Without this
-  ;; clause, package-inferred-system has no edge to that file at all, and
-  ;; `(cl-gbdt:open-backend :lightgbm)' below would signal `unknown-backend'. Depends on
-  ;; `all', the leaf `cl-gbdt/lightgbm' itself depends on, rather than `protocol'
-  ;; directly, so this exercises the same load path a real caller would.
-  (:import-from #:cl-gbdt/src/lightgbm/all)
+  ;; Zero symbols: nothing below refers to this package by name. Its job is to run at load
+  ;; time, registering :lightgbm with `open-backend' -- see `register-backend' near the top
+  ;; of src/lightgbm/classes.lisp -- and defining LightGBM's methods on `cl-gbdt''s
+  ;; generics. Without this clause, package-inferred-system has no edge to those files at
+  ;; all, and `(cl-gbdt:open-backend :lightgbm)' below would signal `unknown-backend'.
+  ;; Depends on `unified', the aggregation the leaf `cl-gbdt/lightgbm/unified' itself
+  ;; depends on, rather than `protocol' directly, so this exercises the same load path a
+  ;; real caller would. Not `all': since the Layer 1 split that is Layer 1 alone, and
+  ;; `train' below would find no applicable method.
+  (:import-from #:cl-gbdt/src/lightgbm/unified)
   ;; Zero symbols, same reasoning as the `#:cl-gbdt' clause above: every reference below is
   ;; package-qualified, `cl-gbdt/lightgbm:booster-eval-names' and `cl-gbdt/lightgbm:booster-eval'.
   ;; Declared anyway so this file's dependency on Task 2's new public functions is explicit
-  ;; rather than riding along on `#:cl-gbdt/src/lightgbm/all' above, which exists here only
-  ;; for its `register-backend' load-time side effect, not for anything it exports.
+  ;; rather than riding along on `#:cl-gbdt/src/lightgbm/unified' above, which exists here
+  ;; only for its load-time side effects, not for anything it exports.
   (:import-from #:cl-gbdt/lightgbm)
   (:import-from #:cl-gbdt/tests/functional/support
                 #:with-backend-library
@@ -1135,3 +1137,29 @@ test that only checked a single name/value pair could not pass by accident if
             (when booster (cl-gbdt:free-booster booster))
             (when train-set (cl-gbdt:free-dataset train-set))
             (cl-gbdt:close-backend backend)))))))
+
+;;; Task 7 (docs/superpowers/sdd/2026-08-11-layer1-separation): `cl-gbdt/lightgbm' now
+;;; re-exports the shared-basis symbols -- `open-backend', `backend-open-p', `backend-name',
+;;; `backend-supports-p', `close-backend' and the whole `cl-gbdt/src/conditions' hierarchy --
+;;; that a caller who loads this backend ALONE, never `cl-gbdt' itself, needs to work with it
+;;; and catch what it signals without naming an internal package. Every other test in this
+;;; file goes through `cl-gbdt:', proving the unified API; this one goes through
+;;; `cl-gbdt/lightgbm:' throughout, proving the standalone surface added by this task instead.
+;;; No `:path' is passed to `open-backend' here, matching every other test above: this test's
+;;; own `with-backend-library' has already loaded the vendored library via
+;;; `cffi:load-foreign-library', so CFFI's own default resolution finds it without one.
+
+(deftest the-backend-package-publishes-what-a-standalone-caller-needs
+  (testing "opening, asking and closing are all reachable without naming an internal package"
+    (with-backend-library (:lightgbm)
+      (let ((backend (cl-gbdt/lightgbm:open-backend :lightgbm)))
+        (unwind-protect
+             (progn
+               (ok (cl-gbdt/lightgbm:backend-open-p backend) "the backend reports itself open")
+               (ok (eq :lightgbm (cl-gbdt/lightgbm:backend-name backend)) "and names itself")
+               (ok (typep (cl-gbdt/lightgbm:backend-supports-p backend :sparse-input) 'boolean)
+                   "a capability question answers")
+               (ok (subtypep 'cl-gbdt/lightgbm:capability-unavailable
+                             'cl-gbdt/lightgbm:gbdt-error)
+                   "the condition hierarchy is reachable from this package too"))
+          (cl-gbdt/lightgbm:close-backend backend))))))

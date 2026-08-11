@@ -28,13 +28,16 @@
   ;; dependency on the unified API is explicit rather than inherited, matching the identical
   ;; clause in evaluation.lisp and training-report.lisp.
   (:import-from #:cl-gbdt)
-  ;; Zero symbols, both of them: their only job is to run at load time and register
-  ;; :lightgbm and :xgboost with `open-backend'. Without these clauses, package-inferred-
-  ;; system has no edge to those files and `(cl-gbdt:open-backend :lightgbm)' below would
-  ;; signal `unknown-backend'. Declared here rather than leaned on through the
-  ;; evaluation.lisp dependency below, which happens to pull both in today.
-  (:import-from #:cl-gbdt/src/lightgbm/all)
-  (:import-from #:cl-gbdt/src/xgboost/all)
+  ;; Zero symbols, both of them: they run at load time to register :lightgbm and :xgboost
+  ;; with `open-backend' and to define each backend's methods on `cl-gbdt''s generics.
+  ;; Without these clauses, package-inferred-system has no edge to those files and
+  ;; `(cl-gbdt:open-backend :lightgbm)' below would signal `unknown-backend'. Declared here
+  ;; rather than leaned on through the evaluation.lisp dependency below, which happens to
+  ;; pull both in today. `unified' rather than `all' since the Layer 1 split: `all' is
+  ;; Layer 1 alone now, carrying the `register-backend' call but not the protocol methods,
+  ;; so `train' below would find no applicable method.
+  (:import-from #:cl-gbdt/src/lightgbm/unified)
+  (:import-from #:cl-gbdt/src/xgboost/unified)
   (:import-from #:cl-gbdt/tests/functional/support
                 #:with-backend-library
                 #:make-separable-dataset)

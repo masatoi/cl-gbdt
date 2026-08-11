@@ -1,10 +1,9 @@
-;;;; protocol.lisp --- XGBoost backend, Layer 2: the classes and all fifteen methods of
-;;;; the unified API's protocol, each delegating its C calls to
-;;;; `cl-gbdt/src/xgboost/native'.
+;;;; protocol.lisp --- XGBoost backend, Layer 2: all thirteen methods of the unified API's
+;;;; protocol, each delegating its C calls to `cl-gbdt/src/xgboost/native'.
 ;;;;
-;;;; With one Layer 1 exception, `slice-model' at the end of this file: it builds a new
-;;;; booster handle, which needs the concrete `xgboost-booster' class defined here, and
-;;;; `native.lisp' may not depend on this file to name it. See that section's own comment.
+;;;; The backend's CLOS classes, the `initialize-backend'/`shutdown-backend' pair that opens
+;;;; and closes the shared library, and `slice-model' are Layer 1, not Layer 2, and live in
+;;;; `cl-gbdt/src/xgboost/classes' -- see that file's header for why.
 
 (uiop:define-package #:cl-gbdt/src/xgboost/protocol
   (:use #:cl)
@@ -13,14 +12,6 @@
                 #:%check-backend-open
                 #:%check-xgboost-dataset
                 #:%check-unsupported
-                #:%read-version
-                #:*library-env-var*
-                #:*vendor-library-directory*
-                #:*vendor-library-pattern*
-                #:*default-library-name*
-                #:*required-symbols*
-                #:*optional-symbols*
-                #:*provided-capabilities*
                 #:%create-dmatrix
                 #:%create-dmatrix-from-csr
                 #:%set-info-field
@@ -56,22 +47,15 @@
                 #:%feature-score-index
                 #:%check-feature-score-dim
                 #:%feature-score
-                #:%check-xgboost-booster
-                #:%read-evaluation
-                #:%slice)
+                #:%read-evaluation)
+  (:import-from #:cl-gbdt/src/xgboost/classes
+                #:xgboost-backend
+                #:xgboost-dataset
+                #:xgboost-booster)
   (:import-from #:cl-gbdt/src/backend
-                #:backend
                 #:backend-name
-                #:backend-library-path
-                #:backend-version
-                #:backend-capabilities
                 #:backend-supports-p
-                #:backend-open-p
-                #:probe-foreign-symbols
-                #:probe-capabilities
-                #:register-backend
-                #:initialize-backend
-                #:shutdown-backend)
+                #:backend-open-p)
   (:import-from #:cl-gbdt/src/protocol
                 #:make-dataset
                 #:dataset-num-rows
@@ -87,10 +71,8 @@
                 #:evaluation
                 #:free-booster)
   (:import-from #:cl-gbdt/src/handle
-                #:dataset
-                #:booster
-                #:make-handle
                 #:release-handle
+                #:with-pointer-ownership
                 #:handle-live-pointer
                 #:handle-released-p
                 #:handle-backend
@@ -99,7 +81,6 @@
                 #:%resolve-best-num-iteration
                 #:%reject-best-num-iteration)
   (:import-from #:cl-gbdt/src/conditions
-                #:missing-foreign-symbols
                 #:foreign-call-error
                 #:missing-training-set
                 #:unsupported-argument
@@ -134,139 +115,28 @@
                 #:watcher-best-iteration
                 #:watcher-best-score
                 #:watcher-stopped-p)
-  (:import-from #:cl-gbdt/src/library
-                #:resolve-and-load-library)
   (:import-from #:cl-gbdt/src/foreign
                 #:with-foreign-float-traps-masked)
-  (:import-from #:cl-gbdt/src/version
-                #:check-backend-version
-                #:*xgboost-version-range*)
-  (:export #:xgboost-backend
-           #:slice-model))
+  (:export #:xgboost-backend))
 
 (in-package #:cl-gbdt/src/xgboost/protocol)
 
 ;;; ---------------------------------------------------------------------------
 ;;; Floating-point trap safety
 ;;;
-;;; Every method below that reaches into libxgboost.so -- all thirteen protocol methods
-;;; plus `initialize-backend' (`XGBoostVersion') and `shutdown-backend' (closing the
-;;; library can run its own static finalizers) -- wraps its entire body in
-;;; `with-foreign-float-traps-masked'. See that macro's docstring in
-;;; `cl-gbdt/src/foreign' for why: SBCL enables floating-point traps by default on
-;;; x86-64 and not on aarch64, and XGBoost's own numeric code -- confirmed for the
-;;; softmax normalization behind a `multi:softprob' prediction -- was written and
-;;; tested against the C convention of those traps staying masked. Method-body
-;;; granularity, not per-call, so a call added later inside an already-wrapped method
-;;; cannot reopen this gap by omission. Every actual C call a method below makes goes
-;;; through `cl-gbdt/src/xgboost/native', but the mask is established here, around the
-;;; whole method body, not inside that file -- see its own header. `slice-model' near
-;;; the end of this file is this file's first non-`defmethod' entry point bound by the
-;;; identical rule -- it wraps its own whole body the same way; see its own section below.
-
-;;; ---------------------------------------------------------------------------
-;;; The backend class
-
-(defclass xgboost-backend (backend)
-  ((foreign-library :initform nil
-                     :accessor %xgboost-foreign-library
-                     :documentation "The `cffi:foreign-library' `initialize-backend'
-loaded, kept so `shutdown-backend' can close exactly this one."))
-  (:documentation "A connection to the XGBoost shared library, implementing cl-gbdt's
-unified backend protocol."))
-
-(register-backend :xgboost 'xgboost-backend)
-
-;;; Handles must be subclassed per backend, not shared -- see
-;;; `cl-gbdt/src/lightgbm/backend''s identical commentary above `lightgbm-dataset'.
-;;; `dataset-num-rows', `predict', `free-dataset' and `free-booster' dispatch on the
-;;; HANDLE, so a method on the core `dataset' or `booster' class would be replaced, not
-;;; specialized, the moment the other backend defined its own -- an XGBoost dataset would
-;;; silently answer through LightGBM's C API, or vice versa.
-
-(defclass xgboost-dataset (dataset) ()
-  (:documentation "A dataset (a DMatrix) held by the XGBoost library."))
-
-(defclass xgboost-booster (booster) ()
-  (:documentation "A booster held by the XGBoost library."))
-
-(defmethod initialize-backend ((backend xgboost-backend) &key path)
-  "Load XGBoost's shared library and record its capabilities on BACKEND.
-
-Discovery order: PATH, then *library-env-var*, then the vendored directory under
-*vendor-library-directory*, then CFFI's system library search for
-*default-library-name* -- see `resolve-and-load-library' for the exact rules and the
-conditions each failure mode signals.
-
-Once a library is loaded, every name in *required-symbols* must resolve via
-`probe-foreign-symbols', passed the `cffi:foreign-library' just loaded as :LIBRARY -- see
-that function's docstring for the SBCL caveat: it validates the library argument but,
-on this platform, cannot actually scope the symbol search to it -- or this signals
-`missing-foreign-symbols'.
-
-Only once that required check has passed does this probe *optional-symbols* via
-`probe-capabilities' and record the result on `backend-capabilities' -- unlike a missing
-required symbol, a missing optional one never signals; it only makes `backend-supports-p'
-answer NIL for the capability that symbol backs. *provided-capabilities* goes to the same
-call as :PROVIDED, recording the capabilities this backend provides unconditionally --
-nothing is probed for them, because the C functions they need are in *required-symbols* and
-the probe above has already passed.
-
-Once `backend-version' is read, `check-backend-version' compares it against
-`*xgboost-version-range*' and signals `untested-backend-version' -- a warning, not an
-error -- when it falls outside that range's recorded bounds. This is the only backend
-this runs for: LightGBM's C API has no version entry point, so `backend-version' stays
-NIL there and there is nothing to compare -- see
-`cl-gbdt/src/lightgbm/backend''s `initialize-backend'.
-
-`open-backend' only marks a backend open -- and so only calls `close-backend' on it --
-once this method returns normally. So if the symbol probe (or anything else after the
-library loads) signals, the library is closed right here before the condition propagates;
-otherwise it would stay mapped into the process with BACKEND dropped and nothing left able
-to close it."
-  (with-foreign-float-traps-masked
-    (multiple-value-bind (library library-path)
-        (resolve-and-load-library backend :path path
-                                           :env-var *library-env-var*
-                                           :directory *vendor-library-directory*
-                                           :pattern *vendor-library-pattern*
-                                           :default-name *default-library-name*)
-      (let ((succeeded nil))
-        (unwind-protect
-             (progn
-               (setf (%xgboost-foreign-library backend) library)
-               (setf (backend-library-path backend) library-path)
-               (let ((missing (probe-foreign-symbols *required-symbols* :library library)))
-                 (when missing
-                   (error 'missing-foreign-symbols
-                          :backend (backend-name backend) :names missing)))
-               (setf (backend-capabilities backend)
-                     (probe-capabilities *optional-symbols*
-                                         :provided *provided-capabilities*
-                                         :library library))
-               (setf (backend-version backend) (%read-version))
-               (check-backend-version :xgboost (backend-version backend)
-                                       *xgboost-version-range*)
-               (setf succeeded t))
-          (unless succeeded
-            (handler-case (cffi:close-foreign-library library)
-              (error () nil))
-            (setf (%xgboost-foreign-library backend) nil)))
-        backend))))
-
-(defmethod shutdown-backend ((backend xgboost-backend))
-  "Close XGBoost's shared library.
-
-`cffi:close-foreign-library' drops cl-gbdt's own reference and, on platforms where the C
-loader honors `dlclose' reference counting, may unmap the library; POSIX does not
-guarantee an actual unload, so this cannot promise the library's code and data are gone
-from the process afterward -- only that cl-gbdt no longer holds it open."
-  (with-foreign-float-traps-masked
-    (let ((library (%xgboost-foreign-library backend)))
-      (when library
-        (cffi:close-foreign-library library)
-        (setf (%xgboost-foreign-library backend) nil)))
-    backend))
+;;; Every method below that reaches into libxgboost.so -- all thirteen protocol methods --
+;;; wraps its entire body in `with-foreign-float-traps-masked'. `initialize-backend'
+;;; (`XGBoostVersion'), `shutdown-backend' (closing the library can run its own static
+;;; finalizers) and the public `slice-model' are wrapped exactly the same way in
+;;; `cl-gbdt/src/xgboost/classes', where they live; this rule is the backend's, not this
+;;; file's. See that macro's docstring in `cl-gbdt/src/foreign' for why: SBCL enables
+;;; floating-point traps by default on x86-64 and not on aarch64, and XGBoost's own numeric
+;;; code -- confirmed for the softmax normalization behind a `multi:softprob' prediction --
+;;; was written and tested against the C convention of those traps staying masked.
+;;; Method-body granularity, not per-call, so a call added later inside an already-wrapped
+;;; method cannot reopen this gap by omission. Every actual C call a method below makes goes
+;;; through `cl-gbdt/src/xgboost/native', but the mask is established here, around the whole
+;;; method body, not inside that file -- see its own header.
 
 ;;; ---------------------------------------------------------------------------
 ;;; The `:sparse-input' gate
@@ -276,10 +146,11 @@ from the process afterward -- only that cl-gbdt no longer holds it open."
 
 Policy section 7 requires the operation itself to re-check a capability rather than trusting
 the caller to have asked `backend-supports-p' first, so a caller who never asked gets a typed
-condition instead of a missing-symbol crash -- the same rule `slice-model' at the end of this
-file follows for `:model-slicing'. Both operations this backend gates on `:sparse-input' call
-this -- `%dataset-pointer' below, on `make-dataset''s behalf, and `predict' -- so the two
-cannot come to disagree about which capability they name or which backend they blame.
+condition instead of a missing-symbol crash -- the same rule `cl-gbdt/src/xgboost/classes''s
+`slice-model' follows for `:model-slicing'. Both operations this backend gates on
+`:sparse-input' call this -- `%dataset-pointer' below, on `make-dataset''s behalf, and
+`predict' -- so the two cannot come to disagree about which capability they name or which
+backend they blame.
 Mirrors `cl-gbdt/src/lightgbm/protocol''s function of the same name.
 
 Only a `csr-matrix' argument ever reaches this. A dense matrix needs neither
@@ -572,8 +443,9 @@ otherwise dereference blindly.
 The raw DMatrix handle exists in C from the moment the creation call returns, but
 `make-handle' does not take ownership of it until the very end -- attaching LABEL, WEIGHT,
 GROUP, FEATURE-NAMES or the rendered feature types can each signal first (a wrong-length
-`:label' is the commonest way). OWNED tracks whether `make-handle' ran; when it did not, the
-raw DMatrix is freed here instead of orphaned.
+`:label' is the commonest way). `with-pointer-ownership' spans exactly that gap: the pointer
+is owned by nobody inside its body, and any exit that has not called TAKE-OWNERSHIP frees the
+raw DMatrix here instead of orphaning it.
 
 Signals `backend-not-open' before any of that when BACKEND is not open -- see
 `%check-backend-open'."
@@ -604,25 +476,18 @@ Signals `backend-not-open' before any of that when BACKEND is not open -- see
                  :function-name function-name
                  :code 0
                  :message "reported success but returned a null dataset handle"))
-        (let ((owned nil))
-          (unwind-protect
-               (progn
-                 (when label
-                   (%set-info-field dataset-pointer "label" label))
-                 (when weight
-                   (%set-info-field dataset-pointer "weight" weight))
-                 (when group
-                   (%set-group-field dataset-pointer group))
-                 (when feature-names
-                   (%set-feature-names dataset-pointer feature-names))
-                 (when feature-types
-                   (%set-feature-types dataset-pointer feature-types))
-                 (prog1
-                     (make-handle 'xgboost-dataset dataset-pointer backend :dataset)
-                   (setf owned t)))
-            (unless owned
-              (handler-case (%free-dmatrix-unchecked dataset-pointer)
-                (error () nil)))))))))
+        (with-pointer-ownership (dataset-pointer #'%free-dmatrix-unchecked take-ownership)
+          (when label
+            (%set-info-field dataset-pointer "label" label))
+          (when weight
+            (%set-info-field dataset-pointer "weight" weight))
+          (when group
+            (%set-group-field dataset-pointer group))
+          (when feature-names
+            (%set-feature-names dataset-pointer feature-names))
+          (when feature-types
+            (%set-feature-types dataset-pointer feature-types))
+          (take-ownership 'xgboost-dataset backend :dataset))))))
 
 (defmethod dataset-num-rows ((dataset xgboost-dataset))
   "Return DATASET's row count, read via `XGDMatrixNumRow'."
@@ -639,7 +504,7 @@ Signals `backend-not-open' before any of that when BACKEND is not open -- see
 
 Unlike every other operation in this file, this does not go through `handle-live-pointer'
 and so does not signal `backend-not-open' when DATASET's backend has already been closed
--- see `cl-gbdt/src/lightgbm/backend''s `free-dataset' for why: this runs from
+-- see `cl-gbdt/src/lightgbm/protocol''s `free-dataset' for why: this runs from
 `with-dataset''s `unwind-protect' cleanup form, and signalling there would replace whatever
 condition is already unwinding the stack instead of letting it propagate. So when the
 backend is closed, the handle is instead marked released without calling `XGDMatrixFree' --
@@ -883,12 +748,13 @@ does on LightGBM: `XGBoosterEvalOneIter' evaluates every DMatrix it is handed, a
 one it cannot evaluate -- an unlabelled DMatrix passed in VALID-SETS is the case this was
 found through, which `XGBoosterUpdateOneIter' trains on without complaint while the
 evaluation call signals `foreign-call-error' (\"label and prediction size not match\"). With
-RECORD-HISTORY true that failure now propagates out of `train' itself, through the OWNED
-dance below, where before this backend recorded anything it surfaced only at a later
-`evaluation' call. RECORD-HISTORY NIL never reaches the evaluation path and so trains such a
-configuration exactly as before.
+RECORD-HISTORY true that failure now propagates out of `train' itself, through the
+`with-pointer-ownership' form below, where before this backend recorded anything it surfaced
+only at a later `evaluation' call. RECORD-HISTORY NIL never reaches the evaluation path and
+so trains such a configuration exactly as before.
 
-A read that fails propagates, freeing the booster through the OWNED dance below rather
+A read that fails propagates, freeing the booster through the `with-pointer-ownership'
+form below rather
 than returning a report whose series are shorter than the run: a short series is
 indistinguishable from one a buggy loop recorded, and \"one value per iteration\" is the
 invariant a caller reading the report relies on.
@@ -945,8 +811,8 @@ so the caller's Lisp arithmetic runs under the masked convention on x86-64 as we
 aarch64 -- `(/ 1.0d0 0.0d0)' yields infinity there rather than signalling
 `division-by-zero'. Nothing about that is specific to a custom objective; it is simply where
 in `train' the caller's code now runs. A condition the caller's function does signal
-propagates out of `train' through the OWNED dance below, freeing the raw booster handle
-rather than orphaning it, exactly as a mid-loop foreign failure does.
+propagates out of `train' through the `with-pointer-ownership' form below, freeing the raw
+booster handle rather than orphaning it, exactly as a mid-loop foreign failure does.
 
 An objective that frees a handle this loop depends on, or closes BACKEND, is caught rather
 than crashed on: `%recheck-train-datasets' re-runs this method's own opening checks the
@@ -1021,13 +887,14 @@ it. A caller who destructively removes an entry from VALID-SETS after `train' re
 remove it from the booster's view too, since both would be the same cons cells; the
 DMatrix `XGBoosterCreate' already attached would then go unchecked by
 `%check-booster-datasets-live' even though XGBoost still holds its pointer -- the same
-hazard `cl-gbdt/src/lightgbm/backend''s `train' guards against, for the identical reason.
+hazard `cl-gbdt/src/lightgbm/protocol''s `train' guards against, for the identical reason.
 Free the result with `free-booster' or wrap it in `with-booster'.
 
 The raw booster handle exists in C from the moment `XGBoosterCreate' returns, but
 `make-handle' does not take ownership of it until the very end -- a rejected parameter or
-a mid-loop failure can each signal first. OWNED tracks whether `make-handle' ran; when it
-did not, the raw booster is freed here instead of orphaned.
+a mid-loop failure can each signal first. `with-pointer-ownership' spans exactly that gap:
+the pointer is owned by nobody inside its body, and any exit that has not called
+TAKE-OWNERSHIP frees the raw booster here instead of orphaning it.
 
 Signals `backend-not-open' before any of that when BACKEND is not open -- see
 `%check-backend-open'."
@@ -1074,84 +941,77 @@ Signals `backend-not-open' before any of that when BACKEND is not open -- see
            ;; with nothing further to do here.
            (completed-rounds 0))
       (let ((booster-pointer (%create-booster dataset-pointers)))
-        (let ((owned nil))
-          (unwind-protect
-               (progn
-                 (%set-parameters booster-pointer parameters)
-                 ;; ROUND is 1-based, which is the numbering `observe-iteration' answers
-                 ;; `watcher-best-iteration' in and the report publishes.
-                 (loop :for round :from 1 :to num-rounds
-                       :do (if objective
-                               ;; `%boosted-rounds', not ROUND: this is XGBoost's own 0-based
-                               ;; `iter' argument, and reading it back from the booster is
-                               ;; exactly what `%update-one-iteration' does for the built-in
-                               ;; branch beside this one -- see that function for why the
-                               ;; count is not tracked locally. ROUND is 1-based and belongs
-                               ;; to the report and the early-stopping watcher, not to C.
-                               (let ((scores (%booster-predictions
-                                              booster-pointer train-data-pointer
-                                              (%dataset-num-rows train-data-pointer)
-                                              :raw :training t)))
-                                 (multiple-value-bind (grad hess) (funcall objective scores)
-                                   ;; Before anything else this iteration does, and before the
-                                   ;; next one reads TRAIN-DATA-POINTER again: the caller's
-                                   ;; own code has just run and may have freed a handle this
-                                   ;; loop holds a raw pointer to. DATASET-POINTERS is rebuilt
-                                   ;; rather than left alone -- `%read-evaluation' below reads
-                                   ;; it, and it would otherwise still hold the stale ones.
-                                   (multiple-value-setq (train-data-pointer valid-set-pointers)
-                                     (%recheck-train-datasets backend dataset valid-sets))
-                                   (setf dataset-pointers
-                                         (cons train-data-pointer valid-set-pointers))
-                                   (check-objective-result grad hess
-                                                           (array-dimension scores 0)
-                                                           (array-dimension scores 1))
-                                   (%train-one-iteration-custom
-                                    booster-pointer train-data-pointer
-                                    (%boosted-rounds booster-pointer) grad hess)))
-                               (%update-one-iteration booster-pointer train-data-pointer))
-                           (incf completed-rounds)
-                           ;; Primary value only: `%read-evaluation''s RAW is `evaluation''s
-                           ;; provenance, and a report carries no per-iteration raw text.
-                           (let ((entries (when record-history
-                                            (%read-evaluation booster-pointer
-                                                              dataset-pointers))))
-                             ;; Appended after every library entry, and before the push and
-                             ;; the watcher, so the history and the watcher see one list. All
-                             ;; three pointer variables are reassigned from what the call
-                             ;; returns: the caller's own code has just run, and the next
-                             ;; iteration's update and `%read-evaluation' both dereference
-                             ;; them.
-                             (when evaluation
-                               (multiple-value-bind (custom pointers)
-                                   (%custom-evaluation-entries
-                                    backend evaluation booster-pointer dataset valid-sets
-                                    dataset-pointers row-counts entries (= round 1) name-pin)
-                                 (setf entries (append entries custom)
-                                       dataset-pointers pointers
-                                       train-data-pointer (first pointers)
-                                       valid-set-pointers (rest pointers))))
-                             (when record-history
-                               (push entries history))
-                             (when (and watcher (observe-iteration watcher entries round))
-                               (return))))
-                 (let* ((best-iteration (and watcher (watcher-best-iteration watcher)))
-                        (report (training-report-from-history
-                                 (reverse history) completed-rounds dataset-names
-                                 :best-iteration best-iteration
-                                 :best-score (and watcher (watcher-best-score watcher))
-                                 :early-stopped-p (and watcher (watcher-stopped-p watcher)
-                                                   (< completed-rounds num-rounds)))))
-                   (multiple-value-prog1
-                       (values (make-handle 'xgboost-booster booster-pointer backend :booster
-                                            :training-set dataset
-                                            :validation-sets valid-sets
-                                            :best-iteration best-iteration)
-                               report)
-                     (setf owned t))))
-            (unless owned
-              (handler-case (%free-booster-unchecked booster-pointer)
-                (error () nil)))))))))
+        (with-pointer-ownership (booster-pointer #'%free-booster-unchecked take-ownership)
+          (%set-parameters booster-pointer parameters)
+          ;; ROUND is 1-based, which is the numbering `observe-iteration' answers
+          ;; `watcher-best-iteration' in and the report publishes.
+          (loop :for round :from 1 :to num-rounds
+                :do (if objective
+                        ;; `%boosted-rounds', not ROUND: this is XGBoost's own 0-based
+                        ;; `iter' argument, and reading it back from the booster is
+                        ;; exactly what `%update-one-iteration' does for the built-in
+                        ;; branch beside this one -- see that function for why the
+                        ;; count is not tracked locally. ROUND is 1-based and belongs
+                        ;; to the report and the early-stopping watcher, not to C.
+                        (let ((scores (%booster-predictions
+                                       booster-pointer train-data-pointer
+                                       (%dataset-num-rows train-data-pointer)
+                                       :raw :training t)))
+                          (multiple-value-bind (grad hess) (funcall objective scores)
+                            ;; Before anything else this iteration does, and before the
+                            ;; next one reads TRAIN-DATA-POINTER again: the caller's
+                            ;; own code has just run and may have freed a handle this
+                            ;; loop holds a raw pointer to. DATASET-POINTERS is rebuilt
+                            ;; rather than left alone -- `%read-evaluation' below reads
+                            ;; it, and it would otherwise still hold the stale ones.
+                            (multiple-value-setq (train-data-pointer valid-set-pointers)
+                              (%recheck-train-datasets backend dataset valid-sets))
+                            (setf dataset-pointers
+                                  (cons train-data-pointer valid-set-pointers))
+                            (check-objective-result grad hess
+                                                    (array-dimension scores 0)
+                                                    (array-dimension scores 1))
+                            (%train-one-iteration-custom
+                             booster-pointer train-data-pointer
+                             (%boosted-rounds booster-pointer) grad hess)))
+                        (%update-one-iteration booster-pointer train-data-pointer))
+                    (incf completed-rounds)
+                    ;; Primary value only: `%read-evaluation''s RAW is `evaluation''s
+                    ;; provenance, and a report carries no per-iteration raw text.
+                    (let ((entries (when record-history
+                                     (%read-evaluation booster-pointer
+                                                       dataset-pointers))))
+                      ;; Appended after every library entry, and before the push and
+                      ;; the watcher, so the history and the watcher see one list. All
+                      ;; three pointer variables are reassigned from what the call
+                      ;; returns: the caller's own code has just run, and the next
+                      ;; iteration's update and `%read-evaluation' both dereference
+                      ;; them.
+                      (when evaluation
+                        (multiple-value-bind (custom pointers)
+                            (%custom-evaluation-entries
+                             backend evaluation booster-pointer dataset valid-sets
+                             dataset-pointers row-counts entries (= round 1) name-pin)
+                          (setf entries (append entries custom)
+                                dataset-pointers pointers
+                                train-data-pointer (first pointers)
+                                valid-set-pointers (rest pointers))))
+                      (when record-history
+                        (push entries history))
+                      (when (and watcher (observe-iteration watcher entries round))
+                        (return))))
+          (let* ((best-iteration (and watcher (watcher-best-iteration watcher)))
+                 (report (training-report-from-history
+                          (reverse history) completed-rounds dataset-names
+                          :best-iteration best-iteration
+                          :best-score (and watcher (watcher-best-score watcher))
+                          :early-stopped-p (and watcher (watcher-stopped-p watcher)
+                                            (< completed-rounds num-rounds)))))
+            (values (take-ownership 'xgboost-booster backend :booster
+                                    :training-set dataset
+                                    :validation-sets valid-sets
+                                    :best-iteration best-iteration)
+                    report)))))))
 
 (defmethod update-one-iteration ((booster xgboost-booster))
   "Advance BOOSTER by one boosting iteration via `XGBoosterUpdateOneIter'.
@@ -1167,7 +1027,7 @@ for the same reason `%check-booster-datasets-live' exists for the pointers it do
 
 XGBoost also reports no `produced_empty_tree'-style signal from this call, unlike
 LightGBM -- there is nothing for this backend to report a false return for, so unlike
-`cl-gbdt/src/lightgbm/backend''s method of the same name, this always returns true after
+`cl-gbdt/src/lightgbm/protocol''s method of the same name, this always returns true after
 a successful call; the generic function's \"returns false when no further split was
 possible\" applies only insofar as a backend can report it, which this one cannot.
 
@@ -1276,7 +1136,8 @@ The output buffer's total element count comes from the C call's own `out_shape'/
 report, not from the row count alone -- the row count is only
 correct for a single-class objective. The second array dimension is that total divided
 by the row count, guarded by `%predict-ncol' -- the same derivation
-`cl-gbdt/src/lightgbm/backend' uses for its own row-count-alone pitfall, and the one that
+`cl-gbdt/src/lightgbm/native''s `%predict-ncol' makes for its own row-count-alone pitfall,
+and the one that
 tells a three-class `multi:softprob' model's predictions apart from a binary model's. Both
 entry points report it the same way, `\"strict_shape\":true' being set for both.
 
@@ -1422,25 +1283,19 @@ since PATH names a model, not a dataset.
 
 The raw booster handle exists in C from the moment `XGBoosterCreate' returns, but
 `make-handle' does not take ownership of it until `XGBoosterLoadModel' has also
-succeeded. OWNED tracks whether `make-handle' ran; when it did not, the raw booster is
-freed here instead of orphaned.
+succeeded. `with-pointer-ownership' spans exactly that gap: the pointer is owned by
+nobody inside its body, and any exit that has not called TAKE-OWNERSHIP -- a failing
+`XGBoosterLoadModel' the likeliest -- frees the raw booster here instead of orphaning it.
 
 Signals `backend-not-open' before any of that when BACKEND is not open -- see
 `%check-backend-open'."
   (with-foreign-float-traps-masked
     (%check-backend-open backend)
     (let ((booster-pointer (%create-booster nil)))
-      (let ((owned nil))
-        (unwind-protect
-             (progn
-               (cffi:with-foreign-string (filename (namestring path))
-                 (%load-model booster-pointer filename))
-               (prog1
-                   (make-handle 'xgboost-booster booster-pointer backend :booster)
-                 (setf owned t)))
-          (unless owned
-            (handler-case (%free-booster-unchecked booster-pointer)
-              (error () nil))))))))
+      (with-pointer-ownership (booster-pointer #'%free-booster-unchecked take-ownership)
+        (cffi:with-foreign-string (filename (namestring path))
+          (%load-model booster-pointer filename))
+        (take-ownership 'xgboost-booster backend :booster)))))
 
 (defmethod model-to-string ((booster xgboost-booster) &key num-iteration)
   "Return BOOSTER's model as a JSON string via `XGBoosterSaveModelToBuffer'.
@@ -1479,7 +1334,7 @@ backend does not do, so this refuses rather than silently scoring every round in
 the requested subset.
 
 The result has one entry per feature, indexed by column, matching
-`cl-gbdt/src/lightgbm/backend''s `feature-importance' -- zero for a feature never used
+`cl-gbdt/src/lightgbm/protocol''s `feature-importance' -- zero for a feature never used
 in a split. `XGBoosterFeatureScore' itself reports the opposite: `out_n_features' and
 `out_scores' cover only features that appear in at least one split, so a feature never
 split on is absent from its report, not present with a zero -- confirmed directly
@@ -1578,87 +1433,3 @@ call."
            (dataset-pointers (mapcar #'handle-live-pointer datasets)))
       (multiple-value-bind (entries raw) (%read-evaluation booster-pointer dataset-pointers)
         (values entries (list :value-source :parsed-text :raw raw))))))
-
-;;; ---------------------------------------------------------------------------
-;;; Model slicing
-;;;
-;;; `slice-model' is the one function in this file that is not a protocol method, and the
-;;; only Layer 1 entry point that does not live in `cl-gbdt/src/xgboost/native' beside its
-;;; siblings `evaluate-one-iteration' and `booster-boosted-rounds'. It is here because it
-;;; returns a NEW booster: `make-handle' needs the concrete class `xgboost-booster', which is
-;;; defined in this file, and `native.lisp' must not depend on this one (policy section 11).
-;;; Every other `make-handle' call in this project is in a `protocol.lisp' for exactly that
-;;; reason -- `load-model' above is the closest sibling, and this follows its shape: the
-;;; guards and the handle construction here, the foreign call delegated to a `%'-function in
-;;; `native.lisp' (`%slice'). See that file's own Model slicing section for the other half.
-;;;
-;;; Deliberately NOT a generic function in `cl-gbdt/src/protocol'. Section 4's criterion for
-;;; the unified API is that both backends can mean the same thing by an operation; LightGBM
-;;; has no counterpart to `XGBoosterSlice', so a portable `slice-model' would either signal
-;;; on one backend for every caller or emulate -- and emulation is the silent fallback
-;;; section 7 forbids. It is published from `cl-gbdt/xgboost' instead, which is what section
-;;; 3's Layer 1 and section 11 are for.
-
-(defun slice-model (booster &key (begin 0) end (step 1))
-  "Return a new booster holding BOOSTER's layers from BEGIN to END, taken STEP at a time.
-
-The interval is HALF-OPEN, `[BEGIN, END)': END names the first layer left out, so slicing a
-ten-round booster with `:begin 0 :end 5' gives five rounds, not six. Measured against the
-vendored libxgboost, whose header documents no interval semantics at all; XGBoost's own
-rejection of `:begin 5 :end 5' as \"Empty slice is not allowed\" is the same reading from
-the other side.
-
-END defaults to NIL, meaning through the last layer, and is passed to `XGBoosterSlice' as
-its own 0. NIL rather than 0 in Lisp because a caller writing `:END 0' means \"nothing\",
-and silently reading that as \"everything\" is the kind of translation policy section 5
-exists to prevent -- so an explicit `:END 0' signals `unsupported-argument' rather than
-being forwarded to a C 0 that would mean the opposite. Every other out-of-range request is
-XGBoost's own to refuse, and it does, with `foreign-call-error': END past the last layer,
-BEGIN below zero, STEP below one, and a STEP that does not divide the interval evenly.
-
-The returned booster belongs to the caller, who frees it with `free-booster'. It is
-INDEPENDENT of BOOSTER: `XGBoosterSlice' copies the layers it selects, so freeing BOOSTER
-first is legitimate, and the slice keeps predicting the same values afterward -- verified
-against the vendored library with BOOSTER and the DMatrix it was trained on both freed. It
-therefore retains no parent, exactly as a `load-model' booster retains no training set;
-retaining one anyway would make freeing BOOSTER signal `released-handle-error' on correct
-code. For the same reason the slice has no training set of its own, so `evaluation' and
-`update-one-iteration' on it behave as they do for a `load-model' booster.
-
-Signals `wrong-backend-reference' when BOOSTER was not built by the XGBoost backend,
-`released-handle-error' when it has been freed, `backend-not-open' when its backend has
-been closed, `capability-unavailable' when the loaded library has no `XGBoosterSlice',
-`unsupported-argument' for an explicit `:END 0', and `foreign-call-error' when the slice
-itself fails.
-
-The capability is re-checked here rather than assumed: policy section 7 requires the
-operation to signal for itself, so a caller who never asked `backend-supports-p' gets a
-typed condition instead of a missing-symbol crash. The handle check runs first, before the
-capability check, so handing this a LightGBM booster reports the wrong handle rather than
-the true-but-irrelevant news that the backend it came from cannot slice."
-  (with-foreign-float-traps-masked
-    (let ((pointer (%check-xgboost-booster booster "slice-model's booster argument"))
-          (backend (handle-backend booster)))
-      (unless (backend-supports-p backend :model-slicing)
-        (error 'capability-unavailable
-               :backend (backend-name backend) :capability :model-slicing))
-      (%check-unsupported
-       backend "slice-model's :END of 0" (eql end 0)
-       (format nil "0 would be an empty slice, which XGBoost rejects outright, but ~
-                    XGBoosterSlice's own end_layer 0 means the last layer -- pass NIL for ~
-                    that rather than letting the two readings collide"))
-      ;; Unlike `load-model' and `train' above, no further foreign call runs between the
-      ;; handle appearing in C and `make-handle' taking ownership of it -- `%slice' returns a
-      ;; booster that is already complete, and `make-handle' is the very next thing that runs.
-      ;; The `owned' unwind-protect dance is still needed, though: `make-handle' itself --
-      ;; `make-instance' or finalizer attachment -- can signal, e.g. on `storage-condition',
-      ;; and a signal there must not orphan the foreign booster `%slice' already returned.
-      (let ((slice-pointer (%slice pointer begin (or end 0) step))
-            (owned nil))
-        (unwind-protect
-             (prog1
-                 (make-handle 'xgboost-booster slice-pointer backend :booster)
-               (setf owned t))
-          (unless owned
-            (handler-case (%free-booster-unchecked slice-pointer)
-              (error () nil))))))))

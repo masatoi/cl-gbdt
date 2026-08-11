@@ -26,12 +26,15 @@
 
 ;;; Backend-specific files do not belong in the list above. `cl-gbdt' is the core system
 ;;; and loads without either shared library; `cl-gbdt/lightgbm' and `cl-gbdt/xgboost' are
-;;; separate systems layered on it. Listing `cl-gbdt/src/xgboost/array-interface' here made
+;;; separate systems that do not depend on it at all, and `cl-gbdt/lightgbm/unified' and
+;;; `cl-gbdt/xgboost/unified' the ones layered on top of it.
+;;; Listing `cl-gbdt/src/xgboost/array-interface' here made
 ;;; the core depend on an XGBoost file and re-exported an XGBoost implementation detail from
 ;;; `CL-GBDT'. Every consumer imports it directly from its own package instead, which is why
-;;; nothing broke when it was removed. `src/lightgbm/native'/`protocol'/`all' (formerly one
-;;; `src/lightgbm/backend', split in this branch's Task 3) were never listed, for the same
-;;; reason.
+;;; nothing broke when it was removed. `src/lightgbm/native'/`classes'/`protocol'/`all'/
+;;; `unified' (once a single `src/lightgbm/backend.lisp', split into native/protocol/all by
+;;; the Phase 1 layering and split again when Layer 1 became a system of its own) were never
+;;; listed, for the same reason.
 
 ;;; package-inferred-system infers a file's dependencies from the file's *first*
 ;;; defpackage form only. This second form's :use-reexport clause is therefore

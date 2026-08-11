@@ -68,6 +68,15 @@ jobs:
         # order shifts. Each leaf is loaded in its own fresh image to catch that.
         run: ros run -- --non-interactive --load tools/ci/check-leaf-systems.lisp
 
+      - name: Layer 1 does not depend on Layer 2
+        # cl-gbdt/lightgbm and cl-gbdt/xgboost are meant to be usable without the unified
+        # API. Nothing but this check stops a later :import-from from quietly undoing that:
+        # the systems would keep loading and every test would stay green, so the only
+        # symptom is a claim in cl-gbdt.asd and both all.lisp headers becoming false. See
+        # tools/ci/check-layer-separation.lisp's header for what it reads and what it
+        # cannot see.
+        run: ros run -- --non-interactive --load tools/ci/check-layer-separation.lisp
+
       - name: Every backend defmethod is float-trap masked
         # A source-level scan, not a dynamic one -- see tools/ci/check-float-traps.lisp's
         # own header for exactly what it catches and what it cannot. SBCL enables FP traps
@@ -87,16 +96,27 @@ jobs:
         run: ros run -- --non-interactive --load tools/ci/check-abi-blacklist.lisp
 
       - name: Compile every system without warnings
-        # All six systems, not just the three non-test ones: cl-gbdt/regen and the two
+        # All eight systems, not just the three non-test ones: cl-gbdt/regen and the two
         # test systems went unchecked before, which is how tests/functional/lightgbm.lisp
         # carried ignored-variable style warnings nobody noticed -- see this file's
         # commit history and CLAUDE.md's testing notes for the fix.
+        #
+        # cl-gbdt/lightgbm/unified and cl-gbdt/xgboost/unified are named explicitly even
+        # though nothing goes uncompiled without them today: cl-gbdt/tests/functional
+        # pulls both in transitively. This list is meant to enumerate the project's public
+        # systems, and a reader checking whether one is covered should not have to work out
+        # that it is covered by accident -- an accident a change to the functional suite's
+        # dependencies could end at any time.
         run: |
           ros run -- --non-interactive \
             --eval '(ql:quickload (list "cl-gbdt" "cl-gbdt/lightgbm" "cl-gbdt/xgboost"
+                                         "cl-gbdt/lightgbm/unified"
+                                         "cl-gbdt/xgboost/unified"
                                          "cl-gbdt/regen" "cl-gbdt/tests"
                                          "cl-gbdt/tests/functional") :silent t)' \
             --eval '(dolist (s (list "cl-gbdt" "cl-gbdt/lightgbm" "cl-gbdt/xgboost"
+                                      "cl-gbdt/lightgbm/unified"
+                                      "cl-gbdt/xgboost/unified"
                                       "cl-gbdt/regen" "cl-gbdt/tests"
                                       "cl-gbdt/tests/functional"))
                       (asdf:compile-system s :force t))' 2>&1 | tee /tmp/compile.log

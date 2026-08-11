@@ -32,12 +32,15 @@
   ;; clause in evaluation.lisp and sparse-input.lisp.
   (:use #:cl #:rove)
   (:import-from #:cl-gbdt)
-  ;; Zero symbols, both of them: their only job is to run at load time and register
-  ;; :lightgbm and :xgboost with `open-backend'. Without these clauses,
-  ;; package-inferred-system has no edge to those files and `(cl-gbdt:open-backend
-  ;; :lightgbm)' below would signal `unknown-backend'.
-  (:import-from #:cl-gbdt/src/lightgbm/all)
-  (:import-from #:cl-gbdt/src/xgboost/all)
+  ;; Zero symbols, both of them: they run at load time to register :lightgbm and :xgboost
+  ;; with `open-backend' and to define each backend's methods on `cl-gbdt''s generics.
+  ;; Without these clauses, package-inferred-system has no edge to those files and
+  ;; `(cl-gbdt:open-backend :lightgbm)' below would signal `unknown-backend'. `unified'
+  ;; rather than `all' since the Layer 1 split: `all' is Layer 1 alone now, carrying the
+  ;; `register-backend' call but not the protocol methods, so `train' below would find no
+  ;; applicable method.
+  (:import-from #:cl-gbdt/src/lightgbm/unified)
+  (:import-from #:cl-gbdt/src/xgboost/unified)
   ;; `dense-to-csr' stores every element of the matrix it converts, zeros included. What this
   ;; file needs that for: an entry a `csr-matrix' does not store is MISSING to XGBoost whatever
   ;; any config says -- see that struct's own docstring, where the divergence is stated -- so a

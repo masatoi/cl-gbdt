@@ -135,7 +135,7 @@ Never compared against a loaded version at runtime, unlike *XGBOOST-VERSION-RANG
 LightGBM's C API has no version entry point at all (`grep -c Version
 src/lightgbm/c-api.lisp' reports 0), so `backend-version' is always NIL on this
 backend and there is nothing to compare it against. See
-`cl-gbdt/src/lightgbm/backend''s `initialize-backend' and `check-backend-version'
+`cl-gbdt/src/lightgbm/classes''s `initialize-backend' and `check-backend-version'
 below. Recorded here anyway, for the same documentation purpose the README's
 backend-differences table serves.
 
@@ -168,7 +168,7 @@ next matrix run.")
 docstring for what VERIFIED and INFERRED each mean and this file's header comment for
 why the runtime check gates on INFERRED, not VERIFIED. Unlike LightGBM, this range is
 actually compared against a loaded version: XGBoost's C API does expose one, read by
-`cl-gbdt/src/xgboost/backend''s `%read-version'.
+`cl-gbdt/src/xgboost/native''s `%read-version'.
 
 Both bounds moved up from task 3's \"1.7.0\": task 4 ran the functional suite against
 `xgboost==1.7.0' and its ranking round trip failed --
@@ -214,7 +214,7 @@ Gates on RANGE's inferred bounds rather than its narrower verified ones -- see t
 file's header comment: warning on every difference from the exact version the
 functional suite happens to run against would fire on nearly every compatible caller.
 
-Only `cl-gbdt/src/xgboost/backend''s `initialize-backend' calls this. It is never
+Only `cl-gbdt/src/xgboost/classes''s `initialize-backend' calls this. It is never
 called for LightGBM: with `backend-version' always NIL there, this would signal on
 every single open, a check that can never actually confirm compatibility -- see
 *LIGHTGBM-VERSION-RANGE*'s docstring for the fuller explanation of that asymmetry."

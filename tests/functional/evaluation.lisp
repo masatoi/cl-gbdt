@@ -28,14 +28,17 @@
   ;; dependency on the unified API is explicit rather than inherited from the backend
   ;; systems below, matching the identical clause in lightgbm-api.lisp.
   (:import-from #:cl-gbdt)
-  ;; Zero symbols, both of them: their only job is to run at load time and register
-  ;; :lightgbm and :xgboost with `open-backend' -- see `register-backend' in each backend's
-  ;; protocol.lisp. Without these clauses, package-inferred-system has no edge to those
-  ;; files at all and `(cl-gbdt:open-backend :lightgbm)' below would signal
-  ;; `unknown-backend'. This is the one file in the suite that needs both, being the one
-  ;; that runs the same assertions against both.
-  (:import-from #:cl-gbdt/src/lightgbm/all)
-  (:import-from #:cl-gbdt/src/xgboost/all)
+  ;; Zero symbols, both of them: they run at load time to register :lightgbm and :xgboost
+  ;; with `open-backend' -- see `register-backend' in each backend's classes.lisp -- and to
+  ;; define each backend's methods on `cl-gbdt''s generics. Without these clauses,
+  ;; package-inferred-system has no edge to those files at all and `(cl-gbdt:open-backend
+  ;; :lightgbm)' below would signal `unknown-backend'. This is the one file in the suite that
+  ;; needs both, being the one that runs the same assertions against both. `unified' rather
+  ;; than `all' since the Layer 1 split: `all' is Layer 1 alone now, carrying the
+  ;; `register-backend' call but not the protocol methods, so `train' below would find no
+  ;; applicable method.
+  (:import-from #:cl-gbdt/src/lightgbm/unified)
+  (:import-from #:cl-gbdt/src/xgboost/unified)
   ;; Zero symbols again: the cross-backend guard test at the end of this file calls each
   ;; backend's Layer 1 entry point by its PUBLIC name -- `cl-gbdt/lightgbm:booster-eval',
   ;; `cl-gbdt/xgboost:evaluate-one-iteration' -- because a caller who could hand one

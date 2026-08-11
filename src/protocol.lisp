@@ -9,7 +9,9 @@
 (uiop:define-package #:cl-gbdt/src/protocol
   (:use #:cl)
   (:import-from #:alexandria #:parse-body)
-  (:import-from #:cl-gbdt/src/backend #:backend)
+  (:import-from #:cl-gbdt/src/backend #:backend #:backend-name)
+  (:import-from #:cl-gbdt/src/handle #:dataset #:booster #:handle-backend)
+  (:import-from #:cl-gbdt/src/conditions #:backend-methods-not-loaded)
   (:export #:make-dataset
            #:dataset-num-rows
            #:dataset-num-features
@@ -662,6 +664,111 @@ this is checked before any foreign call rather than left to crash -- and
 
 (defgeneric free-booster (booster)
   (:documentation "Free BOOSTER. Does nothing if it was already freed."))
+
+;;; ---------------------------------------------------------------------------
+;;; Fallbacks: the backend is loaded, its unified-API methods are not
+;;;
+;;; `cl-gbdt/lightgbm' is Layer 1 alone -- it registers the backend class and opens the
+;;; library, and deliberately does not carry the methods that implement the generic
+;;; functions above. That makes a state reachable which used to be impossible: a program
+;;; holding an open backend and a generic function with no applicable method for it.
+;;; Measured on SBCL, that produces `SB-PCL::NO-APPLICABLE-METHOD-ERROR', whose report
+;;; names neither the backend nor the system to load. Policy section 7 asks for a typed
+;;; condition instead, and these are it.
+;;;
+;;; Each is specialized on a base class -- `backend', `dataset', `booster' -- so a real
+;;; backend's own method is strictly more specific and always wins. Nothing here fires in
+;;; a program that loaded `cl-gbdt/<backend>/unified'.
+;;;
+;;; The six that take keyword arguments spell out the generic function's own keyword list
+;;; rather than saying `&key &allow-other-keys', and that is load-bearing rather than
+;;; cosmetic. Being specialized on a base class does not make a fallback INAPPLICABLE next
+;;; to a backend's own method -- the base class is a superclass of the concrete one, so
+;;; both are applicable and only the ORDER differs -- and CLHS 7.6.5 says a generic
+;;; function accepts every keyword as soon as ANY applicable method has
+;;; `&allow-other-keys'. Written that way, these fallbacks silently widened six of the
+;;; thirteen generics for every caller: `(make-dataset backend matrix :totally-bogus 1)'
+;;; stopped signalling and started returning a dataset, a typo'd `:parameters' or
+;;; `:num-rounds' trained a differently configured model with nothing raised, and SBCL's
+;;; compile-time warning for a misspelled keyword went quiet. Listing the keywords
+;;; explicitly satisfies the congruence rules -- the list IS the generic function's own,
+;;; which is also what every concrete method declares -- and moves the set of accepted
+;;; keywords nowhere. Adding a keyword to one of these generics means adding it here too.
+
+(defmethod make-dataset ((backend backend) matrix
+                         &key label weight group feature-names parameters reference missing
+                           categorical-features)
+  (declare (ignore matrix label weight group feature-names parameters reference missing
+                   categorical-features))
+  (error 'backend-methods-not-loaded
+         :backend (backend-name backend) :generic-function 'make-dataset))
+
+(defmethod train ((backend backend) dataset
+                  &key valid-sets num-rounds parameters record-history early-stopping
+                       objective evaluation)
+  (declare (ignore dataset valid-sets num-rounds parameters record-history early-stopping
+                   objective evaluation))
+  (error 'backend-methods-not-loaded
+         :backend (backend-name backend) :generic-function 'train))
+
+(defmethod load-model ((backend backend) path)
+  (declare (ignore path))
+  (error 'backend-methods-not-loaded
+         :backend (backend-name backend) :generic-function 'load-model))
+
+(defmethod dataset-num-rows ((dataset dataset))
+  (error 'backend-methods-not-loaded
+         :backend (backend-name (handle-backend dataset))
+         :generic-function 'dataset-num-rows))
+
+(defmethod dataset-num-features ((dataset dataset))
+  (error 'backend-methods-not-loaded
+         :backend (backend-name (handle-backend dataset))
+         :generic-function 'dataset-num-features))
+
+(defmethod free-dataset ((dataset dataset))
+  (error 'backend-methods-not-loaded
+         :backend (backend-name (handle-backend dataset))
+         :generic-function 'free-dataset))
+
+(defmethod update-one-iteration ((booster booster))
+  (error 'backend-methods-not-loaded
+         :backend (backend-name (handle-backend booster))
+         :generic-function 'update-one-iteration))
+
+(defmethod predict ((booster booster) matrix &key kind num-iteration missing)
+  (declare (ignore matrix kind num-iteration missing))
+  (error 'backend-methods-not-loaded
+         :backend (backend-name (handle-backend booster))
+         :generic-function 'predict))
+
+(defmethod save-model ((booster booster) path &key num-iteration)
+  (declare (ignore path num-iteration))
+  (error 'backend-methods-not-loaded
+         :backend (backend-name (handle-backend booster))
+         :generic-function 'save-model))
+
+(defmethod model-to-string ((booster booster) &key num-iteration)
+  (declare (ignore num-iteration))
+  (error 'backend-methods-not-loaded
+         :backend (backend-name (handle-backend booster))
+         :generic-function 'model-to-string))
+
+(defmethod feature-importance ((booster booster) &key kind num-iteration)
+  (declare (ignore kind num-iteration))
+  (error 'backend-methods-not-loaded
+         :backend (backend-name (handle-backend booster))
+         :generic-function 'feature-importance))
+
+(defmethod evaluation ((booster booster))
+  (error 'backend-methods-not-loaded
+         :backend (backend-name (handle-backend booster))
+         :generic-function 'evaluation))
+
+(defmethod free-booster ((booster booster))
+  (error 'backend-methods-not-loaded
+         :backend (backend-name (handle-backend booster))
+         :generic-function 'free-booster))
 
 (defmacro with-dataset ((var form) &body body)
   "Bind VAR to the dataset FORM returns, evaluate BODY, and always free it.
