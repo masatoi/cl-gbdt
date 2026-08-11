@@ -137,5 +137,15 @@ guard, and have no portable fallback."
                ;; deterministic fixture of its own -- with a validation block of a DIFFERENT
                ;; height from its training block, which is what makes a per-dataset read
                ;; distinguishable from a training-set read.
-               "cl-gbdt/tests/functional/custom-evaluation")
+               "cl-gbdt/tests/functional/custom-evaluation"
+               ;; The one entry here that declares NO unified-API dependency: it names
+               ;; `cl-gbdt/lightgbm' and nothing else of this project, no `cl-gbdt' and not
+               ;; even the shared tests/functional/support.lisp, which reaches Layer 2
+               ;; itself. That absence IS the property under test -- Layer 1 trains and
+               ;; predicts with no unified API in the image -- and
+               ;; `tools/ci/check-leaf-systems.lisp', which loads every leaf system alone in
+               ;; a fresh subprocess, is what holds the file to it. Adding an edge here or
+               ;; in the file's own package form would destroy the test silently rather
+               ;; than fail it, so neither belongs.
+               "cl-gbdt/tests/functional/lightgbm-standalone")
   :perform (test-op (op c) (symbol-call :rove :run c)))
