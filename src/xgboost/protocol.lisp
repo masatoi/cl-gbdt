@@ -1018,8 +1018,8 @@ KIND and NUM-ITERATION are as the `predict' generic function documents, NUM-ITER
 it. Predictions start from iteration 0 -- the protocol exposes no start-iteration override.
 
 Signals `capability-unavailable' when MATRIX is a `csr-matrix' and this backend's
-`:sparse-input' capability reads false -- see `%check-sparse-input', which checks it before
-any foreign call.
+`:sparse-input' capability reads false -- see `cl-gbdt/src/xgboost/api''s
+`%check-sparse-input', which checks it before any foreign call.
 
 MISSING, the value in MATRIX that means *missing*, reaches the library through a DIFFERENT
 config for each of MATRIX's two forms, and neither is the one `make-dataset' fills. A dense

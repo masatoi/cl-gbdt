@@ -106,10 +106,15 @@
 ;;; `cl-gbdt/src/data' still stay out, though the reason has changed: dataset construction is
 ;;; now at this layer, and `create-dataset' below does take a `csr-matrix', so a Layer 1 caller
 ;;; who wants the sparse path has to reach `cl-gbdt:make-csr-matrix' -- which means loading the
-;;; unified core -- or name `cl-gbdt/src/data' directly. Publishing that constructor here is a
-;;; decision about the SPARSE surface, not a side effect of moving `make-dataset''s procedure
-;;; down, so it is left to be made deliberately, exactly as `cl-gbdt/lightgbm' leaves it. The
-;;; dense path, which is every ordinary array, needs nothing from `cl-gbdt/src/data' at all.
+;;; unified core -- or name `cl-gbdt/src/data' directly. `cl-gbdt/lightgbm' does NOT leave it
+;;; there: it publishes `make-csr-matrix', the `csr-matrix' type and its five readers (see its
+;;; own comment at the same place), and it did so when its `predict' reached Layer 1 and half of
+;;; two published contracts would otherwise have been unreachable from the package publishing
+;;; them. This backend has only the one such contract so far, `create-dataset'; its `predict' is
+;;; still at Layer 2. So the sparse surface is deferred to the task that moves that method down,
+;;; which is where the sibling took the decision and where the same argument will apply here --
+;;; not left open indefinitely, and not a side effect of moving `make-dataset''s procedure down.
+;;; The dense path, which is every ordinary array, needs nothing from `cl-gbdt/src/data' at all.
 ;;;
 ;;; Every one of them is named in `:export' below because that is now the only thing
 ;;; publishing them: they arrive through `:import-from', which imports without exporting. The
