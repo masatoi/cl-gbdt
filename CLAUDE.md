@@ -57,8 +57,8 @@ ever reaches `cl-gbdt/src/protocol`, the training files, or the bare `cl-gbdt`.
 **A Layer 1 caller trains and predicts**, both backends: `create-dataset`, `create-booster`,
 `update-one-iteration`, `predict`, `free-dataset` and `free-booster` are published from
 `api.lisp` and proven with no unified API in the image by
-`tests/functional/{lightgbm,xgboost}-standalone.lisp`, each of which declares one dependency
--- its backend's public package. Five of the 13 methods delegate their whole procedure to
+`tests/functional/{lightgbm,xgboost}-standalone.lisp`, each of which names its backend's
+public package and no other system **of this project** -- `rove` aside, they declare nothing. Five of the 13 methods delegate their whole procedure to
 these; `train` is the one whose Layer 1 counterpart exists and is not called, for the reason
 its own creation call records. What a Layer 1 caller still cannot do is `save-model`,
 `load-model`, `model-to-string`, `feature-importance`, `evaluation`, `dataset-num-rows` or

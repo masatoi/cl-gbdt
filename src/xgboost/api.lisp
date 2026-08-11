@@ -360,10 +360,21 @@ Every check runs before the creation call, so a rejected VALID-SETS entry leaves
 existence at all. The raw handle then exists in C from the moment that call returns and
 nothing in Lisp references it until `make-handle' runs -- `with-pointer-ownership' spans
 exactly that gap, so anything signalling in between frees the booster rather than orphaning
-it. `%set-parameters' is the whole of what runs in that gap today and, per the measurement
-above, is not observed to signal for any parameter; the form is what makes that a property of
-this code rather than a property of the library's leniency, and a future step added between
-the creation call and `take-ownership' inherits the guarantee without asking for it."
+it. `%set-parameters' is the whole of what runs in that gap, and it does signal, just not for
+any of the parameters the measurement above covers: it renders PARAMETERS through
+`normalize-parameters', which signals `data-error' for an ODD-LENGTH plist rather than let a
+final key go silently missing. Measured -- `:parameters '(:eta)' signals `data-error' from
+inside this form and `%free-booster-unchecked' runs exactly once. That is this form's live
+failure mode, not a prospective one, and it is what a value XGBoost itself would have
+tolerated cannot produce.
+
+`cl-gbdt/src/lightgbm/api''s `create-booster' looks symmetrical here and is not. The same odd
+plist signals the same `data-error' there, but with NO booster freed -- measured, zero calls
+to that backend's `%free-booster-unchecked' -- because `%parameter-string' is an ARGUMENT to
+`LGBM_BoosterCreate' and so runs before any handle exists. What its own ownership form catches
+instead is `%add-valid-data' refusing a mismatched bin mapper. The asymmetry is the one this
+docstring opens with, reaching all the way down: parameters go in at creation there and after
+creation here."
   (with-foreign-float-traps-masked
     (%check-backend-open backend)
     ;; `let', not `let*': no binding here reads another, so the sequential scope `let*' adds

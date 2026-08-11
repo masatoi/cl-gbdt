@@ -282,7 +282,15 @@ Every check runs before the creation call, so a rejected VALID-SETS entry leaves
 in existence at all. The raw handle then exists in C from the moment that call returns and
 nothing in Lisp references it until `make-handle' runs -- `with-pointer-ownership' spans
 exactly that gap, so a validation set that fails to attach frees the booster rather than
-orphaning it."
+orphaning it.
+
+PARAMETERS cannot fail in that gap here, and this is where the two backends' ownership forms
+differ. `%parameter-string' is an ARGUMENT to `%create-booster', so a malformed plist -- an
+odd-length one, which `normalize-parameters' signals `data-error' for -- signals before any
+handle exists; measured, `:parameters '(:eta)' frees no booster at all, because there was
+none. On `cl-gbdt/src/xgboost/api' the same plist frees exactly one: that library applies
+parameters AFTER creation, so its `%set-parameters' runs inside its ownership form. See its
+`create-booster', which carries both measurements."
   (with-foreign-float-traps-masked
     (%check-backend-open backend)
     ;; `let', not `let*': no binding here reads another, so the sequential scope `let*' adds

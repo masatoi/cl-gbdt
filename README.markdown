@@ -238,9 +238,9 @@ nothing at this layer translates a key, which is why LightGBM gets `"binary"` an
 `"binary:logistic"` -- and XGBoost's `create-dataset` takes no `:parameters` at all, its
 creation config having no such concept (see [Where the two backends genuinely
 differ](#where-the-two-backends-genuinely-differ)). `tests/functional/lightgbm-standalone.lisp`
-and `tests/functional/xgboost-standalone.lisp` are the same run as a test, each declaring one
-dependency -- its backend's public package -- so that the claim is enforced by the build
-rather than asserted here.
+and `tests/functional/xgboost-standalone.lisp` are the same run as a test, each naming its
+backend's public package and no other system *of this project* -- `rove` aside, they declare
+nothing -- so that the claim is enforced by the build rather than asserted here.
 
 **What a Layer 1 caller still cannot do** is everything else the thirteen generics carry.
 Two lists, and they are not the same kind of gap. Seven operations simply have no Layer 1
