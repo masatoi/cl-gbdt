@@ -1485,3 +1485,29 @@ closed [BEGIN, END] reading would make this 6.")
             (when booster (cl-gbdt:free-booster booster))
             (when train-set (cl-gbdt:free-dataset train-set))
             (cl-gbdt:close-backend backend)))))))
+
+;;; Task 7 (docs/superpowers/sdd/2026-08-11-layer1-separation): `cl-gbdt/xgboost' now
+;;; re-exports the shared-basis symbols -- `open-backend', `backend-open-p', `backend-name',
+;;; `backend-supports-p', `close-backend' and the whole `cl-gbdt/src/conditions' hierarchy --
+;;; that a caller who loads this backend ALONE, never `cl-gbdt' itself, needs to work with it
+;;; and catch what it signals without naming an internal package. Every other test in this
+;;; file goes through `cl-gbdt:', proving the unified API; this one goes through
+;;; `cl-gbdt/xgboost:' throughout, proving the standalone surface added by this task instead.
+;;; No `:path' is passed to `open-backend' here, matching every other test above: this test's
+;;; own `with-backend-library' has already loaded the vendored library via
+;;; `cffi:load-foreign-library', so CFFI's own default resolution finds it without one.
+
+(deftest the-backend-package-publishes-what-a-standalone-caller-needs
+  (testing "opening, asking and closing are all reachable without naming an internal package"
+    (with-backend-library (:xgboost)
+      (let ((backend (cl-gbdt/xgboost:open-backend :xgboost)))
+        (unwind-protect
+             (progn
+               (ok (cl-gbdt/xgboost:backend-open-p backend) "the backend reports itself open")
+               (ok (eq :xgboost (cl-gbdt/xgboost:backend-name backend)) "and names itself")
+               (ok (typep (cl-gbdt/xgboost:backend-supports-p backend :sparse-input) 'boolean)
+                   "a capability question answers")
+               (ok (subtypep 'cl-gbdt/xgboost:capability-unavailable
+                             'cl-gbdt/xgboost:gbdt-error)
+                   "the condition hierarchy is reachable from this package too"))
+          (cl-gbdt/xgboost:close-backend backend))))))
