@@ -57,9 +57,14 @@
 ;;; the round count `slice-model''s interval is expressed against, come from `native'.
 ;;; `slice-model' itself, the capability work's Layer 1 addition, and `create-dataset',
 ;;; `free-dataset', `create-booster', `update-one-iteration', `free-booster' and `predict', the
-;;; finished operations, come from `api' -- the last six being the procedure that used to sit
-;;; inside `cl-gbdt/src/xgboost/protocol''s methods of those names, which now check their
-;;; portable arguments and call these. Together they are a whole training run at this layer,
+;;; finished operations, come from `api'. Five of those six are procedure lifted out of
+;;; `cl-gbdt/src/xgboost/protocol' -- `free-dataset', `update-one-iteration', `free-booster'
+;;; and `predict' out of the methods of those very names, and `create-dataset' out of
+;;; `make-dataset', whose portable name it does not share -- each of those methods now checking
+;;; its portable arguments and calling the function here. `create-booster' is the sixth and is
+;;; not lifted from anything: no protocol method ever built a booster on its own, `train'
+;;; having always built one inline as part of a run. Together they are a whole training run at
+;;; this layer,
 ;;; and now the inference that follows it: build a dataset, build a booster on it, advance it,
 ;;; score with it, free both. `create-booster' is the one with no
 ;;; caller inside this library -- `train' builds its own booster, for the reason its creation

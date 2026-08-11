@@ -119,11 +119,12 @@
 `api.lisp' holds a backend's finished Layer 1 operations -- the ones that take a backend or a
 handle, do the whole job, and hand back a handle or a result, moved out of the `protocol.lisp'
 method bodies that used to hold them so a caller who loaded only `cl-gbdt/lightgbm' or
-`cl-gbdt/xgboost' can invoke them. Today that is LightGBM's `create-dataset' and
-`free-dataset', and only LightGBM has such a file at all. The `%'-prefixed helpers those two
-call live there too and are NOT counted here: rule (2) below reaches only the names the
-backend's public package exports, which is the whole set of names reached with no `defmethod'
-left to inherit a mask from.
+`cl-gbdt/xgboost' can invoke them. BOTH backends have one, and each holds the same six:
+`create-dataset', `create-booster', `update-one-iteration', `predict', `free-dataset' and
+`free-booster' -- plus, on XGBoost, `slice-model', which moved here from `classes.lisp'. The
+`%'-prefixed helpers those call live there too and are NOT counted here: rule (2) below
+reaches only the names the backend's public package exports, which is the whole set of names
+reached with no `defmethod' left to inherit a mask from.
 
 Both backends used to keep every protocol method in one `backend.lisp'. XGBoost's Task 2
 and LightGBM's Task 3 each split that file into `native.lisp' (Layer 1: the %-functions,
@@ -131,9 +132,10 @@ the error wrapper, and -- since the evaluation-api branch's Task 2 -- any public
 entry-point `defun's too) and `protocol.lisp' (Layer 2: the thirteen protocol methods) --
 so most `defmethod' forms live in `protocol.lisp', not `native.lisp', but a public `defun'
 can now legitimately live in either. The layer-separation branch then added
-`classes.lisp' (Layer 1: each backend's CLOS types, the `initialize-backend' and
-`shutdown-backend' pair that opens and closes the shared library, and XGBoost's public
-`slice-model'), moving those forms out of `protocol.lisp' and, until this glob was added,
+`classes.lisp' (Layer 1: each backend's CLOS types and the `initialize-backend' and
+`shutdown-backend' pair that opens and closes the shared library -- and, for one branch,
+XGBoost's public `slice-model', which has since moved on to `api.lisp'), moving those forms
+out of `protocol.lisp' and, until this glob was added,
 out of this scan's sight -- five already-wrapped forms went unchecked for exactly as long
 as this list was one entry short, which is the whole argument for keeping it current and
 the reason a file move should always be read as a question about this parameter.

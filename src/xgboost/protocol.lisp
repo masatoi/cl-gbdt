@@ -431,7 +431,8 @@ handle's ownership is that function's doing; see its own docstring."
 (defmethod free-dataset ((dataset xgboost-dataset))
   "Free DATASET via `XGDMatrixFree'. Does nothing if it was already freed.
 
-Unlike every other operation in this file, this does not go through `handle-live-pointer'
+Unlike every other operation in this file -- `free-booster' below excepted, which takes this
+same path for this same reason -- this does not go through `handle-live-pointer'
 and so does not signal `backend-not-open' when DATASET's backend has already been closed
 -- see `cl-gbdt/src/lightgbm/protocol''s `free-dataset' for why: this runs from
 `with-dataset''s `unwind-protect' cleanup form, and signalling there would replace whatever
@@ -871,18 +872,25 @@ Signals `backend-not-open' before any of that when BACKEND is not open -- see
            ;; with nothing further to do here.
            (completed-rounds 0))
       ;; Built here rather than by `cl-gbdt/src/xgboost/api''s `create-booster', which is the
-      ;; Layer 1 function for exactly this and which every other operation in this file
-      ;; delegates its procedure to. Two things hold this one back, both measured rather than
-      ;; assumed, and both the same two that keep `cl-gbdt/src/lightgbm/protocol''s `train'
-      ;; building its own. `booster-best-iteration' is a `:reader'-only slot (src/handle.lisp):
-      ;; the sole way to set it is `make-handle''s :BEST-ITERATION initarg, at construction, and
-      ;; the value comes from the watcher AFTER the loop -- so this method must still own the
-      ;; raw pointer when the loop ends, and `create-booster' builds its handle before the first
-      ;; iteration. And this ownership form is what frees the raw booster when the loop signals;
-      ;; a handle built up front would instead be left unreferenced, its finalizer only WARNING
-      ;; while the foreign booster leaks -- which no test would catch, both leak tests asserting
-      ;; the observable half alone, that the backend still trains afterwards. Giving the slot a
-      ;; writer to merge the two is not this file's to do.
+      ;; Layer 1 function for exactly this. `train' is the ONE method in this file whose Layer 1
+      ;; counterpart exists and is not called: five of the thirteen delegate their whole
+      ;; procedure -- `make-dataset', `predict', `update-one-iteration', `free-dataset' and
+      ;; `free-booster' -- and the other seven have no counterpart to delegate to at all. What
+      ;; holds this one back is `booster-best-iteration', the same barrier that keeps
+      ;; `cl-gbdt/src/lightgbm/protocol''s `train' building its own, and a property of the
+      ;; shared `handle' class rather than of either library: a `:reader'-only slot
+      ;; (src/handle.lisp) whose sole writer is `make-handle''s :BEST-ITERATION initarg, at
+      ;; construction, while the value comes from the watcher AFTER the loop -- so this method
+      ;; must still own the raw pointer when the loop ends, and `create-booster' builds its
+      ;; handle before the first iteration. Giving the slot a writer to merge the two is not
+      ;; this file's to do.
+      ;;
+      ;; A second reason stood here and is DEMOTED to a preference, on both backends: that this
+      ;; ownership form is what frees the raw booster when the loop signals, where a handle
+      ;; built up front would be left unreferenced with a finalizer that only warns. True of the
+      ;; code as written, but a `train' that built the handle first could free it from an
+      ;; `unwind-protect' just as well. See the LightGBM twin's version of this comment, which
+      ;; also records why the two tests named after leaking do not cover the case it claimed.
       (let ((booster-pointer (%create-booster dataset-pointers)))
         (with-pointer-ownership (booster-pointer #'%free-booster-unchecked take-ownership)
           (%set-parameters booster-pointer parameters)

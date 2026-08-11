@@ -154,9 +154,12 @@
 ;;; `booster-eval'/`booster-eval-names' exception.
 ;;; `tools/ci/check-float-traps.lisp' checks this directly: it reads the sibling `all.lisp''s
 ;;; public `:export' clause and requires every `defun' named there to open with this macro,
-;;; the same rule it already applied to every `defmethod' in `protocol.lisp'. `slice-model',
-;;; the third such entry point, is covered by the identical rule but lives in `classes.lisp'
-;;; rather than here -- see the Model slicing section below for why.
+;;; the same rule it already applied to every `defmethod' in `protocol.lisp'. The other public
+;;; entry points this backend has -- `slice-model' and the six finished operations
+;;; `create-dataset', `create-booster', `update-one-iteration', `predict', `free-dataset' and
+;;; `free-booster' -- are covered by the identical rule but live in `api.lisp' rather than
+;;; here, each wrapping its own whole body there; see the Model slicing section below for why
+;;; `slice-model' in particular could never live in this file.
 
 ;;; ---------------------------------------------------------------------------
 ;;; Error checking
@@ -823,17 +826,42 @@ have a locally-tracked counter silently repeating rounds already boosted."
              "XGBoosterUpdateOneIter"))
 
 (defun %check-booster-datasets-live (booster)
-  "Signal `released-handle-error' when any dataset BOOSTER depends on -- its training set,
-or any validation set attached via `train''s VALID-SETS -- has already been freed.
+  "Signal `released-handle-error' when any dataset BOOSTER depends on -- its training set, or
+any validation set attached at creation by `train' or `create-booster' -- has already been
+freed.
 
-`XGBoosterUpdateOneIter' dereferences the DMatrix pointer passed to it directly, and
-XGBoost's internal caches keep every DMatrix handle given to `XGBoosterCreate' alive by
-pointer, not by anything `XGDMatrixFree' clears when the corresponding dataset is freed.
-Calling it after any of those datasets has been freed out from under the booster is a
-segfault, not a catchable Lisp condition, so every one of them has to be checked here,
-before any foreign call. `booster-training-set' is NIL for a `load-model' booster, which
-has no training set and needs no check; `booster-validation-sets' is NIL when `train' was
-called with no VALID-SETS."
+The two kinds are NOT equally dangerous, and saying so together would overstate one and
+understate the other. Both were measured against the vendored library by freeing the dataset
+and then calling `%update-one-iteration' directly -- past this check, and past
+`handle-live-pointer', on the raw pointers:
+
+  TRAINING SET  `XGBoosterUpdateOneIter' takes the DMatrix handle explicitly and
+                `update-one-iteration' reads it back out of `booster-training-set', so a
+                freed one goes straight into C as a pointer to storage `XGDMatrixFree'
+                deleted. Measured: SB-SYS:MEMORY-FAULT-ERROR at #x0 in 3/3 runs, from inside
+                the library. SBCL turning that fault into a condition on this platform is a
+                signal handler catching a segfault, not a contract to rely on.
+  VALIDATION SET  Returns normally, and again on the next call. `XGBoosterUpdateOneIter'
+                never consults the array `XGBoosterCreate' was given -- it takes its one
+                DMatrix explicitly -- and XGBoost keeps its own reference to each DMatrix in
+                that array, so the object outlives the handle naming it. There is no fault to
+                head off here; what this check buys is that a caller who frees a validation
+                set and keeps boosting is told so, instead of the run continuing against data
+                it has already released. Those retained handles are not decorative -- this
+                backend's `evaluation' hands exactly them to `XGBoosterEvalOneIter', reading
+                each through `handle-live-pointer' first for this same reason.
+
+So the training-set arm is a memory-safety guard and the validation-set arm is a contract
+guard, and both are checked here, before any foreign call, because a caller cannot tell from
+the outside which one it is about to trip. `cl-gbdt/src/lightgbm/native''s function of the
+same name draws no such distinction, and its docstring says why it should not: on that
+library the booster keeps its validation sets' own stored pointers and works against them
+every iteration, so both kinds are the training-set case there.
+
+`booster-training-set' is NIL for a `load-model' booster, which has no training set and needs
+no check -- `cl-gbdt/src/xgboost/api''s `update-one-iteration' signals `missing-training-set'
+for that case rather than this function; `booster-validation-sets' is NIL when no validation
+set was attached."
   (let ((training-set (booster-training-set booster)))
     (when (and training-set (handle-released-p training-set))
       (error 'released-handle-error :object training-set)))
@@ -1719,9 +1747,12 @@ after training and the numbers recorded during training from ever being able to 
 ;;; a file this one cannot depend on, since that one already depends on this one for
 ;;; `*required-symbols*' and the library-discovery parameters, so the edge would close a
 ;;; cycle. Every `make-handle' call in this project is therefore in a file that loads after
-;;; `native.lisp': `slice-model' sits in `classes.lisp' -- Layer 1 still, since it is
-;;; XGBoost's own operation and not part of the unified API -- and calls `%slice' below for
-;;; the foreign half, exactly as `load-model' in `protocol.lisp' calls `%load-model'.
+;;; `native.lisp': `slice-model' sits in `api.lisp' -- Layer 1 still, since it is XGBoost's
+;;; own operation and not part of the unified API -- and calls `%slice' below for the foreign
+;;; half, exactly as `load-model' in `protocol.lisp' calls `%load-model'. It lived in
+;;; `classes.lisp' until `api.lisp' existed, that having been the only Layer 1 file after this
+;;; one; it moved because it is an operation over the booster class rather than part of the
+;;; shared library's lifetime, and the constraint above admits either file equally.
 ;;; `booster-boosted-rounds' has no such constraint -- it
 ;;; returns an integer -- so it stays here beside the `%boosted-rounds' it wraps.
 

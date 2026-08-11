@@ -36,25 +36,36 @@ over both backends.
 
 **Status: functional.** Both backends implement
 all 13 generic functions of the unified API -- `make-dataset`, `train`, `predict`, and
-the rest -- against the real shared libraries, exercised by 792 functional assertions across
-13 test files in `cl-gbdt/tests/functional` (layer 2) on top of 551 assertions across 21
+the rest -- against the real shared libraries, exercised by 820 functional assertions across
+15 test files in `cl-gbdt/tests/functional` (layer 2) on top of 551 assertions across 21
 test files that need no shared library at all (layer 1).
 
 **Each backend is two systems.** `cl-gbdt/<backend>` is that backend's **Layer 1 alone**:
-`src/<backend>/native.lisp` over the generated `c-api.lisp`, plus `src/<backend>/classes.lisp`
-(the backend's CLOS types, `register-backend`, and the `initialize-backend`/`shutdown-backend`
-pair that opens and closes the shared library), published by `src/<backend>/all.lisp`. It does
+`src/<backend>/native.lisp` (the `%`-functions, over raw pointers) over the generated
+`c-api.lisp`, plus `src/<backend>/classes.lisp` (the backend's CLOS types,
+`register-backend`, and the `initialize-backend`/`shutdown-backend` pair that opens and
+closes the shared library), plus `src/<backend>/api.lisp` (the finished operations: each
+takes a backend or a handle, does the whole job, and hands back a handle or a result),
+published by `src/<backend>/all.lisp`. It does
 **not** carry the 13 unified-API methods and does not define the `cl-gbdt` package.
 `cl-gbdt/<backend>/unified` adds `src/<backend>/protocol.lisp` -- those 13 methods -- and core
 `cl-gbdt` with it, aggregated by `src/<backend>/unified.lisp`. Anything calling `cl-gbdt:train`
 loads `/unified`; loading only Layer 1 and calling a portable generic signals
 `backend-methods-not-loaded`, which names the system to load.
 `tools/ci/check-layer-separation.lisp` fails the build if a Layer 1 file's dependency closure
-ever reaches `cl-gbdt/src/protocol`, the training files, or the bare `cl-gbdt`. A Layer 1
-caller still cannot build a dataset -- `make-dataset` exists only as a unified-API method --
-which is a known and deliberate limitation, closed by planned follow-up work tracked as the
-first bullet of `docs/cl-gbdt-layered-api-implementation-policy.md`'s フォローアップ section,
-not an oversight.
+ever reaches `cl-gbdt/src/protocol`, the training files, or the bare `cl-gbdt`.
+**A Layer 1 caller trains and predicts**, both backends: `create-dataset`, `create-booster`,
+`update-one-iteration`, `predict`, `free-dataset` and `free-booster` are published from
+`api.lisp` and proven with no unified API in the image by
+`tests/functional/{lightgbm,xgboost}-standalone.lisp`, each of which declares one dependency
+-- its backend's public package. Five of the 13 methods delegate their whole procedure to
+these; `train` is the one whose Layer 1 counterpart exists and is not called, for the reason
+its own creation call records. What a Layer 1 caller still cannot do is `save-model`,
+`load-model`, `model-to-string`, `feature-importance`, `evaluation`, `dataset-num-rows` or
+`dataset-num-features` -- the next increment's work, tracked as the first bullet of
+`docs/cl-gbdt-layered-api-implementation-policy.md`'s フォローアップ section -- and the
+training report, early stopping and the `:objective`/`:evaluation` callbacks, which are
+`train`'s own concepts and stay Layer 2.
 
 `train` returns a `training-report`
 as its secondary value, and takes `:record-history` (default `t`) to turn the per-iteration
@@ -205,15 +216,19 @@ calls into its shared library wraps its whole body in `with-foreign-float-traps-
 (`cl-gbdt/src/foreign`), not just the specific call this was first found through -- the two
 `classes.lisp` files hold `initialize-backend` and `shutdown-backend`, which open and close
 the library and are as much foreign-reaching as any protocol method. The
-same rule binds a **`defun` in `native.lisp`, `classes.lisp` or `protocol.lisp` of a backend
+same rule binds a **`defun` in `native.lisp`, `classes.lisp`, `api.lisp` or `protocol.lisp`
+of a backend
 once that backend's public package exports it** (the second `uiop:define-package` form in the
 sibling `all.lisp`, per `tools/ci/check-float-traps.lisp`'s `:export`-clause check): such
 a `defun` is a library-reaching entry point with no `defmethod` left to inherit a mask
 from, so it must wrap its own whole body the same way -- LightGBM's
 `booster-eval`/`booster-eval-names` and XGBoost's `evaluate-one-iteration` were the first
-functions this applied to, all three in `native.lisp`; XGBoost's `slice-model` is the
-only one outside it, in `classes.lisp`, where it lives because it builds a booster handle and
-so must name the concrete class defined there.
+functions this applied to, all three in `native.lisp`; every exported `defun` in either
+backend's `api.lisp` is one too -- the six finished operations on both, plus XGBoost's
+`slice-model`, which lives there rather than in `native.lisp` because it builds a booster
+handle and so must name the concrete class `classes.lisp` defines. All four file names are
+globbed by that check's `+BACKEND-FILE-PATTERNS+`; a backend file under some other name
+would be scanned by nothing.
 SBCL enables the `:invalid`, `:divide-by-zero` and `:overflow` floating-point traps by
 default on x86-64 and none of them on aarch64; LightGBM and XGBoost are C code written
 and tested against the opposite (masked) convention, where an intermediate NaN or

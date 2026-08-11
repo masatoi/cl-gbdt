@@ -484,7 +484,8 @@ doing; see its own docstring."
 (defmethod free-dataset ((dataset lightgbm-dataset))
   "Free DATASET via `LGBM_DatasetFree'. Does nothing if it was already freed.
 
-Unlike every other operation in this file, this does not go through
+Unlike every other operation in this file -- `free-booster' below excepted, which
+takes this same path for this same reason -- this does not go through
 `handle-live-pointer' and so does not signal `backend-not-open' when DATASET's
 backend has already been closed. `free-dataset' runs from `with-dataset''s
 `unwind-protect' cleanup form, and a non-local exit is exactly when that cleanup
@@ -893,17 +894,29 @@ Signals `backend-not-open' before any of that when BACKEND is not open -- see
            ;; with nothing further to do here.
            (completed-rounds 0))
       ;; Built here rather than by `cl-gbdt/src/lightgbm/api''s `create-booster', which is the
-      ;; Layer 1 function for exactly this and which every other operation in this file
-      ;; delegates its procedure to. Two things hold this one back, both measured rather than
-      ;; assumed. `booster-best-iteration' is a `:reader'-only slot (src/handle.lisp): the sole
-      ;; way to set it is `make-handle''s :BEST-ITERATION initarg, at construction, and the
-      ;; value comes from the watcher AFTER the loop -- so this method must still own the raw
-      ;; pointer when the loop ends, and `create-booster' builds its handle before the first
-      ;; iteration. And this ownership form is what frees the raw booster when the loop
-      ;; signals; a handle built up front would instead be left unreferenced, its finalizer
-      ;; only WARNING while the foreign booster leaks -- which no test would catch, both
-      ;; leak tests asserting the observable half alone, that the backend still trains
-      ;; afterwards. Giving the slot a writer to merge the two is not this file's to do.
+      ;; Layer 1 function for exactly this. `train' is the ONE method in this file whose Layer
+      ;; 1 counterpart exists and is not called: five of the thirteen delegate their whole
+      ;; procedure -- `make-dataset', `predict', `update-one-iteration', `free-dataset' and
+      ;; `free-booster' -- and the other seven have no counterpart to delegate to at all.
+      ;; `booster-best-iteration' is what holds this one back, and it is a barrier rather than
+      ;; a preference: a `:reader'-only slot (src/handle.lisp) whose sole writer is
+      ;; `make-handle''s :BEST-ITERATION initarg, at construction, while the value comes from
+      ;; the watcher AFTER the loop -- so this method must still own the raw pointer when the
+      ;; loop ends, and `create-booster' builds its handle before the first iteration. Giving
+      ;; the slot a writer to merge the two is not this file's to do.
+      ;;
+      ;; A second reason stood here and is DEMOTED to a preference: that this ownership form
+      ;; is what frees the raw booster when the loop signals, where a handle built up front
+      ;; would be left unreferenced with a finalizer that only warns. True of the code as
+      ;; written, but a `train' that built the handle first could free it from an
+      ;; `unwind-protect' just as well, so it argues for the shape this method already has
+      ;; rather than against the merge. It also came with a claim about coverage that does not
+      ;; hold: the two tests named after leaking --
+      ;; `lightgbm-api-make-dataset-wrong-length-label-signals-without-leaking' and its
+      ;; XGBoost twin -- are about a raw DATASET pointer, not a booster, and each asserts only
+      ;; that `make-dataset' signals. A leaked raw C pointer has no Lisp object or finalizer
+      ;; whose absence a test could observe, which is exactly what the LightGBM one's own
+      ;; commentary says.
       (let ((booster-pointer
               (%create-booster train-data-pointer
                                (%parameter-string
@@ -961,8 +974,10 @@ Signals `backend-not-open' before any of that when BACKEND is not open -- see
 (defmethod update-one-iteration ((booster lightgbm-booster))
   "Advance BOOSTER by one boosting iteration via `LGBM_BoosterUpdateOneIter'.
 
-Returns false once an iteration produces no further split, per the generic
-function's contract. Signals `released-handle-error' when BOOSTER's training set,
+Returns false when the iteration just run produced no further split, per the generic
+function's contract -- about that call, not a latch for the rest of the run; see
+`cl-gbdt/src/lightgbm/api''s function of the same name, which spells that
+distinction out. Signals `released-handle-error' when BOOSTER's training set,
 or any of its validation sets, has already been freed -- see
 `%check-booster-datasets-live'.
 

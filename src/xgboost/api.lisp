@@ -274,10 +274,14 @@ orphaning it."
   "Free DATASET via `XGDMatrixFree'. Does nothing if it was already freed, and returns no
 useful value.
 
-Unlike every other operation that reads an existing handle, this does not go through
+Unlike every other operation that reads an existing handle -- `free-booster' below excepted,
+which takes this same path for this same reason -- this does not go through
 `handle-live-pointer' and so does not signal `backend-not-open' when DATASET's backend has
-already been closed. `free-dataset' runs from `with-dataset''s `unwind-protect' cleanup form,
-and a non-local exit is exactly when that cleanup runs; signalling there would replace whatever
+already been closed. A free runs from a cleanup form -- the `unwind-protect' a Layer 1 caller
+writes for itself, as tests/functional/xgboost-standalone.lisp does, or the one inside
+`cl-gbdt''s `with-dataset', which reaches this function through the method that delegates to it
+and which a caller of `cl-gbdt/xgboost' alone does not have -- and a non-local exit is exactly
+when that cleanup runs; signalling there would replace whatever
 condition is already unwinding the stack instead of letting it propagate. So when the backend
 is closed, the handle is instead marked released without calling `XGDMatrixFree' -- the shared
 library may no longer be mapped into the process, so that call cannot be trusted not to crash
@@ -326,9 +330,14 @@ PARAMETERS reaches the booster the other way round for the same reason of asymme
 in XGBOOST'S OWN vocabulary, applied AFTER creation by `%set-parameters', one
 `XGBoosterSetParam' call per pair, this library having no bulk-parameter argument the way
 `LGBM_BoosterCreate''s parameter string is. Nothing here translates a key or a value, and no
-key is added. A parameter XGBoost refuses signals `foreign-call-error' from inside the
-ownership form below, which frees the raw booster rather than orphaning it -- so a rejected
-parameter, unlike a rejected VALID-SETS entry, does leave a booster briefly in existence.
+key is added. Nor does anything REJECT one: measured against the vendored library,
+`XGBoosterSetParam' validates nothing at all -- an unknown key, a non-numeric `eta', an
+objective that does not exist and a bogus `tree_method' were each accepted here without a
+status code, and the last three surfaced later, as a `foreign-call-error' out of the first
+call that makes XGBoost configure its learner, which is the `XGBoosterBoostedRounds' inside
+`update-one-iteration'. The unknown key never surfaced at all. So this function returns a
+booster for parameters it cannot honour, and the error, when there is one, names a C function
+the caller never wrote.
 
 The booster retains DATASET and a COPY of VALID-SETS, which keeps them alive for its lifetime
 and lets `update-one-iteration' notice a dataset freed out from under it. The copy is what
@@ -350,14 +359,20 @@ repeated here.
 Every check runs before the creation call, so a rejected VALID-SETS entry leaves no booster in
 existence at all. The raw handle then exists in C from the moment that call returns and
 nothing in Lisp references it until `make-handle' runs -- `with-pointer-ownership' spans
-exactly that gap, so a parameter that fails to apply frees the booster rather than orphaning
-it."
+exactly that gap, so anything signalling in between frees the booster rather than orphaning
+it. `%set-parameters' is the whole of what runs in that gap today and, per the measurement
+above, is not observed to signal for any parameter; the form is what makes that a property of
+this code rather than a property of the library's leniency, and a future step added between
+the creation call and `take-ownership' inherits the guarantee without asking for it."
   (with-foreign-float-traps-masked
     (%check-backend-open backend)
-    ;; `let', not `let*': no binding here reads another, and the checks still run before the
-    ;; creation call below because a `let' evaluates its init forms left to right, which is
-    ;; the whole ordering this function needs. `%create-booster' is deliberately NOT among
-    ;; them -- it belongs inside its own form, where the raw handle's lifetime begins.
+    ;; `let', not `let*': no binding here reads another, so the sequential scope `let*' adds
+    ;; would claim a dependency that is not there. Ordering is NOT what separates the two --
+    ;; both evaluate their init forms left to right -- and the ordering this function depends
+    ;; on is not among these bindings at all: the checks precede the creation call because
+    ;; that call sits in the nested form below, in this `let''s body. `%create-booster' is
+    ;; deliberately NOT among these bindings, for exactly that reason -- it belongs inside its
+    ;; own form, where the raw handle's lifetime begins.
     (let ((train-data-pointer
             (%check-xgboost-dataset backend dataset "create-booster's dataset argument"
                                      'xgboost-dataset))
@@ -399,8 +414,10 @@ and says so by always returning true.
 
 Signals `released-handle-error' when BOOSTER's training set, or any of its validation sets,
 has already been freed -- see `%check-booster-datasets-live', which runs before any foreign
-call because `XGBoosterUpdateOneIter' dereferences those datasets' pointers itself and a freed
-one is a segfault rather than a catchable condition. Signals `missing-training-set' when
+call and whose docstring measures why the two kinds are not the same hazard: a freed TRAINING
+set faults inside the library, since its handle is what this call passes to C, while a freed
+VALIDATION set is refused on contract rather than for safety, that array not being consulted
+here at all. Signals `missing-training-set' when
 BOOSTER has no training set at all. Signals `released-handle-error' for a freed BOOSTER, and
 `backend-not-open' when its backend has since been closed -- see `handle-live-pointer'."
   (with-foreign-float-traps-masked
@@ -417,8 +434,8 @@ useful value.
 
 See `free-dataset' above for why this does not signal `backend-not-open' when BOOSTER's
 backend has already been closed, but marks the handle released and `warn's the foreign memory
-leaked instead -- the same cleanup-form reasoning applies here, `with-booster' being the macro
-whose `unwind-protect' calls this one."
+leaked instead -- the same cleanup-form reasoning applies here, whether the `unwind-protect'
+is the caller's own or the one inside `cl-gbdt''s `with-booster'."
   (with-foreign-float-traps-masked
     (if (backend-open-p (handle-backend booster))
         (release-handle booster (lambda (pointer) (%free-booster pointer)))

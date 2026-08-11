@@ -215,11 +215,15 @@ orphaning it."
   "Free DATASET via `LGBM_DatasetFree'. Does nothing if it was already freed, and returns no
 useful value.
 
-Unlike every other operation that reads an existing handle, this does not go through
+Unlike every other operation that reads an existing handle -- `free-booster' below excepted,
+which takes this same path for this same reason -- this does not go through
 `handle-live-pointer' and so does not signal `backend-not-open' when DATASET's backend has
-already been closed. `free-dataset' runs from `with-dataset''s `unwind-protect' cleanup form,
-and a non-local exit is exactly when that cleanup runs; signalling there would replace
-whatever condition is already unwinding the stack instead of letting it propagate. So when
+already been closed. A free runs from a cleanup form -- the `unwind-protect' a Layer 1 caller
+writes for itself, as tests/functional/lightgbm-standalone.lisp does, or the one inside
+`cl-gbdt''s `with-dataset', which reaches this function through the method that delegates to
+it and which a caller of `cl-gbdt/lightgbm' alone does not have -- and a non-local exit is
+exactly when that cleanup runs; signalling there would replace whatever condition is already
+unwinding the stack instead of letting it propagate. So when
 the backend is closed, the handle is instead marked released without calling
 `LGBM_DatasetFree' -- the shared library may no longer be mapped into the process, so that
 call cannot be trusted not to crash -- and a `warn' reports the foreign memory as leaked,
@@ -281,10 +285,13 @@ exactly that gap, so a validation set that fails to attach frees the booster rat
 orphaning it."
   (with-foreign-float-traps-masked
     (%check-backend-open backend)
-    ;; `let', not `let*': no binding here reads another, and the checks still run before the
-    ;; creation call below because a `let' evaluates its init forms left to right, which is
-    ;; the whole ordering this function needs. `%create-booster' is deliberately NOT among
-    ;; them -- it belongs inside its own form, where the raw handle's lifetime begins.
+    ;; `let', not `let*': no binding here reads another, so the sequential scope `let*' adds
+    ;; would claim a dependency that is not there. Ordering is NOT what separates the two --
+    ;; both evaluate their init forms left to right -- and the ordering this function depends
+    ;; on is not among these bindings at all: the checks precede the creation call because
+    ;; that call sits in the nested form below, in this `let''s body. `%create-booster' is
+    ;; deliberately NOT among these bindings, for exactly that reason -- it belongs inside its
+    ;; own form, where the raw handle's lifetime begins.
     (let ((train-data-pointer
             (%check-lightgbm-dataset backend dataset "create-booster's dataset argument"
                                       'lightgbm-dataset))
@@ -306,9 +313,13 @@ orphaning it."
 (defun update-one-iteration (booster)
   "Advance BOOSTER by one boosting iteration via `LGBM_BoosterUpdateOneIter'.
 
-Returns false once an iteration produces no further split -- LightGBM's own
+Returns false when THIS iteration produced no further split -- LightGBM's own
 `produced_empty_tree' out parameter, read by `%update-one-iteration' and inverted here, so
-that a true return means the iteration did produce one.
+that a true return means the iteration did produce one. Per call, and about that call only:
+the C function recomputes the flag every time and promises nothing about the next one, so a
+false return is not a latch and a loop that stops on it is making its own decision, not
+reading one the library has made. `cl-gbdt/src/protocol''s generic says the same in the
+portable words \"returns false when no further split was possible\".
 
 Signals `released-handle-error' when BOOSTER's training set, or any of its validation sets,
 has already been freed -- see `%check-booster-datasets-live', which runs before any foreign
@@ -326,8 +337,8 @@ useful value.
 
 See `free-dataset' above for why this does not signal `backend-not-open' when BOOSTER's
 backend has already been closed, but marks the handle released and `warn's the foreign
-memory leaked instead -- the same cleanup-form reasoning applies here, `with-booster' being
-the macro whose `unwind-protect' calls this one."
+memory leaked instead -- the same cleanup-form reasoning applies here, whether the
+`unwind-protect' is the caller's own or the one inside `cl-gbdt''s `with-booster'."
   (with-foreign-float-traps-masked
     (if (backend-open-p (handle-backend booster))
         (release-handle booster (lambda (pointer) (%free-booster pointer)))

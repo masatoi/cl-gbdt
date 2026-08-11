@@ -17,7 +17,7 @@ file if you have it locally).
 `make-dataset`, `dataset-num-rows`, `dataset-num-features`, `train`,
 `update-one-iteration`, `predict`, `save-model`, `load-model`, `model-to-string`,
 `feature-importance`, `evaluation`, `free-dataset` and `free-booster` -- against the real
-LightGBM and XGBoost shared libraries, exercised by 792 functional assertions across 13 test
+LightGBM and XGBoost shared libraries, exercised by 820 functional assertions across 15 test
 files (design doc section 12, layer 2), in addition to 551 assertions across 21 test files
 that need no shared library at all (layer 1). `train` also returns a `training-report` as
 its secondary value, and takes
@@ -55,8 +55,9 @@ Loading `cl-gbdt` itself still does not require either `liblightgbm.so` or
 `libxgboost.so` to be installed -- see [Systems](#systems): a shared library is opened
 only by an explicit `open-backend` call, from whichever backend system(s) you load on
 top of the core. Each backend ships as **two** systems: `cl-gbdt/lightgbm` is that
-backend's own API alone -- it opens and closes the library, and none of the thirteen
-portable generic functions above are part of it -- while `cl-gbdt/lightgbm/unified`
+backend's own API alone -- it opens and closes the library, builds datasets and boosters,
+trains and predicts, and none of the thirteen portable generic functions above are part of
+it -- while `cl-gbdt/lightgbm/unified`
 adds their LightGBM methods, and core `cl-gbdt` with them. `cl-gbdt/xgboost` and
 `cl-gbdt/xgboost/unified` divide the same way. Every example below that calls one of
 those thirteen loads a `/unified` system; the few that do not are the ones
@@ -137,11 +138,12 @@ the first thing to get right:
 
 | System | What it carries |
 |---|---|
-| `cl-gbdt/lightgbm` | **Layer 1 alone.** Opens and closes the LightGBM shared library, and publishes LightGBM's own API -- `booster-eval`, `booster-eval-names`, the `lightgbm-backend` class -- plus the shared basis a standalone caller needs: `open-backend`, `close-backend`, `backend-supports-p` and its siblings, `handle-released-p`, and the whole condition hierarchy. **`cl-gbdt:train` and the other twelve portable generic functions are not part of it**, and loading it does not define the `cl-gbdt` package at all |
+| `cl-gbdt/lightgbm` | **Layer 1 alone.** Opens and closes the LightGBM shared library, and publishes LightGBM's own API: the six finished operations `create-dataset`, `create-booster`, `update-one-iteration`, `predict`, `free-dataset` and `free-booster` -- a whole training run and the inference after it -- plus `booster-eval`, `booster-eval-names` and the `lightgbm-backend` class, plus the shared basis a standalone caller needs: `open-backend`, `close-backend`, `backend-supports-p` and its siblings, `make-csr-matrix` and the `csr-matrix` readers, `handle-released-p`, `booster-training-set`, `booster-validation-sets`, and the whole condition hierarchy. **`cl-gbdt:train` and the other twelve portable generic functions are not part of it**, and loading it does not define the `cl-gbdt` package at all |
 | `cl-gbdt/lightgbm/unified` | That, plus `src/lightgbm/protocol.lisp` -- LightGBM's methods on all thirteen portable generics -- plus core `cl-gbdt` itself, which it depends on. This is what the quick start above loads, and what every example here that calls `cl-gbdt:train` loads |
 
-`cl-gbdt/xgboost` and `cl-gbdt/xgboost/unified` divide identically; XGBoost's Layer 1 API
-additionally publishes `slice-model`, `evaluate-one-iteration` and
+`cl-gbdt/xgboost` and `cl-gbdt/xgboost/unified` divide identically -- the same six
+operations under the same names, different symbols in a different package -- and XGBoost's
+Layer 1 API additionally publishes `slice-model`, `evaluate-one-iteration` and
 `booster-boosted-rounds`. Loading one backend never loads the other, and no backend system
 is a dependency of core `cl-gbdt`; load whichever matches the shared library you have.
 **Loading both backends' `/unified` systems is how one program drives both libraries through
@@ -174,15 +176,82 @@ sparse input:    T
 open:            NIL
 ```
 
-**What Layer 1 alone still cannot do is build a dataset.** `make-dataset` exists only as a
-unified-API method today, so there is no Layer 1 way to get a `lightgbm-dataset` -- and with
-no dataset there is nothing to train or predict on either. That is a known and deliberate
-limitation of this split rather than an oversight -- bringing dataset construction down to
-Layer 1 is planned follow-up work, recorded as the first bullet of
-`docs/cl-gbdt-layered-api-implementation-policy.md`'s フォローアップ section, not something
-this layering claims to have delivered.
-Until it lands, a Layer 1 system is for opening a library, asking it
-what it can do, and calling that backend's own operations on handles the unified API made.
+**A Layer 1 system alone also trains and predicts.** Six operations per backend carry a whole
+run -- `create-dataset`, `create-booster`, `update-one-iteration`, `predict`, `free-dataset`
+and `free-booster` -- with no unified API in the image at all. Both blocks below run in one
+fresh image that never defines the `cl-gbdt` package:
+
+```lisp
+(ql:quickload '(:cl-gbdt/lightgbm :cl-gbdt/xgboost) :silent t)
+
+(format t "cl-gbdt package: ~S~%" (find-package :cl-gbdt))
+
+(defparameter *matrix* (make-array '(16 2) :element-type 'double-float))
+(defparameter *label* (make-array 16 :element-type 'double-float))
+(dotimes (row 16)
+  (setf (aref *matrix* row 0) (coerce row 'double-float)
+        (aref *matrix* row 1) (coerce (mod row 4) 'double-float)
+        (aref *label* row) (if (< row 8) 0d0 1d0)))
+
+;; LightGBM: dataset, booster, twenty iterations, predictions, both frees.
+(let* ((backend (cl-gbdt/lightgbm:open-backend :lightgbm))
+       (parameters '(:objective "binary" :num-leaves 3 :min-data-in-leaf 1
+                     :min-data-in-bin 1 :verbose -1))
+       (data (cl-gbdt/lightgbm:create-dataset backend *matrix* :label *label*
+                                              :parameters parameters))
+       (booster (cl-gbdt/lightgbm:create-booster backend data :parameters parameters)))
+  (dotimes (round 20) (cl-gbdt/lightgbm:update-one-iteration booster))
+  (multiple-value-bind (result shape) (cl-gbdt/lightgbm:predict booster *matrix*)
+    (format t "LightGBM  shape ~S  row 0 ~,3F  row 15 ~,3F~%"
+            shape (aref result 0 0) (aref result 15 0)))
+  (cl-gbdt/lightgbm:free-booster booster)
+  (cl-gbdt/lightgbm:free-dataset data)
+  (cl-gbdt/lightgbm:close-backend backend))
+
+;; XGBoost: the same six operations, in its own parameter vocabulary.
+(let* ((backend (cl-gbdt/xgboost:open-backend :xgboost))
+       (data (cl-gbdt/xgboost:create-dataset backend *matrix* :label *label*))
+       (booster (cl-gbdt/xgboost:create-booster
+                 backend data
+                 :parameters '(:objective "binary:logistic" :max-depth 2 :eta 0.5))))
+  (dotimes (round 20) (cl-gbdt/xgboost:update-one-iteration booster))
+  (multiple-value-bind (result shape) (cl-gbdt/xgboost:predict booster *matrix*)
+    (format t "XGBoost   shape ~S  row 0 ~,3F  row 15 ~,3F~%"
+            shape (aref result 0 0) (aref result 15 0)))
+  (cl-gbdt/xgboost:free-booster booster)
+  (cl-gbdt/xgboost:free-dataset data)
+  (cl-gbdt/xgboost:close-backend backend))
+```
+
+Output:
+
+```
+cl-gbdt package: NIL
+LightGBM  shape (16 1)  row 0 0.066  row 15 0.934
+XGBoost   shape (16 1)  row 0 0.134  row 15 0.866
+```
+
+Row 0's label is 0 and row 15's is 1, so both backends learned the boundary; `predict`'s
+second value is the shape it states for the array it just wrote, exactly as the unified
+`predict` states one. `:parameters` is each library's **own** vocabulary in both blocks --
+nothing at this layer translates a key, which is why LightGBM gets `"binary"` and XGBoost
+`"binary:logistic"` -- and XGBoost's `create-dataset` takes no `:parameters` at all, its
+creation config having no such concept (see [Where the two backends genuinely
+differ](#where-the-two-backends-genuinely-differ)). `tests/functional/lightgbm-standalone.lisp`
+and `tests/functional/xgboost-standalone.lisp` are the same run as a test, each declaring one
+dependency -- its backend's public package -- so that the claim is enforced by the build
+rather than asserted here.
+
+**What a Layer 1 caller still cannot do** is everything else the thirteen generics carry.
+Two lists, and they are not the same kind of gap. Seven operations simply have no Layer 1
+counterpart yet -- `save-model`, `load-model`, `model-to-string`, `feature-importance`,
+`evaluation`, `dataset-num-rows` and `dataset-num-features` -- and the next increment brings
+them down; the first bullet of
+`docs/cl-gbdt-layered-api-implementation-policy.md`'s フォローアップ section records that.
+The training report, early stopping, and `train`'s `:objective` and `:evaluation` callbacks
+are the other list, and they stay where they are: they are `cl-gbdt:train`'s own concepts,
+built *around* the loop above rather than being operations inside it, so there is nothing at
+Layer 1 for them to be counterparts of.
 
 Loading core `cl-gbdt` next to a Layer 1 system gives you the `cl-gbdt:` spelling but not the
 methods behind it, and asking for one anyway is a named condition rather than a bare
@@ -235,7 +304,7 @@ neither package re-exports (policy sections 3 and 11):
 Output:
 
 ```
-66 external symbols, 49 of them the condition hierarchy
+81 external symbols, 49 of them the condition hierarchy
 (CL-GBDT/SRC/BACKEND:*KNOWN-CAPABILITIES*
  CL-GBDT/SRC/BACKEND:BACKEND-CAPABILITIES CL-GBDT/SRC/BACKEND:BACKEND-INFO
  CL-GBDT/SRC/BACKEND:BACKEND-LIBRARY-PATH CL-GBDT/SRC/BACKEND:BACKEND-NAME
@@ -243,28 +312,48 @@ Output:
  CL-GBDT/SRC/BACKEND:BACKEND-VERSION CL-GBDT/SRC/HANDLE:BOOSTER
  CL-GBDT/SRC/LIGHTGBM/NATIVE:BOOSTER-EVAL
  CL-GBDT/SRC/LIGHTGBM/NATIVE:BOOSTER-EVAL-NAMES
- CL-GBDT/SRC/BACKEND:CLOSE-BACKEND CL-GBDT/SRC/HANDLE:DATASET
+ CL-GBDT/SRC/HANDLE:BOOSTER-TRAINING-SET
+ CL-GBDT/SRC/HANDLE:BOOSTER-VALIDATION-SETS CL-GBDT/SRC/BACKEND:CLOSE-BACKEND
+ CL-GBDT/SRC/LIGHTGBM/API:CREATE-BOOSTER
+ CL-GBDT/SRC/LIGHTGBM/API:CREATE-DATASET CL-GBDT/SRC/DATA:CSR-MATRIX
+ CL-GBDT/SRC/DATA:CSR-MATRIX-INDICES CL-GBDT/SRC/DATA:CSR-MATRIX-INDPTR
+ CL-GBDT/SRC/DATA:CSR-MATRIX-NUM-COLUMNS CL-GBDT/SRC/DATA:CSR-MATRIX-NUM-ROWS
+ CL-GBDT/SRC/DATA:CSR-MATRIX-VALUES CL-GBDT/SRC/HANDLE:DATASET
+ CL-GBDT/SRC/LIGHTGBM/API:FREE-BOOSTER CL-GBDT/SRC/LIGHTGBM/API:FREE-DATASET
  CL-GBDT/SRC/HANDLE:HANDLE-BACKEND CL-GBDT/SRC/HANDLE:HANDLE-RELEASED-P
- CL-GBDT/SRC/LIGHTGBM/CLASSES:LIGHTGBM-BACKEND CL-GBDT/SRC/BACKEND:OPEN-BACKEND)
+ CL-GBDT/SRC/LIGHTGBM/CLASSES:LIGHTGBM-BACKEND CL-GBDT/SRC/DATA:MAKE-CSR-MATRIX
+ CL-GBDT/SRC/BACKEND:OPEN-BACKEND CL-GBDT/SRC/LIGHTGBM/API:PREDICT
+ CL-GBDT/SRC/LIGHTGBM/API:UPDATE-ONE-ITERATION)
 ```
 
-Those 66 fall into three groups. **LightGBM's own API** is three of them: the
-`lightgbm-backend` class -- useful for `typep` or for specializing your own methods on one
-specific backend rather than the shared `backend`; `open-backend` itself never needs it,
-since it looks classes up by the `:lightgbm`/`:xgboost` keyword internally, not by this
-symbol -- plus that backend's own evaluation entry points, `booster-eval` and
-`booster-eval-names`. **The shared basis** is the other fourteen non-condition symbols:
-`open-backend`, `close-backend`, `backend-supports-p` and the rest of the backend readers,
-`handle-released-p`, `handle-backend`, and the `dataset`/`booster` handle classes. They are
-republished here, rather than left to core `cl-gbdt`, so that a program loading this Layer 1
-system alone can open, question and close a backend without naming an internal package. And
-**the condition hierarchy** is the remaining 49, re-exported whole from
+Those 81 fall into three groups. **LightGBM's own API** is nine of them: the six finished
+operations of the standalone example above -- `create-dataset`, `create-booster`,
+`update-one-iteration`, `predict`, `free-dataset` and `free-booster`, all homed in
+`cl-gbdt/src/lightgbm/api` -- plus that backend's own evaluation entry points, `booster-eval`
+and `booster-eval-names`, and the `lightgbm-backend` class, useful for `typep` or for
+specializing your own methods on one specific backend rather than the shared `backend`
+(`open-backend` itself never needs it, since it looks classes up by the
+`:lightgbm`/`:xgboost` keyword internally, not by this symbol). Four of those nine names --
+`predict`, `update-one-iteration`, `free-dataset`, `free-booster` -- are *also* names
+`cl-gbdt` exports, and these are **different symbols**: plain functions here, generic
+functions there, so an image holding both packages has to say which it means. **The shared
+basis** is the other twenty-three non-condition symbols: `open-backend`, `close-backend`,
+`backend-supports-p` and the rest of the backend readers, `handle-released-p`,
+`handle-backend`, `booster-training-set` and `booster-validation-sets`, the
+`dataset`/`booster` handle classes, and `make-csr-matrix` with the `csr-matrix` type and its
+five readers, so that the sparse half of `create-dataset` and `predict` is reachable from the
+package that publishes them. These are republished here, rather than left to core `cl-gbdt`,
+so that a program loading this Layer 1 system alone can open, question and close a backend
+without naming an internal package -- and unlike the four doubled operation names, they are
+the very symbols `cl-gbdt` exports, one symbol reached two ways with nothing to
+disambiguate. And **the condition hierarchy** is the remaining 49, re-exported whole from
 `cl-gbdt/src/conditions`: every type and accessor there is already reviewed public API, so a
 Layer 1 caller catches `foreign-call-error` or `backend-library-not-found` by the same name
 a unified-API caller does.
 
-`cl-gbdt/xgboost` is the same shape -- 67 external symbols, the same 49 conditions and the
-same shared basis -- with four of its own rather than three: `xgboost-backend`,
+`cl-gbdt/xgboost` is the same shape -- 82 external symbols, the same 49 conditions and the
+same 23 shared-basis symbols -- with ten of its own rather than nine: the same six
+operations under its own package's symbols, plus `xgboost-backend`,
 `slice-model`, `booster-boosted-rounds` (see [the capability
 section](#asking-a-backend-what-it-can-do)), and an
 `evaluate-one-iteration` of its own, which takes different arguments and returns something
@@ -284,7 +373,11 @@ backend-specific operation, only infrastructure the two backend systems already 
 internally. Backend-specific safe API -- LightGBM's `rollback-one-iteration`, `refit`, and
 the rest of policy section 3's Layer 1 examples -- is added here one contract at a time as
 it is designed and reviewed, not by widening today's re-export to cover `native` wholesale.
-XGBoost's `slice-model` is the most recent one added that way.
+The six operations above are the most recent addition made that way, and they come from a
+third file, `src/<backend>/api.lisp`, rather than from `native.lisp` at all: `native.lisp`
+holds the `%`-functions that take and return raw pointers, `api.lisp` the finished
+operations built on top of them that take a backend or a handle and hand back a handle or a
+result.
 
 ### Finding the shared library
 
@@ -3365,9 +3458,9 @@ plist, can tell apart.
 | System | Purpose |
 |---|---|
 | `cl-gbdt` | Core: package, condition hierarchy, matrix marshalling, backend registry and `open-backend` protocol, the unified API's generic functions -- no methods, and no shared library required to load it |
-| `cl-gbdt/lightgbm` | **Layer 1 for LightGBM, and nothing above it.** Library discovery and the `%`-wrappers (`src/lightgbm/native.lisp`) over the generated CFFI bindings (`src/lightgbm/c-api.lisp`), plus the backend's CLOS types and the `initialize-backend`/`shutdown-backend` pair that opens and closes the shared library (`src/lightgbm/classes.lisp`), published together by `src/lightgbm/all.lisp`. Carries none of the 13 unified-API methods, and does not define the `cl-gbdt` package |
+| `cl-gbdt/lightgbm` | **Layer 1 for LightGBM, and nothing above it.** Library discovery and the `%`-wrappers (`src/lightgbm/native.lisp`) over the generated CFFI bindings (`src/lightgbm/c-api.lisp`), plus the backend's CLOS types and the `initialize-backend`/`shutdown-backend` pair that opens and closes the shared library (`src/lightgbm/classes.lisp`), plus the six finished operations a caller invokes -- `create-dataset`, `create-booster`, `update-one-iteration`, `predict`, `free-dataset`, `free-booster` (`src/lightgbm/api.lisp`) -- published together by `src/lightgbm/all.lisp`. Carries none of the 13 unified-API methods, and does not define the `cl-gbdt` package |
 | `cl-gbdt/lightgbm/unified` | That plus all 13 unified-API methods (`src/lightgbm/protocol.lisp`), aggregated by `src/lightgbm/unified.lisp`, which also depends on core `cl-gbdt` so the `cl-gbdt:` spelling exists. **This is the system a caller of `cl-gbdt:train` loads** |
-| `cl-gbdt/xgboost` | Layer 1 for XGBoost, exactly as above: `src/xgboost/native.lisp` and `src/xgboost/c-api.lisp`, plus `src/xgboost/classes.lisp` -- which additionally holds `slice-model`, an XGBoost-only operation that builds a booster handle -- published by `src/xgboost/all.lisp` |
+| `cl-gbdt/xgboost` | Layer 1 for XGBoost, exactly as above: `src/xgboost/native.lisp` and `src/xgboost/c-api.lisp`, plus `src/xgboost/classes.lisp` and `src/xgboost/api.lisp` -- the latter holding the same six operations and, additionally, `slice-model`, an XGBoost-only operation that builds a booster handle -- published by `src/xgboost/all.lisp` |
 | `cl-gbdt/xgboost/unified` | That plus all 13 unified-API methods (`src/xgboost/protocol.lisp`), aggregated by `src/xgboost/unified.lisp`, core `cl-gbdt` included |
 | `cl-gbdt/regen` | The binding emitter (`src/regen/`). Development-only -- never appears in `cl-gbdt`'s, `cl-gbdt/lightgbm`'s, or `cl-gbdt/xgboost`'s dependency graph, so an ordinary user never needs it or its dependencies (`alexandria`, `com.inuoe.jzon`). `cffi/c2ffi` is *not* one of them -- it is a dependency of `tools/regen.lisp`, which quickloads it directly, not of the `cl-gbdt/regen` system itself |
 | `cl-gbdt/tests` | The Rove test suite |
@@ -3380,14 +3473,17 @@ one portable API over both libraries. Naming core `cl-gbdt` alongside a `/unifie
 the examples above do, is belt-and-braces: `/unified` already depends on it, and the examples
 name it because they use symbols from it directly.
 
-**Layer 1 alone cannot build a dataset.** `make-dataset` exists only as a unified-API method
-today, so a program that loads `cl-gbdt/lightgbm` and nothing else can open the library, ask
-what it supports and close it again, but has no way to construct the `lightgbm-dataset` that
-`booster-eval` and the rest need. This is a known and deliberate limitation of the split;
-closing it -- bringing dataset construction down to Layer 1 -- is planned follow-up work,
-tracked as the first bullet of `docs/cl-gbdt-layered-api-implementation-policy.md`'s
-フォローアップ section, and this layering should not be read as already delivering a
-standalone library.
+**Layer 1 alone trains and predicts.** A program that loads `cl-gbdt/lightgbm` or
+`cl-gbdt/xgboost` and nothing else builds a dataset, builds a booster over it, advances it
+one iteration at a time, scores with it and frees both -- `create-dataset`,
+`create-booster`, `update-one-iteration`, `predict`, `free-dataset`, `free-booster`, with a
+worked example under [Two systems per backend](#two-systems-per-backend) above. What such a
+program still cannot do is `save-model`, `load-model`, `model-to-string`,
+`feature-importance`, `evaluation`, `dataset-num-rows` or `dataset-num-features`, and it has
+no training report, no early stopping and no `:objective` or `:evaluation` callback -- the
+last three being `cl-gbdt:train`'s own concepts rather than operations with a Layer 1
+counterpart. Bringing the first list down is the remaining follow-up work, tracked as the
+first bullet of `docs/cl-gbdt-layered-api-implementation-policy.md`'s フォローアップ section.
 
 Each Layer 1 backend system (`cl-gbdt/lightgbm` depends on `cl-gbdt/src/lightgbm/all`,
 `cl-gbdt/xgboost` on `cl-gbdt/src/xgboost/all`) depends on `cffi`, its own generated
