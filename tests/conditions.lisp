@@ -18,7 +18,8 @@
                     cl-gbdt:released-handle-error
                     cl-gbdt:data-error
                     cl-gbdt:dimension-mismatch
-                    cl-gbdt:unsupported-element-type))
+                    cl-gbdt:unsupported-element-type
+                    cl-gbdt:backend-methods-not-loaded))
       (ok (subtypep type 'cl-gbdt:gbdt-error)
           (format nil "~A is a subtype of gbdt-error" type))))
   (testing "untested-backend-version is a warning, not an error"

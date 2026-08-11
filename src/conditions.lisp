@@ -51,7 +51,9 @@
            #:unknown-capability-capability
            #:unknown-capability-known
            #:capability-unavailable
-           #:capability-unavailable-capability))
+           #:capability-unavailable-capability
+           #:backend-methods-not-loaded
+           #:backend-methods-not-loaded-generic-function))
 
 (in-package #:cl-gbdt/src/conditions)
 
@@ -347,3 +349,27 @@ Distinct from `unknown-capability': the question was well formed and the answer 
 Policy section 7 requires the operation itself to signal this rather than relying on the
 caller having asked `backend-supports-p' first, and forbids falling back to some other
 behaviour instead."))
+
+(define-condition backend-methods-not-loaded (backend-error)
+  ((generic-function :initarg :generic-function
+                     :reader backend-methods-not-loaded-generic-function
+                     :documentation "The unified-API generic function that was called."))
+  (:report (lambda (condition stream)
+             (let ((backend (backend-error-backend condition)))
+               (format stream
+                       "~S has no method for ~A: that backend's unified-API methods are ~
+                        not loaded. Load cl-gbdt/~(~A~)/unified -- cl-gbdt/~(~A~) is ~
+                        that backend's own API alone, without cl-gbdt's portable one."
+                       (backend-methods-not-loaded-generic-function condition)
+                       backend backend backend))))
+  (:documentation "Signalled when a unified-API generic function is called on a backend
+whose methods for it were never loaded.
+
+`cl-gbdt/lightgbm' registers the backend class and opens the library; `cl-gbdt/lightgbm/unified'
+is what adds the methods implementing `cl-gbdt''s portable generic functions. A program that
+loaded the first and not the second can open a backend and then find no method to call, and
+this condition is that state said plainly. Without it the caller sees the implementation's own
+no-applicable-method error, which names neither the backend nor the system to load.
+
+Never signalled while both systems are loaded: each fallback method is specialized on a base
+class, so a backend's own method is always more specific."))

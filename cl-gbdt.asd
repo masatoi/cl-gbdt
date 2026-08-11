@@ -60,6 +60,7 @@
                "cl-gbdt/tests/handle"
                "cl-gbdt/tests/handle-ownership"
                "cl-gbdt/tests/parameters"
+               "cl-gbdt/tests/protocol"
                "cl-gbdt/tests/library"
                "cl-gbdt/tests/foreign"
                "cl-gbdt/tests/version"
