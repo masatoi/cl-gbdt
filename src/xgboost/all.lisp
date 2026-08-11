@@ -131,11 +131,19 @@
 ;;; five readers are named; `foreign-matrix', `with-foreign-matrix' and the rest of that package
 ;;; stay out, being the plumbing a dense matrix is handed to C through and not something a
 ;;; caller builds. The dense path, which is every ordinary array, still needs none of it.
+;;; `booster-training-set' and `booster-validation-sets' from `handle' are here for the same
+;;; reason, and close an asymmetry with `cl-gbdt/lightgbm', which has published both since its
+;;; own sparse surface arrived: `create-booster' retains both -- identically to that backend's,
+;;; and `update-one-iteration' below it READS the training set back, XGBoost's
+;;; `XGBoosterUpdateOneIter' taking the DMatrix handle explicitly -- and without these a caller
+;;; who built a booster at this layer could not read back what it attached. `handle-released-p',
+;;; already published, is what makes the answer worth having, since a retained dataset can have
+;;; been freed.
 ;;;
-;;; None of those seven is a symbol of this package's own: they are the very symbols
-;;; `cl-gbdt/src/data' defines, so unlike `predict' and the three other doubled operation names
-;;; above, a caller holding both `cl-gbdt' and `cl-gbdt/xgboost' sees one symbol reached two
-;;; ways and has nothing to disambiguate.
+;;; None of those nine is a symbol of this package's own: they are the very symbols
+;;; `cl-gbdt/src/data' and `cl-gbdt/src/handle' define, so unlike `predict' and the three other
+;;; doubled operation names above, a caller holding both `cl-gbdt' and `cl-gbdt/xgboost' sees
+;;; one symbol reached two ways and has nothing to disambiguate.
 ;;;
 ;;; Every one of them is named in `:export' below because that is now the only thing
 ;;; publishing them: they arrive through `:import-from', which imports without exporting. The
@@ -183,6 +191,8 @@
                 #:make-csr-matrix)
   (:import-from #:cl-gbdt/src/handle
                 #:booster
+                #:booster-training-set
+                #:booster-validation-sets
                 #:dataset
                 #:handle-backend
                 #:handle-released-p)
@@ -216,6 +226,8 @@
            #:csr-matrix-num-rows
            #:csr-matrix-values
            #:make-csr-matrix
+           #:booster-training-set
+           #:booster-validation-sets
            #:*known-capabilities*
            #:backend-capabilities
            #:backend-info
