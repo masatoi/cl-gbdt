@@ -801,9 +801,14 @@ the dependency above rather than standing free of it -- \"the one already compar
 only one there is precisely because the library's own names do not change either.
 
 Both checks run AFTER `custom-metric-entry' rather than before it, and the order is
-load-bearing: each compares with `string=', which signals a bare `type-error' for a name that is
-not a string designator at all, while `custom-metric-entry' is what turns that same name into
-this library's own `unsupported-argument'.
+load-bearing twice over. First, each compares with `string=', which signals a bare
+`type-error' for a name that is not a string designator at all, while `custom-metric-entry' is
+what turns that same name into this library's own `unsupported-argument'. Second, and this is
+why both are handed `(second entry)' rather than the NAME the caller returned: the name in the
+entry is `custom-metric-entry''s own `copy-seq' of it, and the copy does not exist until that
+call has been made. A caller returning one string object per iteration and rewriting its
+characters in place would defeat both checks AND the history if any of the three held the
+caller's object -- see `custom-metric-entry', which measured what that reached.
 
 Mirrors `cl-gbdt/src/lightgbm/protocol''s function of the same name, down to the argument
 order and the order of the four steps inside the loop, differing only in taking and returning
@@ -819,11 +824,12 @@ training pointer alone."
                   (multiple-value-bind (train-data-pointer valid-set-pointers)
                       (%recheck-train-datasets backend dataset valid-sets)
                     (setf pointers (cons train-data-pointer valid-set-pointers)))
-                  (let ((entry (custom-metric-entry (backend-name backend) name value index)))
+                  (let* ((entry (custom-metric-entry (backend-name backend) name value index))
+                         (pinned-name (second entry)))
                     (when check-collisions-p
-                      (check-metric-name-collision (backend-name backend) name index
+                      (check-metric-name-collision (backend-name backend) pinned-name index
                                                     library-entries))
-                    (pin-metric-name (backend-name backend) name-pin name index)
+                    (pin-metric-name (backend-name backend) name-pin pinned-name index)
                     (push entry entries)))))
     (values (nreverse entries) pointers)))
 

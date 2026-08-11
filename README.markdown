@@ -17,8 +17,8 @@ file if you have it locally).
 `make-dataset`, `dataset-num-rows`, `dataset-num-features`, `train`,
 `update-one-iteration`, `predict`, `save-model`, `load-model`, `model-to-string`,
 `feature-importance`, `evaluation`, `free-dataset` and `free-booster` -- against the real
-LightGBM and XGBoost shared libraries, exercised by 762 functional assertions across 13 test
-files (design doc section 12, layer 2), in addition to 488 assertions across 19 test files
+LightGBM and XGBoost shared libraries, exercised by 784 functional assertions across 13 test
+files (design doc section 12, layer 2), in addition to 504 assertions across 19 test files
 that need no shared library at all (layer 1). `train` also returns a `training-report` as
 its secondary value, and takes
 `:early-stopping` to end a run once a watched metric stops improving -- see
@@ -2714,6 +2714,11 @@ key and `evaluation`'s own `DATASET-INDEX` already use
 (`src/protocol.lisp`). It must return **two values**, a metric NAME (a string) and a
 VALUE (a real or `NIL`); a NAME that is not a string, or a VALUE that is neither, signals
 `unsupported-argument` (`custom-metric-entry` in `src/training/custom-metric.lisp`).
+A real VALUE is **recorded as a `double-float`**, coerced where the entry is built rather than
+stored as returned: `training-series-values` documents every element of every series as a
+`double-float` or `NIL`, and both libraries' own values already are doubles, so a caller
+returning `1/3` reads `0.3333333333333333d0` back out of its own series rather than a `ratio`
+landing in a slot every other consumer was promised held doubles (same file).
 `NIL` means "not computable this iteration" -- a fold whose
 denominator was zero, a metric undefined before some minimum number of rows -- and is
 recorded in its place in the series rather than dropped, counting as no improvement to an
@@ -3077,6 +3082,21 @@ each index's name is fixed at the first iteration, the only name that can ever r
 library's is the one the collision check already compared. Like the collision check it is
 backend-neutral -- `make-metric-name-pin` and `pin-metric-name`
 (`src/training/custom-metric.lisp`), one pin per `train` call.
+
+Returning **one string object and rewriting it in place** is refused on exactly the same
+terms, and it is not something the pin could have caught by itself. A string is mutable, so a
+caller keeping one name buffer and refilling it each iteration would have handed the pin an
+object that compares `string=` with itself however its characters changed -- and every
+recorded entry would have held that same object, to be read once, at the end of the run, under
+whatever the name said by then. Measured before this was closed, four rounds on LightGBM with
+`metric "binary_logloss"` and a 14-character name rewritten to `"binary_logloss"` from the
+second iteration: `train` returned normally, nothing signalled, and the report held a single
+**eight-value series for a four-round run**. What closes it is that `custom-metric-entry`
+`copy-seq`s the name into the entry it builds, and both `train` methods take the name back
+**out of that entry** for the collision check and the pin -- so the history, the pin and the
+collision check all hold one snapshot and the caller's own object reaches none of them
+(`src/training/custom-metric.lisp`,
+`%custom-evaluation-entries` in `src/lightgbm/protocol.lisp`/`src/xgboost/protocol.lisp`).
 
 A NAME that is not a string at all, or a VALUE that is neither a real nor `NIL`, is refused
 the same way and at the same point in the run -- `custom-metric-entry`, in that same file --

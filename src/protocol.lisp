@@ -305,6 +305,13 @@ array, and the dataset's INDEX. It must return two values, a metric NAME -- a st
 a VALUE, a real number or NIL. A NAME that is not a string, or a VALUE that is neither,
 signals `unsupported-argument' naming :EVALUATION.
 
+A REAL VALUE IS RECORDED AS A `double-float', coerced when the entry is built rather than
+stored as returned: `training-series-values' documents every element of every series as a
+`double-float' or NIL, and a caller returning 1/3 reads 0.3333333333333333d0 back out of its
+own series. The name is COPIED at the same point, so a caller free to return one string
+object per iteration and rewrite its characters cannot change what a completed run recorded,
+nor what the pin below compares against.
+
 INDEX numbers the datasets exactly as EARLY-STOPPING's :DATASET and the report's
 `training-series-index' do: 0 is the training set, and N+1 is the Nth :VALID-SETS entry.
 ROWS is THAT dataset's own row count -- a validation set shorter than the training set is
@@ -373,6 +380,10 @@ reach, since that check runs on the first iteration only: from the iteration the
 meet, one key would collect two values per iteration and its series would come out LONGER
 than `training-report-num-rounds' says the run was. Pinning the name is what keeps \"every
 series is exactly that long\", below, true of a caller's own series as well as the library's.
+Returning ONE STRING OBJECT and rewriting it in place is refused on the same terms, and is not
+a case the pin could have caught by itself: what is pinned, and what every recorded entry
+holds, is a COPY taken at the moment the name was returned, so the comparison is against what
+that iteration actually said rather than against an object the caller can still edit.
 
 The function runs inside `train''s foreign-float-trap mask, on the same terms OBJECTIVE
 does: the caller's own arithmetic does not trap, so `(/ 1.0d0 0.0d0)' yields infinity rather

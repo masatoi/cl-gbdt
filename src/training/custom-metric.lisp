@@ -43,7 +43,7 @@
 (in-package #:cl-gbdt/src/training/custom-metric)
 
 (defun custom-metric-entry (backend-name name value dataset-index)
-  "Return (list DATASET-INDEX NAME VALUE), the entry one call to a caller's `:evaluation'
+  "Return (list DATASET-INDEX NAME-COPY VALUE), the entry one call to a caller's `:evaluation'
 function contributes to an iteration -- the exact (DATASET-INDEX METRIC-NAME VALUE) shape
 both backends' `%read-evaluation' already produce, which is what lets
 `training-report-from-history' and `observe-iteration' fold this entry in alongside the
@@ -65,7 +65,43 @@ keyword or a symbol NAME would key a series under a shape nothing else in the re
 ever be looked up by. NIL is an accepted VALUE, not a special case bolted on here: it is how
 both backends already record a field they could not read as a real, and `observe-iteration'
 already treats it as no improvement rather than an error, so a caller's own unreadable value
-is recorded the same way."
+is recorded the same way.
+
+VALUE IS COERCED, not stored as returned: the entry holds `(coerce VALUE 'double-float)' for
+a real, and NIL for NIL. `training-series-values' documents every element of a series as a
+`double-float' or NIL, and both backends' own values already are doubles, so a caller
+returning 1/3, the `single-float' 0.25, or the integer 3 would otherwise be the ONE producer
+able to put a `ratio', a `single-float' or an `integer' into a slot every existing consumer
+was promised held doubles. Coercing at the point the entry is built, rather than widening
+that promise to accommodate one producer, is the direction taken deliberately: a uniform
+series is what the report already guarantees, and it is the guarantee that would have to
+change otherwise. So a caller reading its own series back sees 0.3333333333333333d0 where it
+returned 1/3 and 0.25d0 where it returned the `single-float' 0.25 -- the value it asked to
+record, at the precision the series holds. Magnitude is SBCL's own business and not this
+function's: a real too large for a `double-float' becomes an infinity under the
+foreign-float-trap mask `train' runs its whole body in, which is where every call from
+`train' happens (measured on aarch64, where those traps are off in any case); called directly
+at layer 1 on a platform whose `:overflow' trap is enabled, SBCL signals
+`floating-point-overflow' out of the `coerce' instead.
+
+NAME IS COPIED INTO THE ENTRY with `copy-seq', and that copy -- never the argument -- is what
+every later reader sees. A string is mutable, and a caller that returns THE SAME string
+object on every iteration and rewrites its characters in place would otherwise reach three
+readers at once: `check-metric-name-collision' and `pin-metric-name' would each be comparing
+that object with itself and so could never see a change to refuse, and EVERY history entry
+would hold that one object, so `training-report-from-history' -- which runs once, after the
+loop -- would fold all of them under whatever the name happened to read by then. Measured
+before this copy existed, on a four-round LightGBM run configured with `metric
+\"binary_logloss\"' and a 14-character name mutated into \"binary_logloss\" from the second
+iteration: `train' returned normally, nothing signalled, and the report held ONE EIGHT-VALUE
+SERIES FOR A FOUR-ROUND RUN -- the library's four values and the caller's four braided under
+one key, misaligned with the iterations. That is precisely the corruption `pin-metric-name'
+below exists to refuse, reached around it. Copying at the one point a name ENTERS this
+library is what closes it, and copying INSIDE the pin would not have: the entry that goes on
+to the history would still have held the caller's object. `train''s two call sites therefore
+take the name back OUT of the entry this returns for both checks below, so the history, the
+pin and the collision check all hold one snapshot and the caller's own object reaches none of
+them."
   (unless (stringp name)
     (error 'unsupported-argument
            :backend backend-name
@@ -77,7 +113,7 @@ is recorded the same way."
            :argument "train's :evaluation"
            :reason (format nil "a custom metric's value must be a real number or NIL, got ~S"
                             value)))
-  (list dataset-index name value))
+  (list dataset-index (copy-seq name) (and value (coerce value 'double-float))))
 
 (defun check-metric-name-collision (backend-name name dataset-index library-entries)
   "Signal `unsupported-argument' naming \"train's :evaluation\" when LIBRARY-ENTRIES holds an
@@ -89,6 +125,12 @@ BACKEND-NAME is the keyword `train''s own backend reports through `backend-name'
 `unsupported-argument' this signals, the same convention `custom-metric-entry' above and
 `cl-gbdt/src/training/early-stopping''s watcher functions follow: a caller sees the backend it
 actually called `train' on rather than a backend that does not exist.
+
+NAME IS THE SNAPSHOT `custom-metric-entry' PUT IN THE ENTRY, read back out of it by both of
+this function's call sites, and not the string the caller's `:evaluation' returned. Comparing
+the caller's own object would leave this check comparing something that can be rewritten
+between the comparison and the fold -- see that function's own account of what a mutable name
+reached before it was copied.
 
 LIBRARY-ENTRIES is one iteration's worth of the library's OWN (DATASET-INDEX METRIC-NAME
 VALUE) entries -- what `%read-evaluation' returns before a caller's own metric is appended to
@@ -140,6 +182,14 @@ BACKEND-NAME is the keyword `train''s own backend reports through `backend-name'
 `:lightgbm' or `:xgboost' -- passed straight through, unexamined, to the
 `unsupported-argument' this signals, the same convention `custom-metric-entry' and
 `check-metric-name-collision' above follow.
+
+NAME IS THE SNAPSHOT `custom-metric-entry' PUT IN THE ENTRY, on the same terms
+`check-metric-name-collision' above states it, and it is what makes the pin a pin at all: a
+table holding the caller's own string object would compare that object with itself on every
+later iteration -- `string=' of a thing with itself is true however its characters were
+rewritten in between -- so a name mutated in place would be pinned to nothing. Snapshotting
+HERE instead would not have sufficed either, since the entry bound for the history holds the
+name too; see `custom-metric-entry' for what that reached, measured.
 
 ONE NAME PER DATASET INDEX FOR THE WHOLE RUN is the contract this enforces, and it is what
 `train''s generic-function docstring states as a requirement on EVALUATION. A caller's

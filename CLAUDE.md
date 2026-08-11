@@ -36,8 +36,8 @@ over both backends.
 
 **Status: functional.** Both backends (`cl-gbdt/lightgbm`, `cl-gbdt/xgboost`) implement
 all 13 generic functions of the unified API -- `make-dataset`, `train`, `predict`, and
-the rest -- against the real shared libraries, exercised by 762 functional assertions across
-13 test files in `cl-gbdt/tests/functional` (layer 2) on top of 488 assertions across 19
+the rest -- against the real shared libraries, exercised by 784 functional assertions across
+13 test files in `cl-gbdt/tests/functional` (layer 2) on top of 504 assertions across 19
 test files that need no shared library at all (layer 1). `train` returns a `training-report`
 as its secondary value, and takes `:record-history` (default `t`) to turn the per-iteration
 recording that fills it off -- recording roughly doubles LightGBM's `train` time, and on
@@ -85,7 +85,9 @@ the moment it returns, so an objective that frees the training set gets
 called once per dataset per iteration, after that iteration's update, with that dataset's
 `predict :kind :normal` scores and the dataset's index -- 0 the training set, N+1 the Nth
 `:valid-sets` entry, the numbering `:early-stopping`'s `:dataset` key already uses -- and that
-returns a metric name and a real or `NIL` value, gated on the `:custom-evaluation` capability
+returns a metric name and a real or `NIL` value -- a real one recorded as a `double-float`,
+coerced where the entry is built so every series holds what `training-series-values` documents
+-- gated on the `:custom-evaluation` capability
 that both backends provide, LightGBM out of a probe and XGBoost out of a declaration since its
 one required C function needs no optional-symbol check; the values become their own report
 series, appended after the library's own for the same iteration so `evaluation`'s own pairs
@@ -99,7 +101,11 @@ the end of the first iteration), and a name that CHANGES at a given index betwee
 one name per dataset index is required for the whole run, since a series is keyed by the
 (index, name) pair and a varying name would make series that are shorter than the run, or --
 when it varies into a library metric's name, which the first-iteration collision check cannot
-reach -- longer than it -- see `README.markdown`'s Custom evaluation section. Core
+reach -- longer than it. A name REWRITTEN IN PLACE is refused on the same terms and could not
+have been caught by the pin alone: the name is `copy-seq`d into the entry and both call sites
+take it back out of that entry for the pin and the collision check, so the caller's own string
+object reaches neither them nor the history -- see `README.markdown`'s Custom evaluation
+section. Core
 `cl-gbdt` still loads, and is still tested, without
 either `liblightgbm.so` or `libxgboost.so` present: a shared library is opened only by
 an explicit `open-backend` call, from whichever backend system you load on top of the

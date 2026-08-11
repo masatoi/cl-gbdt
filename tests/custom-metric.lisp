@@ -42,6 +42,66 @@
   (ok (handler-case (progn (custom-metric-entry :test-backend "my_metric" #C(1 2) 0) nil)
         (unsupported-argument () t))))
 
+;;; The two things the entry NORMALISES, as opposed to the two it merely type-checks above.
+;;; Both were caught in review, and both are about what a caller's own name or value can
+;;; still do to the report AFTER `custom-metric-entry' has accepted it as a string and a
+;;; real.
+
+(deftest custom-metric-entry-coerces-a-readable-value-to-a-double-float
+  ;; `training-series-values' documents every element of a series as a `double-float' or NIL,
+  ;; and both backends' own values already are doubles -- a caller's is the one that need not
+  ;; be. Measured on a four-round run before this coercion existed: a metric returning 1/4
+  ;; trained without complaint and left a series whose element types were (RATIO RATIO RATIO
+  ;; RATIO); 0.25 left SINGLE-FLOATs and 3 left INTEGERs. Coerced here rather than the report
+  ;; widening what it promises every other consumer.
+  (dolist (returned (list 1/4 0.25 3 -2 0.25d0))
+    (let ((value (third (custom-metric-entry :test-backend "my_metric" returned 0))))
+      (ok (typep value 'double-float)
+          (format nil "~S was recorded as ~S, of type ~S" returned value (type-of value)))
+      (ok (= value returned)
+          (format nil "coercing ~S changed the number to ~S" returned value))))
+  ;; NIL is not a real and stays NIL: it is how both backends already record a field they
+  ;; could not read, and `observe-iteration' reads it as no improvement rather than an error.
+  (ok (null (third (custom-metric-entry :test-backend "my_metric" nil 0)))))
+
+(deftest custom-metric-entry-copies-the-name-it-was-handed
+  ;; A string is mutable, and nothing stops a caller returning THE SAME object on every
+  ;; iteration and rewriting its characters. Every history entry would then hold that one
+  ;; object, and `training-report-from-history' runs ONCE, after the loop -- so it would read
+  ;; every iteration's entry under whatever the name said by then.
+  (let* ((name (copy-seq "my_own_logloss"))
+         (entry (custom-metric-entry :test-backend name 0.25d0 0)))
+    (ok (not (eq name (second entry)))
+        "the entry holds the caller's own string object rather than a copy of it")
+    (ok (string= "my_own_logloss" (second entry)))
+    (replace name "binary_logloss")
+    (ok (string= "my_own_logloss" (second entry))
+        "rewriting the caller's string rewrote the name inside the entry")))
+
+(deftest the-pin-refuses-a-name-object-that-is-rewritten-in-place
+  ;; `train''s call-site arrangement in miniature: `custom-metric-entry' builds the entry,
+  ;; and the name the pin is given comes back OUT of that entry rather than from the caller.
+  ;; Copying inside `pin-metric-name' alone would not have been enough -- the entry bound for
+  ;; the history still holds a name -- which is why this drives BOTH and asserts both.
+  ;;
+  ;; Before the copy existed this exact sequence signalled nothing: the pin held the caller's
+  ;; object and `string=' compared it with itself, which is true however it was rewritten.
+  (let* ((pin (make-metric-name-pin))
+         (name (copy-seq "my_own_logloss"))
+         (first-entry (custom-metric-entry :test-backend name 0.5d0 0)))
+    (pin-metric-name :test-backend pin (second first-entry) 0)
+    (replace name "binary_logloss")
+    (ok (handler-case
+            (let ((entry (custom-metric-entry :test-backend name 0.5d0 0)))
+              (pin-metric-name :test-backend pin (second entry) 0)
+              nil)
+          (unsupported-argument () t))
+        "the pin accepted a name object rewritten between two iterations")
+    ;; And the entry already recorded still reads under the name it was built with, which is
+    ;; the half `training-report-from-history' would have folded at the end of the run.
+    (ok (string= "my_own_logloss" (second first-entry))
+        "the already-recorded entry followed the caller's rewrite")))
+
 (deftest check-metric-name-collision-refuses-a-name-the-library-already-uses-here
   (let ((entries '((0 "binary_logloss" 0.5d0) (1 "binary_logloss" 0.6d0))))
     (ok (handler-case

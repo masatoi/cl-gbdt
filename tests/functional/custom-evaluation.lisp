@@ -725,6 +725,60 @@ number or a string fails somewhere no matter what; a symbol quietly works, wrong
                                                           :test #'equal))))))))))
           (cl-gbdt:close-backend backend))))))
 
+;;; What a caller's VALUE becomes once it is in the report, which is a different question
+;;; from whether the run finished -- and the run finished before this was fixed too.
+;;; `cl-gbdt:training-series-values' documents every element of a series as a `double-float'
+;;; or NIL, and both libraries' own values already are doubles; a caller's is the one that
+;;; need not be. Measured on a four-round run before `custom-metric-entry' coerced: a metric
+;;; returning 1/4 trained to :TRAINED and left element types (RATIO RATIO RATIO RATIO), 0.25
+;;; left SINGLE-FLOATs and 3 left INTEGERs -- so a consumer holding to the documented
+;;; invariant broke for custom metrics alone. tests/custom-metric.lisp pins the coercion in
+;;; `custom-metric-entry' directly; what this asserts is the ELEMENT TYPE of what comes back
+;;; out of `train', which is the promise a caller actually reads.
+
+(deftest a-non-double-metric-value-is-recorded-as-a-double-float
+  ;; The three numbers below are the CALLER's own constants round-tripped through its own
+  ;; report, not either library's, so nothing here compares a number between backends --
+  ;; policy section 13. Each backend is asked the same question about its own report and
+  ;; answers it out of its own run.
+  (dolist (name '(:lightgbm :xgboost))
+    (support:with-backend-library (name)
+      (let ((backend (cl-gbdt:open-backend name)))
+        (unwind-protect
+             (when (cl-gbdt:backend-supports-p backend :custom-evaluation)
+               (multiple-value-bind (matrix labels*) (binary-fixture *rows* 0)
+                 (cl-gbdt:with-dataset (dataset (make-labelled-dataset backend name
+                                                                       matrix labels*))
+                   ;; A RATIO, then a `single-float', then an INTEGER: three types a caller
+                   ;; reaches for without thinking about what slot the value lands in. One
+                   ;; per iteration, so all three are exercised in one run and the series
+                   ;; that comes back is a mixture if any of them survives uncoerced.
+                   (let ((returned (list 1/4 0.25 3))
+                         (calls 0))
+                     (multiple-value-bind (booster report)
+                         (cl-gbdt:train backend dataset :num-rounds 3
+                                        :parameters (cdr (assoc name *metric-parameters*))
+                                        :evaluation
+                                        (lambda (scores index)
+                                          (declare (ignore scores index))
+                                          (let ((value (nth calls returned)))
+                                            (incf calls)
+                                            (values *custom-metric-name* value))))
+                       (cl-gbdt:free-booster booster)
+                       (let ((values (series-values report 0 *custom-metric-name*)))
+                         (ok (and values (= 3 (length values)))
+                             (format nil "~A: the caller's series holds ~S" name values))
+                         (ok (and values (every (lambda (value) (typep value 'double-float))
+                                                values))
+                             (format nil "~A: the series' element types were ~S" name
+                                     (and values (map 'list #'type-of values))))
+                         ;; And the coercion preserved the numbers, so a caller reads back
+                         ;; what it recorded rather than what rounding made of it.
+                         (ok (and values (= 3 (length values))
+                                  (every #'eql #(0.25d0 0.25d0 3.0d0) values))
+                             (format nil "~A: the series read back ~S" name values))))))))
+          (cl-gbdt:close-backend backend))))))
+
 ;;; ---------------------------------------------------------------------------
 ;;; :OBJECTIVE and :EVALUATION in the same run
 
@@ -1202,6 +1256,136 @@ best score, the run would not have stopped where it does."
                      (let ((values (series-values report 0 *custom-metric-name*)))
                        (ok (and values (= 3 (length values)))
                            "an unchanging name still records one value per iteration"))))))
+          (cl-gbdt:close-backend backend))))))
+
+;;; The same NAME OBJECT, rewritten in place, which is the way past the pin the test above
+;;; cannot reach. A caller that returns a fresh string each iteration is what that one
+;;; models; a caller that keeps one buffer and refills it is just as ordinary, and before
+;;; `custom-metric-entry' copied the name it defeated everything at once: `pin-metric-name'
+;;; held the caller's own object, so `string=' compared it with itself and saw no change,
+;;; and EVERY history entry held that same object, so `training-report-from-history' -- which
+;;; runs once, after the loop -- folded all of them under whatever the name said by then.
+;;;
+;;; Measured before the copy, four rounds on LightGBM with `metric "binary_logloss"' and a
+;;; 14-character name rewritten to "binary_logloss" from the second iteration: `train'
+;;; returned :TRAINED, nothing signalled, and the report held ONE EIGHT-VALUE SERIES for a
+;;; four-round run -- the library's four values and the caller's four braided under one key,
+;;; misaligned with the iterations. That is exactly the corruption the pin was added to
+;;; prevent, reached around it.
+;;;
+;;; tests/custom-metric.lisp asserts the copy and the pin over a written call sequence; this
+;;; is what says `train' end to end is no longer fooled, which is the whole point -- it was
+;;; `train' that was fooled.
+
+(defun rewrite-name (name string)
+  "Rewrite NAME IN PLACE to hold STRING, and return NAME -- the same object, different
+contents. This is the whole of what a caller reusing one name buffer does between two
+iterations, and the whole of what the test below does to it."
+  (setf (fill-pointer name) 0)
+  (loop :for character :across string :do (vector-push-extend character name))
+  name)
+
+(defun rewritable-name (initial)
+  "Return a fresh adjustable string with a fill pointer, holding INITIAL -- one string object
+`rewrite-name' above can go on rewriting.
+
+Adjustable with a fill pointer rather than a plain `(simple-array character (N))' so a
+rewrite can change the name's LENGTH as well as its characters: the two backends' own metric
+names are 14 and 7 characters long, and a same-length `replace' would need a different
+starting name per backend for a reason this test does not care about. It is an ordinary
+string as far as everything under test is concerned -- `stringp' is true of it, `string='
+reads it, and `copy-seq' copies exactly its active characters."
+  (rewrite-name (make-array 16 :element-type 'character :adjustable t :fill-pointer 0)
+                initial))
+
+(deftest a-metric-name-object-rewritten-in-place-is-refused
+  (dolist (name '(:lightgbm :xgboost))
+    (support:with-backend-library (name)
+      (let ((backend (cl-gbdt:open-backend name)))
+        (unwind-protect
+             (when (cl-gbdt:backend-supports-p backend :custom-evaluation)
+               (multiple-value-bind (matrix labels*) (binary-fixture *rows* 0)
+                 (cl-gbdt:with-dataset (dataset (make-labelled-dataset backend name
+                                                                       matrix labels*))
+                   (testing (format nil "~A: one name object rewritten into ~S at iteration ~
+                                         2 signals" name (library-metric name))
+                     (let* ((metric-name (rewritable-name *custom-metric-name*))
+                            (calls 0)
+                            (condition
+                              (handler-case
+                                  (progn (cl-gbdt:free-booster
+                                          (cl-gbdt:train
+                                           backend dataset :num-rounds 4
+                                           :parameters (cdr (assoc name *metric-parameters*))
+                                           :evaluation
+                                           (lambda (scores index)
+                                             (declare (ignore scores index))
+                                             (incf calls)
+                                             ;; Rewritten at the START of the second call, so
+                                             ;; the FIRST returns a safe name and passes the
+                                             ;; first-iteration collision check -- the whole
+                                             ;; reason this is not that check's business.
+                                             ;; The object returned never changes.
+                                             (when (= calls 2)
+                                               (rewrite-name metric-name
+                                                             (library-metric name)))
+                                             (values metric-name 0.5d0))))
+                                         nil)
+                                (cl-gbdt:unsupported-argument (c) c))))
+                       ;; The rewrite really happened, so a green assertion below cannot be
+                       ;; one about a name that never changed.
+                       (ok (string= (library-metric name) metric-name)
+                           (format nil "the name object reads ~S" (copy-seq metric-name)))
+                       (ok condition
+                           "train recorded the rewritten name instead of signalling")
+                       (ok (and condition
+                                (equal "train's :evaluation"
+                                       (cl-gbdt:unsupported-argument-argument condition)))
+                           (format nil "the condition named argument ~S"
+                                   (and condition
+                                        (cl-gbdt:unsupported-argument-argument condition))))
+                       (ok (and condition
+                                (eq name (cl-gbdt:unsupported-argument-backend condition)))
+                           (format nil "the condition named backend ~S"
+                                   (and condition
+                                        (cl-gbdt:unsupported-argument-backend condition))))
+                       ;; Refused at the second iteration, where the rewrite happened, and
+                       ;; not at the end of the run. One dataset here, so a call is an
+                       ;; iteration.
+                       (ok (= 2 calls)
+                           (format nil "the metric was called ~D times before the refusal"
+                                   calls))))
+                   ;; The control: one object reused and rewritten to the SAME contents every
+                   ;; iteration is accepted and records one value per iteration, so what is
+                   ;; refused above is the CHANGE and not the reuse.
+                   (testing (format nil "~A: one name object rewritten to the same contents ~
+                                         is accepted" name)
+                     (let ((metric-name (rewritable-name *custom-metric-name*)))
+                       (multiple-value-bind (booster report)
+                           (cl-gbdt:train backend dataset :num-rounds 4
+                                          :parameters (cdr (assoc name *metric-parameters*))
+                                          :evaluation
+                                          (lambda (scores index)
+                                            (declare (ignore scores index))
+                                            (rewrite-name metric-name *custom-metric-name*)
+                                            (values metric-name 0.5d0)))
+                         (cl-gbdt:free-booster booster)
+                         (let ((values (series-values report 0 *custom-metric-name*)))
+                           (ok (and values (= 4 (length values)))
+                               (format nil "the caller's series holds ~S" values))
+                           ;; And exactly the shape the measurement above found broken: four
+                           ;; rounds, and no series longer than the run.
+                           (ok (= 4 (cl-gbdt:training-report-num-rounds report)))
+                           (ok (every (lambda (series)
+                                        (= 4 (length (cl-gbdt:training-series-values
+                                                      series))))
+                                      (cl-gbdt:training-report-series report))
+                               (format nil "series lengths were ~S"
+                                       (mapcar (lambda (series)
+                                                 (length (cl-gbdt:training-series-values
+                                                          series)))
+                                               (cl-gbdt:training-report-series
+                                                report)))))))))))
           (cl-gbdt:close-backend backend))))))
 
 ;;; ---------------------------------------------------------------------------
