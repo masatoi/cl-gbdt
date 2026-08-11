@@ -33,7 +33,12 @@
                 #:predictions-separate-p
                 #:make-multiclass-dataset
                 #:predictions-match-labels-p
-                #:within-group-strictly-increasing-p))
+                #:within-group-strictly-increasing-p
+                ;; Adopted for `lightgbm-api-create-booster-and-train-agree' at the end of
+                ;; this file, the only test here that weighs two boosters' answers about one
+                ;; matrix against each other rather than judging one booster's answers on
+                ;; their own.
+                #:predictions-agree-p))
 
 (in-package #:cl-gbdt/tests/functional/lightgbm-api)
 
@@ -1163,3 +1168,84 @@ test that only checked a single name/value pair could not pass by accident if
                              'cl-gbdt/lightgbm:gbdt-error)
                    "the condition hierarchy is reachable from this package too"))
           (cl-gbdt/lightgbm:close-backend backend))))))
+
+;;; Task 4 (.superpowers/sdd/2026-08-11-layer1-training-slice): `create-booster' is the one
+;;; Layer 1 operation with no caller inside this library. `train' does NOT delegate to it --
+;;; see the comment at `train''s own `%create-booster' call in src/lightgbm/protocol.lisp for
+;;; the two measured reasons, a `:reader'-only `best-iteration' slot that can only be set at
+;;; construction and an ownership form that has to free the raw pointer if the loop signals --
+;;; so the two are separate copies of one procedure: build a booster over a dataset from a
+;;; parameter plist, attach the validation sets, drive `LGBM_BoosterUpdateOneIter'. Every
+;;; other test in this file exercises `train''s copy and none exercises `create-booster''s
+;;; alongside it, so nothing held the two together; the pair could drift and both halves stay
+;;; green. This is what notices.
+;;;
+;;; It belongs with tests/functional/lightgbm-standalone.lisp, which is what proves
+;;; `create-booster' trains at all -- but that file may not have the unified API in its image,
+;;; that absence being the very property it exists to prove, and this comparison needs both
+;;; APIs at once. So it lives here instead, in a file that already loads both. That file's
+;;; header carries the other half of this note.
+;;;
+;;; Both arms share *DATASET-PARAMETERS* and *BOOSTER-PARAMETERS* and the same round count, so
+;;; the only difference between them is which API drove the run -- LightGBM trains
+;;; deterministically from fixed data, so agreement here is exact equality up to
+;;; *PREDICTION-TOLERANCE* rather than a statistical claim. The control that follows keeps
+;;; that from passing vacuously: a fixture where every round produced the same model would
+;;; make the first assertion true whatever `create-booster' did.
+
+(defparameter *agreement-rounds* 5
+  "Boosting iterations each arm of `lightgbm-api-create-booster-and-train-agree' runs --
+`train''s :NUM-ROUNDS on one side, the `update-one-iteration' loop's count on the other.
+Matches `lightgbm-api-round-trip''s round count; nothing about the comparison needs more.")
+
+(deftest lightgbm-api-create-booster-and-train-agree
+  (with-backend-library (:lightgbm)
+    (multiple-value-bind (matrix label-vector) (make-separable-dataset)
+      (let ((backend (cl-gbdt:open-backend :lightgbm))
+            (layer-1-dataset nil)
+            (layer-1-booster nil)
+            (unified-dataset nil)
+            (unified-booster nil))
+        (unwind-protect
+             (progn
+               ;; Layer 1: the dataset, the booster and the loop, all from `cl-gbdt/lightgbm'.
+               (setf layer-1-dataset (cl-gbdt/lightgbm:create-dataset
+                                      backend matrix :label label-vector
+                                      :parameters *dataset-parameters*))
+               (setf layer-1-booster (cl-gbdt/lightgbm:create-booster
+                                      backend layer-1-dataset
+                                      :parameters *booster-parameters*))
+               (dotimes (round *agreement-rounds*)
+                 (cl-gbdt/lightgbm:update-one-iteration layer-1-booster))
+               ;; Layer 2: the same fixture, the same parameters, the same number of rounds,
+               ;; through the unified API -- whose `train' builds and advances its booster
+               ;; itself rather than calling either function above.
+               (setf unified-dataset (cl-gbdt:make-dataset
+                                      backend matrix :label label-vector
+                                      :parameters *dataset-parameters*))
+               (setf unified-booster (cl-gbdt:train backend unified-dataset
+                                                    :num-rounds *agreement-rounds*
+                                                    :parameters *booster-parameters*))
+               (let ((layer-1-predictions (cl-gbdt/lightgbm:predict layer-1-booster matrix))
+                     (unified-predictions (cl-gbdt:predict unified-booster matrix)))
+                 (testing "create-booster plus an update loop trains the model train trains"
+                   (ok (predictions-agree-p layer-1-predictions unified-predictions)
+                       (format nil "layer 1: ~S~%unified: ~S"
+                               layer-1-predictions unified-predictions)))
+                 (testing "and the agreement is not vacuous: one more iteration changes it"
+                   ;; The control. Were this fixture one where every round produced the same
+                   ;; model -- or were `update-one-iteration' a no-op on both paths -- the
+                   ;; assertion above would hold for a `create-booster' that ignored its
+                   ;; parameters entirely. A sixth iteration on the Layer 1 booster has to
+                   ;; move its predictions away from the five-round unified run.
+                   (cl-gbdt/lightgbm:update-one-iteration layer-1-booster)
+                   (ok (not (predictions-agree-p
+                             (cl-gbdt/lightgbm:predict layer-1-booster matrix)
+                             unified-predictions))
+                       "a sixth iteration left the predictions unchanged"))))
+          (progn
+            (when layer-1-booster (cl-gbdt/lightgbm:free-booster layer-1-booster))
+            (when unified-booster (cl-gbdt:free-booster unified-booster))
+            (when layer-1-dataset (cl-gbdt/lightgbm:free-dataset layer-1-dataset))
+            (when unified-dataset (cl-gbdt:free-dataset unified-dataset))
+            (cl-gbdt:close-backend backend)))))))
