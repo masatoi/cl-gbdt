@@ -112,15 +112,22 @@
 (ql:quickload "cffi" :silent t)
 
 (defparameter +backend-file-patterns+
-  '("src/*/backend.lisp" "src/*/native.lisp" "src/*/protocol.lisp")
+  '("src/*/backend.lisp" "src/*/classes.lisp" "src/*/native.lisp" "src/*/protocol.lisp")
   "Globs, relative to the repository root, for files this check scans.
 
 Both backends used to keep every protocol method in one `backend.lisp'. XGBoost's Task 2
 and LightGBM's Task 3 each split that file into `native.lisp' (Layer 1: the %-functions,
 the error wrapper, and -- since the evaluation-api branch's Task 2 -- any public
-entry-point `defun's too) and `protocol.lisp' (Layer 2: the classes and all fifteen
-methods) -- so most `defmethod' forms live in `protocol.lisp', not `native.lisp', but a
-public `defun' can now legitimately live in either. `backend.lisp' is still listed even
+entry-point `defun's too) and `protocol.lisp' (Layer 2: the thirteen protocol methods) --
+so most `defmethod' forms live in `protocol.lisp', not `native.lisp', but a public `defun'
+can now legitimately live in either. The layer-separation branch then added
+`classes.lisp' (Layer 1: each backend's CLOS types, the `initialize-backend' and
+`shutdown-backend' pair that opens and closes the shared library, and XGBoost's public
+`slice-model'), moving those forms out of `protocol.lisp' and, until this glob was added,
+out of this scan's sight -- five already-wrapped forms went unchecked for exactly as long
+as this list was one entry short, which is the whole argument for keeping it current and
+the reason a file move should always be read as a question about this parameter.
+`backend.lisp' is still listed even
 though neither backend has one anymore: a future backend added under that older
 convention should still be caught by this scan rather than silently exempted from it. A
 backend split under some other naming convention entirely would still silently not be
