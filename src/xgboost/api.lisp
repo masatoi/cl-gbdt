@@ -25,8 +25,9 @@
 ;;;; it says so where it is defined, since nothing in CI would notice a future caller reaching
 ;;;; it from outside an already-masked extent. `%check-sparse-input' and
 ;;;; `%creation-function-name' make no foreign call -- the first reads a capability plist, the
-;;;; second returns a constant string -- which is what makes them safe for
-;;;; `cl-gbdt/src/xgboost/protocol' to call, as it does both.
+;;;; second returns a constant string. That is what makes the second safe for
+;;;; `cl-gbdt/src/xgboost/protocol''s `make-dataset' to call, as it does; the first is called
+;;;; only from inside this file now that `predict' lives here.
 ;;;;
 ;;;; Nothing here may depend on `cl-gbdt/src/protocol' or the training files: this file is Layer
 ;;;; 1, and `tools/ci/check-layer-separation.lisp' fails the build if it ever does. That is not
@@ -52,16 +53,25 @@
                 #:%create-booster
                 #:%create-dmatrix
                 #:%create-dmatrix-from-csr
+                #:%dataset-num-rows
                 #:%free-booster
                 #:%free-booster-unchecked
                 #:%free-dmatrix
                 #:%free-dmatrix-unchecked
+                #:%predict-config-json
+                #:%predict-from-csr
+                #:%predict-from-dmatrix
+                #:%predict-ncol
+                #:%predict-type
+                #:%reported-shape
+                #:%resolve-num-iteration
                 #:%set-feature-names
                 #:%set-feature-types
                 #:%set-group-field
                 #:%set-info-field
                 #:%set-parameters
                 #:%slice
+                #:%total-element-count
                 #:%update-one-iteration)
   (:import-from #:cl-gbdt/src/backend
                 #:backend-name
@@ -76,22 +86,24 @@
                 #:csr-matrix-indices
                 #:csr-matrix-indptr
                 #:csr-matrix-num-columns
+                #:csr-matrix-num-rows
                 #:csr-matrix-values)
   (:import-from #:cl-gbdt/src/foreign
                 #:with-foreign-float-traps-masked)
   (:import-from #:cl-gbdt/src/handle
+                #:%reject-best-num-iteration
                 #:booster-training-set
                 #:handle-backend
                 #:handle-live-pointer
                 #:handle-released-p
                 #:release-handle
                 #:with-pointer-ownership)
-  (:export #:%check-sparse-input
-           #:%creation-function-name
+  (:export #:%creation-function-name
            #:create-booster
            #:create-dataset
            #:free-booster
            #:free-dataset
+           #:predict
            #:slice-model
            #:update-one-iteration))
 
@@ -107,17 +119,17 @@ Policy section 7 requires the operation itself to re-check a capability rather t
 the caller to have asked `backend-supports-p' first, so a caller who never asked gets a typed
 condition instead of a missing-symbol crash -- the same rule `slice-model' at the end of this
 file follows for `:model-slicing'. Both operations this backend gates on `:sparse-input' call
-this -- `%dataset-pointer' below, on `create-dataset''s behalf, and
-`cl-gbdt/src/xgboost/protocol''s `predict' -- so the two cannot come to disagree about which
-capability they name or which backend they blame.
+this -- `%dataset-pointer' below, on `create-dataset''s behalf, and `predict' further down
+this file -- so the two cannot come to disagree about which capability they name or which
+backend they blame.
 Mirrors `cl-gbdt/src/lightgbm/api''s function of the same name.
 
-Exported from this package, unlike `create-dataset' and its siblings, but NOT from
-`cl-gbdt/xgboost': `predict' still holds the prediction procedure in `protocol.lisp' and calls
-this, so the symbol has to cross a package boundary, while an internal capability gate on the
-backend's public surface would be one more claim to keep true. `all.lisp' imports this
-package's public names one at a time rather than re-exporting it whole for exactly that
-reason.
+Not exported, unlike every other name this file defines that a caller reaches. It was, while
+`cl-gbdt/src/xgboost/protocol''s `predict' held the prediction procedure and imported this
+gate from here; that procedure is now `predict' below, both call sites are in this file, and
+an export nothing outside it needs is one more claim to keep true. `all.lisp' imports this
+package's public names one at a time rather than re-exporting it whole, so the symbol was
+never on `cl-gbdt/xgboost''s surface either way.
 
 Only a `csr-matrix' argument ever reaches this. A dense matrix needs neither
 `XGDMatrixCreateFromCSR' nor `XGBoosterPredictFromCSR' to exist, and must keep working on a
@@ -415,6 +427,213 @@ whose `unwind-protect' calls this one."
           (unless already-released
             (warn "Freeing an XGBoost booster after its backend was closed: the foreign ~
                    booster was not freed and its memory is leaked."))))))
+
+;;; ---------------------------------------------------------------------------
+;;; Inference
+
+(defun predict (booster matrix &key (kind :normal) num-iteration missing)
+  "Predict on MATRIX with BOOSTER, returning two values: the result array and the SHAPE this
+backend states for it.
+
+MATRIX is a dense matrix -- predicted through `XGBoosterPredictFromDMatrix' -- or a
+`csr-matrix', through `XGBoosterPredictFromCSR'. KIND is `:normal', `:raw', `:leaf-index' or
+`:contrib', mapped onto XGBoost's own prediction-type number by `%predict-type', which signals
+for anything else. Predictions start from iteration 0; nothing here exposes a start-iteration
+override.
+
+NUM-ITERATION is a positive integer, or NIL for every iteration -- which XGBoost spells as an
+`\"iteration_end\"' of 0, and `%resolve-num-iteration' is what writes it that way. :BEST is
+REFUSED, with `unsupported-argument' naming this backend and \"predict's :num-iteration\":
+only `train' writes a booster's `best-iteration', and a booster built by `create-booster' has
+none, so at this layer the keyword would name an empty slot. `%reject-best-num-iteration' is
+what refuses it, and its own docstring says why the refusal has to be explicit --
+`%resolve-num-iteration' is `(or num-iteration 0)', so the keyword passes straight through it
+as uninterpreted data. MEASURED at this layer with the refusal removed, on both entry points:
+:BEST reaches `%predict-config-json''s `~D' directive and renders into the config JSON as the
+bare token `BEST' -- `{...,\"iteration_end\":BEST,\"strict_shape\":true}' -- so the call comes
+back as a `foreign-call-error' quoting XGBoost's own JSON parser (\"Unknown construct, around
+character position: 63\"). That is a `cl-gbdt' condition, unlike the raw CFFI `type-error'
+`%reject-best-num-iteration''s docstring records for LightGBM's integer-typed call, but it
+names a parse failure at a character offset rather than the argument the caller got wrong, and
+its wording is XGBoost's to change. The refusal is invisible to Layer 2:
+`cl-gbdt/src/xgboost/protocol''s `predict' method resolves :BEST first -- by
+`%resolve-best-num-iteration', which signals `unsupported-argument' when the booster has no
+best iteration to resolve it against -- and calls this with the integer that resolution
+produced, so the keyword itself never arrives from there.
+
+MISSING is the value in MATRIX that means *missing* -- a real, or NIL for this library's own
+default, the IEEE NaN -- and it reaches the library through a DIFFERENT config for each of
+MATRIX's two forms, neither of them the one `create-dataset' fills. A dense MATRIX becomes a
+transient DMatrix, so its sentinel is a key in THAT DMatrix's creation config --
+`%create-dmatrix', exactly as for a dataset that outlives the call. A `csr-matrix' builds no
+DMatrix at all, so its sentinel is a key in the INPLACE PREDICT config instead --
+`%predict-from-csr', which needs the key anyway. Same argument, same meaning, two config
+strings built by two functions: see `%predict-config-json', whose own docstring says why the
+dense path leaves the key out of the predict config rather than sending the sentinel twice.
+`missing-value-json' signals `unsupported-argument' for a value that is neither a real nor
+NIL, and the comparison the library then makes is at SINGLE precision, whatever MATRIX's own
+element type, as it is on the ingestion path. The `:missing-value' CAPABILITY is not checked
+here: it gates the portable :MISSING argument of `cl-gbdt/src/xgboost/protocol''s `predict',
+which checks it there, and MISSING reaches both branches alike so there would be no branch for
+such a check to belong to -- the same division `%dataset-pointer' above records for the
+ingestion path.
+
+Signals `capability-unavailable' naming `:sparse-input' when MATRIX is a `csr-matrix' and that
+capability reads false -- see `%check-sparse-input' above, which checks it before any foreign
+call.
+
+Signals `released-handle-error' for a freed BOOSTER, and `backend-not-open' when its backend
+has since been closed -- see `handle-live-pointer', which is read before anything is
+allocated, and before NUM-ITERATION is examined, so a freed booster handed :BEST is reported
+as freed rather than as having passed a keyword this layer refuses.
+
+A dense MATRIX is built into a transient DMatrix via `%create-dmatrix' first --
+`XGBoosterPredictFromDMatrix' takes a DMatrix handle, unlike LightGBM's
+`LGBM_BoosterPredictForMat', which predicts straight off a raw pointer and row/column
+counts. It is built first, before anything else here, so a MISSING that
+`%dense-matrix-config-json' refuses signals with nothing pinned and no foreign allocation
+held -- the property `%create-dmatrix''s own docstring claims. The transient DMatrix is
+freed before this returns, on every exit path, since nothing else retains it. Its free is
+checked with `check-xgb', not discarded outright: a failure there is reported with `warn'
+rather than an error, matching `free-dataset''s own reasoning for warning instead of
+signalling, since raising an error from cleanup would replace whatever condition is already
+propagating on an unwinding exit -- but on the ordinary success path, a failed free still
+leaks foreign memory and is worth reporting rather than passing over in silence.
+
+A `csr-matrix' builds no DMatrix at all: `XGBoosterPredictFromCSR' is XGBoost's INPLACE
+prediction and reads the three vectors where they lie, so there is nothing transient to
+free and no `unwind-protect' around it. That saves a copy, and it is the entry point the
+`:sparse-input' capability declares -- but it is a different code path from
+`XGBoosterPredictFromDMatrix', not a CSR spelling of it, and **it covers only `:normal' and
+`:raw'**. `:contrib' and `:leaf-index' on a `csr-matrix' signal `foreign-call-error'
+(\"Unsupported prediction type:2\" and \":6\" respectively), measured against the vendored
+library. Both work on a dense matrix, and materialising the rows as one -- a 2D
+`double-float' or `single-float' array, or a `foreign-matrix' -- is the only way to reach
+either KIND for rows a caller holds sparsely: those are the only other forms
+`call-with-foreign-matrix' has a method for, and a dataset is not among them, so routing the
+rows through `create-dataset' leads nowhere `predict' can be called on.
+That refusal is the library's own and is left to it, exactly as a `csr-matrix' whose
+NUM-COLUMNS is not BOOSTER's feature count is (\"Number of columns in data must equal to the
+trained model\"). NUM-ITERATION is honoured identically on both paths -- the same
+`iteration_begin'/`iteration_end' pair reaches the same config JSON, which additionally
+carries the `\"missing\"' key inplace prediction requires; see `%predict-config-json'.
+
+The output buffer's total element count comes from the C call's own `out_shape'/`out_dim'
+report, not from the row count alone -- the row count is only
+correct for a single-class objective. The second array dimension is that total divided
+by the row count, guarded by `%predict-ncol' -- the same derivation
+`cl-gbdt/src/lightgbm/native''s `%predict-ncol' makes for its own row-count-alone pitfall,
+and the one that
+tells a three-class `multi:softprob' model's predictions apart from a binary model's. Both
+entry points report it the same way, `\"strict_shape\":true' being set for both.
+
+That same report is also RETURNED, as this function's second value: `%reported-shape' reads
+`out_shape' back as a list of integers instead of only multiplying it out, and neither entry
+point interprets or reshapes it. Reading the shape BACK is what parts this backend from
+`cl-gbdt/src/lightgbm/api''s `%prediction-shape', which has no such call to read and derives
+what it can from an element count instead, stating NIL for `:leaf-index'. It is never NIL
+here: `out_dim' was measured 2 for `:normal'
+and `:raw', 3 for `:contrib' and 4 for `:leaf-index' on both entry points, so
+`%reported-shape''s empty-loop case -- a zero DIM -- does not arise. This backend declares
+`:prediction-shape' in `*provided-capabilities*' to say so, and nothing re-checks that
+declaration: there is no argument to refuse, and what the declaration says is that the
+mechanism is present, not that the shape is non-NIL. Measured against the vendored library,
+the shape is RICHER than the first value's own dimensions for two kinds: a four-round
+three-class model over four features reports (rows 4 3 1) for `:leaf-index' where the array is
+rows x 12, and
+(rows 3 5) for `:contrib' where the array is rows x 15. A four-round BINARY model over three
+features reports (rows 4 1 1) and (rows 1 4) -- multidimensional there too, its one output
+group notwithstanding -- so this is not a multiclass-only difference. The first value is
+untouched by any of it.
+
+`out_result' is XGBoost's own memory, valid only until the next call into this booster,
+so every element is copied out, coerced from `single-float' to `double-float', before
+this returns.
+
+Deliberately does not scan the result for NaN or infinity. `with-foreign-float-traps-masked'
+around this body stops SBCL from turning an intermediate invalid operation inside
+XGBoost's own computation -- e.g. `multi:softprob''s softmax normalization -- into a signal;
+it does not, and cannot, stop XGBoost from legitimately returning a non-finite value as a
+final result (`:raw' scores in particular are not bounded the way a transformed prediction
+is). Rejecting or flagging one here would be a policy this wrapper does not otherwise
+impose on any other operation's output, invented for this fix rather than driven by a
+reported failure -- a caller that cannot tolerate a non-finite prediction should check for
+one itself."
+  (with-foreign-float-traps-masked
+    ;; BOOSTER-POINTER is bound first, and a `let' evaluates its init forms left to right, so
+    ;; a freed BOOSTER is refused by `handle-live-pointer' before `%reject-best-num-iteration'
+    ;; can report a :BEST it would also have refused -- the same precedence the `predict'
+    ;; method above this layer keeps between a freed handle and its own argument checks.
+    (let ((booster-pointer (handle-live-pointer booster))
+          (predict-type (%predict-type kind))
+          (iteration-end
+            (%resolve-num-iteration
+             (%reject-best-num-iteration booster num-iteration "predict's :num-iteration"))))
+      ;; Reading `out_shape'/`out_dim'/`out_result' back into the result array, and back out
+      ;; as this function's two return values, is identical for both entry points and lives
+      ;; here once; CALL is the only thing that differs between them, which is exactly how
+      ;; much of this function a `csr-matrix' changes. Both entry points report the shape the
+      ;; same way -- `"strict_shape":true' is set for both -- so neither branch special-cases
+      ;; the KIND, and the two KINDs the sparse one refuses never get here at all.
+      (flet ((predict-into (nrow call)
+               (cffi:with-foreign-objects ((out-shape :pointer) (out-dim :uint64)
+                                           (out-result :pointer))
+                 (funcall call out-shape out-dim out-result)
+                 (let* ((dim (cffi:mem-ref out-dim :uint64))
+                        (shape-pointer (cffi:mem-ref out-shape :pointer))
+                        (element-count (%total-element-count shape-pointer dim))
+                        ;; Read off the same pointer as the count above and before anything
+                        ;; else touches this booster: `out_shape' is XGBoost's own memory,
+                        ;; valid only until the next call into it, as `out_result' is.
+                        (shape (%reported-shape shape-pointer dim))
+                        (ncol-result (%predict-ncol element-count nrow))
+                        (result-buffer (cffi:mem-ref out-result :pointer))
+                        (result (make-array (list nrow ncol-result)
+                                            :element-type 'double-float)))
+                   (dotimes (row nrow)
+                     (dotimes (col ncol-result)
+                       (setf (aref result row col)
+                             (coerce (cffi:mem-aref result-buffer :float
+                                                    (+ (* row ncol-result) col))
+                                     'double-float))))
+                   (values result shape)))))
+        (if (typep matrix 'csr-matrix)
+            (progn
+              (%check-sparse-input (handle-backend booster))
+              (predict-into (csr-matrix-num-rows matrix)
+                            (lambda (out-shape out-dim out-result)
+                              (%predict-from-csr booster-pointer
+                                                 (csr-matrix-indptr matrix)
+                                                 (csr-matrix-indices matrix)
+                                                 (csr-matrix-values matrix)
+                                                 (csr-matrix-num-columns matrix)
+                                                 predict-type iteration-end missing
+                                                 out-shape out-dim out-result))))
+            ;; The transient DMatrix is built first, so a MISSING that
+            ;; `%dense-matrix-config-json' refuses signals with nothing pinned and no foreign
+            ;; allocation held -- the property `%create-dmatrix''s own docstring claims. NROW
+            ;; comes from the DMatrix `%create-dmatrix' already built, via `%dataset-num-rows',
+            ;; rather than a second pin of MATRIX just to read its row count back.
+            (let ((dmatrix-pointer (%create-dmatrix matrix missing)))
+              (when (cffi:null-pointer-p dmatrix-pointer)
+                (error 'foreign-call-error
+                       :function-name "XGDMatrixCreateFromDense"
+                       :code 0
+                       :message "reported success but returned a null dataset handle"))
+              (unwind-protect
+                   (let ((nrow (%dataset-num-rows dmatrix-pointer)))
+                     (cffi:with-foreign-string
+                         (config (%predict-config-json predict-type iteration-end))
+                       (predict-into nrow
+                                     (lambda (out-shape out-dim out-result)
+                                       (%predict-from-dmatrix booster-pointer dmatrix-pointer
+                                                              config out-shape out-dim
+                                                              out-result)))))
+                (handler-case (%free-dmatrix dmatrix-pointer)
+                  (error (condition)
+                    (warn "Freeing predict's temporary XGBoost dataset failed: the ~
+                           foreign dataset was not freed and its memory is leaked. ~A"
+                          condition))))))))))
 
 ;;; ---------------------------------------------------------------------------
 ;;; Model slicing

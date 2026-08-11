@@ -50,37 +50,49 @@
 ;;; public surface by accident -- exactly what this task's brief warns an accidental export
 ;;; becomes: a compatibility obligation.
 ;;;
-;;; Nine symbols so far, each pulled explicitly by name. `xgboost-backend' from `classes' is the
-;;; CLOS class a caller can specialize methods on or check with `typep'; `evaluate-one-iteration'
+;;; Ten symbols from those three packages, each pulled explicitly by name. `xgboost-backend'
+;;; from `classes' is the CLOS class a caller can specialize methods on or check with `typep';
+;;; `evaluate-one-iteration'
 ;;; (docs/superpowers/specs/2026-08-06-evaluation-api-design.md) and `booster-boosted-rounds',
 ;;; the round count `slice-model''s interval is expressed against, come from `native'.
 ;;; `slice-model' itself, the capability work's Layer 1 addition, and `create-dataset',
-;;; `free-dataset', `create-booster', `update-one-iteration' and `free-booster', the finished
-;;; operations, come from `api' -- the last five being the procedure that used to sit inside
-;;; `cl-gbdt/src/xgboost/protocol''s methods of those names, which now check their portable
-;;; arguments and call these. Together they are a whole training run at this layer: build a
-;;; dataset, build a booster on it, advance it, free both. `create-booster' is the one with no
+;;; `free-dataset', `create-booster', `update-one-iteration', `free-booster' and `predict', the
+;;; finished operations, come from `api' -- the last six being the procedure that used to sit
+;;; inside `cl-gbdt/src/xgboost/protocol''s methods of those names, which now check their
+;;; portable arguments and call these. Together they are a whole training run at this layer,
+;;; and now the inference that follows it: build a dataset, build a booster on it, advance it,
+;;; score with it, free both. `create-booster' is the one with no
 ;;; caller inside this library -- `train' builds its own booster, for the reason its creation
 ;;; call records -- so it is published on the strength of its own contract rather than of a
-;;; method that exercises it. `free-dataset', `free-booster' and `update-one-iteration' here are
-;;; NOT `cl-gbdt''s generics of those names: they are plain functions and different symbols, so
-;;; a caller who has both packages in an image must name which one they mean, exactly as they
-;;; already must for anything else two packages export under one name. `slice-model' was
+;;; method that exercises it. `free-dataset', `free-booster', `update-one-iteration' and
+;;; `predict' here are NOT `cl-gbdt''s generics of those names: they are plain functions and
+;;; different symbols, so a caller who has both packages in an image must name which one they
+;;; mean, exactly as they already must for anything else two packages export under one name.
+;;; `slice-model' was
 ;;; imported from `classes' until `api' existed; it moved because it is
 ;;; an operation over the booster class rather than part of the library's lifetime, and the
 ;;; symbol a caller reaches is unchanged by that move -- this clause is the only thing that had
 ;;; to notice.
 ;;;
-;;; All nine are policy section 3's Layer 1, mirroring `cl-gbdt/lightgbm''s identical shape.
+;;; All ten are policy section 3's Layer 1, mirroring `cl-gbdt/lightgbm''s identical shape.
 ;;; Nothing else from `native' is published here: none of its remaining exports is a reviewed,
 ;;; Lisp-level XGBoost-specific operation. `api' is `:import-from'ed rather than
-;;; `:use-reexport'ed for the reason `classes' is: it also exports `%check-sparse-input' and
-;;; `%creation-function-name', internal helpers that exist at that layer only because
-;;; `protocol.lisp''s `make-dataset' and `predict' call them too, and re-exporting the package
-;;; whole would put both on this public surface by accident. A future Phase 2 addition follows
-;;; the same shape -- named explicitly in both an `:import-from' and the `:export' clause below,
-;;; never picked up by widening either into a blanket re-export of a whole package; see this
-;;; comment block's own earlier paragraph for why that stays forbidden.
+;;; `:use-reexport'ed for the reason `classes' is, and the reason survives that package's
+;;; `:export' clause holding nothing but those seven operations and one helper today:
+;;; `:use-reexport' would publish whatever that clause grows next automatically, and the
+;;; `:export' clause below is what `tools/ci/check-float-traps.lisp' reads to decide which
+;;; `defun's are entry points -- see the paragraph on that check below, which is why a name
+;;; arriving here without being written here is a hazard rather than a convenience. The helper
+;;; is `%creation-function-name', which exists at that layer only because `protocol.lisp''s
+;;; `make-dataset' calls it too, and re-exporting the package whole would put an internal
+;;; helper on this public surface by accident. `%check-sparse-input' used to make the same
+;;; point beside it: `api' exported that gate while `protocol.lisp''s `predict' called it from
+;;; the other file, and that procedure is now `api''s own `predict', both of the gate's call
+;;; sites are in that file, and the name is no longer exported at all. A future Phase 2
+;;; addition follows the same shape -- named explicitly in both an `:import-from' and the
+;;; `:export' clause below, never picked up by widening either into a blanket re-export of a
+;;; whole package; see this comment block's own earlier paragraph for why that stays
+;;; forbidden.
 ;;;
 ;;; `xgboost-backend' reached this surface by way of `:use-reexport #:cl-gbdt/src/xgboost/protocol'
 ;;; until the split, that package having re-exported the one symbol and nothing else. `classes'
@@ -107,19 +119,23 @@
 ;;; `shutdown-backend', `probe-foreign-symbols' and `probe-capabilities' from `backend';
 ;;; `make-handle', `release-handle', `handle-pointer' and `handle-live-pointer' from `handle'
 ;;; -- and re-exporting either package whole would put every one of those on this surface by
-;;; accident, the identical hazard already described above. `csr-matrix' and the rest of
-;;; `cl-gbdt/src/data' still stay out, though the reason has changed: dataset construction is
-;;; now at this layer, and `create-dataset' below does take a `csr-matrix', so a Layer 1 caller
-;;; who wants the sparse path has to reach `cl-gbdt:make-csr-matrix' -- which means loading the
-;;; unified core -- or name `cl-gbdt/src/data' directly. `cl-gbdt/lightgbm' does NOT leave it
-;;; there: it publishes `make-csr-matrix', the `csr-matrix' type and its five readers (see its
-;;; own comment at the same place), and it did so when its `predict' reached Layer 1 and half of
-;;; two published contracts would otherwise have been unreachable from the package publishing
-;;; them. This backend has only the one such contract so far, `create-dataset'; its `predict' is
-;;; still at Layer 2. So the sparse surface is deferred to the task that moves that method down,
-;;; which is where the sibling took the decision and where the same argument will apply here --
-;;; not left open indefinitely, and not a side effect of moving `make-dataset''s procedure down.
-;;; The dense path, which is every ordinary array, needs nothing from `cl-gbdt/src/data' at all.
+;;; accident, the identical hazard already described above.
+;;;
+;;; The sparse surface is the decision the previous task deferred to exactly this one, taken
+;;; here on the same terms `cl-gbdt/lightgbm' took it and at the same point in the work: both
+;;; `create-dataset' and `predict' accept a `csr-matrix' wherever they accept a dense matrix,
+;;; and until this form named it, a Layer 1 caller could reach the sparse half of either only
+;;; by loading the unified core for `cl-gbdt:make-csr-matrix' or by naming the internal
+;;; `cl-gbdt/src/data' directly -- so half of two published contracts was unreachable from the
+;;; package that publishes them. `make-csr-matrix', the `csr-matrix' structure type and its
+;;; five readers are named; `foreign-matrix', `with-foreign-matrix' and the rest of that package
+;;; stay out, being the plumbing a dense matrix is handed to C through and not something a
+;;; caller builds. The dense path, which is every ordinary array, still needs none of it.
+;;;
+;;; None of those seven is a symbol of this package's own: they are the very symbols
+;;; `cl-gbdt/src/data' defines, so unlike `predict' and the three other doubled operation names
+;;; above, a caller holding both `cl-gbdt' and `cl-gbdt/xgboost' sees one symbol reached two
+;;; ways and has nothing to disambiguate.
 ;;;
 ;;; Every one of them is named in `:export' below because that is now the only thing
 ;;; publishing them: they arrive through `:import-from', which imports without exporting. The
@@ -127,17 +143,20 @@
 ;;; `tools/ci/check-float-traps.lisp' reads exactly this `:export' to decide which `defun's
 ;;; are entry points reached without a `defmethod' to inherit a float-trap mask from, so a
 ;;; public `defun' that appeared here only by way of `:use-reexport' would slip that check
-;;; silently. That scan does reach all six `api' functions: its +BACKEND-FILE-PATTERNS+ globs
+;;; silently. That scan does reach all seven `api' functions: its +BACKEND-FILE-PATTERNS+ globs
 ;;; `src/*/api.lisp' and `src/*/classes.lisp' alongside `src/*/native.lisp' and
 ;;; `src/*/protocol.lisp', so a public `defun' in either is both named here and matched there --
-;;; the scan reports `api.lisp' as "0 defmethods, 6 public defuns, 0 unmasked" and `classes.lisp'
-;;; as "2 defmethods, 0 public defuns, 0 unmasked" now that `slice-model' has moved. A future
-;;; Layer 1 addition is listed here for the same reasons; a CLOS class such as `xgboost-backend'
-;;; needs no entry, having no body to mask.
-;;; None of Task 7's additions are `defun's in THIS file either -- `open-backend' and
+;;; the scan reports `api.lisp' as "0 defmethods, 7 public defuns, 0 unmasked" and `classes.lisp'
+;;; as "2 defmethods, 0 public defuns, 0 unmasked" now that `slice-model' has moved and
+;;; `predict' has arrived. A future Layer 1 addition is listed here for the same reasons; a
+;;; CLOS class such as `xgboost-backend' needs no entry, having no body to mask.
+;;; None of the shared-basis additions are `defun's in THIS file either -- `open-backend' and
 ;;; `close-backend' are `defun's in `src/backend.lisp', outside the check's own file-pattern
 ;;; glob, and the condition accessors `:use-reexport'ed from `cl-gbdt/src/conditions' are
-;;; reader functions `define-condition' generates, not `defun's the check would count.
+;;; reader functions `define-condition' generates, not `defun's the check would count. The
+;;; sparse surface adds none either: `make-csr-matrix' and the five readers are the functions
+;;; `defstruct' generates in `src/data.lisp', which that glob does not reach and which the scan
+;;; would not count as `defun's if it did.
 ;;;
 ;;; And, as ever: never `#:cl-gbdt/src/xgboost/c-api', the raw CFFI bindings -- see the
 ;;; comment above `cl-gbdt/src/xgboost/all'.
@@ -154,6 +173,14 @@
                 #:backend-version
                 #:close-backend
                 #:open-backend)
+  (:import-from #:cl-gbdt/src/data
+                #:csr-matrix
+                #:csr-matrix-indices
+                #:csr-matrix-indptr
+                #:csr-matrix-num-columns
+                #:csr-matrix-num-rows
+                #:csr-matrix-values
+                #:make-csr-matrix)
   (:import-from #:cl-gbdt/src/handle
                 #:booster
                 #:dataset
@@ -169,6 +196,7 @@
                 #:create-dataset
                 #:free-booster
                 #:free-dataset
+                #:predict
                 #:slice-model
                 #:update-one-iteration)
   (:export #:xgboost-backend
@@ -179,7 +207,15 @@
            #:create-dataset
            #:free-booster
            #:free-dataset
+           #:predict
            #:update-one-iteration
+           #:csr-matrix
+           #:csr-matrix-indices
+           #:csr-matrix-indptr
+           #:csr-matrix-num-columns
+           #:csr-matrix-num-rows
+           #:csr-matrix-values
+           #:make-csr-matrix
            #:*known-capabilities*
            #:backend-capabilities
            #:backend-info
@@ -201,8 +237,12 @@
 ;;; brand-new dependency this form alone needs, one the first form does not already list,
 ;;; belongs there, not here. That now rules `protocol' out for this form as well: the first
 ;;; form no longer names it, and naming it here alone would give this file a Layer 2 edge
-;;; again, undoing the split. Task 7's three new clauses need no such addition either: `classes'
+;;; again, undoing the split. The shared-basis clauses need no such addition either: `classes'
 ;;; itself already `:import-from's `cl-gbdt/src/backend', `cl-gbdt/src/handle' and
 ;;; `cl-gbdt/src/conditions' (see its own package form), so loading `cl-gbdt/src/xgboost/all'
 ;;; -- which the first form's `:use-reexport' of `classes' already requires -- transitively
-;;; loads all three ASDF systems before this second form is ever read.
+;;; loads all three ASDF systems before this second form is ever read. The
+;;; `cl-gbdt/src/data' clause added for the sparse surface is the same case one package
+;;; further out: `api', which the first form does `:use-reexport', `:import-from's that package
+;;; itself -- it has to, `create-dataset' and `predict' both branching on `csr-matrix' -- so
+;;; the system is loaded by the time this form is read, and the first form needs no edit.
