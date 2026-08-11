@@ -89,8 +89,8 @@
   (:import-from #:cl-gbdt/src/handle
                 #:dataset
                 #:booster
-                #:make-handle
                 #:release-handle
+                #:with-pointer-ownership
                 #:handle-live-pointer
                 #:handle-released-p
                 #:handle-backend
@@ -604,25 +604,18 @@ Signals `backend-not-open' before any of that when BACKEND is not open -- see
                  :function-name function-name
                  :code 0
                  :message "reported success but returned a null dataset handle"))
-        (let ((owned nil))
-          (unwind-protect
-               (progn
-                 (when label
-                   (%set-info-field dataset-pointer "label" label))
-                 (when weight
-                   (%set-info-field dataset-pointer "weight" weight))
-                 (when group
-                   (%set-group-field dataset-pointer group))
-                 (when feature-names
-                   (%set-feature-names dataset-pointer feature-names))
-                 (when feature-types
-                   (%set-feature-types dataset-pointer feature-types))
-                 (prog1
-                     (make-handle 'xgboost-dataset dataset-pointer backend :dataset)
-                   (setf owned t)))
-            (unless owned
-              (handler-case (%free-dmatrix-unchecked dataset-pointer)
-                (error () nil)))))))))
+        (with-pointer-ownership (dataset-pointer #'%free-dmatrix-unchecked take-ownership)
+          (when label
+            (%set-info-field dataset-pointer "label" label))
+          (when weight
+            (%set-info-field dataset-pointer "weight" weight))
+          (when group
+            (%set-group-field dataset-pointer group))
+          (when feature-names
+            (%set-feature-names dataset-pointer feature-names))
+          (when feature-types
+            (%set-feature-types dataset-pointer feature-types))
+          (take-ownership 'xgboost-dataset backend :dataset))))))
 
 (defmethod dataset-num-rows ((dataset xgboost-dataset))
   "Return DATASET's row count, read via `XGDMatrixNumRow'."
@@ -1074,84 +1067,77 @@ Signals `backend-not-open' before any of that when BACKEND is not open -- see
            ;; with nothing further to do here.
            (completed-rounds 0))
       (let ((booster-pointer (%create-booster dataset-pointers)))
-        (let ((owned nil))
-          (unwind-protect
-               (progn
-                 (%set-parameters booster-pointer parameters)
-                 ;; ROUND is 1-based, which is the numbering `observe-iteration' answers
-                 ;; `watcher-best-iteration' in and the report publishes.
-                 (loop :for round :from 1 :to num-rounds
-                       :do (if objective
-                               ;; `%boosted-rounds', not ROUND: this is XGBoost's own 0-based
-                               ;; `iter' argument, and reading it back from the booster is
-                               ;; exactly what `%update-one-iteration' does for the built-in
-                               ;; branch beside this one -- see that function for why the
-                               ;; count is not tracked locally. ROUND is 1-based and belongs
-                               ;; to the report and the early-stopping watcher, not to C.
-                               (let ((scores (%booster-predictions
-                                              booster-pointer train-data-pointer
-                                              (%dataset-num-rows train-data-pointer)
-                                              :raw :training t)))
-                                 (multiple-value-bind (grad hess) (funcall objective scores)
-                                   ;; Before anything else this iteration does, and before the
-                                   ;; next one reads TRAIN-DATA-POINTER again: the caller's
-                                   ;; own code has just run and may have freed a handle this
-                                   ;; loop holds a raw pointer to. DATASET-POINTERS is rebuilt
-                                   ;; rather than left alone -- `%read-evaluation' below reads
-                                   ;; it, and it would otherwise still hold the stale ones.
-                                   (multiple-value-setq (train-data-pointer valid-set-pointers)
-                                     (%recheck-train-datasets backend dataset valid-sets))
-                                   (setf dataset-pointers
-                                         (cons train-data-pointer valid-set-pointers))
-                                   (check-objective-result grad hess
-                                                           (array-dimension scores 0)
-                                                           (array-dimension scores 1))
-                                   (%train-one-iteration-custom
-                                    booster-pointer train-data-pointer
-                                    (%boosted-rounds booster-pointer) grad hess)))
-                               (%update-one-iteration booster-pointer train-data-pointer))
-                           (incf completed-rounds)
-                           ;; Primary value only: `%read-evaluation''s RAW is `evaluation''s
-                           ;; provenance, and a report carries no per-iteration raw text.
-                           (let ((entries (when record-history
-                                            (%read-evaluation booster-pointer
-                                                              dataset-pointers))))
-                             ;; Appended after every library entry, and before the push and
-                             ;; the watcher, so the history and the watcher see one list. All
-                             ;; three pointer variables are reassigned from what the call
-                             ;; returns: the caller's own code has just run, and the next
-                             ;; iteration's update and `%read-evaluation' both dereference
-                             ;; them.
-                             (when evaluation
-                               (multiple-value-bind (custom pointers)
-                                   (%custom-evaluation-entries
-                                    backend evaluation booster-pointer dataset valid-sets
-                                    dataset-pointers row-counts entries (= round 1) name-pin)
-                                 (setf entries (append entries custom)
-                                       dataset-pointers pointers
-                                       train-data-pointer (first pointers)
-                                       valid-set-pointers (rest pointers))))
-                             (when record-history
-                               (push entries history))
-                             (when (and watcher (observe-iteration watcher entries round))
-                               (return))))
-                 (let* ((best-iteration (and watcher (watcher-best-iteration watcher)))
-                        (report (training-report-from-history
-                                 (reverse history) completed-rounds dataset-names
-                                 :best-iteration best-iteration
-                                 :best-score (and watcher (watcher-best-score watcher))
-                                 :early-stopped-p (and watcher (watcher-stopped-p watcher)
-                                                   (< completed-rounds num-rounds)))))
-                   (multiple-value-prog1
-                       (values (make-handle 'xgboost-booster booster-pointer backend :booster
-                                            :training-set dataset
-                                            :validation-sets valid-sets
-                                            :best-iteration best-iteration)
-                               report)
-                     (setf owned t))))
-            (unless owned
-              (handler-case (%free-booster-unchecked booster-pointer)
-                (error () nil)))))))))
+        (with-pointer-ownership (booster-pointer #'%free-booster-unchecked take-ownership)
+          (%set-parameters booster-pointer parameters)
+          ;; ROUND is 1-based, which is the numbering `observe-iteration' answers
+          ;; `watcher-best-iteration' in and the report publishes.
+          (loop :for round :from 1 :to num-rounds
+                :do (if objective
+                        ;; `%boosted-rounds', not ROUND: this is XGBoost's own 0-based
+                        ;; `iter' argument, and reading it back from the booster is
+                        ;; exactly what `%update-one-iteration' does for the built-in
+                        ;; branch beside this one -- see that function for why the
+                        ;; count is not tracked locally. ROUND is 1-based and belongs
+                        ;; to the report and the early-stopping watcher, not to C.
+                        (let ((scores (%booster-predictions
+                                       booster-pointer train-data-pointer
+                                       (%dataset-num-rows train-data-pointer)
+                                       :raw :training t)))
+                          (multiple-value-bind (grad hess) (funcall objective scores)
+                            ;; Before anything else this iteration does, and before the
+                            ;; next one reads TRAIN-DATA-POINTER again: the caller's
+                            ;; own code has just run and may have freed a handle this
+                            ;; loop holds a raw pointer to. DATASET-POINTERS is rebuilt
+                            ;; rather than left alone -- `%read-evaluation' below reads
+                            ;; it, and it would otherwise still hold the stale ones.
+                            (multiple-value-setq (train-data-pointer valid-set-pointers)
+                              (%recheck-train-datasets backend dataset valid-sets))
+                            (setf dataset-pointers
+                                  (cons train-data-pointer valid-set-pointers))
+                            (check-objective-result grad hess
+                                                    (array-dimension scores 0)
+                                                    (array-dimension scores 1))
+                            (%train-one-iteration-custom
+                             booster-pointer train-data-pointer
+                             (%boosted-rounds booster-pointer) grad hess)))
+                        (%update-one-iteration booster-pointer train-data-pointer))
+                    (incf completed-rounds)
+                    ;; Primary value only: `%read-evaluation''s RAW is `evaluation''s
+                    ;; provenance, and a report carries no per-iteration raw text.
+                    (let ((entries (when record-history
+                                     (%read-evaluation booster-pointer
+                                                       dataset-pointers))))
+                      ;; Appended after every library entry, and before the push and
+                      ;; the watcher, so the history and the watcher see one list. All
+                      ;; three pointer variables are reassigned from what the call
+                      ;; returns: the caller's own code has just run, and the next
+                      ;; iteration's update and `%read-evaluation' both dereference
+                      ;; them.
+                      (when evaluation
+                        (multiple-value-bind (custom pointers)
+                            (%custom-evaluation-entries
+                             backend evaluation booster-pointer dataset valid-sets
+                             dataset-pointers row-counts entries (= round 1) name-pin)
+                          (setf entries (append entries custom)
+                                dataset-pointers pointers
+                                train-data-pointer (first pointers)
+                                valid-set-pointers (rest pointers))))
+                      (when record-history
+                        (push entries history))
+                      (when (and watcher (observe-iteration watcher entries round))
+                        (return))))
+          (let* ((best-iteration (and watcher (watcher-best-iteration watcher)))
+                 (report (training-report-from-history
+                          (reverse history) completed-rounds dataset-names
+                          :best-iteration best-iteration
+                          :best-score (and watcher (watcher-best-score watcher))
+                          :early-stopped-p (and watcher (watcher-stopped-p watcher)
+                                            (< completed-rounds num-rounds)))))
+            (values (take-ownership 'xgboost-booster backend :booster
+                                    :training-set dataset
+                                    :validation-sets valid-sets
+                                    :best-iteration best-iteration)
+                    report)))))))
 
 (defmethod update-one-iteration ((booster xgboost-booster))
   "Advance BOOSTER by one boosting iteration via `XGBoosterUpdateOneIter'.
@@ -1430,17 +1416,10 @@ Signals `backend-not-open' before any of that when BACKEND is not open -- see
   (with-foreign-float-traps-masked
     (%check-backend-open backend)
     (let ((booster-pointer (%create-booster nil)))
-      (let ((owned nil))
-        (unwind-protect
-             (progn
-               (cffi:with-foreign-string (filename (namestring path))
-                 (%load-model booster-pointer filename))
-               (prog1
-                   (make-handle 'xgboost-booster booster-pointer backend :booster)
-                 (setf owned t)))
-          (unless owned
-            (handler-case (%free-booster-unchecked booster-pointer)
-              (error () nil))))))))
+      (with-pointer-ownership (booster-pointer #'%free-booster-unchecked take-ownership)
+        (cffi:with-foreign-string (filename (namestring path))
+          (%load-model booster-pointer filename))
+        (take-ownership 'xgboost-booster backend :booster)))))
 
 (defmethod model-to-string ((booster xgboost-booster) &key num-iteration)
   "Return BOOSTER's model as a JSON string via `XGBoosterSaveModelToBuffer'.
@@ -1653,12 +1632,6 @@ the true-but-irrelevant news that the backend it came from cannot slice."
       ;; The `owned' unwind-protect dance is still needed, though: `make-handle' itself --
       ;; `make-instance' or finalizer attachment -- can signal, e.g. on `storage-condition',
       ;; and a signal there must not orphan the foreign booster `%slice' already returned.
-      (let ((slice-pointer (%slice pointer begin (or end 0) step))
-            (owned nil))
-        (unwind-protect
-             (prog1
-                 (make-handle 'xgboost-booster slice-pointer backend :booster)
-               (setf owned t))
-          (unless owned
-            (handler-case (%free-booster-unchecked slice-pointer)
-              (error () nil))))))))
+      (let ((slice-pointer (%slice pointer begin (or end 0) step)))
+        (with-pointer-ownership (slice-pointer #'%free-booster-unchecked take-ownership)
+          (take-ownership 'xgboost-booster backend :booster))))))
