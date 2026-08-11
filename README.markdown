@@ -18,7 +18,7 @@ file if you have it locally).
 `update-one-iteration`, `predict`, `save-model`, `load-model`, `model-to-string`,
 `feature-importance`, `evaluation`, `free-dataset` and `free-booster` -- against the real
 LightGBM and XGBoost shared libraries, exercised by 784 functional assertions across 13 test
-files (design doc section 12, layer 2), in addition to 504 assertions across 19 test files
+files (design doc section 12, layer 2), in addition to 516 assertions across 19 test files
 that need no shared library at all (layer 1). `train` also returns a `training-report` as
 its secondary value, and takes
 `:early-stopping` to end a run once a watched metric stops improving -- see
@@ -2718,7 +2718,12 @@ A real VALUE is **recorded as a `double-float`**, coerced where the entry is bui
 stored as returned: `training-series-values` documents every element of every series as a
 `double-float` or `NIL`, and both libraries' own values already are doubles, so a caller
 returning `1/3` reads `0.3333333333333333d0` back out of its own series rather than a `ratio`
-landing in a slot every other consumer was promised held doubles (same file).
+landing in a slot every other consumer was promised held doubles (same file). A real too large
+for a `double-float` to hold records the signed infinity, identically on every platform: the
+coercion is wrapped the same way `%rational-json` (`src/config/missing-value.lisp`) wraps its
+own, because whether `coerce` *signals* on such a value is a property of the platform's
+floating-point traps rather than of the value -- see that function's docstring, which records
+the split.
 `NIL` means "not computable this iteration" -- a fold whose
 denominator was zero, a metric undefined before some minimum number of rows -- and is
 recorded in its place in the series rather than dropped, counting as no improvement to an

@@ -64,6 +64,35 @@
   ;; could not read, and `observe-iteration' reads it as no improvement rather than an error.
   (ok (null (third (custom-metric-entry :test-backend "my_metric" nil 0)))))
 
+(deftest custom-metric-entry-records-an-unrepresentable-value-as-an-infinity
+  ;; The coercion above is the one place a caller's value can be a number no `double-float'
+  ;; can hold, and whether `coerce' SIGNALS on it or quietly yields an infinity is a property
+  ;; of the platform's traps rather than of the number -- the split
+  ;; `cl-gbdt/src/config/missing-value''s `%rational-json' records, having been written after
+  ;; a CI break on exactly it. `%double-value' wraps the coercion the same way, which is what
+  ;; makes this assertable at all: an outcome that differed between the two CI halves could
+  ;; not be written down as one expectation.
+  ;;
+  ;; NOTE ON WHAT THIS RUN PROVES WHERE. On a platform with the `:overflow' trap enabled --
+  ;; x86-64, and macOS aarch64 -- an unwrapped coercion signals here and this test fails. On
+  ;; Linux aarch64 the trap is off, the unwrapped coercion already yields the infinity, and
+  ;; this test passes either way. It is green on both by construction; it can only go RED on
+  ;; the trapped half.
+  (let ((huge (expt 10 400)))
+    ;; A positive bignum, its negation, and a ratio: the three exact shapes that can overflow
+    ;; the coercion. No float can -- every `single-float' fits a `double-float'.
+    (dolist (returned (list huge (- huge) (/ huge 3) (- (/ huge 3))))
+      (let ((value (third (custom-metric-entry :test-backend "my_metric" returned 0))))
+        (ok (typep value 'double-float)
+            (format nil "~S was recorded as a ~S" (type-of returned) (type-of value)))
+        (ok (and (floatp value) (sb-ext:float-infinity-p value))
+            (format nil "an unrepresentable ~S was recorded as ~S" (type-of returned) value))
+        ;; The SIGN is carried over from the original, which is the half `plusp' on the
+        ;; original value decides and the half a bare `handler-case' returning one constant
+        ;; would have got wrong.
+        (ok (if (plusp returned) (plusp value) (minusp value))
+            (format nil "~S kept its sign as ~S" (plusp returned) value))))))
+
 (deftest custom-metric-entry-copies-the-name-it-was-handed
   ;; A string is mutable, and nothing stops a caller returning THE SAME object on every
   ;; iteration and rewriting its characters. Every history entry would then hold that one

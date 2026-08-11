@@ -37,7 +37,7 @@ over both backends.
 **Status: functional.** Both backends (`cl-gbdt/lightgbm`, `cl-gbdt/xgboost`) implement
 all 13 generic functions of the unified API -- `make-dataset`, `train`, `predict`, and
 the rest -- against the real shared libraries, exercised by 784 functional assertions across
-13 test files in `cl-gbdt/tests/functional` (layer 2) on top of 504 assertions across 19
+13 test files in `cl-gbdt/tests/functional` (layer 2) on top of 516 assertions across 19
 test files that need no shared library at all (layer 1). `train` returns a `training-report`
 as its secondary value, and takes `:record-history` (default `t`) to turn the per-iteration
 recording that fills it off -- recording roughly doubles LightGBM's `train` time, and on
@@ -86,7 +86,10 @@ called once per dataset per iteration, after that iteration's update, with that 
 `predict :kind :normal` scores and the dataset's index -- 0 the training set, N+1 the Nth
 `:valid-sets` entry, the numbering `:early-stopping`'s `:dataset` key already uses -- and that
 returns a metric name and a real or `NIL` value -- a real one recorded as a `double-float`,
-coerced where the entry is built so every series holds what `training-series-values` documents
+coerced where the entry is built so every series holds what `training-series-values` documents,
+and one too large for a `double-float` recorded as the signed infinity by the same
+`handler-case` wrap `src/config/missing-value.lisp`'s `%rational-json` uses, so the stored
+value does not depend on whether the platform traps `:overflow`
 -- gated on the `:custom-evaluation` capability
 that both backends provide, LightGBM out of a probe and XGBoost out of a declaration since its
 one required C function needs no optional-symbol check; the values become their own report

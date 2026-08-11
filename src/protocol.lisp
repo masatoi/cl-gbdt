@@ -308,9 +308,11 @@ signals `unsupported-argument' naming :EVALUATION.
 A REAL VALUE IS RECORDED AS A `double-float', coerced when the entry is built rather than
 stored as returned: `training-series-values' documents every element of every series as a
 `double-float' or NIL, and a caller returning 1/3 reads 0.3333333333333333d0 back out of its
-own series. The name is COPIED at the same point, so a caller free to return one string
-object per iteration and rewrite its characters cannot change what a completed run recorded,
-nor what the pin below compares against.
+own series. A real too large for a `double-float' to hold records the signed infinity, on
+every platform alike rather than signalling on the ones whose `:overflow' trap is enabled.
+The name is COPIED at the same point, so a caller free to return one string object per
+iteration and rewrite its characters cannot change what a completed run recorded, nor what
+the pin below compares against.
 
 INDEX numbers the datasets exactly as EARLY-STOPPING's :DATASET and the report's
 `training-series-index' do: 0 is the training set, and N+1 is the Nth :VALID-SETS entry.

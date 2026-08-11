@@ -42,6 +42,36 @@
 
 (in-package #:cl-gbdt/src/training/custom-metric)
 
+(defun %double-value (value)
+  "Return the real VALUE as a `double-float', substituting the signed infinity for a value
+too large for one to hold rather than letting the coercion signal.
+
+Whether `(coerce VALUE 'double-float)' SIGNALS `floating-point-overflow' or quietly yields an
+infinity is a property of the platform's floating-point traps rather than of VALUE, so an
+unwrapped coercion would make what `custom-metric-entry' records differ between the platforms
+this project is tested on. `cl-gbdt/src/config/missing-value''s `%rational-json' met this
+exact seam first, and after a CI break on it; ITS docstring is where the trap split is
+recorded and the one place to keep it, so this follows that function's shape rather than
+restating the split and letting the two drift apart.
+
+WHAT IS STORED IS THEREFORE THE SAME EVERYWHERE: a metric returning a real too large for a
+`double-float' records `sb-ext:double-float-positive-infinity' or
+`sb-ext:double-float-negative-infinity', on every platform, whether or not the caller's traps
+are masked and whether this is reached through `train''s own foreign-float-trap mask or by a
+direct call. Nothing signals either way.
+
+`(plusp VALUE)' chooses between the two on the ORIGINAL value, and cannot itself trap: only a
+rational can overflow this coercion -- every `single-float' fits a `double-float', and a
+`double-float' coerces to itself -- so the handler runs on an exact number or not at all,
+where `plusp' is an exact comparison. A NaN is a `real' and so does reach this function, but a
+NaN conversion does not raise `floating-point-overflow', so it never reaches the handler and
+`plusp' is never applied to one."
+  (handler-case (coerce value 'double-float)
+    (floating-point-overflow ()
+      (if (plusp value)
+          sb-ext:double-float-positive-infinity
+          sb-ext:double-float-negative-infinity))))
+
 (defun custom-metric-entry (backend-name name value dataset-index)
   "Return (list DATASET-INDEX NAME-COPY VALUE), the entry one call to a caller's `:evaluation'
 function contributes to an iteration -- the exact (DATASET-INDEX METRIC-NAME VALUE) shape
@@ -77,12 +107,10 @@ that promise to accommodate one producer, is the direction taken deliberately: a
 series is what the report already guarantees, and it is the guarantee that would have to
 change otherwise. So a caller reading its own series back sees 0.3333333333333333d0 where it
 returned 1/3 and 0.25d0 where it returned the `single-float' 0.25 -- the value it asked to
-record, at the precision the series holds. Magnitude is SBCL's own business and not this
-function's: a real too large for a `double-float' becomes an infinity under the
-foreign-float-trap mask `train' runs its whole body in, which is where every call from
-`train' happens (measured on aarch64, where those traps are off in any case); called directly
-at layer 1 on a platform whose `:overflow' trap is enabled, SBCL signals
-`floating-point-overflow' out of the `coerce' instead.
+record, at the precision the series holds. A real too large for a `double-float' to hold
+records the signed infinity instead, identically on every platform and whether or not this is
+reached through `train''s own foreign-float-trap mask -- see `%double-value' above, which is
+what makes that outcome a property of this library rather than of the caller's trap settings.
 
 NAME IS COPIED INTO THE ENTRY with `copy-seq', and that copy -- never the argument -- is what
 every later reader sees. A string is mutable, and a caller that returns THE SAME string
@@ -113,7 +141,7 @@ them."
            :argument "train's :evaluation"
            :reason (format nil "a custom metric's value must be a real number or NIL, got ~S"
                             value)))
-  (list dataset-index (copy-seq name) (and value (coerce value 'double-float))))
+  (list dataset-index (copy-seq name) (and value (%double-value value))))
 
 (defun check-metric-name-collision (backend-name name dataset-index library-entries)
   "Signal `unsupported-argument' naming \"train's :evaluation\" when LIBRARY-ENTRIES holds an
