@@ -50,7 +50,14 @@ A `simple-vector' rather than a `(vector double-float)' precisely so NIL can app
 formats metric values through `std::ostream', which writes `nan' and `inf' for non-finite
 doubles; policy section 5 says such a field is reported as unreadable rather than dropped or
 replaced by an invented number, and dropping it would also slide every later value one
-iteration earlier."))
+iteration earlier.
+
+`double-float' holds for a `train' :EVALUATION's own values too, and holds by COERCION rather
+than by luck: a caller's function may return any real, and `custom-metric-entry'
+(`cl-gbdt/src/training/custom-metric') coerces what it returns before the entry is built, so
+a 1/3 is recorded as 0.3333333333333333d0 rather than as a `ratio', and a real too large for
+a `double-float' as the signed infinity rather than as a signalled overflow. That is what
+keeps this slot's promise the same one for every series in a report, whoever produced it."))
   (:documentation "One metric's values over one dataset, across a training run."))
 
 (defclass training-report ()

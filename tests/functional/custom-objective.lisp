@@ -306,7 +306,7 @@ this one is the suite's own `*prediction-tolerance*' restated rather than a new 
 ;;; first, and signals rather than quietly boosting against the library's own objective.
 ;;; Both vendored libraries provide the capability -- the test above asserts exactly that --
 ;;; so the only way to reach the gate is to overwrite the probed plist, which is what a
-;;; LightGBM missing one of its three C symbols, or an XGBoost with no
+;;; LightGBM missing one of its four C symbols, or an XGBoost with no
 ;;; `XGBoosterTrainOneIter', would have produced at `open-backend'. This is the same way
 ;;; `cl-gbdt/tests/functional/sparse-input''s
 ;;; `sparse-input-without-the-capability-signals' and
@@ -501,10 +501,12 @@ this one is the suite's own `*prediction-tolerance*' restated rather than a new 
   ;; other test here runs at GROUPS = 1, where `(+ (* group rows) row)' and
   ;; `(+ (* row groups) group)' are THE SAME INDEX -- so a backend that flattened the caller's
   ;; arrays in the wrong order would pass all of them green. SIX docstrings state a layout as
-  ;; measured fact -- group-major in `%training-scores' and `%update-one-iteration-custom' in
+  ;; measured fact -- group-major in `%booster-predictions' and `%update-one-iteration-custom' in
   ;; src/lightgbm/native.lisp and `train' in src/lightgbm/protocol.lisp, row-major in
-  ;; `%training-scores' and `%train-one-iteration-custom' in src/xgboost/native.lisp and `train'
-  ;; in src/xgboost/protocol.lisp; this is what holds all six. The two backends want OPPOSITE
+  ;; `%booster-predictions' and `%train-one-iteration-custom' in src/xgboost/native.lisp and
+  ;; `train' in src/xgboost/protocol.lisp; this is what holds all six. The two score readers
+  ;; share one NAME across the two files and disagree about the layout, which is not a
+  ;; contradiction: each states its own library's buffer. The two backends want OPPOSITE
   ;; orders and the caller writes neither: OBJECTIVE is handed, and returns, a (ROWS GROUPS)
   ;; array on both.
   ;;
@@ -521,7 +523,8 @@ this one is the suite's own `*prediction-tolerance*' restated rather than a new 
   ;;
   ;; TWO iterations, and both halves of the flattening are pinned separately. The run's OUTPUT
   ;; pins the update function -- which groups the caller's gradient actually reached -- and the
-  ;; SECOND call's own SCORES argument pins `%training-scores', which is the reverse direction
+  ;; SECOND call's own SCORES argument pins the score READER -- each backend's own
+  ;; `%booster-predictions' -- which is the reverse direction
   ;; and would otherwise have nothing behind it: at iteration 1 every score is 0, so no
   ;; single-iteration run can tell the two readings of that buffer apart.
   ;;
@@ -535,9 +538,9 @@ this one is the suite's own `*prediction-tolerance*' restated rather than a new 
   ;;   (`%update-one-iteration-       written, so both the scores read back and the final
   ;;   custom' / `%train-one-         predictions smear
   ;;   iteration-custom')
-  ;;   `%training-scores' flipped    only the SCORES quiet-group assertion fails. The
-  ;;                                 predictions are untouched, because this objective derives
-  ;;                                 its gradient from the ROW INDEX and never reads SCORES --
+  ;;   the score READER flipped      only the SCORES quiet-group assertion fails. The
+  ;;   (either backend's             predictions are untouched, because this objective derives
+  ;;   `%booster-predictions')       its gradient from the ROW INDEX and never reads SCORES --
   ;;                                 which is exactly why the scores assertion is not redundant
   ;;                                 with the prediction one and has to be made separately
   ;;
@@ -572,7 +575,7 @@ this one is the suite's own `*prediction-tolerance*' restated rather than a new 
                        (ok (equal shapes
                                   (list (list *multiclass-rows* *num-classes*))))
                        (ok (= 2 (length scores-seen)))
-                       ;; What `%training-scores' READ back after iteration 1. Group 0 had
+                       ;; What the score reader READ back after iteration 1. Group 0 had
                        ;; moved by then and the other two had not, so the same shape of
                        ;; assertion applies to the scores as to the predictions -- and it is a
                        ;; row-major READ, not a row-major write, that this pair catches.

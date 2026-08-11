@@ -109,7 +109,7 @@
            #:%predict-ncol
            #:%predict-from-dmatrix
            #:%predict-from-csr
-           #:%training-scores
+           #:%booster-predictions
            #:%train-one-iteration-custom
            #:%save-model
            #:%load-model
@@ -327,12 +327,12 @@ backend can take a `csr-matrix' at all, and a caller told \"yes\" who could buil
 but not predict from one would have been told a half-truth. Listing both from the start means
 the answer never changes meaning as the sparse path grows.
 
-`:custom-objective' names ONE function where LightGBM's entry of the same name needs three:
+`:custom-objective' names ONE function where LightGBM's entry of the same name needs four:
 `XGBoosterTrainOneIter' takes the caller's gradient and Hessian, and everything else one
 iteration of `train''s custom loop calls is already required here. The scores the caller's
-function is handed come from `XGBoosterPredictFromDMatrix' -- `%training-scores' below is a
-margin prediction over the training DMatrix, not a separate score-reading entry point the way
-LightGBM's `LGBM_BoosterGetPredict' is -- the output-group count is not read from the library
+function is handed come from `XGBoosterPredictFromDMatrix' -- `%booster-predictions' below is
+a `:raw' prediction over the training DMatrix, not a separate score-reading entry point the
+way LightGBM's `LGBM_BoosterGetPredict' is -- the output-group count is not read from the library
 at all but divided out of that prediction's own element count by `%predict-ncol', and the round
 number the update is given comes from `XGBoosterBoostedRounds', through `%boosted-rounds', the
 same way the built-in `%update-one-iteration' gets its own. Both of those C names are in
@@ -360,7 +360,7 @@ state a (ROWS GROUPS) shape.")
 
 (defparameter *provided-capabilities*
   '(:evaluation-history :early-stopping :missing-value :categorical-features
-    :prediction-shape)
+    :prediction-shape :custom-evaluation)
   "Capabilities this backend provides unconditionally, recorded true at `open-backend'
 without being probed -- `probe-capabilities''s PROVIDED, which says why a probe cannot
 express this.
@@ -399,11 +399,40 @@ absence could make it true or false.
 
 No operation re-checks it: nothing takes an argument asking for a shape, so a backend answering
 false returns NIL as `predict''s second value rather than signalling. That is not a break with
-a uniform rule -- of the four names beside it in this list, `:missing-value' and
-`:categorical-features' ARE re-checked, by `cl-gbdt/src/xgboost/protocol''s
-`%check-missing-value' and `%check-categorical-features', while `:evaluation-history' and
-`:early-stopping' are re-checked nowhere either. See `cl-gbdt/src/backend''s
-`*known-capabilities*', where the whole split is stated.
+a uniform rule -- of the five names beside it in this list, `:missing-value',
+`:categorical-features' and `:custom-evaluation' ARE re-checked, by
+`cl-gbdt/src/xgboost/protocol''s `%check-missing-value', `%check-categorical-features' and
+`%check-custom-evaluation', while `:evaluation-history' and `:early-stopping' are re-checked
+nowhere either. See `cl-gbdt/src/backend''s `*known-capabilities*', where the whole split is
+stated.
+
+`:custom-evaluation' is here for that first reason a fifth time: the C function `train' hands
+a caller's own `:evaluation' metric one dataset's predictions with --
+`XGBoosterPredictFromDMatrix', reached through `%booster-predictions' -- is in
+`*required-symbols*' above, and `%predict-config-json' and `%predict-ncol' beside it are this
+file's own pure code. A library missing that entry point never opens at all, so there is no
+state in which this backend is open and cannot hand a caller's metric one dataset's
+predictions, and nothing for a probe to answer differently from one open to the next.
+
+It is the FIRST capability this list holds that the sibling backend PROBES, so the asymmetry
+is worth stating rather than leaving to be read as an inconsistency:
+`cl-gbdt/src/lightgbm/native' names `:custom-evaluation' in its `*optional-symbols*' because
+its own read needs `LGBM_BoosterGetPredict', `LGBM_BoosterGetNumPredict' and
+`LGBM_BoosterGetNumClasses', not one of which is in ITS `*required-symbols*' -- so a LightGBM
+missing any of the three opens perfectly well and cannot serve a custom metric, which is
+exactly the state a probe exists to detect. No XGBoost this backend will open is in the
+corresponding state. The two backends answer the same capability from opposite lists because
+their libraries put the same entry point on opposite sides of required, not because they
+disagree about what the capability means.
+
+Naming it in BOTH lists on ONE backend is the thing that would be wrong, and is why this entry
+is not hedged by also listing `XGBoosterPredictFromDMatrix' under `*optional-symbols*' above:
+`probe-capabilities' records PROVIDED entries ahead of probed ones, so the probe's answer would
+be unreachable, and its own docstring calls that combination a contradiction in the backend's
+declarations. `tools/ci/check-abi-blacklist.lisp''s own header names the reverse risk this
+choice accepts -- a capability declared provided is recorded true on a library that lacks the
+symbol, and nothing there would notice -- which is precisely why the C function it rests on has
+to be a REQUIRED one, as it is.
 
 Every name here must be registered in `cl-gbdt/src/backend''s `*known-capabilities*', or
 `backend-supports-p' would signal `unknown-capability' for a capability the plist claims;
@@ -865,8 +894,12 @@ What the value means is documented in the vendored header
 runs in one of two scenarios, obtaining `y_pred' from the model, or \"obtain[ing] the
 prediction for computing gradients\", and \"the second scenario applies when you are defining a
 custom objective function\". So false is right for `predict', whose caller asked for a
-prediction, and true is right for `%training-scores', whose result exists only to be handed to
-a caller's objective function -- see that function, which is the only caller passing true.
+prediction, and true is right for the read `train''s OBJECTIVE branch makes through
+`%booster-predictions', whose result exists only to be handed to a caller's objective function
+-- that ONE call site is the only caller passing true. `%booster-predictions' takes TRAINING as
+its own argument rather than fixing it, because `train''s EVALUATION branch reads through the
+same function and passes false: what that branch hands the caller is an ordinary prediction,
+scenario one, not a gradient's input -- see that function.
 
 The two are NOT interchangeable in general, whatever a `gbtree' measurement suggests: the same
 header names DART's training-time dropout as the case where they differ, \"the prediction
@@ -1014,16 +1047,21 @@ returns -- none of which differs between the two entry points."
                           "XGBoosterPredictFromCSR")))))))))
 
 ;;; ---------------------------------------------------------------------------
-;;; Custom objective
+;;; Custom objective and custom evaluation
 ;;;
 ;;; Below the Inference section rather than inside Training above, because the first of these
-;;; two functions IS a prediction: `%training-scores' reaches `%predict-config-json',
+;;; two functions IS a prediction: `%booster-predictions' reaches `%predict-config-json',
 ;;; `%predict-type', `%predict-from-dmatrix', `%total-element-count' and `%predict-ncol', every
 ;;; one of them defined above. Keeping the pair here keeps this file's definition order and its
 ;;; call order the same. `cl-gbdt/src/lightgbm/native' keeps its own pair of the same names in
 ;;; its Training section instead, which is not an inconsistency between the two files: that
 ;;; library reads a booster's current scores with `LGBM_BoosterGetPredict', which is not a
 ;;; prediction entry point and depends on nothing in that file's Inference section.
+;;;
+;;; The first of the two serves BOTH caller-supplied functions `train' takes -- :OBJECTIVE's
+;;; per-iteration score read and :EVALUATION's per-dataset one -- which is why it is named for
+;;; what it returns rather than for either caller, and why the section it sits in names both.
+;;; The second serves :OBJECTIVE alone; :EVALUATION reaches no update entry point at all.
 ;;;
 ;;; Neither function wraps itself in `with-foreign-float-traps-masked', and both reach the
 ;;; shared library. That is this file's ordinary rule, not an omission: both are reached only
@@ -1035,24 +1073,73 @@ returns -- none of which differs between the two entry points."
 ;;; `tools/ci/check-float-traps.lisp' reads that same `:export' clause, so it has nothing to
 ;;; say about either -- a clean run of it is not evidence about these two functions.
 
-(defun %training-scores (booster-pointer dmatrix-pointer rows)
-  "Return BOOSTER-POINTER's current raw scores for DMATRIX-POINTER as a (ROWS GROUPS)
-`double-float' array.
+(defun %booster-predictions (booster-pointer dmatrix-pointer rows kind
+                             &key (training nil))
+  "Return BOOSTER-POINTER's current predictions of KIND for DMATRIX-POINTER, as a
+(ROWS GROUPS) `double-float' array.
 
-A margin prediction over the training DMatrix -- `%predict-config-json' with `:raw''s
-predict type and ITERATION-END 0, every iteration the booster has so far. `predict' builds
-its config through the same function, differing in that it resolves ITERATION-END through
-`%resolve-num-iteration' from a caller's :NUM-ITERATION where this passes the literal 0, and
-in the TRAINING flag below.
+ROWS is THAT DMatrix's own row count and never another's: on the fixture
+tests/functional/custom-evaluation.lisp trains, the training set has 40 rows and the
+validation set 17, and a caller handing one where the other belongs would mis-shape the array
+rather than fail. Nothing here can catch that -- `%predict-ncol' below divides the library's
+reported element count by whatever ROWS says -- so `train' reads each dataset's own count with
+`%dataset-num-rows' and passes it beside that dataset's own pointer.
 
-`\"training\":true', which is what makes this a second caller of that builder rather than a
-reuse of `predict''s exact string. The key itself is required either way -- omitting it
-returns -1, `Argument `training` is required for `XGBoosterPredictFromDMatrix`' -- and TRUE
-is the value the vendored header asks for here: it names two prediction scenarios
-(`ffi-spec/xgboost/include/xgboost/c_api.h:1180-1191'), obtaining `y_pred' and \"obtain[ing]
-the prediction for computing gradients\", and says \"the second scenario applies when you are
-defining a custom objective function\", which is the only thing this function's result is
-ever used for.
+An `XGBoosterPredictFromDMatrix' call: `%predict-config-json' with KIND's predict type, as
+`%predict-type' maps it, and ITERATION-END 0, every iteration the booster has so far.
+`predict' builds its config through the same function, differing in that it resolves
+ITERATION-END through `%resolve-num-iteration' from a caller's :NUM-ITERATION where this
+passes the literal 0, and in TRAINING below.
+
+Named after `cl-gbdt/src/lightgbm/native''s function of the same name because it answers the
+same question -- what does this booster currently predict for that dataset -- and is asked it
+from the same two places: `train''s OBJECTIVE branch, once per iteration for the training set,
+and `train''s EVALUATION branch, once per dataset per iteration. One reader per backend rather
+than one per caller, which is what the sibling has whether it wants it or not
+(`LGBM_BoosterGetPredict' offers no kind to choose). What differs is the cost and what is
+read: this one PREDICTS AFRESH on every call, a full prediction pass per dataset per
+iteration, where LightGBM's hands back values that library already holds. This library has no
+counterpart to `LGBM_BoosterGetPredict' at all, which is why the pass is paid rather than
+avoided.
+
+KIND is a parameter, not a constant, because the two call sites genuinely want different
+numbers:
+
+  - `train''s OBJECTIVE branch passes `:raw'. A gradient is computed from the MARGIN, and this
+    backend does not rewrite PARAMETERS, so a configured objective's prediction transform is
+    still in effect and `:normal' would hand that caller probabilities. See
+    `cl-gbdt/src/xgboost/protocol''s `train'.
+  - `train''s EVALUATION branch passes `:normal'. What a caller's metric is handed is that
+    dataset's PREDICTION -- the very number `predict' returns for the same rows -- which is
+    what `train''s generic-function docstring promises and what makes a caller-written metric
+    comparable with the library's own. Measured on the vendored library over one
+    `objective=binary:logistic' booster and the fixture above: this array agrees with
+    `predict :kind :normal' over that dataset's own matrix to 0.0 for BOTH the 40-row training
+    set and the 17-row validation set, under a library objective and again under a caller's
+    own :OBJECTIVE.
+
+  Under a caller's own :OBJECTIVE the two kinds are still NOT the same numbers here, unlike on
+  LightGBM where `train' forces `objective=none' and the transform disappears with it: this
+  backend rewrites nothing, so `binary:logistic''s transform stays in effect and the same
+  booster's `:normal' read sits 0.756 from its `:raw' one -- measured on the fixture above,
+  largest absolute difference over the training set after five iterations, and the SAME 0.756
+  whether those five iterations ran the library's objective or a caller's. That equality is
+  the point: the divergence is a property of the configured transform, which this backend
+  leaves alone, not of the custom objective. It grows with the run -- 0.564 after one
+  iteration, 0.677 after three, 0.906 after ten, on that same fixture -- so it is a direction,
+  not a constant. It is the divergence `cl-gbdt/src/xgboost/protocol''s `predict' and `train'
+  already document as the price of not rewriting PARAMETERS, inherited here rather than
+  introduced: an :EVALUATION and an :OBJECTIVE in the same run are handed different numbers
+  because they asked for different ones.
+
+TRAINING renders `%predict-config-json''s `\"training\"' key, which is required either way --
+omitting it returns -1, `Argument `training` is required for `XGBoosterPredictFromDMatrix`'.
+TRUE is the value the vendored header asks for on the OBJECTIVE path: it names two prediction
+scenarios (`ffi-spec/xgboost/include/xgboost/c_api.h:1180-1191'), obtaining `y_pred' and
+\"obtain[ing] the prediction for computing gradients\", and says \"the second scenario applies
+when you are defining a custom objective function\". The EVALUATION path is scenario ONE and
+passes the default false, exactly as `predict' does -- which is also what keeps the agreement
+measured above from resting on the two scenarios happening to coincide.
 
 Nothing existing moves when that flag changes value, and that is measured rather than
 assumed: on the default `gbtree' booster, `false' and `true' train identical models here.
@@ -1060,8 +1147,8 @@ Where they are NOT identical is the case the same header names -- DART, whose tr
 dropout means \"the prediction result will be different from the one obtained by normal
 inference step due to dropped trees\". That difference is the header's statement, NOT a
 measurement taken here; what a `:booster \"dart\"' run does under this flag has not been
-measured. It is reachable, though: PARAMETERS reach `%set-parameters' untouched, so sending
-`false' would hand such a caller's objective the full undropped ensemble.
+measured. It is reachable, though: PARAMETERS reach `%set-parameters' untouched, so a DART
+run's :OBJECTIVE sees the dropped ensemble while its :EVALUATION sees the full one.
 
 The buffer is read ROW-MAJOR -- row I of output group K at `(+ (* I GROUPS) K)' -- which is
 how `cl-gbdt/src/xgboost/protocol''s `predict' already reads the identical buffer from the
@@ -1075,15 +1162,11 @@ and `%predict-ncol' pair `predict' uses, rather than from a `num_class' paramete
 would have to parse. `\"strict_shape\":true' is what makes that division trustworthy for a
 single-group model as well as a multiclass one; see `%predict-config-json'.
 
-`:raw' rather than `:normal' because a gradient is computed from the margin: this backend
-does not rewrite PARAMETERS, so a configured objective's prediction transform is still in
-effect and `:normal' would hand the caller probabilities. See
-`cl-gbdt/src/xgboost/protocol''s `train'.
-
 OUT-RESULT is XGBoost's own memory, valid only until the next call into this booster, so
 every element is copied out and coerced to `double-float' before this returns -- the same
-lifetime `predict' works to."
-  (let ((config (%predict-config-json (%predict-type :raw) 0 :training t)))
+lifetime `predict' works to, and the reason the copy loop below runs before anything else
+here touches the library."
+  (let ((config (%predict-config-json (%predict-type kind) 0 :training training)))
     (cffi:with-foreign-objects ((out-shape :pointer) (out-dim :uint64) (out-result :pointer))
       (cffi:with-foreign-string (config-string config)
         (check-xgb (%predict-from-dmatrix booster-pointer dmatrix-pointer config-string
@@ -1093,10 +1176,10 @@ lifetime `predict' works to."
                                                   (cffi:mem-ref out-dim :uint64)))
              (groups (%predict-ncol element-count rows))
              (buffer (cffi:mem-ref out-result :pointer))
-             (scores (make-array (list rows groups) :element-type 'double-float)))
-        (dotimes (row rows scores)
+             (predictions (make-array (list rows groups) :element-type 'double-float)))
+        (dotimes (row rows predictions)
           (dotimes (group groups)
-            (setf (aref scores row group)
+            (setf (aref predictions row group)
                   (coerce (cffi:mem-aref buffer :float (+ (* row groups) group))
                           'double-float))))))))
 

@@ -277,7 +277,16 @@ a plateau is not an improvement, so it must not reset `watcher-since-improvement
 ENTRIES is one iteration's (DATASET-INDEX METRIC-NAME VALUE) lists, in whatever order the
 backend produced them; nothing about that order is assumed here, only that at most one
 entry matches a given (index, metric) pair, which is exactly the (DATASET-INDEX,
-METRIC-NAME) key `training-report-from-history' relies on for the same reason."
+METRIC-NAME) key `training-report-from-history' relies on for the same reason.
+
+That invariant survives `train''s :EVALUATION, whose entries join these, because of two
+checks made where those entries are built: `check-metric-name-collision' refuses a caller's
+name that the library already reports for the same index, and `pin-metric-name' holds each
+index to one name for the whole run so the first check cannot be walked around by returning
+a safe name on the first iteration and a colliding one afterwards -- both in
+`cl-gbdt/src/training/custom-metric'. Without them `find-if' below would return the first of
+two entries for one pair, and this watcher would read one value per iteration and never learn
+the other existed."
   (find-if (lambda (entry)
              (and (eql (first entry) (watcher-index watcher))
                   (string= (second entry) (watcher-metric watcher))))

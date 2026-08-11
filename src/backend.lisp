@@ -156,7 +156,8 @@ to this function can detect it here."
     :missing-value
     :categorical-features
     :prediction-shape
-    :custom-objective)
+    :custom-objective
+    :custom-evaluation)
   "Every capability name `backend-supports-p' will answer for.
 
 Policy section 7 named five as a MINIMUM -- it asks that at least those be answerable, not
@@ -188,29 +189,53 @@ IT, which is deliberate.
 `:objective' function that turns the current raw scores into a gradient and a Hessian, so a
 run boosts against the caller's own loss rather than one built into the library.
 
-It is not the odd member of an otherwise uniform list. FIVE of the nine names here are
+`:custom-evaluation' is the fifth name past that floor: whether `train' accepts an
+`:evaluation' function that turns one dataset's current predictions into a named metric
+value, recorded per iteration alongside the library's own metrics. Both backends answer it
+true, and it is the ONE name here whose two true answers come out of DIFFERENT LISTS --
+LightGBM probes it, XGBoost declares it. See the paragraph on where a re-checked name's answer
+comes from, below, which that shape is the sole exception to.
+
+It is not the odd member of an otherwise uniform list. SIX of the ten names here are
 re-checked by the operation they gate, each signalling `capability-unavailable' for an argument
-it cannot honour: `:sparse-input', `:missing-value', `:categorical-features' and
-`:custom-objective', in both backends' `protocol.lisp' -- the last of them by
-`%check-custom-objective', off `train''s :OBJECTIVE -- and `:model-slicing', in XGBoost's
-`slice-model'. Those five are the whole of it -- `:evaluation-history', `:early-stopping' and
-`:multidimensional-feature-score' are re-checked nowhere either (the last has no backend
-answering it true at all, and `%check-feature-score-dim', which is where a multidimensional
-score is rejected, signals `unsupported-argument' off what the library reported at runtime
-rather than off the capability).
+it cannot honour: `:sparse-input', `:missing-value', `:categorical-features',
+`:custom-objective' and `:custom-evaluation', in both backends' `protocol.lisp' -- the last two
+by `%check-custom-objective' and `%check-custom-evaluation', off `train''s :OBJECTIVE and
+:EVALUATION -- and `:model-slicing', in XGBoost's `slice-model'. Those six are the whole of
+it -- `:evaluation-history', `:early-stopping' and `:multidimensional-feature-score' are
+re-checked nowhere (the third has no backend answering it true at all, and
+`%check-feature-score-dim', which is where a multidimensional score is rejected, signals
+`unsupported-argument' off what the library reported at runtime rather than off the
+capability).
 `:prediction-shape' has no argument to refuse at all: nothing asks for a shape, so a false
 answer means the second value is always NIL while `predict' otherwise behaves exactly as it
 always did. That is not the silent fallback policy section 7 forbids -- section 7 protects a
 caller who asked for something and would otherwise have it quietly dropped, and here nothing was
-asked for -- and a re-check added for symmetry with those five would make `predict' signal
+asked for -- and a re-check added for symmetry with those six would make `predict' signal
 outright on a backend that simply has less to say.
 
 Where a re-checked name's answer COMES from varies and does not affect that split: a backend
 declares it in `*provided-capabilities*' when nothing is left to look up, and names its C
 functions in `*optional-symbols*' when a library that opens perfectly well can still lack
-them -- `:sparse-input', `:model-slicing' and `:custom-objective' are probed that way on
-every backend providing them, `:missing-value' and `:categorical-features' declared. A false
-answer needs the same re-check either way.
+them -- `:sparse-input', `:model-slicing' and `:custom-objective' are probed that way on every
+backend providing them, `:missing-value' and `:categorical-features' declared.
+
+`:custom-evaluation' is the one name that is BOTH, and that is a fact about the two LIBRARIES
+rather than a disagreement between the two backends about what the capability means. Each
+backend's per-dataset prediction read needs different C functions, and they fall on opposite
+sides of required: LightGBM's needs three (`LGBM_BoosterGetPredict',
+`LGBM_BoosterGetNumPredict', `LGBM_BoosterGetNumClasses'), not one of them in that backend's
+`*required-symbols*', so a LightGBM lacking any of the three opens perfectly well and cannot
+serve a custom metric -- exactly the state a probe exists to detect. XGBoost's needs one
+(`XGBoosterPredictFromDMatrix'), which IS in its `*required-symbols*', so no XGBoost this
+library will open is in the corresponding state and a probe would have nothing left to decide.
+Naming it in both lists on ONE backend is what would be wrong: `probe-capabilities' records
+PROVIDED entries ahead of probed ones, so the probe's answer would be unreachable, which that
+function's own docstring calls a contradiction in the backend's declarations.
+
+A false answer needs the same re-check whichever list it came from, and a backend naming a
+capability in NEITHER list reads false for a third reason again -- the absence of any
+declaration, which is LightGBM's `:missing-value' answer.
 
 `:evaluation-history' is true on both backends: `train' records one, and each backend names
 the capability in its own `*provided-capabilities*' rather than in `*optional-symbols*',

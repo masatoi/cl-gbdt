@@ -26,6 +26,7 @@
                 #:lgbm-booster-update-one-iter
                 #:lgbm-booster-update-one-iter-custom
                 #:lgbm-booster-get-num-classes
+                #:lgbm-booster-get-num-predict
                 #:lgbm-booster-get-predict
                 #:lgbm-booster-free
                 #:lgbm-booster-calc-num-predict
@@ -101,7 +102,7 @@
            #:%add-valid-data
            #:%update-one-iteration
            #:%booster-num-classes
-           #:%training-scores
+           #:%booster-predictions
            #:%update-one-iteration-custom
            #:%check-booster-datasets-live
            #:%free-booster-unchecked
@@ -291,6 +292,8 @@ after the library loads.")
 (defparameter *optional-symbols*
   '((:sparse-input "LGBM_DatasetCreateFromCSR" "LGBM_BoosterPredictForCSR")
     (:custom-objective "LGBM_BoosterUpdateOneIterCustom" "LGBM_BoosterGetPredict"
+     "LGBM_BoosterGetNumPredict" "LGBM_BoosterGetNumClasses")
+    (:custom-evaluation "LGBM_BoosterGetPredict" "LGBM_BoosterGetNumPredict"
      "LGBM_BoosterGetNumClasses"))
   "Capability name to the C function names that capability needs.
 
@@ -306,22 +309,43 @@ backend can take a `csr-matrix' at all, and a caller told \"yes\" who could buil
 but not predict from one would have been told a half-truth. Listing both from the start means
 the answer never changes meaning as the sparse path grows.
 
-`:custom-objective' names all three functions one iteration of `train''s custom loop makes,
+`:custom-objective' names all four functions one iteration of `train''s custom loop makes,
 for the same reason: `LGBM_BoosterUpdateOneIterCustom' performs the update,
-`LGBM_BoosterGetPredict' reads the raw scores the caller's function is handed, and
+`LGBM_BoosterGetPredict' reads the raw scores the caller's function is handed,
+`LGBM_BoosterGetNumPredict' says how long that read's buffer is, and
 `LGBM_BoosterGetNumClasses' says how many output groups those scores have. A library
 providing the update but not the read could not run one iteration, so a capability answering
 true off the update alone would be answering about less than the caller asked.
+`LGBM_BoosterGetNumPredict' is here because the score read goes through
+`%booster-predictions', which sizes its buffer with `%num-predict' -- so the objective branch
+of `train' calls it once per iteration, exactly as the evaluation branch does. It was missing
+from this entry while that was already true, which would have let a LightGBM exporting the
+other three open, answer `:custom-objective' TRUE, and then die at the first iteration with
+SBCL's undefined-alien-function error rather than with the `capability-unavailable' this
+probe exists to produce.
 
-It belongs HERE and not in `*provided-capabilities*' below, and the distinction is not
-cosmetic: none of the three is in `*required-symbols*' above, so a LightGBM missing any of
-them opens perfectly well and simply cannot boost against a caller's own gradient -- which is
-exactly the state a probe exists to detect. `probe-capabilities' records PROVIDED entries
-ahead of probed ones, so naming a capability in both lists would make the probe's answer
-unreachable; its own docstring calls that combination a contradiction in the backend's
-declarations. This is the same shape as `:sparse-input' above, and the opposite of
-`:categorical-features' below, whose column list is a parameter-string key with no symbol to
-look for at all.")
+`:custom-evaluation' names the three functions `%booster-predictions' makes for ONE dataset:
+`LGBM_BoosterGetNumPredict' for that dataset's own buffer length, `LGBM_BoosterGetPredict'
+for the predictions the caller's `:evaluation' function is handed, and
+`LGBM_BoosterGetNumClasses' for how many output groups they have. All three are also named by
+`:custom-objective' above -- both branches read scores through the same `%booster-predictions'
+-- which is expected rather than a duplication to collapse: `probe-capabilities' probes each
+ENTRY independently, and `tools/ci/check-abi-blacklist.lisp' maps an imported C name back to
+the LIST of capabilities naming it, so one name serving two capabilities is a list of two
+rather than a conflict. Collapsing the two entries into one would make a library missing
+`LGBM_BoosterUpdateOneIterCustom' -- which the evaluation path never calls -- answer false for
+a capability it can perfectly well provide.
+
+Both custom entries belong HERE and not in `*provided-capabilities*' below, and the
+distinction is not cosmetic: not one of the four C names between them is in
+`*required-symbols*' above, so a LightGBM missing any of them opens perfectly well and simply
+cannot boost against a caller's own gradient, or hand a caller's own metric one dataset's
+predictions -- which is exactly the state a probe exists to detect. `probe-capabilities'
+records PROVIDED entries ahead of probed ones, so naming a capability in both lists would
+make the probe's answer unreachable; its own docstring calls that combination a contradiction
+in the backend's declarations. This is the same shape as `:sparse-input' above, and the
+opposite of `:categorical-features' below, whose column list is a parameter-string key with
+no symbol to look for at all.")
 
 (defparameter *provided-capabilities*
   '(:evaluation-history :early-stopping :categorical-features :prediction-shape)
@@ -367,13 +391,14 @@ were there a symbol to look for it in.
 
 No operation re-checks it. Nothing takes an argument asking for a shape, so a backend answering
 false returns NIL as `predict''s second value and predicts exactly as it otherwise would,
-rather than signalling. Five of the nine names in `cl-gbdt/src/backend''s
+rather than signalling. Six of the ten names in `cl-gbdt/src/backend''s
 `*known-capabilities*' ARE re-checked by the operation they gate -- `:sparse-input',
-`:missing-value', `:categorical-features' and `:custom-objective', by `%check-sparse-input',
-`%check-missing-value', `%check-categorical-features' and `%check-custom-objective' in
+`:missing-value', `:categorical-features', `:custom-objective' and `:custom-evaluation', by
+`%check-sparse-input', `%check-missing-value', `%check-categorical-features',
+`%check-custom-objective' and `%check-custom-evaluation' in
 `cl-gbdt/src/lightgbm/protocol', and `:model-slicing', by XGBoost's `slice-model' -- and the
-other four are re-checked nowhere. See `*known-capabilities*' itself, where that split is
-stated in full.
+other four, this one among them, are re-checked nowhere. See `*known-capabilities*' itself,
+where that split is stated in full.
 
 Every name here must be registered in `cl-gbdt/src/backend''s `*known-capabilities*', or
 `backend-supports-p' would signal `unknown-capability' for a capability the plist claims;
@@ -687,32 +712,66 @@ also have to supply the group count."
                 "LGBM_BoosterGetNumClasses")
     (cffi:mem-ref classes :int)))
 
-(defun %training-scores (booster-pointer rows)
-  "Return BOOSTER-POINTER's current raw scores for its training set as a (ROWS GROUPS)
-`double-float' array.
+(defun %num-predict (booster-pointer data-index)
+  "Return how many `double's `LGBM_BoosterGetPredict' will write for the dataset at
+DATA-INDEX on BOOSTER-POINTER, via `LGBM_BoosterGetNumPredict'.
 
-`LGBM_BoosterGetPredict' with `data_idx' 0 reads the scores LightGBM already holds for the
-training data rather than predicting afresh, which is both cheaper and the number the next
+The length is PER DATASET and cannot be derived from the training set's row count:
+measured against the vendored library, this call answers 17 for a 17-row validation set
+attached to a 40-row training set. That is the whole reason it is called at all rather
+than the buffer being sized from a row count the caller already has."
+  (cffi:with-foreign-object (out-len :int64)
+    (check-lgbm (lgbm-booster-get-num-predict booster-pointer data-index out-len)
+                "LGBM_BoosterGetNumPredict")
+    (cffi:mem-ref out-len :int64)))
+
+(defun %booster-predictions (booster-pointer data-index rows)
+  "Return the predictions BOOSTER-POINTER currently holds for the dataset at DATA-INDEX, as
+a (ROWS GROUPS) `double-float' array.
+
+DATA-INDEX is LightGBM's own `data_idx' numbering, passed straight through: 0 is the
+training set the booster was built from, 1 the first dataset attached with
+`LGBM_BoosterAddValidData', 2 the second. ROWS is THAT dataset's own row count and never
+another dataset's -- the length check below is what holds a caller to it.
+
+`LGBM_BoosterGetPredict' reads the values LightGBM already holds for that dataset rather
+than predicting afresh, which is both cheaper and, for the training set, the number the next
 gradient has to be computed from. Its buffer is flat and **group-major**: row I of output
 group K sits at `(+ (* K ROWS) I)'. Measured against `predict :kind :raw' on the same booster
 under `objective=none', where the two agree exactly; read row-major they differ.
 
-Under `objective=none' -- the only configuration `train' calls this from, since LightGBM
-refuses a custom update under any other -- the scores are the raw margin. With an objective
-set LightGBM converts them through it first, so this function's contract holds only where
-`train' uses it."
-  (let* ((groups (%booster-num-classes booster-pointer))
-         (count (* rows groups)))
+The values are `predict :kind :normal''s. Measured against the vendored library on one
+`objective=binary' booster over a 40-row training set and a 17-row validation set: for BOTH
+datasets this buffer agrees with `predict :kind :normal' over that dataset's own matrix to
+0.0 and differs from `predict :kind :raw' by 0.706, so what is held here is the transformed
+prediction, not the margin. Under `objective=none' -- which `train' forces for a
+caller-supplied :OBJECTIVE, and only then -- there is no transform to apply, so `:normal'
+and `:raw' are the same numbers and this buffer agrees with both to 0.0. Also measured, on
+the same two datasets.
+
+The buffer's length comes from `%num-predict' for this DATA-INDEX rather than from
+`ROWS x GROUPS', for the reason that function's docstring records. GROUPS comes from
+`LGBM_BoosterGetNumClasses', which is a property of the model rather than of any one
+dataset, and the two readings are ASSERTED to agree given ROWS: a mismatch means either the
+wrong dataset's row count reached this function -- the exact bug per-dataset lengths exist
+to rule out -- or the library disagreeing with itself, and truncating silently would hide
+both."
+  (let ((groups (%booster-num-classes booster-pointer))
+        (count (%num-predict booster-pointer data-index)))
+    (assert (= count (* rows groups)) ()
+            "LGBM_BoosterGetNumPredict reports ~D elements for data_idx ~D, expected ~D ~
+             for ~D rows x ~D groups"
+            count data-index (* rows groups) rows groups)
     (cffi:with-foreign-objects ((out-len :int64) (buffer :double count))
-      (check-lgbm (lgbm-booster-get-predict booster-pointer 0 out-len buffer)
+      (check-lgbm (lgbm-booster-get-predict booster-pointer data-index out-len buffer)
                   "LGBM_BoosterGetPredict")
       (assert (= count (cffi:mem-ref out-len :int64)) ()
-              "LGBM_BoosterGetPredict wrote ~D elements, expected ~D for ~D rows x ~D groups"
-              (cffi:mem-ref out-len :int64) count rows groups)
-      (let ((scores (make-array (list rows groups) :element-type 'double-float)))
-        (dotimes (row rows scores)
+              "LGBM_BoosterGetPredict wrote ~D elements for data_idx ~D, expected ~D"
+              (cffi:mem-ref out-len :int64) data-index count)
+      (let ((predictions (make-array (list rows groups) :element-type 'double-float)))
+        (dotimes (row rows predictions)
           (dotimes (group groups)
-            (setf (aref scores row group)
+            (setf (aref predictions row group)
                   (cffi:mem-aref buffer :double (+ (* group rows) row)))))))))
 
 (defun %update-one-iteration-custom (booster-pointer grad hess)
