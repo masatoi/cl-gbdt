@@ -21,7 +21,7 @@
            #:handle-pointer #:handle-backend #:booster-training-set
            #:booster-validation-sets #:booster-best-iteration
            #:handle-released-p #:handle-live-pointer
-           #:make-handle #:release-handle))
+           #:make-handle #:release-handle #:with-pointer-ownership))
 
 (in-package #:cl-gbdt/src/handle)
 
@@ -151,6 +151,46 @@ happened, and this one just did."
       (setf (car released) t)
       (trivial-garbage:cancel-finalization handle)))
   (values))
+
+(defmacro with-pointer-ownership ((pointer free-function ownership-operator) &body body)
+  "Evaluate BODY with POINTER owned by nobody, freeing it unless BODY takes ownership.
+
+OWNERSHIP-OPERATOR names a local function BODY calls to hand POINTER to a Lisp handle:
+
+  (with-pointer-ownership (raw #'%free-dataset-unchecked take-ownership)
+    (%set-info-field raw \"label\" label)
+    (take-ownership 'lightgbm-dataset backend :dataset))
+
+It takes `make-handle''s arguments minus POINTER -- CLASS-NAME, BACKEND, KIND and
+`make-handle''s own keyword arguments -- returns the handle it made, and records that
+ownership moved. BODY's values are this form's values, so a body ending in
+`(values handle report)' returns both.
+
+The gap this closes: the foreign resource exists from the moment the creation call
+returns, but nothing in Lisp references it until `make-handle' runs, so nothing will
+free it and no finalizer will ever fire for it. A BODY that leaves without calling
+OWNERSHIP-OPERATOR -- by signalling, by `throw', by `return-from', or simply by
+returning -- would orphan it. FREE-FUNCTION, a function of one argument, is called on
+POINTER in exactly that case.
+
+Any error FREE-FUNCTION itself signals is discarded, so a failing cleanup cannot
+replace the condition that caused the unwind (policy section 10). POINTER is evaluated
+once."
+  (let ((pointer-value (gensym "POINTER"))
+        (free (gensym "FREE"))
+        (owned (gensym "OWNED")))
+    `(let ((,pointer-value ,pointer)
+           (,free ,free-function)
+           (,owned nil))
+       (flet ((,ownership-operator (class-name backend kind &rest initargs)
+                (prog1 (apply #'make-handle class-name ,pointer-value backend kind initargs)
+                  (setf ,owned t))))
+         (declare (ignorable #',ownership-operator))
+         (unwind-protect
+              (progn ,@body)
+           (unless ,owned
+             (handler-case (funcall ,free ,pointer-value)
+               (error () nil))))))))
 
 (defun %check-handle-kind (object kind backend-keyword argument-description)
   "Return OBJECT's live foreign pointer, after confirming OBJECT is a KIND -- the symbol

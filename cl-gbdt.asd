@@ -41,6 +41,7 @@
                "cl-gbdt/tests/bindings"
                "cl-gbdt/tests/backend"
                "cl-gbdt/tests/handle"
+               "cl-gbdt/tests/handle-ownership"
                "cl-gbdt/tests/parameters"
                "cl-gbdt/tests/library"
                "cl-gbdt/tests/foreign"
