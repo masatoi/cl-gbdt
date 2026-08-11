@@ -50,23 +50,28 @@
 ;;; public surface by accident -- exactly what this task's brief warns an accidental export
 ;;; becomes: a compatibility obligation.
 ;;;
-;;; Six symbols so far, each pulled explicitly by name. `xgboost-backend' from `classes' is the
+;;; Nine symbols so far, each pulled explicitly by name. `xgboost-backend' from `classes' is the
 ;;; CLOS class a caller can specialize methods on or check with `typep'; `evaluate-one-iteration'
 ;;; (docs/superpowers/specs/2026-08-06-evaluation-api-design.md) and `booster-boosted-rounds',
 ;;; the round count `slice-model''s interval is expressed against, come from `native'.
-;;; `slice-model' itself, the capability work's Layer 1 addition, and `create-dataset' and
-;;; `free-dataset', the first finished operations to reach this surface, come from `api' -- the
-;;; latter two being the procedure that used to sit inside `cl-gbdt/src/xgboost/protocol''s
-;;; `make-dataset' and `free-dataset' methods, which now check their portable arguments and call
-;;; these. `free-dataset' here is NOT `cl-gbdt''s generic of that name: it is a plain function
-;;; and a different symbol, so a caller who has both packages in an image must name which one
-;;; they mean, exactly as they already must for anything else two packages export under one
-;;; name. `slice-model' was imported from `classes' until `api' existed; it moved because it is
+;;; `slice-model' itself, the capability work's Layer 1 addition, and `create-dataset',
+;;; `free-dataset', `create-booster', `update-one-iteration' and `free-booster', the finished
+;;; operations, come from `api' -- the last five being the procedure that used to sit inside
+;;; `cl-gbdt/src/xgboost/protocol''s methods of those names, which now check their portable
+;;; arguments and call these. Together they are a whole training run at this layer: build a
+;;; dataset, build a booster on it, advance it, free both. `create-booster' is the one with no
+;;; caller inside this library -- `train' builds its own booster, for the reason its creation
+;;; call records -- so it is published on the strength of its own contract rather than of a
+;;; method that exercises it. `free-dataset', `free-booster' and `update-one-iteration' here are
+;;; NOT `cl-gbdt''s generics of those names: they are plain functions and different symbols, so
+;;; a caller who has both packages in an image must name which one they mean, exactly as they
+;;; already must for anything else two packages export under one name. `slice-model' was
+;;; imported from `classes' until `api' existed; it moved because it is
 ;;; an operation over the booster class rather than part of the library's lifetime, and the
 ;;; symbol a caller reaches is unchanged by that move -- this clause is the only thing that had
 ;;; to notice.
 ;;;
-;;; All six are policy section 3's Layer 1, mirroring `cl-gbdt/lightgbm''s identical shape.
+;;; All nine are policy section 3's Layer 1, mirroring `cl-gbdt/lightgbm''s identical shape.
 ;;; Nothing else from `native' is published here: none of its remaining exports is a reviewed,
 ;;; Lisp-level XGBoost-specific operation. `api' is `:import-from'ed rather than
 ;;; `:use-reexport'ed for the reason `classes' is: it also exports `%check-sparse-input' and
@@ -122,10 +127,10 @@
 ;;; `tools/ci/check-float-traps.lisp' reads exactly this `:export' to decide which `defun's
 ;;; are entry points reached without a `defmethod' to inherit a float-trap mask from, so a
 ;;; public `defun' that appeared here only by way of `:use-reexport' would slip that check
-;;; silently. That scan does reach all three `api' functions: its +BACKEND-FILE-PATTERNS+ globs
+;;; silently. That scan does reach all six `api' functions: its +BACKEND-FILE-PATTERNS+ globs
 ;;; `src/*/api.lisp' and `src/*/classes.lisp' alongside `src/*/native.lisp' and
 ;;; `src/*/protocol.lisp', so a public `defun' in either is both named here and matched there --
-;;; the scan reports `api.lisp' as "0 defmethods, 3 public defuns, 0 unmasked" and `classes.lisp'
+;;; the scan reports `api.lisp' as "0 defmethods, 6 public defuns, 0 unmasked" and `classes.lisp'
 ;;; as "2 defmethods, 0 public defuns, 0 unmasked" now that `slice-model' has moved. A future
 ;;; Layer 1 addition is listed here for the same reasons; a CLOS class such as `xgboost-backend'
 ;;; needs no entry, having no body to mask.
@@ -160,15 +165,21 @@
                 #:evaluate-one-iteration
                 #:booster-boosted-rounds)
   (:import-from #:cl-gbdt/src/xgboost/api
+                #:create-booster
                 #:create-dataset
+                #:free-booster
                 #:free-dataset
-                #:slice-model)
+                #:slice-model
+                #:update-one-iteration)
   (:export #:xgboost-backend
            #:evaluate-one-iteration
            #:booster-boosted-rounds
            #:slice-model
+           #:create-booster
            #:create-dataset
+           #:free-booster
            #:free-dataset
+           #:update-one-iteration
            #:*known-capabilities*
            #:backend-capabilities
            #:backend-info

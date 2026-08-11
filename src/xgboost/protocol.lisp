@@ -11,9 +11,13 @@
 ;;;; finished operation performs is Layer 1 and lives in `cl-gbdt/src/xgboost/api' -- so far
 ;;;; `make-dataset', which checks :MISSING and :CATEGORICAL-FEATURES, refuses :REFERENCE and
 ;;;; :PARAMETERS, renders the feature-type strings and then calls that file's `create-dataset',
-;;;; and `free-dataset', whose whole body was procedure and delegates entirely. A caller who
-;;;; loaded `cl-gbdt/xgboost' alone reaches those functions with no method here in the image at
-;;;; all.
+;;;; and `free-dataset', `update-one-iteration' and `free-booster', whose whole bodies were
+;;;; procedure and delegate entirely. A caller who loaded `cl-gbdt/xgboost' alone reaches those
+;;;; functions with no method here in the image at all.
+;;;;
+;;;; `train' is the one exception, and deliberately so: it builds its booster itself rather
+;;;; than calling `cl-gbdt/src/xgboost/api''s `create-booster'. See the comment at its creation
+;;;; call, which measures why.
 
 (uiop:define-package #:cl-gbdt/src/xgboost/protocol
   (:use #:cl)
@@ -30,8 +34,6 @@
                 #:%set-parameters
                 #:%boosted-rounds
                 #:%update-one-iteration
-                #:%check-booster-datasets-live
-                #:%free-booster
                 #:%free-booster-unchecked
                 #:%predict-type
                 #:%resolve-num-iteration
@@ -56,18 +58,21 @@
                 #:xgboost-backend
                 #:xgboost-dataset
                 #:xgboost-booster)
-  ;; Layer 1's finished dataset operations. `free-dataset' is deliberately absent from this
-  ;; clause: the `:import-from #:cl-gbdt/src/protocol' below names a GENERIC FUNCTION of the
-  ;; same name, and the two are different symbols -- importing both would be a name conflict,
-  ;; not a re-import. The one method that needs the Layer 1 function names it in full.
+  ;; Layer 1's finished operations. `free-dataset', `update-one-iteration' and `free-booster'
+  ;; are deliberately absent from this clause: the `:import-from #:cl-gbdt/src/protocol' below
+  ;; names a GENERIC FUNCTION of each of those names, and each pair is two different symbols
+  ;; -- importing both would be a name conflict, not a re-import. The three methods that need
+  ;; the Layer 1 functions name them in full. `create-booster' is absent for an unrelated
+  ;; reason: no method here calls it, `train' building its own booster for the reason its
+  ;; creation call records, and an import naming a symbol nothing uses is one more claim to
+  ;; keep true.
   (:import-from #:cl-gbdt/src/xgboost/api
                 #:%check-sparse-input
                 #:%creation-function-name
                 #:create-dataset)
   (:import-from #:cl-gbdt/src/backend
                 #:backend-name
-                #:backend-supports-p
-                #:backend-open-p)
+                #:backend-supports-p)
   (:import-from #:cl-gbdt/src/protocol
                 #:make-dataset
                 #:dataset-num-rows
@@ -83,10 +88,8 @@
                 #:evaluation
                 #:free-booster)
   (:import-from #:cl-gbdt/src/handle
-                #:release-handle
                 #:with-pointer-ownership
                 #:handle-live-pointer
-                #:handle-released-p
                 #:handle-backend
                 #:booster-training-set
                 #:booster-validation-sets
@@ -94,7 +97,6 @@
                 #:%reject-best-num-iteration)
   (:import-from #:cl-gbdt/src/conditions
                 #:foreign-call-error
-                #:missing-training-set
                 #:unsupported-argument
                 #:capability-unavailable)
   (:import-from #:cl-gbdt/src/data
@@ -140,8 +142,9 @@
 ;;; wraps its entire body in `with-foreign-float-traps-masked'. `initialize-backend'
 ;;; (`XGBoostVersion') and `shutdown-backend' (closing the library can run its own static
 ;;; finalizers) are wrapped exactly the same way in `cl-gbdt/src/xgboost/classes', and every
-;;; Layer 1 operation in `cl-gbdt/src/xgboost/api' -- `create-dataset', `free-dataset' and the
-;;; public `slice-model' -- the same way again, where they live; this rule is the backend's,
+;;; Layer 1 operation in `cl-gbdt/src/xgboost/api' -- `create-dataset', `free-dataset',
+;;; `create-booster', `update-one-iteration', `free-booster' and the public `slice-model' --
+;;; the same way again, where they live; this rule is the backend's,
 ;;; not this file's. A method that now delegates its procedure to `api' keeps its own wrap
 ;;; regardless: the two nest harmlessly, and dropping it would make the wrap depend on what the
 ;;; callee happens to do today.
@@ -885,6 +888,19 @@ Signals `backend-not-open' before any of that when BACKEND is not open -- see
            ;; it is also what makes an early-stopped run report its true, shortened length
            ;; with nothing further to do here.
            (completed-rounds 0))
+      ;; Built here rather than by `cl-gbdt/src/xgboost/api''s `create-booster', which is the
+      ;; Layer 1 function for exactly this and which every other operation in this file
+      ;; delegates its procedure to. Two things hold this one back, both measured rather than
+      ;; assumed, and both the same two that keep `cl-gbdt/src/lightgbm/protocol''s `train'
+      ;; building its own. `booster-best-iteration' is a `:reader'-only slot (src/handle.lisp):
+      ;; the sole way to set it is `make-handle''s :BEST-ITERATION initarg, at construction, and
+      ;; the value comes from the watcher AFTER the loop -- so this method must still own the
+      ;; raw pointer when the loop ends, and `create-booster' builds its handle before the first
+      ;; iteration. And this ownership form is what frees the raw booster when the loop signals;
+      ;; a handle built up front would instead be left unreferenced, its finalizer only WARNING
+      ;; while the foreign booster leaks -- which no test would catch, both leak tests asserting
+      ;; the observable half alone, that the backend still trains afterwards. Giving the slot a
+      ;; writer to merge the two is not this file's to do.
       (let ((booster-pointer (%create-booster dataset-pointers)))
         (with-pointer-ownership (booster-pointer #'%free-booster-unchecked take-ownership)
           (%set-parameters booster-pointer parameters)
@@ -981,29 +997,32 @@ sets, has already been freed -- see `%check-booster-datasets-live'. Signals
 `missing-training-set' when BOOSTER has no training set at all -- a `load-model'
 booster, which never went through `train' -- since handing `XGBoosterUpdateOneIter' a
 null DMatrixHandle in that case is a null-pointer dereference, not something it can
-reject with a status code."
+reject with a status code.
+
+This method's whole body was procedure -- there was no portable argument here to check or
+translate -- so all of it is `cl-gbdt/src/xgboost/api''s `update-one-iteration', which is
+where the two checks and the explicit training-set pointer now live."
   (with-foreign-float-traps-masked
-    (%check-booster-datasets-live booster)
-    (let ((training-set (booster-training-set booster)))
-      (unless training-set
-        (error 'missing-training-set :booster booster))
-      (%update-one-iteration (handle-live-pointer booster) (handle-live-pointer training-set)))
-    t))
+    ;; Named in full, not imported: `cl-gbdt/src/protocol''s `update-one-iteration', the
+    ;; generic this method is defined on, is a DIFFERENT symbol of the same name, and this
+    ;; file imports that one. Not recursion. The `with-foreign-float-traps-masked' wrap stays
+    ;; even though the callee establishes its own, for the reason `free-dataset' above gives.
+    (cl-gbdt/src/xgboost/api:update-one-iteration booster)))
 
 (defmethod free-booster ((booster xgboost-booster))
   "Free BOOSTER via `XGBoosterFree'. Does nothing if it was already freed.
 
 See `free-dataset''s docstring for why this does not signal `backend-not-open' when
 BOOSTER's backend has already been closed -- the same `with-booster' cleanup-form
-reasoning applies here."
+reasoning applies here.
+
+This method's whole body was procedure too, and is `cl-gbdt/src/xgboost/api''s
+`free-booster' entirely, where the closed-backend branch now lives beside the identical one
+`free-dataset' takes."
   (with-foreign-float-traps-masked
-    (if (backend-open-p (handle-backend booster))
-        (release-handle booster (lambda (pointer) (%free-booster pointer)))
-        (let ((already-released (handle-released-p booster)))
-          (release-handle booster (lambda (pointer) (declare (ignore pointer))))
-          (unless already-released
-            (warn "Freeing an XGBoost booster after its backend was closed: the foreign ~
-                   booster was not freed and its memory is leaked."))))))
+    ;; Named in full, not imported, and not recursion -- see `update-one-iteration' above,
+    ;; which faces the same doubled name for the same reason.
+    (cl-gbdt/src/xgboost/api:free-booster booster)))
 
 ;;; ---------------------------------------------------------------------------
 ;;; Inference

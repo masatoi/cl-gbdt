@@ -45,10 +45,14 @@
                 #:xgboost-dataset)
   (:import-from #:cl-gbdt/src/xgboost/native
                 #:%check-backend-open
+                #:%check-booster-datasets-live
                 #:%check-unsupported
                 #:%check-xgboost-booster
+                #:%check-xgboost-dataset
+                #:%create-booster
                 #:%create-dmatrix
                 #:%create-dmatrix-from-csr
+                #:%free-booster
                 #:%free-booster-unchecked
                 #:%free-dmatrix
                 #:%free-dmatrix-unchecked
@@ -56,14 +60,17 @@
                 #:%set-feature-types
                 #:%set-group-field
                 #:%set-info-field
-                #:%slice)
+                #:%set-parameters
+                #:%slice
+                #:%update-one-iteration)
   (:import-from #:cl-gbdt/src/backend
                 #:backend-name
                 #:backend-open-p
                 #:backend-supports-p)
   (:import-from #:cl-gbdt/src/conditions
                 #:capability-unavailable
-                #:foreign-call-error)
+                #:foreign-call-error
+                #:missing-training-set)
   (:import-from #:cl-gbdt/src/data
                 #:csr-matrix
                 #:csr-matrix-indices
@@ -73,15 +80,20 @@
   (:import-from #:cl-gbdt/src/foreign
                 #:with-foreign-float-traps-masked)
   (:import-from #:cl-gbdt/src/handle
+                #:booster-training-set
                 #:handle-backend
+                #:handle-live-pointer
                 #:handle-released-p
                 #:release-handle
                 #:with-pointer-ownership)
   (:export #:%check-sparse-input
            #:%creation-function-name
+           #:create-booster
            #:create-dataset
+           #:free-booster
            #:free-dataset
-           #:slice-model))
+           #:slice-model
+           #:update-one-iteration))
 
 (in-package #:cl-gbdt/src/xgboost/api)
 
@@ -267,6 +279,142 @@ that point."
           (unless already-released
             (warn "Freeing an XGBoost dataset after its backend was closed: the foreign ~
                    dataset was not freed and its memory is leaked."))))))
+
+;;; ---------------------------------------------------------------------------
+;;; Boosters
+;;;
+;;; `cl-gbdt/src/xgboost/protocol''s `train' does NOT call `create-booster', and a reader who
+;;; assumes every training run exercises it would be wrong. `train' must hand `make-handle' a
+;;; `:best-iteration' its own loop computes, and `booster-best-iteration' is a `:reader'-only
+;;; slot set at construction, so `train' has to own the pointer across its whole loop and build
+;;; the handle at the end; `create-booster' builds it at the start, by the same argument every
+;;; other Layer 1 operation follows. See `train''s own call site, which carries that reasoning
+;;; where an editor tempted to merge the two will meet it -- and note that the same is true of
+;;; `cl-gbdt/src/lightgbm/api''s `create-booster', for the same two reasons: this is a property
+;;; of the shared `handle' class and of what a training loop owns, not of either library. The
+;;; two small functions below ARE what their methods call, wholesale.
+
+(defun create-booster (backend dataset &key parameters valid-sets)
+  "Create a booster over DATASET on BACKEND via `XGBoosterCreate', returning an
+`xgboost-booster'.
+
+The result is UNTRAINED: `XGBoosterCreate' allocates the model and every boosting iteration
+comes from a later `update-one-iteration'. Free it with `free-booster'.
+
+VALID-SETS is a list of `xgboost-dataset's -- bare datasets, not the (NAME . DATASET) entries
+`cl-gbdt''s `train' accepts, a name being a training-report concept with no meaning at this
+layer. Unlike LightGBM's `LGBM_BoosterCreate', which takes the training set alone and gains
+validation sets afterward through `LGBM_BoosterAddValidData', `XGBoosterCreate' takes the
+whole array of DMatrix handles a booster will ever reference AT ONCE -- the training set
+first, then each validation set in the order given -- and this library has no \"add valid
+data\" entry point at all. Nothing is attached after creation here because there is nothing to
+attach it with: a validation set left out of the creation call could never be added later.
+
+PARAMETERS reaches the booster the other way round for the same reason of asymmetry: a plist
+in XGBOOST'S OWN vocabulary, applied AFTER creation by `%set-parameters', one
+`XGBoosterSetParam' call per pair, this library having no bulk-parameter argument the way
+`LGBM_BoosterCreate''s parameter string is. Nothing here translates a key or a value, and no
+key is added. A parameter XGBoost refuses signals `foreign-call-error' from inside the
+ownership form below, which frees the raw booster rather than orphaning it -- so a rejected
+parameter, unlike a rejected VALID-SETS entry, does leave a booster briefly in existence.
+
+The booster retains DATASET and a COPY of VALID-SETS, which keeps them alive for its lifetime
+and lets `update-one-iteration' notice a dataset freed out from under it. The copy is what
+makes that promise hold: were the caller's own list object stored, a later `delete' or
+`(setf (cdr ...))' on it would remove an entry from the booster's view while XGBoost still
+held that dataset's pointer.
+
+Signals `backend-not-open' before any foreign call when BACKEND is not open -- see
+`%check-backend-open' -- `wrong-backend-reference' when DATASET or a VALID-SETS entry is not
+an `xgboost-dataset', and `released-handle-error' or `backend-not-open' when one is but has
+already been freed or had its own backend closed; see `%check-xgboost-dataset'. That check
+runs on EVERY element of the array this backend hands `XGBoosterCreate', not on DATASET alone,
+and it is what rules out a booster's own pointer arriving there as a DMatrix handle. This
+function dispatches on nothing, so it is the only thing standing between a wrong-kind handle
+and a segfault. Signals `foreign-call-error' when creation reports success but writes a null
+handle -- that check lives in `%create-booster', beside the call it guards, and is not
+repeated here.
+
+Every check runs before the creation call, so a rejected VALID-SETS entry leaves no booster in
+existence at all. The raw handle then exists in C from the moment that call returns and
+nothing in Lisp references it until `make-handle' runs -- `with-pointer-ownership' spans
+exactly that gap, so a parameter that fails to apply frees the booster rather than orphaning
+it."
+  (with-foreign-float-traps-masked
+    (%check-backend-open backend)
+    ;; `let', not `let*': no binding here reads another, and the checks still run before the
+    ;; creation call below because a `let' evaluates its init forms left to right, which is
+    ;; the whole ordering this function needs. `%create-booster' is deliberately NOT among
+    ;; them -- it belongs inside its own form, where the raw handle's lifetime begins.
+    (let ((train-data-pointer
+            (%check-xgboost-dataset backend dataset "create-booster's dataset argument"
+                                     'xgboost-dataset))
+          (valid-set-pointers
+            (mapcar (lambda (valid-set)
+                      (%check-xgboost-dataset backend valid-set
+                                               "a create-booster :valid-sets entry"
+                                               'xgboost-dataset))
+                    valid-sets))
+          (validation-sets (copy-list valid-sets)))
+      ;; The training set first, then each validation set: `XGBoosterCreate' takes the array
+      ;; positionally and `cl-gbdt/src/xgboost/protocol''s `train' builds the identical list
+      ;; the identical way, which is what makes a booster built here and one built there hold
+      ;; the same DMatrix handles in the same order.
+      (let ((booster-pointer (%create-booster (cons train-data-pointer valid-set-pointers))))
+        (with-pointer-ownership (booster-pointer #'%free-booster-unchecked take-ownership)
+          (%set-parameters booster-pointer parameters)
+          (take-ownership 'xgboost-booster backend :booster
+                          :training-set dataset
+                          :validation-sets validation-sets))))))
+
+(defun update-one-iteration (booster)
+  "Advance BOOSTER by one boosting iteration via `XGBoosterUpdateOneIter'. Always returns
+true after a successful call.
+
+Unlike LightGBM's `LGBM_BoosterUpdateOneIter', which reads the booster's internal
+training-set pointer implicitly, XGBoost's version takes the DMatrix handle explicitly, so
+this reads it back from `booster-training-set' rather than being able to omit it. A
+`load-model' booster's training set is NIL by design -- see the `booster' class'
+documentation -- and handing `XGBoosterUpdateOneIter' a null DMatrixHandle would not come back
+as a status code the way a bad parameter does: it is a null-pointer dereference inside
+XGBoost's own implementation. That case is rejected here, before the foreign call, for the
+same reason `%check-booster-datasets-live' exists for the pointers it does check.
+
+XGBoost also reports no `produced_empty_tree'-style signal from this call, unlike LightGBM, so
+there is nothing here to return false for -- where `cl-gbdt/src/lightgbm/api''s function of
+the same name returns false once an iteration produced no further split, this one cannot tell,
+and says so by always returning true.
+
+Signals `released-handle-error' when BOOSTER's training set, or any of its validation sets,
+has already been freed -- see `%check-booster-datasets-live', which runs before any foreign
+call because `XGBoosterUpdateOneIter' dereferences those datasets' pointers itself and a freed
+one is a segfault rather than a catchable condition. Signals `missing-training-set' when
+BOOSTER has no training set at all. Signals `released-handle-error' for a freed BOOSTER, and
+`backend-not-open' when its backend has since been closed -- see `handle-live-pointer'."
+  (with-foreign-float-traps-masked
+    (%check-booster-datasets-live booster)
+    (let ((training-set (booster-training-set booster)))
+      (unless training-set
+        (error 'missing-training-set :booster booster))
+      (%update-one-iteration (handle-live-pointer booster) (handle-live-pointer training-set)))
+    t))
+
+(defun free-booster (booster)
+  "Free BOOSTER via `XGBoosterFree'. Does nothing if it was already freed, and returns no
+useful value.
+
+See `free-dataset' above for why this does not signal `backend-not-open' when BOOSTER's
+backend has already been closed, but marks the handle released and `warn's the foreign memory
+leaked instead -- the same cleanup-form reasoning applies here, `with-booster' being the macro
+whose `unwind-protect' calls this one."
+  (with-foreign-float-traps-masked
+    (if (backend-open-p (handle-backend booster))
+        (release-handle booster (lambda (pointer) (%free-booster pointer)))
+        (let ((already-released (handle-released-p booster)))
+          (release-handle booster (lambda (pointer) (declare (ignore pointer))))
+          (unless already-released
+            (warn "Freeing an XGBoost booster after its backend was closed: the foreign ~
+                   booster was not freed and its memory is leaked."))))))
 
 ;;; ---------------------------------------------------------------------------
 ;;; Model slicing
