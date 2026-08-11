@@ -13,17 +13,34 @@
   :class :package-inferred-system
   :depends-on ("cl-gbdt/src/regen/all"))
 
+;;; Layer 1 alone: the library's lifetime, the backend's CLOS types, and its own
+;;; LightGBM-specific operations. Loading this does NOT define the `cl-gbdt' package -- the
+;;; unified API's methods live in the `/unified' system underneath.
 (defsystem "cl-gbdt/lightgbm"
   :description "LightGBM backend for cl-gbdt"
   :license "MIT"
   :class :package-inferred-system
   :depends-on ("cl-gbdt/src/lightgbm/all"))
 
+(defsystem "cl-gbdt/lightgbm/unified"
+  :description "LightGBM backend plus cl-gbdt's unified API methods"
+  :license "MIT"
+  :class :package-inferred-system
+  :depends-on ("cl-gbdt/src/lightgbm/unified"))
+
+;;; Layer 1 alone, exactly as `cl-gbdt/lightgbm' above; `cl-gbdt/xgboost/unified' is the
+;;; system that adds the unified API's methods on top.
 (defsystem "cl-gbdt/xgboost"
   :description "XGBoost backend for cl-gbdt"
   :license "MIT"
   :class :package-inferred-system
   :depends-on ("cl-gbdt/src/xgboost/all"))
+
+(defsystem "cl-gbdt/xgboost/unified"
+  :description "XGBoost backend plus cl-gbdt's unified API methods"
+  :license "MIT"
+  :class :package-inferred-system
+  :depends-on ("cl-gbdt/src/xgboost/unified"))
 
 (defsystem "cl-gbdt/tests"
   :author "Satoshi Imai <satoshi.imai@gmail.com>"

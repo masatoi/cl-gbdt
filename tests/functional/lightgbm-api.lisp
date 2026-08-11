@@ -11,19 +11,21 @@
 (uiop:define-package #:cl-gbdt/tests/functional/lightgbm-api
   (:use #:cl #:rove)
   (:import-from #:cl-gbdt)
-  ;; Zero symbols: nothing below refers to this package by name. Its only job is to
-  ;; run at load time and register :lightgbm with `open-backend' -- see
-  ;; `register-backend' near the top of src/lightgbm/protocol.lisp. Without this
-  ;; clause, package-inferred-system has no edge to that file at all, and
-  ;; `(cl-gbdt:open-backend :lightgbm)' below would signal `unknown-backend'. Depends on
-  ;; `all', the leaf `cl-gbdt/lightgbm' itself depends on, rather than `protocol'
-  ;; directly, so this exercises the same load path a real caller would.
-  (:import-from #:cl-gbdt/src/lightgbm/all)
+  ;; Zero symbols: nothing below refers to this package by name. Its job is to run at load
+  ;; time, registering :lightgbm with `open-backend' -- see `register-backend' near the top
+  ;; of src/lightgbm/classes.lisp -- and defining LightGBM's methods on `cl-gbdt''s
+  ;; generics. Without this clause, package-inferred-system has no edge to those files at
+  ;; all, and `(cl-gbdt:open-backend :lightgbm)' below would signal `unknown-backend'.
+  ;; Depends on `unified', the aggregation the leaf `cl-gbdt/lightgbm/unified' itself
+  ;; depends on, rather than `protocol' directly, so this exercises the same load path a
+  ;; real caller would. Not `all': since the Layer 1 split that is Layer 1 alone, and
+  ;; `train' below would find no applicable method.
+  (:import-from #:cl-gbdt/src/lightgbm/unified)
   ;; Zero symbols, same reasoning as the `#:cl-gbdt' clause above: every reference below is
   ;; package-qualified, `cl-gbdt/lightgbm:booster-eval-names' and `cl-gbdt/lightgbm:booster-eval'.
   ;; Declared anyway so this file's dependency on Task 2's new public functions is explicit
-  ;; rather than riding along on `#:cl-gbdt/src/lightgbm/all' above, which exists here only
-  ;; for its `register-backend' load-time side effect, not for anything it exports.
+  ;; rather than riding along on `#:cl-gbdt/src/lightgbm/unified' above, which exists here
+  ;; only for its load-time side effects, not for anything it exports.
   (:import-from #:cl-gbdt/lightgbm)
   (:import-from #:cl-gbdt/tests/functional/support
                 #:with-backend-library

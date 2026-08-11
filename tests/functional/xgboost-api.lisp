@@ -11,14 +11,16 @@
 (uiop:define-package #:cl-gbdt/tests/functional/xgboost-api
   (:use #:cl #:rove)
   (:import-from #:cl-gbdt)
-  ;; Zero symbols: nothing below refers to this package by name. Its only job is to
-  ;; run at load time and register :xgboost with `open-backend' -- see
-  ;; `register-backend' near the top of src/xgboost/protocol.lisp. Without this
-  ;; clause, package-inferred-system has no edge to that file at all, and
+  ;; Zero symbols: nothing below refers to this package by name. Its job is to run at load
+  ;; time, registering :xgboost with `open-backend' -- see `register-backend' near the top
+  ;; of src/xgboost/classes.lisp -- and defining XGBoost's methods on `cl-gbdt''s generics.
+  ;; Without this clause, package-inferred-system has no edge to those files at all, and
   ;; `(cl-gbdt:open-backend :xgboost)' below would signal `unknown-backend'. Depends on
-  ;; `all', the leaf `cl-gbdt/xgboost' itself depends on, rather than `protocol'
-  ;; directly, so this exercises the same load path a real caller would.
-  (:import-from #:cl-gbdt/src/xgboost/all)
+  ;; `unified', the aggregation the leaf `cl-gbdt/xgboost/unified' itself depends on, rather
+  ;; than `protocol' directly, so this exercises the same load path a real caller would. Not
+  ;; `all': since the Layer 1 split that is Layer 1 alone, and `train' below would find no
+  ;; applicable method.
+  (:import-from #:cl-gbdt/src/xgboost/unified)
   ;; Zero symbols, same load-time reason as the clause above, for the other backend:
   ;; `xgboost-api-slice-model-rejects-a-lightgbm-booster' needs a real LightGBM booster to
   ;; hand `slice-model', and `(cl-gbdt:open-backend :lightgbm)' signals `unknown-backend'
@@ -27,13 +29,14 @@
   ;; *XGBoost's* entry point rejects a foreign handle, which is why it belongs here rather
   ;; than in the backend-neutral `cl-gbdt/tests/functional/evaluation', whose own package
   ;; form carries both clauses for the different reason that it runs the same assertions
-  ;; against both backends.
-  (:import-from #:cl-gbdt/src/lightgbm/all)
+  ;; against both backends. `unified' for the same reason as the clause above: that test
+  ;; trains its LightGBM booster through `cl-gbdt:train'.
+  (:import-from #:cl-gbdt/src/lightgbm/unified)
   ;; Zero symbols, same reasoning as the `#:cl-gbdt' clause above: every reference below is
   ;; package-qualified, `cl-gbdt/xgboost:evaluate-one-iteration'. Declared anyway so this file's
   ;; dependency on Task 3's new public function is explicit rather than riding along on
-  ;; `#:cl-gbdt/src/xgboost/all' above, which exists here only for its `register-backend'
-  ;; load-time side effect, not for anything it exports. Matches
+  ;; `#:cl-gbdt/src/xgboost/unified' above, which exists here only for its load-time side
+  ;; effects, not for anything it exports. Matches
   ;; `cl-gbdt/tests/functional/lightgbm-api''s identical clause for Task 2's
   ;; `cl-gbdt/lightgbm'.
   (:import-from #:cl-gbdt/xgboost)
