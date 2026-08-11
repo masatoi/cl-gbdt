@@ -341,10 +341,18 @@ README内のassertion件数のdocument driftは **解消済み** (243 / 106 で�
 - missing value option
 - categorical metadata
 - multidimensional prediction result
-- external memory
 - custom objective / evaluation
 
 すべてを同時に実装しようとしてはならない。各機能について、Layer 1 contract、Layer 2に含める可否、capability、functional testを一組として実装する。
+
+### external memoryを一覧から外した理由
+
+当初この一覧にはexternal memoryも含めていたが、vendoredヘッダを読んだ結果、**両backendとも、このwrapperがexternal memoryと呼べるものを、対応するdataset構築の入口では提供していない**ことが分かったため外した。同じ調査を繰り返さないよう、根拠を残す。
+
+- **XGBoost**のexternal memoryは`Streaming`グループにある。ヘッダ自身が "the experimental external-memory-based DMatrix, which reads data in batches during training" と書き、到達するには`XGDMatrixCreateFromCallback`または`XGExtMemQuantileDMatrixCreateFromCallback`に、呼び出し側が**Cコールバックとして実装したdata iterator**（`XGDMatrixCallbackNext`、`DataIterResetCallback`）を渡す必要がある。`XGDMatrixCreateFromURI`は "load a data matrix" であって、通常のin-memory DMatrixを作る。
+- **LightGBM**には該当する機能がない。`LGBM_DatasetCreateFromFile`は "Load dataset from file (like LightGBM CLI version does)" で、できあがる`Dataset`はbin化された形で全量メモリに載る。`LGBM_DatasetInitStreaming`とその周辺は、複数スレッドから行を流し込む**構築**の機構であって、データをメモリ外に置く機構ではない。
+
+したがって実装するとすれば、このプロジェクト初のC→Lisp callbackを導入し、上流自身がexperimentalと呼ぶAPIに乗り、片側のbackendでのみ真となるcapabilityを足すことになる。§7が要求するportable contractに載せられる形ではない。将来この判断を覆すなら、上記の三点が変わったことを先に確認すること。
 
 ## 13. テスト方針
 
