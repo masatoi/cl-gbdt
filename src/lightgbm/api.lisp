@@ -75,6 +75,7 @@
   (:import-from #:cl-gbdt/src/foreign
                 #:with-foreign-float-traps-masked)
   (:import-from #:cl-gbdt/src/handle
+                #:%reject-best-num-iteration
                 #:handle-backend
                 #:handle-live-pointer
                 #:handle-released-p
@@ -410,12 +411,17 @@ anything else. Predictions start from iteration 0; nothing here exposes a start-
 override.
 
 NUM-ITERATION is a positive integer, or NIL for every iteration -- which LightGBM spells as 0,
-and `%resolve-num-iteration' is what writes it that way. It does NOT accept :BEST: only `train'
-writes a booster's `best-iteration', and a booster built by `create-booster' has none, so at
-this layer the keyword would name an empty slot. `cl-gbdt/src/lightgbm/protocol''s `predict'
-method is where :BEST is resolved -- by `%resolve-best-num-iteration', which signals
-`unsupported-argument' when the booster has no best iteration to resolve it against -- and it
-calls this with the integer that resolution produced.
+and `%resolve-num-iteration' is what writes it that way. :BEST is REFUSED, with
+`unsupported-argument' naming this backend and \"predict's :num-iteration\": only `train' writes
+a booster's `best-iteration', and a booster built by `create-booster' has none, so at this layer
+the keyword would name an empty slot. `%reject-best-num-iteration' is what refuses it, and its
+own docstring measures why the refusal has to be explicit -- `%resolve-num-iteration' is
+`(or num-iteration 0)', so :BEST would otherwise reach a foreign call expecting an integer as
+uninterpreted data and come back a raw CFFI `type-error' rather than a `cl-gbdt' condition. The
+refusal is invisible to Layer 2: `cl-gbdt/src/lightgbm/protocol''s `predict' method resolves
+:BEST first -- by `%resolve-best-num-iteration', which signals `unsupported-argument' when the
+booster has no best iteration to resolve it against -- and calls this with the integer that
+resolution produced, so the keyword itself never arrives from there.
 
 Signals `capability-unavailable' naming `:sparse-input' when MATRIX is a `csr-matrix' and that
 capability reads false -- see `%check-sparse-input' above, which checks it before any foreign
@@ -430,7 +436,9 @@ reports as `foreign-call-error' (\"The number of features in data (N) is not the
 in training data (M).\"); nothing here pre-empts that check.
 
 Signals `released-handle-error' for a freed BOOSTER, and `backend-not-open' when its backend
-has since been closed -- see `handle-live-pointer', which is read before anything is allocated.
+has since been closed -- see `handle-live-pointer', which is read before anything is allocated,
+and before NUM-ITERATION is examined, so a freed booster handed :BEST is reported as freed
+rather than as having no best iteration.
 
 The output buffer's element count comes from `LGBM_BoosterCalcNumPredict', not from the row
 count alone: the row count is only correct for a single-class objective. That count is read the
@@ -461,9 +469,15 @@ Deliberately does not scan the result for NaN or infinity -- see
 unchanged: `with-foreign-float-traps-masked' restores the C calling convention around this
 call, it does not and should not decide what counts as a valid model output."
   (with-foreign-float-traps-masked
+    ;; POINTER is bound first, and a `let' evaluates its init forms left to right, so a freed
+    ;; BOOSTER is refused by `handle-live-pointer' before `%reject-best-num-iteration' can
+    ;; report a :BEST it would also have refused -- the same precedence the `predict' method
+    ;; above this layer keeps between a freed handle and its own argument checks.
     (let ((pointer (handle-live-pointer booster))
           (predict-type (%predict-type kind))
-          (iteration-count (%resolve-num-iteration num-iteration)))
+          (iteration-count (%resolve-num-iteration
+                            (%reject-best-num-iteration booster num-iteration
+                                                        "predict's :num-iteration"))))
       ;; The buffer sizing, the OUT-LEN check and the copy-out are identical for both entry
       ;; points and live here once; CALL is the only thing that differs between them, which
       ;; is exactly how much of this function a `csr-matrix' changes.

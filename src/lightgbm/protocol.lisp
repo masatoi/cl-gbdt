@@ -1002,9 +1002,10 @@ This method's whole body was procedure too, and is `cl-gbdt/src/lightgbm/api''s
 KIND and NUM-ITERATION are as the `predict' generic function documents. NUM-ITERATION's
 :BEST is resolved HERE, by `%resolve-best-num-iteration', and the integer it produces is what
 reaches the procedure: `booster-best-iteration' is written by `train' and by nothing else, so
-:BEST is a Layer 2 concept and `cl-gbdt/src/lightgbm/api''s `predict' takes an integer or NIL
--- see its docstring, which says so from the other side. Predictions start from iteration 0 --
-the protocol exposes no start-iteration override.
+:BEST is a Layer 2 concept and `cl-gbdt/src/lightgbm/api''s `predict' takes an integer or NIL,
+refusing the keyword itself with `unsupported-argument' -- see its docstring, which says so
+from the other side. Predictions start from iteration 0 -- the protocol exposes no
+start-iteration override.
 
 Signals `capability-unavailable' naming `:missing-value' for a non-NIL MISSING, whatever the
 value is and whatever form MATRIX takes -- this backend has no C-API route for a
@@ -1049,15 +1050,17 @@ resolving :BEST."
     ;; exactly as they did when this method held the whole procedure and read the pointer
     ;; first. `make-dataset' above keeps its own `%check-backend-open' for the same reason.
     (handle-live-pointer booster)
-    (when missing
-      (%check-missing-value (handle-backend booster)))
-    ;; Named in full, not imported, and not recursion -- see `update-one-iteration' above,
-    ;; which faces the same doubled name for the same reason.
-    (cl-gbdt/src/lightgbm/api:predict
-     booster matrix
-     :kind kind
-     :num-iteration (%resolve-best-num-iteration booster num-iteration
-                                                 "predict's :num-iteration"))))
+    ;; Resolved ABOVE the :MISSING gate, not in the delegation's argument list, because that is
+    ;; where the old body resolved it: `%resolve-best-num-iteration' sat in the same `let' that
+    ;; read the pointer, and the `when' came after. So a booster with no best iteration still
+    ;; reports THAT, rather than the `capability-unavailable' :MISSING always signals here.
+    (let ((resolved (%resolve-best-num-iteration booster num-iteration
+                                                 "predict's :num-iteration")))
+      (when missing
+        (%check-missing-value (handle-backend booster)))
+      ;; Named in full, not imported, and not recursion -- see `update-one-iteration' above,
+      ;; which faces the same doubled name for the same reason.
+      (cl-gbdt/src/lightgbm/api:predict booster matrix :kind kind :num-iteration resolved))))
 
 ;;; ---------------------------------------------------------------------------
 ;;; Persistence
