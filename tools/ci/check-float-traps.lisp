@@ -112,8 +112,16 @@
 (ql:quickload "cffi" :silent t)
 
 (defparameter +backend-file-patterns+
-  '("src/*/backend.lisp" "src/*/classes.lisp" "src/*/native.lisp" "src/*/protocol.lisp")
+  '("src/*/api.lisp" "src/*/backend.lisp" "src/*/classes.lisp" "src/*/native.lisp"
+    "src/*/protocol.lisp")
   "Globs, relative to the repository root, for files this check scans.
+
+`api.lisp' holds each backend's finished Layer 1 operations -- the procedures that build a
+dataset, build and train a booster and predict with it, moved out of the `protocol.lisp'
+method bodies that used to hold them so a caller who loaded only `cl-gbdt/lightgbm' or
+`cl-gbdt/xgboost' can invoke them. Every one is a `defun' the backend's public package
+exports, which is exactly the case rule (2) below exists for: no `defmethod' is left to
+inherit a mask from, so each must establish its own.
 
 Both backends used to keep every protocol method in one `backend.lisp'. XGBoost's Task 2
 and LightGBM's Task 3 each split that file into `native.lisp' (Layer 1: the %-functions,
@@ -143,6 +151,15 @@ carries for the same reason.")
          :test #'equal)
         #'string< :key #'namestring))
 
+(defun %intern-unresolvable-qualified-symbol (condition)
+  "Resolve a `package-error' signalled by `read' by invoking its `continue' restart, which
+reads the offending token as a symbol of the same name in `*package*' instead. Declines --
+returns normally, leaving CONDITION to whatever handler is next -- when no such restart is
+offered. See `read-top-level-forms', which establishes this."
+  (let ((restart (find-restart 'continue condition)))
+    (when restart
+      (invoke-restart restart))))
+
 (defun read-top-level-forms (path)
   "Read PATH's top-level forms as data and return them as a list.
 
@@ -151,15 +168,29 @@ loading it (registering a CLOS class, defining a backend) happens here. Forms ar
 read with `*package*' bound to a throwaway package that uses only CL, so a bare
 symbol -- everything in these files except its `cffi:...'/`uiop:...' references --
 interns harmlessly regardless of whether PATH's own package is defined yet.
-`*read-eval*' is bound to NIL so a stray `#.' in the source cannot run code either."
+`*read-eval*' is bound to NIL so a stray `#.' in the source cannot run code either.
+
+A qualified reference to one of THIS PROJECT's own packages is what the handler is for.
+`src/lightgbm/protocol.lisp' names `cl-gbdt/src/lightgbm/api:free-dataset' in full because
+it also imports a GENERIC FUNCTION of that name from `cl-gbdt/src/protocol': the two are
+different symbols, no package can import both, so one of them has to be written out -- and
+that repeats for every Layer 1 operation whose name a unified generic already uses. Reading
+that token needs the named package to EXIST and to export that name, exactly as the `cffi:'
+references above do, and nothing here loads project code to make either true. Rather than
+load the project (which would defeat reading it as data) or enumerate its packages, the
+token is read as a bare symbol of the same name. That loses nothing this script uses: every
+form is inspected through `symbol-name-string=', by name and never by identity, so
+`cl-gbdt/src/foreign:with-foreign-float-traps-masked' written out in full would be
+recognized as the wrap exactly as the imported spelling is."
   (let ((*package* (or (find-package '#:cl-gbdt/tools/ci/float-traps-scratch)
                         (make-package '#:cl-gbdt/tools/ci/float-traps-scratch
                                        :use '(#:cl))))
         (*read-eval* nil))
-    (with-open-file (in path)
-      (loop :for form := (read in nil :eof)
-            :until (eq form :eof)
-            :collect form))))
+    (handler-bind ((package-error #'%intern-unresolvable-qualified-symbol))
+      (with-open-file (in path)
+        (loop :for form := (read in nil :eof)
+              :until (eq form :eof)
+              :collect form)))))
 
 (defun symbol-name-string= (symbol name)
   "True when SYMBOL's name is the string NAME, regardless of SYMBOL's package."

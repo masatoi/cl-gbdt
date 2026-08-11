@@ -1,10 +1,12 @@
 ;;;; all.lisp --- The LightGBM backend's public face.
 ;;;;
 ;;;; Reassembles `cl-gbdt/src/lightgbm/native' (Layer 1: library discovery, the error
-;;;; wrapper, every %-function) and `cl-gbdt/src/lightgbm/classes' (Layer 1: the backend's
+;;;; wrapper, every %-function), `cl-gbdt/src/lightgbm/classes' (Layer 1: the backend's
 ;;;; CLOS types and the `initialize-backend'/`shutdown-backend' pair that opens and closes
-;;;; the shared library) into one package. This is what `cl-gbdt/lightgbm' (see cl-gbdt.asd)
-;;;; depends on, following the same shape `src/xgboost/all.lisp' uses for the same reason.
+;;;; the shared library) and `cl-gbdt/src/lightgbm/api' (Layer 1: the finished operations
+;;;; built on top of those two) into one package. This is what `cl-gbdt/lightgbm' (see
+;;;; cl-gbdt.asd) depends on, following the same shape `src/xgboost/all.lisp' uses for the
+;;;; same reason.
 ;;;;
 ;;;; Layer 1 and nothing else. `cl-gbdt/src/lightgbm/protocol' (Layer 2: the thirteen
 ;;;; protocol methods) was named here until the split and is not any more, which is what
@@ -20,7 +22,8 @@
 
 (uiop:define-package #:cl-gbdt/src/lightgbm/all
   (:use-reexport #:cl-gbdt/src/lightgbm/native
-                 #:cl-gbdt/src/lightgbm/classes))
+                 #:cl-gbdt/src/lightgbm/classes
+                 #:cl-gbdt/src/lightgbm/api))
 
 ;;; ---------------------------------------------------------------------------
 ;;; The public package
@@ -46,10 +49,23 @@
 ;;; public surface by accident -- exactly what this task's brief warns an accidental export
 ;;; becomes: a compatibility obligation.
 ;;;
-;;; Three symbols, each pulled explicitly by name. `lightgbm-backend' from `classes' is the
-;;; CLOS class a caller can specialize methods on or check with `typep'; `booster-eval-names'
+;;; Five symbols so far, each pulled explicitly by name. `lightgbm-backend' from `classes' is
+;;; the CLOS class a caller can specialize methods on or check with `typep'; `booster-eval-names'
 ;;; and `booster-eval' from `native' are Phase 2's first LightGBM-specific safe API
-;;; (docs/superpowers/specs/2026-08-06-evaluation-api-design.md, policy section 3's Layer 1).
+;;; (docs/superpowers/specs/2026-08-06-evaluation-api-design.md, policy section 3's Layer 1);
+;;; `create-dataset' and `free-dataset' from `api' are the first finished operations to reach
+;;; this surface -- the procedure that used to sit inside `cl-gbdt/src/lightgbm/protocol''s
+;;; `make-dataset' and `free-dataset' methods, which now check their portable arguments and
+;;; call these. `free-dataset' here is NOT `cl-gbdt''s generic of that name: it is a plain
+;;; function and a different symbol, so a caller who has both packages in an image must name
+;;; which one they mean, exactly as they already must for anything else two packages export
+;;; under one name.
+;;;
+;;; `api' is `:import-from'ed rather than `:use-reexport'ed for the reason `classes' is: it
+;;; also exports `%check-sparse-input', an internal capability gate that exists at that layer
+;;; only because `protocol.lisp''s `predict' calls it too, and re-exporting the package whole
+;;; would put it on this public surface by accident.
+;;;
 ;;; This published `lightgbm-backend' by way of `:use-reexport #:cl-gbdt/src/lightgbm/protocol'
 ;;; until the split, that package having re-exported the one symbol and nothing else. `classes'
 ;;; is where the class now lives, but it is imported from by name rather than `:use-reexport'ed
@@ -78,9 +94,13 @@
 ;;; `release-handle', `handle-pointer' and `handle-live-pointer' from `handle' -- and
 ;;; re-exporting either package whole would put every one of those on this surface by accident,
 ;;; the identical hazard already described above. `csr-matrix' and the rest of
-;;; `cl-gbdt/src/data' stay out too: `make-dataset' does not exist at this layer yet, so a
-;;; `csr-matrix' would have nothing here to build a dataset for until S2 brings dataset
-;;; construction to Layer 1.
+;;; `cl-gbdt/src/data' still stay out, though the reason has changed: dataset construction is
+;;; now at this layer, and `create-dataset' below does take a `csr-matrix', so a Layer 1
+;;; caller who wants the sparse path has to reach `cl-gbdt:make-csr-matrix' -- which means
+;;; loading the unified core -- or name `cl-gbdt/src/data' directly. Publishing that
+;;; constructor here is a decision about the SPARSE surface, not a side effect of moving
+;;; `make-dataset''s procedure down, so it is left to be made deliberately. The dense path,
+;;; which is every ordinary array, needs nothing from `cl-gbdt/src/data' at all.
 ;;;
 ;;; The `:export' clause names all of them because `:import-from' imports without exporting, so
 ;;; it is now the only thing publishing any of them. It carries a second job as well --
@@ -118,9 +138,14 @@
   (:import-from #:cl-gbdt/src/lightgbm/native
                 #:booster-eval-names
                 #:booster-eval)
+  (:import-from #:cl-gbdt/src/lightgbm/api
+                #:create-dataset
+                #:free-dataset)
   (:export #:lightgbm-backend
            #:booster-eval-names
            #:booster-eval
+           #:create-dataset
+           #:free-dataset
            #:*known-capabilities*
            #:backend-capabilities
            #:backend-info
@@ -136,8 +161,8 @@
            #:handle-backend
            #:handle-released-p))
 
-;;; This second form's dependencies on `classes' and `native' are already covered by the first
-;;; form's own `:use-reexport' above -- package-inferred-system infers a file's dependencies
+;;; This second form's dependencies on `classes', `native' and `api' are already covered by the
+;;; first form's own `:use-reexport' above -- package-inferred-system infers a file's dependencies
 ;;; from the file's *first* defpackage form only (see `src/all.lisp''s identical comment), so a
 ;;; brand-new dependency this form alone needs, one the first form does not already list,
 ;;; belongs there, not here. That now rules `protocol' out for this form as well: the first
