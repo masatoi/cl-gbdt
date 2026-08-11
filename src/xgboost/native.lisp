@@ -4,8 +4,10 @@
 ;;;; conditions, raw pointers accepted only where a caller already validated them.
 ;;;;
 ;;;; Nothing here is a CLOS protocol method and nothing here depends on
-;;;; `cl-gbdt/src/xgboost/protocol' -- see that file for the fifteen `defmethod's this
-;;;; module exists to support. `cl-gbdt/src/xgboost/protocol''s own docstrings, not this
+;;;; `cl-gbdt/src/xgboost/protocol' -- see that file for the thirteen unified-API
+;;;; `defmethod's this module exists to support, and `cl-gbdt/src/xgboost/classes' for the
+;;;; two more, `initialize-backend' and `shutdown-backend', that this file's library-discovery
+;;;; parameters serve. `cl-gbdt/src/xgboost/protocol''s own docstrings, not this
 ;;;; file's, are the place each function's role in the unified API is explained; the
 ;;;; docstrings below describe only what each function does to the C API.
 
@@ -153,7 +155,7 @@
 ;;; `tools/ci/check-float-traps.lisp' checks this directly: it reads the sibling `all.lisp''s
 ;;; public `:export' clause and requires every `defun' named there to open with this macro,
 ;;; the same rule it already applied to every `defmethod' in `protocol.lisp'. `slice-model',
-;;; the third such entry point, is covered by the identical rule but lives in `protocol.lisp'
+;;; the third such entry point, is covered by the identical rule but lives in `classes.lisp'
 ;;; rather than here -- see the Model slicing section below for why.
 
 ;;; ---------------------------------------------------------------------------
@@ -185,7 +187,7 @@ with the detail available from `XGBGetLastError'. FUNCTION-NAME identifies which
 function reported CODE, for the condition's report.
 
 Thin wrapper around `check-foreign-call' supplying `%last-error-message' as XGBoost's
-last-error thunk, matching `cl-gbdt/src/lightgbm/backend''s `check-lgbm' -- see that
+last-error thunk, matching `cl-gbdt/src/lightgbm/native''s `check-lgbm' -- see that
 function's docstring for why it stays a named wrapper instead of calling
 `check-foreign-call' directly at each call site."
   (check-foreign-call code function-name #'%last-error-message))
@@ -204,13 +206,14 @@ caller has closed (or never opened) is never reached by `XGDMatrixCreateFromDens
 
 (defun %check-xgboost-dataset (backend dataset argument-description dataset-class)
   "Return DATASET's live foreign pointer, after confirming DATASET is of type
-DATASET-CLASS -- `cl-gbdt/src/xgboost/protocol''s `xgboost-dataset'. ARGUMENT-DESCRIPTION
+DATASET-CLASS -- `cl-gbdt/src/xgboost/classes''s `xgboost-dataset'. ARGUMENT-DESCRIPTION
 names which caller-supplied argument DATASET came from -- e.g. \"train's dataset
 argument\" -- for `wrong-backend-reference''s report.
 
 DATASET-CLASS is a parameter, not a symbol named directly in this file, because this
-file must not depend on `cl-gbdt/src/xgboost/protocol' -- see policy section 11 and
-this file's own header -- and `xgboost-dataset' is defined there. The caller, `train',
+file cannot depend on `cl-gbdt/src/xgboost/classes' -- that package reads this one's
+`*required-symbols*' and library-discovery parameters, so the edge already runs the other
+way and naming it here would close a cycle. The caller, `train',
 passes `'xgboost-dataset' at each call site instead.
 
 Every caller-supplied dataset argument -- `train''s DATASET and each entry of `train''s
@@ -229,7 +232,7 @@ otherwise: `released-handle-error' for an already-freed DATASET, `backend-not-op
 DATASET's own backend has since been closed.
 
 This does not additionally check that DATASET was built by BACKEND specifically, only
-that it is of type DATASET-CLASS -- see `cl-gbdt/src/lightgbm/backend''s
+that it is of type DATASET-CLASS -- see `cl-gbdt/src/lightgbm/native''s
 `%check-lightgbm-dataset', which this mirrors, for why: two backend instances over the
 same shared library are a legitimate way for a caller to hold datasets from."
   (unless (typep dataset dataset-class)
@@ -280,7 +283,7 @@ with the vendored directory pushed onto `cffi:*foreign-library-directories*',
 `(:default \"xgboost\")' fails to resolve `libxgboost.so' while `(:default \"libxgboost\")'
 succeeds. So this constant has to carry the library's full on-disk basename, `lib'
 included -- unlike LightGBM's, whose compiled basename genuinely omits it; see
-`cl-gbdt/src/lightgbm/backend''s identical constant.")
+`cl-gbdt/src/lightgbm/native''s identical constant.")
 
 (defparameter *required-symbols*
   '("XGBoostVersion"
@@ -619,7 +622,7 @@ them is pinned, for the reason `%create-dmatrix' gives."
   "Attach the sequence VALUES to DATASET-POINTER's FIELD-NAME via
 `XGDMatrixSetInfoFromInterface'. Used for `label' and `weight', both of which XGBoost
 stores as single-precision floats regardless of the training matrix's own element type --
-the same convention `cl-gbdt/src/lightgbm/backend' follows for the same two fields.
+the same convention `cl-gbdt/src/lightgbm/native' follows for the same two fields.
 
 VALUES is copied into a freshly allocated foreign buffer -- via `write-foreign-sequence',
 coercing each element to `single-float' -- rather than pinning a caller-supplied Lisp
@@ -637,7 +640,7 @@ array directly, so this accepts any sequence, not only an SBCL simple-array."
 `XGDMatrixSetUIntInfo' under XGBoost's \"group\" field.
 
 XGBoost's group array is `unsigned' (`:uint' in CFFI terms), unlike LightGBM's `int32' --
-see `cl-gbdt/src/lightgbm/backend''s `make-dataset', which writes the same query-group
+see `cl-gbdt/src/lightgbm/native''s `%set-group-field', which writes the same query-group
 sizes through `LGBM_DatasetSetField' as `int32' instead. Both hold the same nonnegative
 row counts; only the C prototypes differ. `XGDMatrixSetUIntInfo' is deprecated upstream
 in favor of `XGDMatrixSetInfoFromInterface', but is still the entry point this backend
@@ -666,7 +669,7 @@ dotted list is exactly the raw `type-error' that check exists to head off. Mirro
 Every string successfully allocated is freed on any exit, including one signaled partway
 through the allocation loop itself -- ALLOCATED tracks exactly how many of the COUNT slots
 hold a real `foreign-string-alloc' result, matching
-`cl-gbdt/src/lightgbm/backend''s `%set-feature-names', which this mirrors call-for-call
+`cl-gbdt/src/lightgbm/native''s `%set-feature-names', which this mirrors call-for-call
 apart from the field name and the C function it calls."
   (check-feature-names feature-names :xgboost)
   (let ((count (length feature-names))
@@ -962,7 +965,7 @@ already stated."
 (defun %predict-ncol (element-count nrow)
   "Return ELEMENT-COUNT's per-row width for a matrix of NROW rows.
 
-Mirrors `cl-gbdt/src/lightgbm/backend''s function of the same name and purpose. NROW = 0
+Mirrors `cl-gbdt/src/lightgbm/native''s function of the same name and purpose. NROW = 0
 is handled directly -- there is no row to give a width to -- and every other case is
 asserted to divide evenly: `%total-element-count' reporting a total that is not an exact
 multiple of NROW would mean either this file's shape arithmetic or XGBoost's own report
@@ -1278,7 +1281,8 @@ still owns copying OUT-DPTR's contents out via OUT-LEN afterward."
 `:gain' maps to XGBoost's `\"total_gain\"', not its `\"gain\"' -- the vendored header
 (`ffi-spec/xgboost/include/xgboost/c_api.h') documents `\"gain\"' as the *average* gain
 across the splits a feature is used in and `\"total_gain\"' as the sum, while LightGBM's
-`C_API_FEATURE_IMPORTANCE_GAIN' -- what `cl-gbdt/src/lightgbm/backend' maps `:gain' onto
+`C_API_FEATURE_IMPORTANCE_GAIN' -- what `cl-gbdt/src/lightgbm/native''s
+`%feature-importance-type' maps `:gain' onto
 -- and `feature-importance''s own generic-function docstring both mean the total. Mapping
 to `\"gain\"' here would have this backend silently return a different quantity than
 LightGBM under the identical keyword, the exact failure mode this project treats as most
@@ -1339,7 +1343,7 @@ equal to out_n_scores\" per that same header -- confirmed empirically here too, 
 every tree-booster case measured, multi-class included, which all report OUT-DIM 1.
 
 `feature-importance' promises one entry per feature, matching
-`cl-gbdt/src/lightgbm/backend''s own `feature-importance': `LGBM_BoosterFeatureImportance'
+`cl-gbdt/src/lightgbm/protocol''s own `feature-importance': `LGBM_BoosterFeatureImportance'
 has no shape output at all, and, confirmed empirically, already sums a multi-class
 model's per-class contributions into one number per feature inside the library before
 this ever sees it. XGBoost's per-class matrix has no such library-computed summary for
@@ -1711,11 +1715,14 @@ after training and the numbers recorded during training from ever being able to 
 ;;;
 ;;; The public operation itself, `slice-model', is NOT here. `XGBoosterSlice' produces a new
 ;;; `BoosterHandle', and wrapping a fresh foreign pointer in a handle means naming the
-;;; concrete class `xgboost-booster', which is defined in `cl-gbdt/src/xgboost/protocol' --
-;;; a file this one must not depend on (policy section 11, and this file's own header).
-;;; Every `make-handle' call in this project is in a `protocol.lisp' for that reason, so
-;;; `slice-model' is too, and calls `%slice' below for the foreign half, exactly as
-;;; `load-model' calls `%load-model'. `booster-boosted-rounds' has no such constraint -- it
+;;; concrete class `xgboost-booster', which is defined in `cl-gbdt/src/xgboost/classes' --
+;;; a file this one cannot depend on, since that one already depends on this one for
+;;; `*required-symbols*' and the library-discovery parameters, so the edge would close a
+;;; cycle. Every `make-handle' call in this project is therefore in a file that loads after
+;;; `native.lisp': `slice-model' sits in `classes.lisp' -- Layer 1 still, since it is
+;;; XGBoost's own operation and not part of the unified API -- and calls `%slice' below for
+;;; the foreign half, exactly as `load-model' in `protocol.lisp' calls `%load-model'.
+;;; `booster-boosted-rounds' has no such constraint -- it
 ;;; returns an integer -- so it stays here beside the `%boosted-rounds' it wraps.
 
 (defun booster-boosted-rounds (booster)

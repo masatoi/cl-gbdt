@@ -174,7 +174,7 @@ binary, so COLUMN is always 0, but the shape still has to be unpacked by hand."
           (ng (cl-gbdt:backend-open-p backend)))))))
 
 ;;; Task 3 wired `check-backend-version' into this backend's `initialize-backend' --
-;;; see `cl-gbdt/src/xgboost/protocol''s `initialize-backend' and
+;;; see `cl-gbdt/src/xgboost/classes''s `initialize-backend' and
 ;;; `cl-gbdt/src/version''s `*xgboost-version-range*'. The vendored library here is
 ;;; 3.3.0, XGBoost's own recorded VERIFIED point and *XGBOOST-VERSION-RANGE*'s
 ;;; INFERRED-HIGH -- inside the range by construction. A warning here would mean the
@@ -445,7 +445,7 @@ two groups.")
             (cl-gbdt:close-backend backend)))))))
 
 ;;; `train' copies VALID-SETS -- see `%create-booster' -- rather than storing the
-;;; caller's own list, for the identical reason `cl-gbdt/src/lightgbm/backend''s
+;;; caller's own list, for the identical reason `cl-gbdt/src/lightgbm/protocol''s
 ;;; `train' does: a caller who destructively truncates their own list after `train'
 ;;; returns must not silently remove a dataset from the booster's own view of what it
 ;;; depends on. This proves the guard still fires once the caller's own list has been
@@ -523,7 +523,7 @@ two groups.")
 
 ;;; `close-backend' calls `cffi:close-foreign-library', which may unmap the shared
 ;;; library from the process; POSIX does not guarantee it, but does not forbid it
-;;; either -- see `cl-gbdt/src/lightgbm/backend''s identical commentary above its own
+;;; either -- see `cl-gbdt/tests/functional/lightgbm-api''s identical commentary above its own
 ;;; version of this test. `handle-live-pointer' checks `backend-open-p' before
 ;;; returning a pointer, turning what would otherwise be a call into a library that
 ;;; might no longer be mapped into `backend-not-open'. This proves it does, using
@@ -561,7 +561,7 @@ two groups.")
 ;;; `make-dataset', `train' and `load-model' each create a brand-new handle directly
 ;;; from a backend, unlike every other operation in this file, which reads an
 ;;; existing handle and so is already covered by `handle-live-pointer''s
-;;; `backend-open-p' check -- see `cl-gbdt/src/lightgbm/backend''s identical F2
+;;; `backend-open-p' check -- see `cl-gbdt/tests/functional/lightgbm-api''s identical F2
 ;;; commentary. This proves each of the three signals `backend-not-open' instead of
 ;;; reaching its first foreign call against a library that might no longer be
 ;;; mapped, one entry point per test.

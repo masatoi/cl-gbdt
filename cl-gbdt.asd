@@ -15,15 +15,17 @@
 
 ;;; Layer 1 alone: the library's lifetime, the backend's CLOS types, and its own
 ;;; LightGBM-specific operations. Loading this does NOT define the `cl-gbdt' package -- the
-;;; unified API's methods live in the `/unified' system underneath.
+;;; unified API's methods live in the `/unified' system defined just below.
 (defsystem "cl-gbdt/lightgbm"
-  :description "LightGBM backend for cl-gbdt"
+  :description "LightGBM backend, Layer 1 only: the library's lifetime and LightGBM's own
+API. Load cl-gbdt/lightgbm/unified for cl-gbdt's 13 portable generic functions."
   :license "MIT"
   :class :package-inferred-system
   :depends-on ("cl-gbdt/src/lightgbm/all"))
 
 (defsystem "cl-gbdt/lightgbm/unified"
-  :description "LightGBM backend plus cl-gbdt's unified API methods"
+  :description "LightGBM backend plus cl-gbdt's 13 unified-API methods, and core cl-gbdt
+with them. This is what a caller of cl-gbdt:train loads."
   :license "MIT"
   :class :package-inferred-system
   :depends-on ("cl-gbdt/src/lightgbm/unified"))
@@ -31,13 +33,15 @@
 ;;; Layer 1 alone, exactly as `cl-gbdt/lightgbm' above; `cl-gbdt/xgboost/unified' is the
 ;;; system that adds the unified API's methods on top.
 (defsystem "cl-gbdt/xgboost"
-  :description "XGBoost backend for cl-gbdt"
+  :description "XGBoost backend, Layer 1 only: the library's lifetime, XGBoost's own API and
+slice-model. Load cl-gbdt/xgboost/unified for cl-gbdt's 13 portable generic functions."
   :license "MIT"
   :class :package-inferred-system
   :depends-on ("cl-gbdt/src/xgboost/all"))
 
 (defsystem "cl-gbdt/xgboost/unified"
-  :description "XGBoost backend plus cl-gbdt's unified API methods"
+  :description "XGBoost backend plus cl-gbdt's 13 unified-API methods, and core cl-gbdt
+with them. This is what a caller of cl-gbdt:train loads."
   :license "MIT"
   :class :package-inferred-system
   :depends-on ("cl-gbdt/src/xgboost/unified"))

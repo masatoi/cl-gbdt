@@ -30,8 +30,11 @@
 ;;; this form, it existed as an ASDF system name only -- `cl-gbdt/src/lightgbm/all' above
 ;;; is an internal aggregation, not what section 11 means by "public". This is the thing
 ;;; that name now resolves to, following `src/all.lisp''s shape: two `uiop:define-package'
-;;; forms in one file, the second re-exporting a curated subset of the first, rather than a
-;;; separate file -- no reason to diverge from that precedent appeared.
+;;; forms in one file rather than a separate file -- no reason to diverge from that
+;;; precedent appeared. The second form is no longer a subset of the first, though: it began
+;;; as a curated selection from it, and Task 7 added the shared-basis and condition symbols
+;;; described below, which come from `cl-gbdt/src/backend', `cl-gbdt/src/handle' and
+;;; `cl-gbdt/src/conditions' -- packages the first form does not name at all.
 ;;;
 ;;; Deliberately NOT `:use-reexport #:cl-gbdt/src/lightgbm/all' wholesale. That package
 ;;; re-exports every symbol `cl-gbdt/src/lightgbm/native' exports -- every internal

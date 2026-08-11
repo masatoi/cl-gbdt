@@ -443,8 +443,9 @@ otherwise dereference blindly.
 The raw DMatrix handle exists in C from the moment the creation call returns, but
 `make-handle' does not take ownership of it until the very end -- attaching LABEL, WEIGHT,
 GROUP, FEATURE-NAMES or the rendered feature types can each signal first (a wrong-length
-`:label' is the commonest way). OWNED tracks whether `make-handle' ran; when it did not, the
-raw DMatrix is freed here instead of orphaned.
+`:label' is the commonest way). `with-pointer-ownership' spans exactly that gap: the pointer
+is owned by nobody inside its body, and any exit that has not called TAKE-OWNERSHIP frees the
+raw DMatrix here instead of orphaning it.
 
 Signals `backend-not-open' before any of that when BACKEND is not open -- see
 `%check-backend-open'."
@@ -503,7 +504,7 @@ Signals `backend-not-open' before any of that when BACKEND is not open -- see
 
 Unlike every other operation in this file, this does not go through `handle-live-pointer'
 and so does not signal `backend-not-open' when DATASET's backend has already been closed
--- see `cl-gbdt/src/lightgbm/backend''s `free-dataset' for why: this runs from
+-- see `cl-gbdt/src/lightgbm/protocol''s `free-dataset' for why: this runs from
 `with-dataset''s `unwind-protect' cleanup form, and signalling there would replace whatever
 condition is already unwinding the stack instead of letting it propagate. So when the
 backend is closed, the handle is instead marked released without calling `XGDMatrixFree' --
@@ -747,12 +748,13 @@ does on LightGBM: `XGBoosterEvalOneIter' evaluates every DMatrix it is handed, a
 one it cannot evaluate -- an unlabelled DMatrix passed in VALID-SETS is the case this was
 found through, which `XGBoosterUpdateOneIter' trains on without complaint while the
 evaluation call signals `foreign-call-error' (\"label and prediction size not match\"). With
-RECORD-HISTORY true that failure now propagates out of `train' itself, through the OWNED
-dance below, where before this backend recorded anything it surfaced only at a later
-`evaluation' call. RECORD-HISTORY NIL never reaches the evaluation path and so trains such a
-configuration exactly as before.
+RECORD-HISTORY true that failure now propagates out of `train' itself, through the
+`with-pointer-ownership' form below, where before this backend recorded anything it surfaced
+only at a later `evaluation' call. RECORD-HISTORY NIL never reaches the evaluation path and
+so trains such a configuration exactly as before.
 
-A read that fails propagates, freeing the booster through the OWNED dance below rather
+A read that fails propagates, freeing the booster through the `with-pointer-ownership'
+form below rather
 than returning a report whose series are shorter than the run: a short series is
 indistinguishable from one a buggy loop recorded, and \"one value per iteration\" is the
 invariant a caller reading the report relies on.
@@ -809,8 +811,8 @@ so the caller's Lisp arithmetic runs under the masked convention on x86-64 as we
 aarch64 -- `(/ 1.0d0 0.0d0)' yields infinity there rather than signalling
 `division-by-zero'. Nothing about that is specific to a custom objective; it is simply where
 in `train' the caller's code now runs. A condition the caller's function does signal
-propagates out of `train' through the OWNED dance below, freeing the raw booster handle
-rather than orphaning it, exactly as a mid-loop foreign failure does.
+propagates out of `train' through the `with-pointer-ownership' form below, freeing the raw
+booster handle rather than orphaning it, exactly as a mid-loop foreign failure does.
 
 An objective that frees a handle this loop depends on, or closes BACKEND, is caught rather
 than crashed on: `%recheck-train-datasets' re-runs this method's own opening checks the
@@ -885,13 +887,14 @@ it. A caller who destructively removes an entry from VALID-SETS after `train' re
 remove it from the booster's view too, since both would be the same cons cells; the
 DMatrix `XGBoosterCreate' already attached would then go unchecked by
 `%check-booster-datasets-live' even though XGBoost still holds its pointer -- the same
-hazard `cl-gbdt/src/lightgbm/backend''s `train' guards against, for the identical reason.
+hazard `cl-gbdt/src/lightgbm/protocol''s `train' guards against, for the identical reason.
 Free the result with `free-booster' or wrap it in `with-booster'.
 
 The raw booster handle exists in C from the moment `XGBoosterCreate' returns, but
 `make-handle' does not take ownership of it until the very end -- a rejected parameter or
-a mid-loop failure can each signal first. OWNED tracks whether `make-handle' ran; when it
-did not, the raw booster is freed here instead of orphaned.
+a mid-loop failure can each signal first. `with-pointer-ownership' spans exactly that gap:
+the pointer is owned by nobody inside its body, and any exit that has not called
+TAKE-OWNERSHIP frees the raw booster here instead of orphaning it.
 
 Signals `backend-not-open' before any of that when BACKEND is not open -- see
 `%check-backend-open'."
@@ -1024,7 +1027,7 @@ for the same reason `%check-booster-datasets-live' exists for the pointers it do
 
 XGBoost also reports no `produced_empty_tree'-style signal from this call, unlike
 LightGBM -- there is nothing for this backend to report a false return for, so unlike
-`cl-gbdt/src/lightgbm/backend''s method of the same name, this always returns true after
+`cl-gbdt/src/lightgbm/protocol''s method of the same name, this always returns true after
 a successful call; the generic function's \"returns false when no further split was
 possible\" applies only insofar as a backend can report it, which this one cannot.
 
@@ -1133,7 +1136,8 @@ The output buffer's total element count comes from the C call's own `out_shape'/
 report, not from the row count alone -- the row count is only
 correct for a single-class objective. The second array dimension is that total divided
 by the row count, guarded by `%predict-ncol' -- the same derivation
-`cl-gbdt/src/lightgbm/backend' uses for its own row-count-alone pitfall, and the one that
+`cl-gbdt/src/lightgbm/native''s `%predict-ncol' makes for its own row-count-alone pitfall,
+and the one that
 tells a three-class `multi:softprob' model's predictions apart from a binary model's. Both
 entry points report it the same way, `\"strict_shape\":true' being set for both.
 
@@ -1279,8 +1283,9 @@ since PATH names a model, not a dataset.
 
 The raw booster handle exists in C from the moment `XGBoosterCreate' returns, but
 `make-handle' does not take ownership of it until `XGBoosterLoadModel' has also
-succeeded. OWNED tracks whether `make-handle' ran; when it did not, the raw booster is
-freed here instead of orphaned.
+succeeded. `with-pointer-ownership' spans exactly that gap: the pointer is owned by
+nobody inside its body, and any exit that has not called TAKE-OWNERSHIP -- a failing
+`XGBoosterLoadModel' the likeliest -- frees the raw booster here instead of orphaning it.
 
 Signals `backend-not-open' before any of that when BACKEND is not open -- see
 `%check-backend-open'."
@@ -1329,7 +1334,7 @@ backend does not do, so this refuses rather than silently scoring every round in
 the requested subset.
 
 The result has one entry per feature, indexed by column, matching
-`cl-gbdt/src/lightgbm/backend''s `feature-importance' -- zero for a feature never used
+`cl-gbdt/src/lightgbm/protocol''s `feature-importance' -- zero for a feature never used
 in a split. `XGBoosterFeatureScore' itself reports the opposite: `out_n_features' and
 `out_scores' cover only features that appear in at least one split, so a feature never
 split on is absent from its report, not present with a zero -- confirmed directly

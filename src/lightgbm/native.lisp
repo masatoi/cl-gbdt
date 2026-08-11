@@ -4,8 +4,10 @@
 ;;;; conditions, raw pointers accepted only where a caller already validated them.
 ;;;;
 ;;;; Nothing here is a CLOS protocol method and nothing here depends on
-;;;; `cl-gbdt/src/lightgbm/protocol' -- see that file for the fifteen `defmethod's this
-;;;; module exists to support. `cl-gbdt/src/lightgbm/protocol''s own docstrings, not this
+;;;; `cl-gbdt/src/lightgbm/protocol' -- see that file for the thirteen unified-API
+;;;; `defmethod's this module exists to support, and `cl-gbdt/src/lightgbm/classes' for the
+;;;; two more, `initialize-backend' and `shutdown-backend', that this file's library-discovery
+;;;; parameters serve. `cl-gbdt/src/lightgbm/protocol''s own docstrings, not this
 ;;;; file's, are the place each function's role in the unified API is explained; the
 ;;;; docstrings below describe only what each function does to the C API.
 
@@ -193,14 +195,15 @@ never reached by `LGBM_DatasetCreateFromMat', `LGBM_BoosterCreate' or
 
 (defun %check-lightgbm-dataset (backend dataset argument-description dataset-class)
   "Return DATASET's live foreign pointer, after confirming DATASET is of type
-DATASET-CLASS -- `cl-gbdt/src/lightgbm/protocol''s `lightgbm-dataset'.
+DATASET-CLASS -- `cl-gbdt/src/lightgbm/classes''s `lightgbm-dataset'.
 ARGUMENT-DESCRIPTION names which caller-supplied argument DATASET came from --
 e.g. \"train's dataset argument\" -- for `wrong-backend-reference''s report.
 
 DATASET-CLASS is a parameter, not a symbol named directly in this file, because
-this file must not depend on `cl-gbdt/src/lightgbm/protocol' -- see policy
-section 11 and this file's own header -- and `lightgbm-dataset' is defined
-there. Each caller -- `%reference-pointer', and `cl-gbdt/src/lightgbm/protocol''s
+this file cannot depend on `cl-gbdt/src/lightgbm/classes' -- that package reads
+this one's `*required-symbols*' and library-discovery parameters, so the edge
+already runs the other way and naming it here would close a cycle. Each caller --
+`%reference-pointer', and `cl-gbdt/src/lightgbm/protocol''s
 `train' at both of its own call sites -- passes `'lightgbm-dataset' explicitly
 instead. Mirrors `cl-gbdt/src/xgboost/native''s `%check-xgboost-dataset', which
 hit the identical constraint during that backend's own Phase 1 split.
@@ -607,7 +610,7 @@ calls `foreign-string-free' on an uninitialized foreign-object slot."
 `LGBM_DatasetCreateFromMat''s `reference' argument for REFERENCE, or a null
 pointer when REFERENCE is NIL.
 
-DATASET-CLASS is `cl-gbdt/src/lightgbm/protocol''s `lightgbm-dataset', passed in
+DATASET-CLASS is `cl-gbdt/src/lightgbm/classes''s `lightgbm-dataset', passed in
 by the caller for the same reason `%check-lightgbm-dataset' takes it as a
 parameter instead of naming the symbol directly -- see that function's
 docstring.

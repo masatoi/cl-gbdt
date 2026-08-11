@@ -256,7 +256,7 @@ the true-but-irrelevant news that the backend it came from cannot slice."
       ;; call runs between the handle appearing in C and `make-handle' taking ownership of it
       ;; -- `%slice' returns a booster that is already complete, and `make-handle' is the very
       ;; next thing that runs.
-      ;; The `owned' unwind-protect dance is still needed, though: `make-handle' itself --
+      ;; `with-pointer-ownership' is still needed, though: `make-handle' itself --
       ;; `make-instance' or finalizer attachment -- can signal, e.g. on `storage-condition',
       ;; and a signal there must not orphan the foreign booster `%slice' already returned.
       (let ((slice-pointer (%slice pointer begin (or end 0) step)))

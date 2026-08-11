@@ -104,7 +104,7 @@ above has already passed.
 
 LightGBM's C API has no runtime version query, so `backend-version' is left
 NIL rather than guessed --
-and, unlike `cl-gbdt/src/xgboost/protocol''s `initialize-backend', this never
+and, unlike `cl-gbdt/src/xgboost/classes''s `initialize-backend', this never
 calls `cl-gbdt/src/version''s `check-backend-version': with nothing to read, a
 call here could never confirm compatibility, only ever warn on every single
 open, which is not a check worth leaving in. See `*lightgbm-version-range*''s

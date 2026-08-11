@@ -485,8 +485,9 @@ been closed -- see `%reference-pointer'.
 The raw dataset handle exists in C from the moment the creation call returns, but
 `make-handle' does not take ownership of it until the very end -- attaching LABEL,
 WEIGHT, GROUP or FEATURE-NAMES can each signal first (a wrong-length `:label' is the
-commonest way). OWNED tracks whether `make-handle' ran; when it did not, the raw dataset
-is freed here instead of orphaned.
+commonest way). `with-pointer-ownership' spans exactly that gap: the pointer is owned by
+nobody inside its body, and any exit that has not called TAKE-OWNERSHIP frees the raw
+dataset here instead of orphaning it.
 
 Signals `backend-not-open' before any of that when BACKEND is not open -- see
 `%check-backend-open'."
@@ -772,7 +773,8 @@ report it still returns as its secondary value has an empty series list over the
 NUM-ROUNDS -- `training-report-from-history' over an empty history, the same shape a run
 with `metric=none' produces.
 
-A read that fails propagates, freeing the booster through the OWNED dance below rather
+A read that fails propagates, freeing the booster through the `with-pointer-ownership'
+form below rather
 than returning a report whose series are shorter than the run: a short series is
 indistinguishable from one a buggy loop recorded, and \"one value per iteration\" is the
 invariant a caller reading the report relies on.
@@ -826,8 +828,8 @@ so the caller's Lisp arithmetic runs under the masked convention on x86-64 as we
 aarch64 -- `(/ 1.0d0 0.0d0)' yields infinity there rather than signalling
 `division-by-zero'. Nothing about that is specific to a custom objective; it is simply where
 in `train' the caller's code now runs. A condition the caller's function does signal
-propagates out of `train' through the OWNED dance below, freeing the raw booster handle
-rather than orphaning it, exactly as a mid-loop foreign failure does.
+propagates out of `train' through the `with-pointer-ownership' form below, freeing the raw
+booster handle rather than orphaning it, exactly as a mid-loop foreign failure does.
 
 An objective that frees a handle this loop depends on, or closes BACKEND, is caught rather
 than crashed on: `%recheck-train-datasets' re-runs this method's own opening checks the
@@ -901,9 +903,10 @@ Free the result with `free-booster' or wrap it in `with-booster'.
 
 The raw booster handle exists in C from the moment `LGBM_BoosterCreate' returns,
 but `make-handle' does not take ownership of it until the very end -- a stale
-VALID-SETS entry or a mid-loop failure can each signal first. OWNED tracks
-whether `make-handle' ran; when it did not, the raw booster is freed here
-instead of orphaned.
+VALID-SETS entry or a mid-loop failure can each signal first.
+`with-pointer-ownership' spans exactly that gap: the pointer is owned by nobody
+inside its body, and any exit that has not called TAKE-OWNERSHIP frees the raw
+booster here instead of orphaning it.
 
 Signals `backend-not-open' before any of that when BACKEND is not open -- see
 `%check-backend-open'."
@@ -1235,8 +1238,8 @@ documentation -- since PATH names a model, not a dataset.
 
 The raw booster handle exists in C from the moment `LGBM_BoosterCreateFromModelfile'
 returns, but `make-handle' does not take ownership of it until it also succeeds --
-mirroring `cl-gbdt/src/xgboost/protocol''s `load-model', which has the identical
-OWNED/`unwind-protect' pattern for the same reason: nothing here guarantees
+mirroring `cl-gbdt/src/xgboost/protocol''s `load-model', which reaches for the same
+`with-pointer-ownership' macro for the same reason: nothing here guarantees
 `make-handle' cannot signal, and a raw handle it never took ownership of would
 otherwise be orphaned rather than freed.
 
