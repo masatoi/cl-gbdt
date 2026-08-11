@@ -29,6 +29,16 @@
 ;;;; `read', with `*read-eval*' bound to NIL so a stray `#.' cannot run code either, is all
 ;;;; that touches the source.
 ;;;;
+;;;; It reads `cl-gbdt.asd' the same way first, because the walk walks a PACKAGE and the
+;;;; claim being checked is about a SYSTEM. `cl-gbdt/lightgbm' is Layer 1 only for as long as
+;;;; its `:depends-on' names `cl-gbdt/src/lightgbm/all' and nothing else; repoint it at
+;;;; `cl-gbdt/src/lightgbm/unified' and `(ql:quickload :cl-gbdt/lightgbm)' loads the entire
+;;;; unified API -- the exact property this check exists to protect -- while every closure
+;;;; below stays clean, because the package it walks did not move. That was not hypothetical
+;;;; either: with the pairing asserted only in a docstring, the reviewer's one-line
+;;;; `:depends-on' edit printed PASS and exited 0. `check-system-dependency' is what reads the
+;;;; `.asd' and refuses to accept the premise on the strength of a comment.
+;;;;
 ;;;; The first DEFPACKAGE form, not the first form: `package-form' skips whatever precedes
 ;;;; it, exactly as ASDF's `stream-defpackage-form' does. Reading the first form
 ;;;; unconditionally instead is fail-open, and was: one `(defparameter cl-user::*harmless* 1)'
@@ -62,9 +72,11 @@
 ;;;; output, but exit 0 is what CI consults, and a human is not who this runs for. So the
 ;;;; sizes are a floor, not a note: a root whose file cannot be found, or whose closure is one
 ;;;; package, fails. That covers being run from the wrong directory, a typo or rename in
-;;;; +LAYER-1-ROOTS+, and an `all.lisp' that moved -- each of which otherwise passes silently,
-;;;; and each of which turns the two failures above into loud ones too. The sibling
-;;;; `tools/ci/check-abi-blacklist.lisp' carries an empty-parse guard for the same reason.
+;;;; +LAYER-1-SYSTEMS+, and an `all.lisp' that moved -- each of which otherwise passes
+;;;; silently, and each of which turns the two failures above into loud ones too. A missing
+;;;; `cl-gbdt.asd', or one defining no system by the name +LAYER-1-SYSTEMS+ gives, fails for
+;;;; the same reason. The sibling `tools/ci/check-abi-blacklist.lisp' carries an empty-parse
+;;;; guard for the same reason.
 ;;;;
 ;;;; WHAT THIS CANNOT CATCH
 ;;;;
@@ -78,9 +90,13 @@
 ;;;;     `check-float-traps.lisp''s +BACKEND-FILE-PATTERNS+ carry for themselves: a new
 ;;;;     `src/training/*.lisp' needs a line added here, and nothing but review notices if it
 ;;;;     does not get one.
-;;;;   - A third backend, or any Layer 1 root not named in +LAYER-1-ROOTS+. Only the two roots
-;;;;     listed there are walked -- though a root that stops resolving now fails rather than
-;;;;     passing vacuously, per THE FLOOR.
+;;;;   - A third backend, or any Layer 1 system not named in +LAYER-1-SYSTEMS+. Only the two
+;;;;     pairs listed there are checked and walked -- though a root that stops resolving, and
+;;;;     a system name `cl-gbdt.asd' no longer defines, now fail rather than passing
+;;;;     vacuously, per THE FLOOR.
+;;;;   - A Layer 2 system that starts depending on something it should not. Layer 2 is
+;;;;     expected to reach Layer 1 and the unified core both; only the two Layer 1 systems'
+;;;;     `:depends-on' entries are read.
 ;;;;   - Anything about the other direction, or about Layer 2's internal shape. Layer 2 is
 ;;;;     expected to depend on Layer 1; that is not a finding.
 ;;;;   - A dependency introduced by a clause under a reader conditional this implementation
@@ -100,13 +116,24 @@ would read it -- no defpackage form at all, or a clause whose dependency contrib
 script cannot classify. Both are reported as failures rather than skipped, because either
 one silently subtracts from what the walk can see."))
 
-(defparameter +layer-1-roots+
-  '("cl-gbdt/src/lightgbm/all" "cl-gbdt/src/xgboost/all")
-  "The package each backend's Layer 1 system depends on.
+(defparameter +layer-1-systems+
+  '(("cl-gbdt/lightgbm" . "cl-gbdt/src/lightgbm/all")
+    ("cl-gbdt/xgboost" . "cl-gbdt/src/xgboost/all"))
+  "Each backend's Layer 1 ASDF system, paired with the package this check walks for it.
 
-`cl-gbdt.asd' names exactly these two as `cl-gbdt/lightgbm''s and `cl-gbdt/xgboost''s sole
-dependency, so walking them is walking those systems. Each must resolve to a real file --
-see `check-root' -- so a rename here fails loudly instead of checking nothing.")
+The pairing is the premise every closure below rests on: walking the package is walking the
+system only while `cl-gbdt.asd' names that package as the system's sole dependency.
+`check-system-dependency' reads the `.asd' and verifies exactly that, because a premise
+asserted here and nowhere else is a premise that goes on reading true after it stops being
+true -- see this file's HOW IT DECIDES for the measured PASS that produced.
+
+Each package must also resolve to a real file -- see `check-root' -- so a rename here fails
+loudly instead of checking nothing.")
+
+(defparameter +system-definition-file+ "cl-gbdt.asd"
+  "The system definition read by `check-system-dependency', relative to the current
+directory. Resolved the same way every source file here is, so being run from the wrong
+directory fails rather than checking nothing.")
 
 (defparameter +layer-2-packages+
   '("cl-gbdt"
@@ -275,6 +302,107 @@ header."
       (walk root))
     (sort (loop :for name :being :the :hash-keys :of seen :collect name) #'string<)))
 
+(defun defsystem-form-p (form)
+  "True when FORM is a `defsystem' form.
+
+Matched by symbol NAME rather than identity, exactly as `defpackage-form-p' matches its
+own, so `defsystem' and `asdf:defsystem' both count and neither has to be interned as
+itself in this script's reader package."
+  (and (consp form)
+       (symbolp (car form))
+       (string= (symbol-name (car form)) "DEFSYSTEM")))
+
+(defun system-definition-forms ()
+  "Return every `defsystem' form in +SYSTEM-DEFINITION-FILE+, read as data.
+
+Read exactly as `package-form' reads a source file, and for the same reasons: `*read-eval*'
+NIL so a `#.' cannot run code, `*package*' CL-USER so every symbol interns harmlessly as
+data. Nothing here is evaluated, so a `.asd' whose `:perform' clause calls something is
+still only a list.
+
+Signals `malformed-source' when the file is not where the current directory says it should
+be, and when it holds no `defsystem' form at all. Both are the empty-parse hazard THE FLOOR
+describes: returning no systems would make every name below simply absent, and absence
+must not read as agreement."
+  (let ((file (probe-file (merge-pathnames +system-definition-file+ (uiop:getcwd)))))
+    (unless file
+      (error 'malformed-source
+             :path +system-definition-file+
+             :detail (format nil "no such file under ~A -- run this check from the ~
+                                  repository root"
+                             (uiop:getcwd))))
+    (with-open-file (stream file)
+      (let ((*package* (find-package :cl-user))
+            (*read-eval* nil))
+        (or (loop :for form := (read stream nil nil)
+                  :while form
+                  :when (defsystem-form-p form)
+                    :collect form)
+            (error 'malformed-source
+                   :path (enough-namestring file (uiop:getcwd))
+                   :detail "contains no defsystem form"))))))
+
+(defun system-form (name forms)
+  "Return the form in FORMS defining the system called NAME, or NIL when there is none."
+  (find-if (lambda (form)
+             (and (cdr form)
+                  (string= (string-downcase (string (second form))) name)))
+           forms))
+
+(defun system-dependencies (form name)
+  "Return the systems FORM's `:depends-on' clause names, as lower-case strings.
+
+NAME is used only for reporting. Signals `malformed-source' when there is no `:depends-on'
+clause at all, and for an entry that is not a plain designator: ASDF also accepts
+`(:version ...)' and `(:feature ...)' there, and quietly reducing one of those to nothing
+would let a system that depends on more than its Layer 1 root look as though it depends on
+exactly it -- the same fail-closed posture `clause-packages' takes for an unknown package
+clause."
+  (let ((declared (getf (cddr form) :depends-on :absent)))
+    (when (eq declared :absent)
+      (error 'malformed-source
+             :path +system-definition-file+
+             :detail (format nil "system ~A has no :depends-on clause" name)))
+    (loop :for entry :in declared
+          :unless (or (stringp entry) (symbolp entry))
+            :do (error 'malformed-source
+                       :path +system-definition-file+
+                       :detail (format nil "system ~A has a :depends-on entry this script ~
+                                            cannot classify: ~S"
+                                       name entry))
+          :collect (string-downcase (string entry)))))
+
+(defun check-system-dependency (name root forms)
+  "Report on the ASDF system NAME. True when `cl-gbdt.asd' declares ROOT as its sole
+dependency.
+
+This is the premise +LAYER-1-SYSTEMS+ states and the walk cannot see: `check-root' walks a
+package, and that walk says something about a system only while the system names that
+package's file and nothing besides."
+  (let ((form (system-form name forms)))
+    (cond
+      ((null form)
+       (format t "~&~A: FAIL: ~A defines no system by this name~%" name +system-definition-file+)
+       (format t "  Nothing below walks the system itself, so this name has to resolve here.~%")
+       (format t "  Either the system was renamed, or +LAYER-1-SYSTEMS+ is stale.~%")
+       nil)
+      (t
+       (let ((declared (system-dependencies form name)))
+         (cond
+           ((equal declared (list root))
+            (format t "~&~A: depends on ~A alone~%" name root)
+            t)
+           (t
+            (format t "~&~A: FAIL: ~A declares :depends-on ~S~%"
+                    name +system-definition-file+ declared)
+            (format t "  but this check walks ~A, so the closure below says nothing about~%"
+                    root)
+            (format t "  what loading ~A actually pulls in.~%" name)
+            (format t "  Point the system back at its Layer 1 root, or update ~
+                       +LAYER-1-SYSTEMS+ to~%")
+            (format t "  name the package that is now this system's sole dependency.~%")
+            nil)))))))
+
 (defparameter +minimum-closure-size+ 1
   "A closure this size or smaller is treated as nothing having been walked.
 
@@ -296,8 +424,8 @@ that finds no files prints the same PASS a clean run prints, and exit 0 is what 
                root (package-relative-path root))
        (format t "  Packages resolve against the current directory, which is ~A.~%"
                (uiop:getcwd))
-       (format t "  Run this check from the repository root, or fix +LAYER-1-ROOTS+ if the ~
-                  file moved.~%")
+       (format t "  Run this check from the repository root, or fix +LAYER-1-SYSTEMS+ if ~
+                  the file moved.~%")
        nil)
       (t
        (let* ((reached (closure root))
@@ -317,13 +445,15 @@ that finds no files prints the same PASS a clean run prints, and exit 0 is what 
            (t t)))))))
 
 (handler-case
-    (let ((ok t))
-      (dolist (root +layer-1-roots+)
-        (unless (check-root root) (setf ok nil)))
+    (let ((ok t)
+          (systems (system-definition-forms)))
+      (loop :for (name . root) :in +layer-1-systems+
+            :do (unless (check-system-dependency name root systems) (setf ok nil))
+                (unless (check-root root) (setf ok nil)))
       ;; The failure line is deliberately vaguer than the passing one. Not every failure
-      ;; here is a layering violation -- an unresolvable root reaches nothing at all -- and a
-      ;; summary claiming Layer 2 was reached would be a false report of the finding above
-      ;; it.
+      ;; here is a layering violation -- an unresolvable root reaches nothing at all, and a
+      ;; system pointed somewhere else was never walked -- and a summary claiming Layer 2 was
+      ;; reached would be a false report of the finding above it.
       (if ok
           (format t "~&PASS: no Layer 1 system reaches the unified API~%")
           (format t "~&FAIL: the Layer 1 / Layer 2 separation is not verified -- see above~%"))
