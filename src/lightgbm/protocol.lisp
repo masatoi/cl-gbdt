@@ -78,8 +78,8 @@
   (:import-from #:cl-gbdt/src/handle
                 #:dataset
                 #:booster
-                #:make-handle
                 #:release-handle
+                #:with-pointer-ownership
                 #:handle-live-pointer
                 #:handle-released-p
                 #:handle-backend
@@ -638,23 +638,16 @@ Signals `backend-not-open' before any of that when BACKEND is not open -- see
                  :function-name function-name
                  :code 0
                  :message "reported success but returned a null dataset handle"))
-        (let ((owned nil))
-          (unwind-protect
-               (progn
-                 (when label
-                   (%set-info-field dataset-pointer "label" label))
-                 (when weight
-                   (%set-info-field dataset-pointer "weight" weight))
-                 (when group
-                   (%set-group-field dataset-pointer group))
-                 (when feature-names
-                   (%set-feature-names dataset-pointer feature-names))
-                 (prog1
-                     (make-handle 'lightgbm-dataset dataset-pointer backend :dataset)
-                   (setf owned t)))
-            (unless owned
-              (handler-case (%free-dataset-unchecked dataset-pointer)
-                (error () nil)))))))))
+        (with-pointer-ownership (dataset-pointer #'%free-dataset-unchecked take-ownership)
+          (when label
+            (%set-info-field dataset-pointer "label" label))
+          (when weight
+            (%set-info-field dataset-pointer "weight" weight))
+          (when group
+            (%set-group-field dataset-pointer group))
+          (when feature-names
+            (%set-feature-names dataset-pointer feature-names))
+          (take-ownership 'lightgbm-dataset backend :dataset))))))
 
 (defmethod dataset-num-rows ((dataset lightgbm-dataset))
   "Return DATASET's row count, read via `LGBM_DatasetGetNumData'."
@@ -1078,62 +1071,55 @@ Signals `backend-not-open' before any of that when BACKEND is not open -- see
               (%create-booster train-data-pointer
                                (%parameter-string
                                 (if objective (objective-parameters parameters) parameters)))))
-        (let ((owned nil))
-          (unwind-protect
-               (progn
-                 (%add-valid-data booster-pointer valid-set-pointers)
-                 ;; ROUND is 1-based, which is the numbering `observe-iteration' answers
-                 ;; `watcher-best-iteration' in and the report publishes.
-                 (loop :for round :from 1 :to num-rounds
-                       :do (if objective
-                               (let ((scores (%booster-predictions
-                                              booster-pointer 0
-                                              (%dataset-num-rows train-data-pointer))))
-                                 (multiple-value-bind (grad hess) (funcall objective scores)
-                                   ;; Before anything else this iteration does, and before the
-                                   ;; next one reads TRAIN-DATA-POINTER again: the caller's
-                                   ;; own code has just run and may have freed a handle this
-                                   ;; loop holds a raw pointer to.
-                                   (setf train-data-pointer
-                                         (%recheck-train-datasets backend dataset valid-sets))
-                                   (check-objective-result grad hess
-                                                           (array-dimension scores 0)
-                                                           (array-dimension scores 1))
-                                   (%update-one-iteration-custom booster-pointer grad hess)))
-                               (%update-one-iteration booster-pointer))
-                           (incf completed-rounds)
-                           (let ((entries (when record-history
-                                            (%read-evaluation booster-pointer dataset-count))))
-                             ;; Appended after every library entry, and before the push and
-                             ;; the watcher, so the history and the watcher see one list.
-                             (when evaluation
-                               (multiple-value-bind (custom pointer)
-                                   (%custom-evaluation-entries
-                                    backend evaluation booster-pointer dataset valid-sets
-                                    row-counts entries (= round 1) name-pin)
-                                 (setf entries (append entries custom)
-                                       train-data-pointer pointer)))
-                             (when record-history
-                               (push entries history))
-                             (when (and watcher (observe-iteration watcher entries round))
-                               (return))))
-                 (let* ((best-iteration (and watcher (watcher-best-iteration watcher)))
-                        (report (training-report-from-history
-                                 (reverse history) completed-rounds dataset-names
-                                 :best-iteration best-iteration
-                                 :best-score (and watcher (watcher-best-score watcher))
-                                 :early-stopped-p (and watcher (watcher-stopped-p watcher)
-                                                   (< completed-rounds num-rounds)))))
-                   (multiple-value-prog1
-                       (values (make-handle 'lightgbm-booster booster-pointer backend :booster
-                                            :training-set dataset
-                                            :validation-sets valid-sets
-                                            :best-iteration best-iteration)
-                               report)
-                     (setf owned t))))
-            (unless owned
-              (handler-case (%free-booster-unchecked booster-pointer)
-                (error () nil)))))))))
+        (with-pointer-ownership (booster-pointer #'%free-booster-unchecked take-ownership)
+          (%add-valid-data booster-pointer valid-set-pointers)
+          ;; ROUND is 1-based, which is the numbering `observe-iteration' answers
+          ;; `watcher-best-iteration' in and the report publishes.
+          (loop :for round :from 1 :to num-rounds
+                :do (if objective
+                        (let ((scores (%booster-predictions
+                                       booster-pointer 0
+                                       (%dataset-num-rows train-data-pointer))))
+                          (multiple-value-bind (grad hess) (funcall objective scores)
+                            ;; Before anything else this iteration does, and before the
+                            ;; next one reads TRAIN-DATA-POINTER again: the caller's
+                            ;; own code has just run and may have freed a handle this
+                            ;; loop holds a raw pointer to.
+                            (setf train-data-pointer
+                                  (%recheck-train-datasets backend dataset valid-sets))
+                            (check-objective-result grad hess
+                                                    (array-dimension scores 0)
+                                                    (array-dimension scores 1))
+                            (%update-one-iteration-custom booster-pointer grad hess)))
+                        (%update-one-iteration booster-pointer))
+                    (incf completed-rounds)
+                    (let ((entries (when record-history
+                                     (%read-evaluation booster-pointer dataset-count))))
+                      ;; Appended after every library entry, and before the push and
+                      ;; the watcher, so the history and the watcher see one list.
+                      (when evaluation
+                        (multiple-value-bind (custom pointer)
+                            (%custom-evaluation-entries
+                             backend evaluation booster-pointer dataset valid-sets
+                             row-counts entries (= round 1) name-pin)
+                          (setf entries (append entries custom)
+                                train-data-pointer pointer)))
+                      (when record-history
+                        (push entries history))
+                      (when (and watcher (observe-iteration watcher entries round))
+                        (return))))
+          (let* ((best-iteration (and watcher (watcher-best-iteration watcher)))
+                 (report (training-report-from-history
+                          (reverse history) completed-rounds dataset-names
+                          :best-iteration best-iteration
+                          :best-score (and watcher (watcher-best-score watcher))
+                          :early-stopped-p (and watcher (watcher-stopped-p watcher)
+                                            (< completed-rounds num-rounds)))))
+            (values (take-ownership 'lightgbm-booster backend :booster
+                                    :training-set dataset
+                                    :validation-sets valid-sets
+                                    :best-iteration best-iteration)
+                    report)))))))
 
 (defmethod update-one-iteration ((booster lightgbm-booster))
   "Advance BOOSTER by one boosting iteration via `LGBM_BoosterUpdateOneIter'.
@@ -1385,14 +1371,8 @@ see `%check-backend-open'."
                :function-name "LGBM_BoosterCreateFromModelfile"
                :code 0
                :message "reported success but returned a null booster handle"))
-      (let ((owned nil))
-        (unwind-protect
-             (prog1
-                 (make-handle 'lightgbm-booster booster-pointer backend :booster)
-               (setf owned t))
-          (unless owned
-            (handler-case (%free-booster-unchecked booster-pointer)
-              (error () nil))))))))
+      (with-pointer-ownership (booster-pointer #'%free-booster-unchecked take-ownership)
+        (take-ownership 'lightgbm-booster backend :booster)))))
 
 (defmethod model-to-string ((booster lightgbm-booster) &key num-iteration)
   "Return BOOSTER's model as a string via `LGBM_BoosterSaveModelToString'.
