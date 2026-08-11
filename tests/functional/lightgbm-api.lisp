@@ -1233,16 +1233,20 @@ Matches `lightgbm-api-round-trip''s round count; nothing about the comparison ne
                        (format nil "layer 1: ~S~%unified: ~S"
                                layer-1-predictions unified-predictions)))
                  (testing "and the agreement is not vacuous: one more iteration changes it"
-                   ;; The control. Were this fixture one where every round produced the same
-                   ;; model -- or were `update-one-iteration' a no-op on both paths -- the
-                   ;; assertion above would hold for a `create-booster' that ignored its
-                   ;; parameters entirely. A sixth iteration on the Layer 1 booster has to
-                   ;; move its predictions away from the five-round unified run.
+                   ;; The control, scoped to what it actually guards: were
+                   ;; `update-one-iteration' a no-op on both paths -- or this fixture one
+                   ;; where every round produced the same model -- the assertion above would
+                   ;; hold for two boosters that had never trained. It does not extend to a
+                   ;; `create-booster' that ignored its parameters: measured, dropping
+                   ;; :PARAMETERS from the Layer 1 arm reddens the assertion above and leaves
+                   ;; this one green, which is the right division of labour between them. A
+                   ;; sixth iteration on the Layer 1 booster has to move its predictions away
+                   ;; from the five-round unified run.
                    (cl-gbdt/lightgbm:update-one-iteration layer-1-booster)
                    (ok (not (predictions-agree-p
                              (cl-gbdt/lightgbm:predict layer-1-booster matrix)
                              unified-predictions))
-                       "a sixth iteration left the predictions unchanged"))))
+                       "a sixth iteration moved the predictions"))))
           (progn
             (when layer-1-booster (cl-gbdt/lightgbm:free-booster layer-1-booster))
             (when unified-booster (cl-gbdt:free-booster unified-booster))

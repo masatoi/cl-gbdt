@@ -75,6 +75,25 @@ not know that."
             (aref label-vector row) (if (< row 8) 0d0 1d0)))
     (values matrix label-vector)))
 
+(defun validation-fixture ()
+  "Return (values MATRIX LABEL-VECTOR): four held-out rows, three of which `fixture''s step
+function explains and one of which it contradicts.
+
+Column 0 is 1.5, 3.5, 5.5 and 9.5 -- values that appear nowhere in `fixture''s matrix, so a
+dataset built from these bins independently unless `create-dataset' is given `:reference'.
+Every label is 0, which makes the last row a deliberate error: a booster trained on
+`fixture' puts column-0 9.5 firmly in the positive half. That is what gives this dataset a
+`binary_logloss' an order of magnitude worse than the training set's -- measured, 0.73
+against 0.068 -- and so what lets `layer-1-alone-attaches-a-validation-set' tell a real
+validation set at index 1 from the training set attached twice."
+  (let ((matrix (make-array '(4 2) :element-type 'double-float))
+        (label-vector (make-array 4 :element-type 'double-float)))
+    (dotimes (row 4)
+      (setf (aref matrix row 0) (if (= row 3) 9.5d0 (+ 1.5d0 (* 2 row)))
+            (aref matrix row 1) (coerce row 'double-float)
+            (aref label-vector row) 0d0))
+    (values matrix label-vector)))
+
 (defmacro with-open-backend ((backend) &body body)
   "Evaluate BODY with BACKEND bound to an open LightGBM backend, closing it afterwards, or
 skip when the shared library is absent.
@@ -133,9 +152,13 @@ compared."
                           (ok (equal '(16 1) (array-dimensions result))
                               (format nil "predict's result is ~S"
                                       (array-dimensions result)))
-                          ;; `predict''s second value, which this backend DERIVES rather than
-                          ;; reads back -- see `%prediction-shape'. Layer 1 states it too, so
-                          ;; a standalone caller is not left to infer it.
+                          ;; `predict''s SECOND value. For `:normal', `%prediction-shape'
+                          ;; returns the result array's own dimensions verbatim, so the
+                          ;; numbers here are the ones the assertion above already examined
+                          ;; and this adds nothing about them. What it adds is that Layer 1
+                          ;; states a shape AT ALL: a `predict' that returned the array and
+                          ;; nothing else would leave a standalone caller to infer one, and
+                          ;; only this assertion notices.
                           (ok (equal '(16 1) shape)
                               (format nil "predict states the shape ~S" shape))
                           ;; The one assertion here that needs the booster to have actually
@@ -148,3 +171,140 @@ compared."
                               (format nil "predictions: ~S" result))))
                    (cl-gbdt/lightgbm:free-booster booster)))
             (cl-gbdt/lightgbm:free-dataset data)))))))
+
+;;; `create-booster''s :VALID-SETS half is invisible to everything above, and to
+;;; `lightgbm-api-create-booster-and-train-agree' in tests/functional/lightgbm-api.lisp as
+;;; well: attaching a validation set does not change the model LightGBM trains, so comparing
+;;; PREDICTIONS -- either against a label boundary here or against `cl-gbdt:train''s own run
+;;; there -- is blind to `%add-valid-data', to the `copy-list' snapshot of the caller's list,
+;;; and to the per-entry `%check-lightgbm-dataset'. `train' has its own copy of that same
+;;; procedure and other tests DO exercise it with validation sets, so without the two tests
+;;; below `create-booster''s copy could drift alone and every suite stay green.
+;;;
+;;; The assertions are therefore chosen to be ones a prediction cannot make: what the booster
+;;; retained, what the library will evaluate, and what it refuses before any foreign call.
+;;; None of it needs the unified API, which is why it belongs in this file rather than beside
+;;; the agreement test.
+
+(deftest layer-1-alone-attaches-a-validation-set
+  (testing "create-booster's :valid-sets reaches the library and the booster keeps its own view"
+    (with-open-backend (backend)
+      (multiple-value-bind (matrix label-vector) (fixture)
+        (multiple-value-bind (valid-matrix valid-label-vector) (validation-fixture)
+          (let* ((data (cl-gbdt/lightgbm:create-dataset backend matrix :label label-vector
+                                                        :parameters *parameters*))
+                 ;; `:reference data', because `validation-fixture' shares no column-0 value
+                 ;; with `fixture': without it each of these bins independently and
+                 ;; `LGBM_BoosterAddValidData' refuses the mismatched bin mapper outright.
+                 (valid-1 (cl-gbdt/lightgbm:create-dataset
+                           backend valid-matrix :label valid-label-vector
+                           :reference data :parameters *parameters*))
+                 (valid-2 (cl-gbdt/lightgbm:create-dataset
+                           backend valid-matrix :label valid-label-vector
+                           :reference data :parameters *parameters*))
+                 ;; The caller's own list object, kept so it can be mutated below.
+                 (callers-valid-sets (list valid-1 valid-2))
+                 (booster (cl-gbdt/lightgbm:create-booster
+                           backend data :valid-sets callers-valid-sets
+                           :parameters *parameters*)))
+            (unwind-protect
+                 (progn
+                   (dotimes (round 20)
+                     (cl-gbdt/lightgbm:update-one-iteration booster))
+                   ;; Retention, both halves. A `create-booster' that attached the datasets
+                   ;; to LightGBM but kept neither would train and predict identically --
+                   ;; and leave a standalone caller no way to ask what its booster depends
+                   ;; on, and `%check-booster-datasets-live' nothing to check.
+                   (ok (eq data (cl-gbdt/lightgbm:booster-training-set booster))
+                       "the booster reports the dataset it was built over")
+                   (ok (equal (list valid-1 valid-2)
+                              (cl-gbdt/lightgbm:booster-validation-sets booster))
+                       (format nil "booster-validation-sets is ~S"
+                               (cl-gbdt/lightgbm:booster-validation-sets booster)))
+                   ;; The `copy-list'. Truncating the caller's own list is what a `delete' of
+                   ;; the second entry does; were the booster holding that list object rather
+                   ;; than a snapshot, this would silently remove VALID-2 from its view while
+                   ;; LightGBM still held that dataset's pointer -- and the freed-set
+                   ;; assertion at the end of this test would then not signal at all.
+                   (setf (cdr callers-valid-sets) nil)
+                   (ok (equal (list valid-1 valid-2)
+                              (cl-gbdt/lightgbm:booster-validation-sets booster))
+                       (format nil "after the caller truncated its own list: ~S"
+                               (cl-gbdt/lightgbm:booster-validation-sets booster)))
+                   ;; Attachment itself, read back through the library rather than through
+                   ;; Lisp-side bookkeeping: `LGBM_BoosterGetEval' rejects an index past the
+                   ;; last attached dataset, so index 2 answering at all is what proves the
+                   ;; SECOND entry reached `LGBM_BoosterAddValidData' -- an attach loop that
+                   ;; stopped after the head would signal `foreign-call-error' here.
+                   (ok (= (length (cl-gbdt/lightgbm:booster-eval-names booster))
+                          (length (cl-gbdt/lightgbm:booster-eval booster 2)))
+                       (format nil "index 2 reports ~S for metrics ~S"
+                               (cl-gbdt/lightgbm:booster-eval booster 2)
+                               (cl-gbdt/lightgbm:booster-eval-names booster)))
+                   ;; And that the two indices address two different datasets, rather than
+                   ;; one dataset answering for both: `validation-fixture' contains a row the
+                   ;; training data contradicts, so its binary_logloss is an order of
+                   ;; magnitude worse -- measured, 0.73 against 0.068. That gap is what makes
+                   ;; the indices distinguishable at all. Measured by mutation: a
+                   ;; `%booster-eval' that passes 0 to `LGBM_BoosterGetEval' whatever
+                   ;; DATA-INDEX it was given leaves every other assertion in this file green
+                   ;; -- including the index-2 one above, 0 being in range always -- and
+                   ;; reddens this one alone.
+                   (ok (> (aref (cl-gbdt/lightgbm:booster-eval booster 1) 0)
+                          (aref (cl-gbdt/lightgbm:booster-eval booster 0) 0))
+                       (format nil "training set ~S, validation set ~S"
+                               (cl-gbdt/lightgbm:booster-eval booster 0)
+                               (cl-gbdt/lightgbm:booster-eval booster 1)))
+                   ;; Last, because it poisons the booster: freeing a validation set out from
+                   ;; under it has to be noticed BEFORE the next foreign call, since
+                   ;; `LGBM_DatasetFree' does not clear the pointer LightGBM kept and
+                   ;; `LGBM_BoosterUpdateOneIter' would dereference it -- a segfault, not a
+                   ;; catchable condition. This holds `create-booster''s retained snapshot to
+                   ;; the standard `train''s already meets.
+                   (cl-gbdt/lightgbm:free-dataset valid-2)
+                   ;; `handler-case', not rove's `signals', which does not reliably catch a
+                   ;; condition raised inside `restart-case'.
+                   (ok (handler-case
+                           (progn (cl-gbdt/lightgbm:update-one-iteration booster) nil)
+                         (cl-gbdt/lightgbm:released-handle-error () t))
+                       "update-one-iteration did not signal released-handle-error"))
+              (progn
+                (cl-gbdt/lightgbm:free-booster booster)
+                (cl-gbdt/lightgbm:free-dataset valid-1)
+                (cl-gbdt/lightgbm:free-dataset data)))))))))
+
+(deftest layer-1-alone-refuses-a-bad-validation-set-entry
+  (testing "create-booster checks each :valid-sets entry before any foreign call"
+    (with-open-backend (backend)
+      (multiple-value-bind (matrix label-vector) (fixture)
+        (let* ((data (cl-gbdt/lightgbm:create-dataset backend matrix :label label-vector
+                                                      :parameters *parameters*))
+               (freed (cl-gbdt/lightgbm:create-dataset backend matrix :label label-vector
+                                                       :parameters *parameters*))
+               (other-booster (cl-gbdt/lightgbm:create-booster backend data
+                                                               :parameters *parameters*)))
+          (cl-gbdt/lightgbm:free-dataset freed)
+          (unwind-protect
+               (progn
+                 ;; Both entries below are pointers `LGBM_BoosterAddValidData' would
+                 ;; dereference as `DatasetHandle's -- freed memory in the first case, a
+                 ;; booster's own handle in the second. Neither is something the library can
+                 ;; reject for us, so the checks have to run in Lisp and before creation;
+                 ;; `create-booster' dispatches on nothing, so nothing else stands in the way.
+                 (ok (handler-case
+                         (progn (cl-gbdt/lightgbm:create-booster
+                                 backend data :valid-sets (list freed)
+                                 :parameters *parameters*)
+                                nil)
+                       (cl-gbdt/lightgbm:released-handle-error () t))
+                     "create-booster accepted a freed dataset in :valid-sets")
+                 (ok (handler-case
+                         (progn (cl-gbdt/lightgbm:create-booster
+                                 backend data :valid-sets (list other-booster)
+                                 :parameters *parameters*)
+                                nil)
+                       (cl-gbdt/lightgbm:wrong-backend-reference () t))
+                     "create-booster accepted a booster in :valid-sets"))
+            (progn
+              (cl-gbdt/lightgbm:free-booster other-booster)
+              (cl-gbdt/lightgbm:free-dataset data))))))))
