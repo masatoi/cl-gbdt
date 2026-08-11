@@ -9,10 +9,10 @@
 ;;;; `with-foreign-float-traps-masked' -- see `protocol.lisp''s header for why, and
 ;;;; `tools/ci/check-float-traps.lisp', which scans this file and holds every name the sibling
 ;;;; `all.lisp' exports to that rule. The `%'-prefixed helpers are not separately wrapped and
-;;;; are not policed by that check: each runs inside the body wrap of the one operation that
-;;;; calls it -- `%dataset-pointer' inside `create-dataset', `%prediction-shape' inside
-;;;; `predict' -- and each says so where it is defined, since nothing in CI would notice a
-;;;; future caller reaching it from outside an already-masked extent.
+;;;; are not policed by that check: each runs inside the body wrap of an operation here --
+;;;; `%dataset-pointer' inside `create-dataset', `%prediction-shape' inside `predict', and
+;;;; `%check-sparse-input' inside both -- and each says so where it is defined, since nothing
+;;;; in CI would notice a future caller reaching one from outside an already-masked extent.
 ;;;;
 ;;;; Nothing here may depend on `cl-gbdt/src/protocol' or the training files: this file is Layer 1,
 ;;;; and `tools/ci/check-layer-separation.lisp' fails the build if it ever does. That is not a
@@ -133,11 +133,12 @@ own contract promises about them.
 The `:sparse-input' capability is re-checked on the sparse branch rather than assumed --
 `%check-sparse-input' above, which carries the reasoning.
 
-A `defun', not a second `make-dataset' method specialized on `csr-matrix': `make-dataset'
-dispatches on BACKEND and MATRIX is its second required argument, so a method pair would
-split every one of the shared steps below -- the ownership dance, LABEL, WEIGHT, GROUP,
-FEATURE-NAMES -- across two bodies that must not drift, to vary one call. This keeps that
-whole procedure single and varies only the call that actually differs."
+A `defun', not a second `create-dataset' method specialized on `csr-matrix': `create-dataset'
+is a plain function taking MATRIX as a required argument, so a method pair would first have to
+make it generic and would then split every one of the shared steps it holds -- the ownership
+dance, LABEL, WEIGHT, GROUP, FEATURE-NAMES -- across two bodies that must not drift, to vary
+one call. This keeps that whole procedure single and varies only the call that actually
+differs."
   (if (typep matrix 'csr-matrix)
       (progn
         (%check-sparse-input backend)
@@ -369,7 +370,7 @@ handed, and BOOSTER-POINTER the booster it ran against.
 
 No SHAPE is read back from the library here, because there is no shape to read: this backend's
 prediction entry points report an element count and no axes at all, where XGBoost's write an
-`out_shape'/`out_dim' pair `cl-gbdt/src/xgboost/protocol''s `predict' hands back verbatim. Every
+`out_shape'/`out_dim' pair `cl-gbdt/src/xgboost/api''s `predict' hands back verbatim. Every
 value below is DERIVED, and each KIND gets only what can be derived from what is known.
 
 That is not to say this function makes no foreign call. The `:contrib' arm calls
@@ -448,7 +449,7 @@ call. Everything else means exactly what it means for a dense matrix: both entry
 the same PREDICT-TYPE, the same START-ITERATION/NUM-ITERATION pair and the same parameter
 string, and both fill the same buffer in the same row-major order, so KIND and NUM-ITERATION
 are honoured identically on either path -- all four KINDs included, unlike
-`cl-gbdt/src/xgboost/protocol''s `predict', whose sparse entry point is XGBoost's inplace
+`cl-gbdt/src/xgboost/api''s `predict', whose sparse entry point is XGBoost's inplace
 prediction and covers only two of them. A `csr-matrix' whose NUM-COLUMNS is not BOOSTER's own
 feature count is LightGBM's own mistake to catch, and it does, with a clean nonzero return this
 reports as `foreign-call-error' (\"The number of features in data (N) is not the same as it was
@@ -484,7 +485,7 @@ nothing re-checks that declaration, there being no argument to refuse. The first
 untouched by all of it -- same dimensions, same elements, every KIND, either entry point.
 
 Deliberately does not scan the result for NaN or infinity -- see
-`cl-gbdt/src/xgboost/protocol''s `predict' for the identical reasoning, which applies here
+`cl-gbdt/src/xgboost/api''s `predict' for the identical reasoning, which applies here
 unchanged: `with-foreign-float-traps-masked' restores the C calling convention around this
 call, it does not and should not decide what counts as a valid model output."
   (with-foreign-float-traps-masked

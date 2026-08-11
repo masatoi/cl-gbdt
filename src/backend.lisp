@@ -198,10 +198,13 @@ comes from, below, which that shape is the sole exception to.
 
 It is not the odd member of an otherwise uniform list. SIX of the ten names here are
 re-checked by the operation they gate, each signalling `capability-unavailable' for an argument
-it cannot honour: `:sparse-input', `:missing-value', `:categorical-features',
-`:custom-objective' and `:custom-evaluation', in both backends' `protocol.lisp' -- the last two
+it cannot honour: `:missing-value', `:categorical-features', `:custom-objective' and
+`:custom-evaluation', in both backends' `protocol.lisp' -- the last two
 by `%check-custom-objective' and `%check-custom-evaluation', off `train''s :OBJECTIVE and
-:EVALUATION -- and `:model-slicing', in XGBoost's `slice-model'. Those six are the whole of
+:EVALUATION -- plus `:sparse-input' and `:model-slicing', which are re-checked a layer down
+in `api.lisp': `%check-sparse-input', in both backends' copy of that file, gates
+`create-dataset' and `predict', the two operations that choose a sparse entry point, and
+`:model-slicing' gates `slice-model' in XGBoost's. Those six are the whole of
 it -- `:evaluation-history', `:early-stopping' and `:multidimensional-feature-score' are
 re-checked nowhere (the third has no backend answering it true at all, and
 `%check-feature-score-dim', which is where a multidimensional score is rejected, signals

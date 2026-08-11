@@ -1,5 +1,6 @@
 ;;;; protocol.lisp --- LightGBM backend, Layer 2: all thirteen methods of the unified
-;;;; API's protocol, each delegating its C calls to `cl-gbdt/src/lightgbm/native'.
+;;;; API's protocol, each delegating its C calls to `cl-gbdt/src/lightgbm/native', or its
+;;;; whole procedure to `cl-gbdt/src/lightgbm/api', or both.
 ;;;;
 ;;;; The backend's CLOS classes and the `initialize-backend'/`shutdown-backend' pair that
 ;;;; opens and closes the shared library are Layer 1, not Layer 2, and live in
@@ -1035,7 +1036,7 @@ Signals `capability-unavailable' when MATRIX is a `csr-matrix' and this backend'
 `:sparse-input' capability reads false -- see `cl-gbdt/src/lightgbm/api''s
 `%check-sparse-input', which checks it before any foreign call. Everything else means exactly
 what it means for a dense matrix, `csr-matrix' or not: KIND and NUM-ITERATION are honoured
-identically on either path -- all four KINDs included, unlike `cl-gbdt/src/xgboost/protocol''s
+identically on either path -- all four KINDs included, unlike `cl-gbdt/src/xgboost/api''s
 `predict', whose sparse entry point is XGBoost's inplace prediction and covers only two of
 them.
 
@@ -1055,7 +1056,20 @@ assertion, the copy-out and the derived shape, together with the `:sparse-input'
 deliberate absence of any NaN or infinity scan over the result. Everything the paragraphs
 above promise about those is that function's doing; see its own docstring. What is left here
 is the portable contract: the :MISSING gate this backend answers with a refusal, and
-resolving :BEST."
+resolving :BEST.
+
+Refusing a KIND this backend has no prediction type for moved BELOW BOTH of those, and is
+the one thing about this method a caller can observe changing: `%predict-type''s `ecase'
+now runs inside the procedure rather than in the same `let' that read the pointer, so a
+call wrong in two ways at once is answered by whichever check still runs first. Measured
+through `cl-gbdt:predict' against the vendored library, on a booster trained without
+:EARLY-STOPPING and so with no best iteration: a bad KIND together with a non-NIL :MISSING
+signalled `sb-kernel:case-failure' before the split and signals `capability-unavailable'
+now; a bad KIND together with `:num-iteration :best' signalled `sb-kernel:case-failure' and
+signals `unsupported-argument'. A bad KIND alone is `sb-kernel:case-failure' either way.
+Both changes put a typed `cl-gbdt' condition where an untyped one used to escape, and the
+old order could not be restored without calling `%predict-type' here purely for effect,
+duplicating a check the procedure already makes."
   (with-foreign-float-traps-masked
     ;; Read and discarded, and not redundant with the same call inside the procedure: this
     ;; method's contract is that a freed BOOSTER, or one whose backend has since been closed,

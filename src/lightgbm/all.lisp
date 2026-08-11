@@ -63,12 +63,11 @@
 ;;; not lifted from anything: no protocol method ever built a booster OVER A DATASET on its
 ;;; own, `train' having always built one inline as part of a run. (`load-model' builds one too,
 ;;; but from a file and with no dataset in sight, so it is not this function under another
-;;; name.) Together they are a whole training run at
-;;; this layer,
-;;; and now the inference that follows it: build a dataset, build a booster on it, advance it,
-;;; score with it, free both. `create-booster' is the one with no caller inside this library --
-;;; `train' builds its own booster, for the reason its creation call records -- so it is
-;;; published on the strength of its own contract rather than of a method that exercises it.
+;;; name.) Together they are a whole training run at this layer, and now the inference that
+;;; follows it: build a dataset, build a booster on it, advance it, score with it, free both.
+;;; `create-booster' is the one with no caller inside this library -- `train' builds its own
+;;; booster, for the reason its creation call records -- so it is published on the strength of
+;;; its own contract rather than of a method that exercises it.
 ;;; `free-dataset', `free-booster', `update-one-iteration' and `predict' here are NOT
 ;;; `cl-gbdt''s generics of those names: they are plain functions and different symbols, so a
 ;;; caller who has both packages in an image must name which one they mean, exactly as they

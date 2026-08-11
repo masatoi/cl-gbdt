@@ -203,7 +203,12 @@ BACKEND -- there is no existing handle for the check to route through the way
 `handle-live-pointer' does for every other operation in this file, since none exists yet.
 Each of them calls this first, before touching any foreign function, so a backend a
 caller has closed (or never opened) is never reached by `XGDMatrixCreateFromDense',
-`XGBoosterCreate' or `XGBoosterLoadModel' with a library that may no longer be mapped."
+`XGBoosterCreate' or `XGBoosterLoadModel' with a library that may no longer be mapped.
+
+`cl-gbdt/src/xgboost/api''s `create-dataset' and `create-booster' call it as well, for the
+same reason and ahead of the first two of those three C functions: they are Layer 1 entry
+points a caller reaches without going through `make-dataset' or `train' at all, so neither
+may inherit the check its Layer 2 counterpart makes."
   (unless (backend-open-p backend)
     (error 'backend-not-open :backend (backend-name backend))))
 
@@ -216,16 +221,18 @@ argument\" -- for `wrong-backend-reference''s report.
 DATASET-CLASS is a parameter, not a symbol named directly in this file, because this
 file cannot depend on `cl-gbdt/src/xgboost/classes' -- that package reads this one's
 `*required-symbols*' and library-discovery parameters, so the edge already runs the other
-way and naming it here would close a cycle. The caller, `train',
-passes `'xgboost-dataset' at each call site instead.
+way and naming it here would close a cycle. The two callers,
+`cl-gbdt/src/xgboost/protocol''s `train' and `cl-gbdt/src/xgboost/api''s `create-booster',
+pass `'xgboost-dataset' at each of their call sites instead.
 
-Every caller-supplied dataset argument -- `train''s DATASET and each entry of `train''s
-:VALID-SETS -- must pass through here before reaching a foreign call that expects a
-`DMatrixHandle'. `handle-live-pointer' alone is not enough: it only guards against a
-released handle or a closed backend, and happily returns *any* handle's pointer
-regardless of kind, including a booster's -- `train' dispatches on the backend, not on
-the handle, so unlike `dataset-num-rows' or `free-dataset' there is no CLOS specializer
-already ruling out the wrong kind of handle. A booster's own pointer reaching
+Every caller-supplied dataset argument -- `train''s DATASET and each entry of its
+:VALID-SETS, and the same two arguments of `create-booster' -- must pass through here
+before reaching a foreign call that expects a `DMatrixHandle'. `handle-live-pointer' alone
+is not enough: it only guards against a released handle or a closed backend, and happily
+returns *any* handle's pointer regardless of kind, including a booster's -- `train'
+dispatches on the backend and `create-booster', a `defun', on nothing at all, so neither
+dispatches on the handle and unlike `dataset-num-rows' or `free-dataset' there is no CLOS
+specializer already ruling out the wrong kind of handle. A booster's own pointer reaching
 `XGBoosterCreate''s DMatrix array is exactly the corruption this check exists to prevent
 -- the identical hazard killed the process across several threads on the LightGBM branch.
 
@@ -504,10 +511,13 @@ before returning.
 The config JSON is built BEFORE the matrix is pinned, so a MISSING that
 `%dense-matrix-config-json' refuses signals with nothing yet held: rejecting the argument
 never has to unwind out of a pin or a foreign allocation. That is a property of this
-function's own body alone: `predict' in `cl-gbdt/src/xgboost/protocol' calls this function
-once, pins nothing of MATRIX itself around that call, and reads the DMatrix's row count
-back afterward via `%dataset-num-rows' rather than a pin of its own -- so the property
-holds at that call site with nothing further required of it."
+function's own body alone: `predict' in `cl-gbdt/src/xgboost/api' -- which is where that
+procedure lives now, the protocol method of the same name having kept only the portable
+contract -- calls this function once, pins nothing of MATRIX itself around that call, and
+reads the DMatrix's row count back afterward via `%dataset-num-rows' rather than a pin of
+its own -- so the property holds at that call site with nothing further required of it. The
+other caller, `create-dataset' in the same file, reaches this through `%dataset-pointer' and
+likewise pins nothing of MATRIX around it."
   (let ((config-json (%dense-matrix-config-json missing)))
     (with-foreign-matrix (data-pointer nrow ncol element-type) matrix
       (let ((typestr (%array-interface-typestr element-type)))
@@ -719,21 +729,25 @@ allocation loop, whose reasoning that function's docstring carries."
   "Free the DMatrix at POINTER via `XGDMatrixFree', signalling `foreign-call-error' when
 the library reports failure.
 
-Extracted so `cl-gbdt/src/xgboost/protocol''s `free-dataset' and `predict' each delegate
-the call itself, rather than naming `xgd-matrix-free' directly, to this file -- see
-policy section 3's Layer 2 delegating to Layer 1. `free-dataset' passes this to
-`release-handle' as its release function; `predict' calls it directly on its transient
+Extracted so `cl-gbdt/src/xgboost/api''s `free-dataset' and `predict' each delegate
+the call itself, rather than naming `xgd-matrix-free' directly, to this file. Those were
+`cl-gbdt/src/xgboost/protocol''s methods of the same names when the extraction was made --
+policy section 3's Layer 2 delegating to Layer 1 -- and both methods now delegate in turn
+to the Layer 1 functions, so both ends of this call are Layer 1. `free-dataset' passes this
+to `release-handle' as its release function; `predict' calls it directly on its transient
 DMatrix, inside a `handler-case' that turns a failure into a `warn' instead of letting it
-propagate over whatever this method is already returning."
+propagate over whatever that function is already returning."
   (check-xgb (xgd-matrix-free pointer) "XGDMatrixFree"))
 
 (defun %free-dmatrix-unchecked (pointer)
   "Free the DMatrix at POINTER via `XGDMatrixFree' without checking its returned status.
 
-`make-dataset' calls this from its cleanup path when ownership of a partially built
-dataset never transferred to a handle -- a signal already unwinding the stack there must
-not be replaced by a status-check failure from this best-effort free, so unlike
-`%free-dmatrix' this does not consult `check-xgb' at all."
+`cl-gbdt/src/xgboost/api''s `create-dataset' calls this from its cleanup path when
+ownership of a partially built dataset never transferred to a handle -- a signal already
+unwinding the stack there must not be replaced by a status-check failure from this
+best-effort free, so unlike `%free-dmatrix' this does not consult `check-xgb' at all. It is
+the only caller: `make-dataset' held that cleanup path until `create-dataset' took the whole
+procedure over, and now reaches this function through it rather than naming it at all."
   (xgd-matrix-free pointer))
 
 (defun %dataset-num-rows (pointer)
@@ -767,8 +781,9 @@ than a zero-length foreign array, to avoid depending on whether a zero-count
 `cffi:with-foreign-object' allocation is meaningful.
 
 Signals `foreign-call-error' when creation reports success but writes a null handle --
-the same guard `make-dataset' applies to `XGDMatrixCreateFromDense', for the same reason:
-every later call through this handle would otherwise dereference it blindly."
+the same guard `cl-gbdt/src/xgboost/api''s `create-dataset' applies to
+`XGDMatrixCreateFromDense', for the same reason: every later call through this handle would
+otherwise dereference it blindly."
   (flet ((create-with (dmats count)
            (cffi:with-foreign-object (out :pointer)
              (check-xgb (xg-booster-create dmats count out) "XGBoosterCreate")
@@ -873,18 +888,19 @@ set was attached."
   "Free the booster at POINTER via `XGBoosterFree', signalling `foreign-call-error' when
 the library reports failure.
 
-Extracted the same way `%free-dmatrix' is -- see that function's docstring --
-so `cl-gbdt/src/xgboost/protocol''s `free-booster' delegates the call itself to this
-file instead of naming `xg-booster-free' directly."
+Extracted the same way `%free-dmatrix' is -- see that function's docstring, including the
+relocation both have since made -- so `cl-gbdt/src/xgboost/api''s `free-booster' delegates
+the call itself to this file instead of naming `xg-booster-free' directly."
   (check-xgb (xg-booster-free pointer) "XGBoosterFree"))
 
 (defun %free-booster-unchecked (pointer)
   "Free the booster at POINTER via `XGBoosterFree' without checking its returned status.
 
-`train' and `load-model' each call this from their cleanup path when ownership of a
-partially built booster never transferred to a handle -- see `%free-dmatrix-unchecked''s
-docstring for why a signal already unwinding the stack there must not be replaced by a
-status-check failure from this best-effort free."
+`cl-gbdt/src/xgboost/protocol''s `train' and `load-model', and
+`cl-gbdt/src/xgboost/api''s `create-booster' and `slice-model', each call this from their
+cleanup path when ownership of a partially or newly built booster never transferred to a
+handle -- see `%free-dmatrix-unchecked''s docstring for why a signal already unwinding the
+stack there must not be replaced by a status-check failure from this best-effort free."
   (xg-booster-free pointer))
 
 ;;; ---------------------------------------------------------------------------
@@ -1012,11 +1028,14 @@ is wrong, which is worth surfacing loudly rather than truncating silently."
 writing OUT-SHAPE, OUT-DIM and OUT-RESULT, and signal `foreign-call-error' when the
 library reports failure.
 
-Extracted so `cl-gbdt/src/xgboost/protocol''s `predict' delegates the call itself to this
-file instead of naming `xg-booster-predict-from-d-matrix' directly -- see policy section
-3's Layer 2 delegating to Layer 1. `predict' still owns interpreting OUT-SHAPE, OUT-DIM
-and OUT-RESULT afterward, via `%total-element-count' and `%predict-ncol', and copying
-OUT-RESULT's contents out before it returns."
+Extracted so `cl-gbdt/src/xgboost/api''s `predict' delegates the call itself to this
+file instead of naming `xg-booster-predict-from-d-matrix' directly. It was
+`cl-gbdt/src/xgboost/protocol''s `predict' -- policy section 3's Layer 2 delegating to
+Layer 1 -- when the extraction was made; that method now holds the portable contract only
+and delegates the procedure to the Layer 1 function of the same name, so both ends of this
+call are Layer 1. `predict' still owns interpreting OUT-SHAPE, OUT-DIM and OUT-RESULT
+afterward, via `%total-element-count' and `%predict-ncol', and copying OUT-RESULT's
+contents out before it returns."
   (check-xgb (xg-booster-predict-from-d-matrix
               booster-pointer dmatrix-pointer config out-shape out-dim out-result)
              "XGBoosterPredictFromDMatrix"))
@@ -1058,9 +1077,10 @@ consequences a caller sees, both measured against the vendored library:
 The `m' parameter, an optional proxy DMatrix carrying meta info, is a null pointer: nothing
 in this backend's prediction path has meta info to attach to a matrix it is only reading.
 
-`predict' still owns interpreting OUT-SHAPE, OUT-DIM and OUT-RESULT afterward, via
-`%total-element-count' and `%predict-ncol', and copying OUT-RESULT's contents out before it
-returns -- none of which differs between the two entry points."
+`cl-gbdt/src/xgboost/api''s `predict' still owns interpreting OUT-SHAPE, OUT-DIM and
+OUT-RESULT afterward, via `%total-element-count' and `%predict-ncol', and copying
+OUT-RESULT's contents out before it returns -- none of which differs between the two entry
+points."
   (let ((config-json (%predict-config-json predict-type iteration-end :missing missing)))
     (%call-with-pinned-csr
      indptr indices values
@@ -1445,8 +1465,9 @@ the `:xgboost' backend.
 
 `evaluate-one-iteration''s DATASETS argument is a list of caller-supplied handles this file
 must check before handing their pointers to `XGBoosterEvalOneIter'. The existing
-`%check-xgboost-dataset' cannot be reused: its only caller, `cl-gbdt/src/xgboost/protocol''s
-`train', already holds the concrete `xgboost-dataset' class symbol to pass it, and
+`%check-xgboost-dataset' cannot be reused: both of its callers --
+`cl-gbdt/src/xgboost/protocol''s `train' and `cl-gbdt/src/xgboost/api''s `create-booster'
+-- already hold the concrete `xgboost-dataset' class symbol to pass it, and
 `evaluate-one-iteration' has no such caller to get one from.
 
 Thin wrapper over `cl-gbdt/src/handle''s `%check-handle-kind', which carries the contract

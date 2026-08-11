@@ -58,9 +58,14 @@ ever reaches `cl-gbdt/src/protocol`, the training files, or the bare `cl-gbdt`.
 `update-one-iteration`, `predict`, `free-dataset` and `free-booster` are published from
 `api.lisp` and proven with no unified API in the image by
 `tests/functional/{lightgbm,xgboost}-standalone.lisp`, each of which names its backend's
-public package and no other system **of this project** -- `rove` aside, they declare nothing. Five of the 13 methods delegate their whole procedure to
-these; `train` is the one whose Layer 1 counterpart exists and is not called, for the reason
-its own creation call records. What a Layer 1 caller still cannot do is `save-model`,
+public package and no other system **of this project** -- `rove` aside, they declare
+nothing. Five of the 13 methods delegate their whole procedure to these; `train` is the one
+whose Layer 1 counterpart exists and is not called, for the reason its own creation call
+records. The delegation left the unified API's own behaviour alone but for one ordering,
+recorded in both backends' `predict` docstrings: `predict` now refuses a bad `:kind` *below*
+its `:missing` gate and its `:best` resolution rather than above them, so a call wrong in two
+ways at once gets a typed `cl-gbdt` condition where an untyped `sb-kernel:case-failure` used
+to escape. What a Layer 1 caller still cannot do is `save-model`,
 `load-model`, `model-to-string`, `feature-importance`, `evaluation`, `dataset-num-rows` or
 `dataset-num-features` -- the next increment's work, tracked as the first bullet of
 `docs/cl-gbdt-layered-api-implementation-policy.md`'s フォローアップ section -- and the

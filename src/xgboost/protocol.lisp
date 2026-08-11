@@ -1,5 +1,6 @@
 ;;;; protocol.lisp --- XGBoost backend, Layer 2: all thirteen methods of the unified API's
-;;;; protocol, each delegating its C calls to `cl-gbdt/src/xgboost/native'.
+;;;; protocol, each delegating its C calls to `cl-gbdt/src/xgboost/native', or its whole
+;;;; procedure to `cl-gbdt/src/xgboost/api', or both.
 ;;;;
 ;;;; The backend's CLOS classes and the `initialize-backend'/`shutdown-backend' pair that opens
 ;;;; and closes the shared library are Layer 1, not Layer 2, and live in
@@ -1066,7 +1067,22 @@ path's restriction to `:normal' and `:raw', the shape read-back, the copy-out of
 `out_result', together with the `:sparse-input' gate and the deliberate absence of any NaN or
 infinity scan over the result. Everything the paragraphs above promise about those is that
 function's doing; see its own docstring. What is left here is the portable contract: the
-:MISSING capability gate, and resolving :BEST."
+:MISSING capability gate, and resolving :BEST.
+
+Refusing a KIND this backend has no prediction type for moved BELOW BOTH of those, and is
+the one thing about this method a caller can observe changing: `%predict-type''s `ecase' now
+runs inside the procedure rather than in the same `let' that read the pointer, so a call
+wrong in two ways at once is answered by whichever check still runs first. Measured through
+`cl-gbdt:predict' against the vendored library, on a booster trained without :EARLY-STOPPING
+and so with no best iteration: a bad KIND together with `:num-iteration :best' signalled
+`sb-kernel:case-failure' before the split and signals `unsupported-argument' now, putting a
+typed `cl-gbdt' condition where an untyped one used to escape. A bad KIND alone is
+`sb-kernel:case-failure' either way, and so is a bad KIND together with a non-NIL :MISSING --
+the gate above never refuses while `:missing-value' reads true, which is the one row where
+this backend differs from `cl-gbdt/src/lightgbm/protocol''s `predict', whose gate always
+refuses and which therefore changed on that pair too. The old order could not be restored
+without calling `%predict-type' here purely for effect, duplicating a check the procedure
+already makes."
   (with-foreign-float-traps-masked
     ;; Read and discarded, and not redundant with the same call inside the procedure: this
     ;; method's contract is that a freed BOOSTER, or one whose backend has since been closed,
