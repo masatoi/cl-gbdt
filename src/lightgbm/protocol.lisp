@@ -9,9 +9,13 @@
 ;;;; that exist because a unified generic promised a portable argument. The procedure a
 ;;;; finished operation performs is Layer 1 and lives in `cl-gbdt/src/lightgbm/api' -- so far
 ;;;; `make-dataset', which checks :MISSING and :CATEGORICAL-FEATURES and then calls that
-;;;; file's `create-dataset', and `free-dataset', whose whole body was procedure and delegates
-;;;; entirely. A caller who loaded `cl-gbdt/lightgbm' alone reaches those functions with no
-;;;; method here in the image at all.
+;;;; file's `create-dataset', and `free-dataset', `update-one-iteration' and `free-booster',
+;;;; whose whole bodies were procedure and delegate entirely. A caller who loaded
+;;;; `cl-gbdt/lightgbm' alone reaches those functions with no method here in the image at all.
+;;;;
+;;;; `train' is the one exception, and deliberately so: it builds its booster itself rather
+;;;; than calling `cl-gbdt/src/lightgbm/api''s `create-booster'. See the comment at its
+;;;; creation call, which measures why.
 
 (uiop:define-package #:cl-gbdt/src/lightgbm/protocol
   (:use #:cl)
@@ -30,7 +34,6 @@
                 #:%update-one-iteration-custom
                 #:%check-booster-datasets-live
                 #:%free-booster-unchecked
-                #:%free-booster
                 #:%predict-type
                 #:%resolve-num-iteration
                 #:%calc-num-predict
@@ -48,17 +51,20 @@
                 #:lightgbm-backend
                 #:lightgbm-dataset
                 #:lightgbm-booster)
-  ;; Layer 1's finished dataset operations. `free-dataset' is deliberately absent from this
-  ;; clause: the `:import-from #:cl-gbdt/src/protocol' below names a GENERIC FUNCTION of the
-  ;; same name, and the two are different symbols -- importing both would be a name conflict,
-  ;; not a re-import. The one method that needs the Layer 1 function names it in full.
+  ;; Layer 1's finished operations. `free-dataset', `update-one-iteration' and `free-booster'
+  ;; are deliberately absent from this clause: the `:import-from #:cl-gbdt/src/protocol' below
+  ;; names a GENERIC FUNCTION of each of those names, and each pair is two different symbols
+  ;; -- importing both would be a name conflict, not a re-import. The three methods that need
+  ;; the Layer 1 functions name them in full. `create-booster' is absent for an unrelated
+  ;; reason: no method here calls it, `train' building its own booster for the reason its
+  ;; creation call records, and an import naming a symbol nothing uses is one more claim to
+  ;; keep true.
   (:import-from #:cl-gbdt/src/lightgbm/api
                 #:%check-sparse-input
                 #:create-dataset)
   (:import-from #:cl-gbdt/src/backend
                 #:backend-name
-                #:backend-supports-p
-                #:backend-open-p)
+                #:backend-supports-p)
   (:import-from #:cl-gbdt/src/protocol
                 #:make-dataset
                 #:dataset-num-rows
@@ -74,10 +80,8 @@
                 #:evaluation
                 #:free-booster)
   (:import-from #:cl-gbdt/src/handle
-                #:release-handle
                 #:with-pointer-ownership
                 #:handle-live-pointer
-                #:handle-released-p
                 #:handle-backend
                 #:booster-training-set
                 #:booster-validation-sets
@@ -903,6 +907,18 @@ Signals `backend-not-open' before any of that when BACKEND is not open -- see
            ;; it is also what makes an early-stopped run report its true, shortened length
            ;; with nothing further to do here.
            (completed-rounds 0))
+      ;; Built here rather than by `cl-gbdt/src/lightgbm/api''s `create-booster', which is the
+      ;; Layer 1 function for exactly this and which every other operation in this file
+      ;; delegates its procedure to. Two things hold this one back, both measured rather than
+      ;; assumed. `booster-best-iteration' is a `:reader'-only slot (src/handle.lisp): the sole
+      ;; way to set it is `make-handle''s :BEST-ITERATION initarg, at construction, and the
+      ;; value comes from the watcher AFTER the loop -- so this method must still own the raw
+      ;; pointer when the loop ends, and `create-booster' builds its handle before the first
+      ;; iteration. And this ownership form is what frees the raw booster when the loop
+      ;; signals; a handle built up front would instead be left unreferenced, its finalizer
+      ;; only WARNING while the foreign booster leaks -- which no test would catch, both
+      ;; leak tests asserting the observable half alone, that the backend still trains
+      ;; afterwards. Giving the slot a writer to merge the two is not this file's to do.
       (let ((booster-pointer
               (%create-booster train-data-pointer
                                (%parameter-string
@@ -963,25 +979,32 @@ Signals `backend-not-open' before any of that when BACKEND is not open -- see
 Returns false once an iteration produces no further split, per the generic
 function's contract. Signals `released-handle-error' when BOOSTER's training set,
 or any of its validation sets, has already been freed -- see
-`%check-booster-datasets-live'."
+`%check-booster-datasets-live'.
+
+This method's whole body was procedure -- there was no portable argument here to check or
+translate -- so all of it is `cl-gbdt/src/lightgbm/api''s `update-one-iteration', which is
+where the liveness check and the `produced_empty_tree' inversion now live."
   (with-foreign-float-traps-masked
-    (%check-booster-datasets-live booster)
-    (zerop (%update-one-iteration (handle-live-pointer booster)))))
+    ;; Named in full, not imported: `cl-gbdt/src/protocol''s `update-one-iteration', the
+    ;; generic this method is defined on, is a DIFFERENT symbol of the same name, and this
+    ;; file imports that one. Not recursion. The `with-foreign-float-traps-masked' wrap stays
+    ;; even though the callee establishes its own, for the reason `free-dataset' above gives.
+    (cl-gbdt/src/lightgbm/api:update-one-iteration booster)))
 
 (defmethod free-booster ((booster lightgbm-booster))
   "Free BOOSTER via `LGBM_BoosterFree'. Does nothing if it was already freed.
 
 See `free-dataset''s docstring for why this does not signal `backend-not-open' when
 BOOSTER's backend has already been closed -- the same `with-booster' cleanup-form
-reasoning applies here."
+reasoning applies here.
+
+This method's whole body was procedure too, and is `cl-gbdt/src/lightgbm/api''s
+`free-booster' entirely, where the closed-backend branch now lives beside the identical one
+`free-dataset' takes."
   (with-foreign-float-traps-masked
-    (if (backend-open-p (handle-backend booster))
-        (release-handle booster (lambda (pointer) (%free-booster pointer)))
-        (let ((already-released (handle-released-p booster)))
-          (release-handle booster (lambda (pointer) (declare (ignore pointer))))
-          (unless already-released
-            (warn "Freeing a LightGBM booster after its backend was closed: the foreign ~
-                   booster was not freed and its memory is leaked."))))))
+    ;; Named in full, not imported, and not recursion -- see `update-one-iteration' above,
+    ;; which faces the same doubled name for the same reason.
+    (cl-gbdt/src/lightgbm/api:free-booster booster)))
 
 ;;; ---------------------------------------------------------------------------
 ;;; Inference

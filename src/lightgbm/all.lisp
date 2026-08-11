@@ -49,17 +49,21 @@
 ;;; public surface by accident -- exactly what this task's brief warns an accidental export
 ;;; becomes: a compatibility obligation.
 ;;;
-;;; Five symbols so far, each pulled explicitly by name. `lightgbm-backend' from `classes' is
+;;; Eight symbols so far, each pulled explicitly by name. `lightgbm-backend' from `classes' is
 ;;; the CLOS class a caller can specialize methods on or check with `typep'; `booster-eval-names'
 ;;; and `booster-eval' from `native' are Phase 2's first LightGBM-specific safe API
 ;;; (docs/superpowers/specs/2026-08-06-evaluation-api-design.md, policy section 3's Layer 1);
-;;; `create-dataset' and `free-dataset' from `api' are the first finished operations to reach
-;;; this surface -- the procedure that used to sit inside `cl-gbdt/src/lightgbm/protocol''s
-;;; `make-dataset' and `free-dataset' methods, which now check their portable arguments and
-;;; call these. `free-dataset' here is NOT `cl-gbdt''s generic of that name: it is a plain
-;;; function and a different symbol, so a caller who has both packages in an image must name
-;;; which one they mean, exactly as they already must for anything else two packages export
-;;; under one name.
+;;; `create-dataset', `free-dataset', `create-booster', `update-one-iteration' and
+;;; `free-booster' from `api' are the finished operations -- the procedure that used to sit
+;;; inside `cl-gbdt/src/lightgbm/protocol''s methods of those names, which now check their
+;;; portable arguments and call these. Together they are a whole training run at this layer:
+;;; build a dataset, build a booster on it, advance it, free both. `create-booster' is the one
+;;; with no caller inside this library -- `train' builds its own booster, for the reason its
+;;; creation call records -- so it is published on the strength of its own contract rather than
+;;; of a method that exercises it. `free-dataset', `free-booster' and `update-one-iteration'
+;;; here are NOT `cl-gbdt''s generics of those names: they are plain functions and different
+;;; symbols, so a caller who has both packages in an image must name which one they mean,
+;;; exactly as they already must for anything else two packages export under one name.
 ;;;
 ;;; `api' is `:import-from'ed rather than `:use-reexport'ed for the reason `classes' is: it
 ;;; also exports `%check-sparse-input', an internal capability gate that exists at that layer
@@ -139,13 +143,19 @@
                 #:booster-eval-names
                 #:booster-eval)
   (:import-from #:cl-gbdt/src/lightgbm/api
+                #:create-booster
                 #:create-dataset
-                #:free-dataset)
+                #:free-booster
+                #:free-dataset
+                #:update-one-iteration)
   (:export #:lightgbm-backend
            #:booster-eval-names
            #:booster-eval
+           #:create-booster
            #:create-dataset
+           #:free-booster
            #:free-dataset
+           #:update-one-iteration
            #:*known-capabilities*
            #:backend-capabilities
            #:backend-info

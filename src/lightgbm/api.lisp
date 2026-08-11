@@ -16,24 +16,33 @@
 ;;;; image, and these functions are the whole of what they can call.
 ;;;;
 ;;;; Loads after `classes.lisp' and cannot precede it: every operation below takes or returns a
-;;;; `lightgbm-dataset', and `%reference-pointer' is handed that class name as a symbol.
+;;;; `lightgbm-dataset' or a `lightgbm-booster', and `%reference-pointer' and
+;;;; `%check-lightgbm-dataset' are each handed a class name as a symbol.
 
 (uiop:define-package #:cl-gbdt/src/lightgbm/api
   (:use #:cl)
   (:import-from #:cffi)
   (:import-from #:cl-gbdt/src/lightgbm/classes
+                #:lightgbm-booster
                 #:lightgbm-dataset)
   (:import-from #:cl-gbdt/src/lightgbm/native
+                #:%add-valid-data
                 #:%check-backend-open
+                #:%check-booster-datasets-live
+                #:%check-lightgbm-dataset
+                #:%create-booster
                 #:%create-dataset
                 #:%create-dataset-from-csr
+                #:%free-booster
+                #:%free-booster-unchecked
                 #:%free-dataset
                 #:%free-dataset-unchecked
                 #:%parameter-string
                 #:%reference-pointer
                 #:%set-feature-names
                 #:%set-group-field
-                #:%set-info-field)
+                #:%set-info-field
+                #:%update-one-iteration)
   (:import-from #:cl-gbdt/src/backend
                 #:backend-name
                 #:backend-open-p
@@ -51,12 +60,16 @@
                 #:with-foreign-float-traps-masked)
   (:import-from #:cl-gbdt/src/handle
                 #:handle-backend
+                #:handle-live-pointer
                 #:handle-released-p
                 #:release-handle
                 #:with-pointer-ownership)
   (:export #:%check-sparse-input
+           #:create-booster
            #:create-dataset
-           #:free-dataset))
+           #:free-booster
+           #:free-dataset
+           #:update-one-iteration))
 
 (in-package #:cl-gbdt/src/lightgbm/api)
 
@@ -198,3 +211,107 @@ since it is genuinely unreclaimable at that point."
           (unless already-released
             (warn "Freeing a LightGBM dataset after its backend was closed: the foreign ~
                    dataset was not freed and its memory is leaked."))))))
+
+;;; ---------------------------------------------------------------------------
+;;; Boosters
+;;;
+;;; `cl-gbdt/src/lightgbm/protocol''s `train' does NOT call `create-booster', and a reader
+;;; who assumes every training run exercises it would be wrong. `train' must hand
+;;; `make-handle' a `:best-iteration' its own loop computes, and `booster-best-iteration' is
+;;; a `:reader'-only slot set at construction, so `train' has to own the pointer across its
+;;; whole loop and build the handle at the end; `create-booster' builds it at the start, by
+;;; the same argument every other Layer 1 operation follows. See `train''s own call site,
+;;; which carries that reasoning where an editor tempted to merge the two will meet it. The
+;;; two small functions below ARE what their methods call, wholesale.
+
+(defun create-booster (backend dataset &key parameters valid-sets)
+  "Create a booster over DATASET on BACKEND via `LGBM_BoosterCreate', returning a
+`lightgbm-booster'.
+
+The result is UNTRAINED: `LGBM_BoosterCreate' allocates the model and fixes its parameters,
+and every boosting iteration comes from a later `update-one-iteration'. Free it with
+`free-booster'.
+
+PARAMETERS is a plist in LightGBM'S OWN vocabulary, rendered by `%parameter-string' and
+handed to the creation call verbatim; nothing here translates a key or a value, and no key
+is added. VALID-SETS is a list of `lightgbm-dataset's -- bare datasets, not the
+(NAME . DATASET) entries `cl-gbdt''s `train' accepts, a name being a training-report concept
+with no meaning at this layer -- attached afterward with `LGBM_BoosterAddValidData' in the
+order given. The booster retains DATASET and a COPY of VALID-SETS, which keeps them alive
+for its lifetime and lets `update-one-iteration' notice a dataset freed out from under it.
+The copy is what makes that promise hold: were the caller's own list object stored, a later
+`delete' or `(setf (cdr ...))' on it would remove an entry from the booster's view while
+LightGBM still held that dataset's pointer.
+
+Signals `backend-not-open' before any foreign call when BACKEND is not open -- see
+`%check-backend-open' -- `wrong-backend-reference' when DATASET or a VALID-SETS entry is not
+a `lightgbm-dataset', and `released-handle-error' or `backend-not-open' when one is but has
+already been freed or had its own backend closed; see `%check-lightgbm-dataset', which is
+what rules out `LGBM_BoosterCreate' being handed a booster's own pointer as its training
+set. This function dispatches on nothing, so that check is the only thing standing between a
+wrong-kind handle and a segfault. Signals `foreign-call-error' when creation reports success
+but writes a null handle -- that check lives in `%create-booster', beside the call it guards,
+and is not repeated here.
+
+Every check runs before the creation call, so a rejected VALID-SETS entry leaves no booster
+in existence at all. The raw handle then exists in C from the moment that call returns and
+nothing in Lisp references it until `make-handle' runs -- `with-pointer-ownership' spans
+exactly that gap, so a validation set that fails to attach frees the booster rather than
+orphaning it."
+  (with-foreign-float-traps-masked
+    (%check-backend-open backend)
+    ;; `let', not `let*': no binding here reads another, and the checks still run before the
+    ;; creation call below because a `let' evaluates its init forms left to right, which is
+    ;; the whole ordering this function needs. `%create-booster' is deliberately NOT among
+    ;; them -- it belongs inside its own form, where the raw handle's lifetime begins.
+    (let ((train-data-pointer
+            (%check-lightgbm-dataset backend dataset "create-booster's dataset argument"
+                                      'lightgbm-dataset))
+          (valid-set-pointers
+            (mapcar (lambda (valid-set)
+                      (%check-lightgbm-dataset backend valid-set
+                                                "a create-booster :valid-sets entry"
+                                                'lightgbm-dataset))
+                    valid-sets))
+          (validation-sets (copy-list valid-sets)))
+      (let ((booster-pointer (%create-booster train-data-pointer
+                                              (%parameter-string parameters))))
+        (with-pointer-ownership (booster-pointer #'%free-booster-unchecked take-ownership)
+          (%add-valid-data booster-pointer valid-set-pointers)
+          (take-ownership 'lightgbm-booster backend :booster
+                          :training-set dataset
+                          :validation-sets validation-sets))))))
+
+(defun update-one-iteration (booster)
+  "Advance BOOSTER by one boosting iteration via `LGBM_BoosterUpdateOneIter'.
+
+Returns false once an iteration produces no further split -- LightGBM's own
+`produced_empty_tree' out parameter, read by `%update-one-iteration' and inverted here, so
+that a true return means the iteration did produce one.
+
+Signals `released-handle-error' when BOOSTER's training set, or any of its validation sets,
+has already been freed -- see `%check-booster-datasets-live', which runs before any foreign
+call because `LGBM_BoosterUpdateOneIter' dereferences those datasets' pointers itself and a
+freed one is a segfault rather than a catchable condition. Signals `released-handle-error'
+for a freed BOOSTER, and `backend-not-open' when its backend has since been closed -- see
+`handle-live-pointer'."
+  (with-foreign-float-traps-masked
+    (%check-booster-datasets-live booster)
+    (zerop (%update-one-iteration (handle-live-pointer booster)))))
+
+(defun free-booster (booster)
+  "Free BOOSTER via `LGBM_BoosterFree'. Does nothing if it was already freed, and returns no
+useful value.
+
+See `free-dataset' above for why this does not signal `backend-not-open' when BOOSTER's
+backend has already been closed, but marks the handle released and `warn's the foreign
+memory leaked instead -- the same cleanup-form reasoning applies here, `with-booster' being
+the macro whose `unwind-protect' calls this one."
+  (with-foreign-float-traps-masked
+    (if (backend-open-p (handle-backend booster))
+        (release-handle booster (lambda (pointer) (%free-booster pointer)))
+        (let ((already-released (handle-released-p booster)))
+          (release-handle booster (lambda (pointer) (declare (ignore pointer))))
+          (unless already-released
+            (warn "Freeing a LightGBM booster after its backend was closed: the foreign ~
+                   booster was not freed and its memory is leaked."))))))
