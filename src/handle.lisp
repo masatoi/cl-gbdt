@@ -175,12 +175,14 @@ POINTER in exactly that case.
 
 Any error FREE-FUNCTION itself signals is discarded, so a failing cleanup cannot
 replace the condition that caused the unwind (policy section 10). POINTER is evaluated
-once."
+once, and after FREE-FUNCTION: an error from evaluating the free function would leave a
+pointer this form had already taken and could no longer free, so the form that decides
+HOW to free is evaluated while there is still nothing to lose."
   (let ((pointer-value (gensym "POINTER"))
         (free (gensym "FREE"))
         (owned (gensym "OWNED")))
-    `(let ((,pointer-value ,pointer)
-           (,free ,free-function)
+    `(let ((,free ,free-function)
+           (,pointer-value ,pointer)
            (,owned nil))
        (flet ((,ownership-operator (class-name backend kind &rest initargs)
                 (prog1 (apply #'make-handle class-name ,pointer-value backend kind initargs)
