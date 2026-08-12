@@ -971,16 +971,19 @@ Signals `backend-not-open' before any of that when BACKEND is not open -- see
                  (values booster report)))
           ;; Every exit that did not reach the `setf' above frees the booster. Where the old
           ;; body's `with-pointer-ownership' freed a RAW pointer, this frees the handle:
-          ;; `free-booster' also marks it released and cancels its finalizer. Named in full,
-          ;; not imported -- `cl-gbdt/src/protocol''s `free-booster' is a DIFFERENT symbol of
-          ;; the same name and is what this file imports -- and it cannot mask the condition
-          ;; already unwinding.
-          ;; Wrapped, not bare: `with-pointer-ownership' -- the form this replaces -- runs its
-          ;; own free inside `(handler-case ... (error () nil))' precisely so a failing
-          ;; cleanup cannot replace the condition that caused the unwind (policy section 10),
-          ;; and `free-booster' on an OPEN backend reaches `%free-booster', which signals
-          ;; `foreign-call-error' when `XGBoosterFree' returns non-zero. Nothing else here
-          ;; would suppress it.
+          ;; `free-booster' also marks it released and cancels its finalizer, so a signalling
+          ;; run leaves nothing behind rather than an unreferenced handle whose finalizer only
+          ;; warns. Named in full, not imported: `cl-gbdt/src/protocol''s `free-booster', the
+          ;; generic, is a DIFFERENT symbol of the same name and is what this file imports.
+          ;;
+          ;; Wrapped in `handler-case', mirroring `with-pointer-ownership''s own free, so a
+          ;; failing cleanup cannot replace the condition already unwinding (policy section
+          ;; 10). That is not hypothetical here: on the branch that actually runs -- an open
+          ;; backend and a live handle, since `create-booster' just built it -- this reaches
+          ;; `%free-booster', which signals `foreign-call-error' on a non-zero
+          ;; `XGBoosterFree' status. The closed-backend branch only `warn's and cannot
+          ;; signal, and `wrong-backend-reference' cannot fire on a handle this method just
+          ;; built, but the wrap covers all three rather than relying on which one applies.
           (unless completed
             (handler-case (cl-gbdt/src/xgboost/api:free-booster booster)
               (error () nil))))))))

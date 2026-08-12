@@ -1395,10 +1395,11 @@ reads it, and `copy-seq' copies exactly its active characters."
 ;;; Caller code that misbehaves
 
 (deftest an-error-inside-the-metric-frees-the-booster
-  ;; `train' builds a raw booster handle before the loop and only takes ownership of it at
-  ;; the end. A condition raised from the caller's own metric must unwind through that same
-  ;; path, or the run leaks a handle the caller has no way to free. This is the same
-  ;; property `an-error-inside-the-objective-propagates-and-frees-the-booster' asserts for
+  ;; `train' holds a full booster handle from `create-booster' before the loop starts, and
+  ;; frees it through an `unwind-protect' if the run does not complete. A condition raised
+  ;; from the caller's own metric must unwind through that same path, or the run leaks a
+  ;; handle the caller has no way to free. This is the same property
+  ;; `an-error-inside-the-objective-propagates-and-frees-the-booster' asserts for
   ;; :OBJECTIVE, at the other point in the loop where the caller's code runs.
   (dolist (name '(:lightgbm :xgboost))
     (support:with-backend-library (name)

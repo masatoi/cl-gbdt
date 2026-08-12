@@ -383,14 +383,19 @@ since it is genuinely unreclaimable at that point."
 ;;; ---------------------------------------------------------------------------
 ;;; Boosters
 ;;;
-;;; `cl-gbdt/src/lightgbm/protocol''s `train' does NOT call `create-booster', and a reader
-;;; who assumes every training run exercises it would be wrong. `train' must hand
-;;; `make-handle' a `:best-iteration' its own loop computes, and `booster-best-iteration' is
-;;; a `:reader'-only slot set at construction, so `train' has to own the pointer across its
-;;; whole loop and build the handle at the end; `create-booster' builds it at the start, by
-;;; the same argument every other Layer 1 operation follows. See `train''s own call site,
-;;; which carries that reasoning where an editor tempted to merge the two will meet it. The
-;;; two small functions below ARE what their methods call, wholesale.
+;;; `cl-gbdt/src/lightgbm/protocol''s `train' calls `create-booster' for its whole
+;;; construction (`.superpowers/sdd/2026-08-12-train-create-booster-merge'), the same way
+;;; every other Layer 1 operation's method already called its own counterpart. What used to
+;;; hold `train' back was `booster-best-iteration' being a `:reader'-only slot writable only
+;;; at construction, while the value `train' has to write comes from its own loop's watcher
+;;; afterward -- `cl-gbdt/src/handle''s `%set-booster-best-iteration' removed that barrier,
+;;; so `train' now holds a full handle from this function's own `make-handle' call and writes
+;;; the best iteration back once its loop ends, rather than building the handle itself only
+;;; at the end. See `train''s own call site for that write and the reasoning behind it -- and
+;;; note the same is true of `cl-gbdt/src/xgboost/api''s `create-booster': this was a
+;;; property of the shared `handle' class, not of either library, which is why both backends'
+;;; `train' carried the same barrier and both lost it together. The two small functions below
+;;; ARE what their methods call, wholesale.
 
 (defun create-booster (backend dataset &key parameters valid-sets)
   "Create a booster over DATASET on BACKEND via `LGBM_BoosterCreate', returning a
