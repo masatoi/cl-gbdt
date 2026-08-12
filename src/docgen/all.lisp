@@ -4,4 +4,5 @@
 ;;;; which the `cl-gbdt/docgen' system in cl-gbdt.asd depends on. Development only.
 
 (uiop:define-package #:cl-gbdt/src/docgen/all
-  (:use-reexport #:cl-gbdt/src/docgen/introspect))
+  (:use-reexport #:cl-gbdt/src/docgen/introspect
+                 #:cl-gbdt/src/docgen/render))

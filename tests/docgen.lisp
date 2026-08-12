@@ -161,3 +161,43 @@
                    cl-gbdt/tests/docgen/gamma::code)
                  (gethash 'cl-gbdt/tests/docgen/gamma:fixture-indexed-condition-code
                           index))))))
+
+(deftest render-lambda-list-prints-names-not-packages
+  (testing "internal symbols print as bare lower-case names"
+    (ok (string= "(booster matrix &key kind)"
+                 (cl-gbdt/src/docgen/all:render-lambda-list
+                  (list 'cl-gbdt/tests/docgen::booster 'cl-gbdt/tests/docgen::matrix
+                        '&key 'cl-gbdt/tests/docgen::kind))))))
+
+(deftest render-lambda-list-keeps-keywords-colons
+  (testing "a keyword default keeps its colon; downcasing symbol-name alone would lose it"
+    (ok (string= "(&key (kind :normal) (step 1))"
+                 (cl-gbdt/src/docgen/all:render-lambda-list
+                  '(&key (kind :normal) (step 1)))))))
+
+(deftest render-lambda-list-renders-nested-and-uninterned
+  (testing "macro destructuring, and a defstruct constructor's ((:key #:name) default)"
+    (ok (string= "((pointer nrow ncol) &body body)"
+                 (cl-gbdt/src/docgen/all:render-lambda-list
+                  '((pointer nrow ncol) &body body))))
+    (ok (string= "(&key ((:verified-low verified-low) nil))"
+                 (cl-gbdt/src/docgen/all:render-lambda-list
+                  (list '&key (list (list :verified-low (make-symbol "VERIFIED-LOW")) nil)))))))
+
+(deftest render-lambda-list-drops-aux
+  (testing "&aux is an implementation detail of the body, not part of the contract"
+    (ok (string= "(a b)"
+                 (cl-gbdt/src/docgen/all:render-lambda-list '(a b &aux (c 1)))))))
+
+(defgeneric fixture-dispatch (object other)
+  (:documentation "Two-argument fixture generic."))
+
+(defmethod fixture-dispatch ((object fixture-class) other)
+  "Method on the class fixture."
+  (list object other))
+
+(deftest render-method-signature-pairs-parameters-with-specializers
+  (testing "an unspecialized parameter shows T, which is what the method dispatches on"
+    (let ((method (first (sb-mop:generic-function-methods #'fixture-dispatch))))
+      (ok (string= "(fixture-dispatch (object fixture-class) (other t))"
+                   (cl-gbdt/src/docgen/all:render-method-signature 'fixture-dispatch method))))))
