@@ -102,10 +102,11 @@ macro in the same `deftest' would still run with no library loaded."
 (defun model-path (name)
   "Return a pathname for NAME in the system's temporary directory.
 
-Shared by every functional test that writes a model file. The two standalone files cannot
-reach it -- they name their backend's public package and `rove' and nothing else, this file
-reaching the unified API through `dense-to-csr' -- so each of those carries its own copy;
-that duplication is forced by the isolation those files exist to prove, and this one is not."
+Shared by the functional tests that need a model-file pathname. The two standalone files
+cannot reach it -- they name their backend's public package and `rove' and nothing else,
+this file reaching the unified API through `dense-to-csr' -- so each of those carries its
+own copy; that duplication is forced by the isolation those files exist to prove, and this
+one is not."
   (merge-pathnames name (uiop:temporary-directory)))
 
 (defun resolve-via-cffi-default (backend default-name)

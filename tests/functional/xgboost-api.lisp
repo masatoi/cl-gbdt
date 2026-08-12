@@ -1703,9 +1703,9 @@ their measurements out of date for no gain.")
                ;; S2-2's six additions, the half `tools/ci/check-layer-1-guards.lisp' cannot
                ;; reach: that check establishes a guard EXISTS, not that it names the RIGHT
                ;; class, and every one of these was a `defmethod' specialized on
-               ;; `xgboost-booster' or `xgboost-dataset' until that check made it a plain
-               ;; `defun'. XGBoost's `save-model' takes no `:num-iteration', unlike LightGBM's,
-               ;; so its refusal block passes the path alone.
+               ;; `xgboost-booster' or `xgboost-dataset' until the Layer 1 split made it a
+               ;; plain `defun'. XGBoost's `save-model' takes no `:num-iteration', unlike
+               ;; LightGBM's, so its refusal block passes the path alone.
                (testing "save-model rejects a LightGBM booster"
                  (ok (handler-case
                          (progn (cl-gbdt/xgboost:save-model

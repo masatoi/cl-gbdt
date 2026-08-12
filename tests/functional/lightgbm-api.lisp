@@ -1347,8 +1347,8 @@ Matches `lightgbm-api-round-trip''s round count; nothing about the comparison ne
                ;; S2-2's six additions, the half `tools/ci/check-layer-1-guards.lisp' cannot
                ;; reach: that check establishes a guard EXISTS, not that it names the RIGHT
                ;; class, and every one of these was a `defmethod' specialized on
-               ;; `lightgbm-booster' or `lightgbm-dataset' until that check made it a plain
-               ;; `defun'.
+               ;; `lightgbm-booster' or `lightgbm-dataset' until the Layer 1 split made it a
+               ;; plain `defun'.
                (testing "save-model rejects an XGBoost booster"
                  (ok (handler-case
                          (progn (cl-gbdt/lightgbm:save-model
