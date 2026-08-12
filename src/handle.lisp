@@ -76,9 +76,10 @@ Set only when `train' was given `:early-stopping', and only when its watcher act
 determined a best iteration -- NIL for a `load-model' booster, for one trained without
 `:early-stopping', and for one trained with it whose watcher never got the chance to see
 one (see `train''s docstring for the two ways that happens even with `:early-stopping'
-supplied). `predict', `save-model' and `model-to-string''s `:num-iteration :best' resolve
-against this slot, signalling `unsupported-argument' rather than assuming a default when
-it is NIL."))
+supplied). Writable only through `%set-booster-best-iteration', below, whose one caller is
+`train' itself, after its loop ends. `predict', `save-model' and `model-to-string''s
+`:num-iteration :best' resolve against this slot, signalling `unsupported-argument' rather
+than assuming a default when it is NIL."))
   (:documentation "A trained, or in-progress, backend model.
 
 Retains its training set strongly, which is what makes `with-booster''s docstring --
@@ -114,6 +115,26 @@ instance's `training-set', `validation-sets' and `best-iteration' initargs; only
                                    (list :best-iteration best-iteration))))))
     (finalize handle (%make-finalizer released kind))
     handle))
+
+(defun %set-booster-best-iteration (booster iteration)
+  "Set BOOSTER's `best-iteration' to ITERATION, and return ITERATION.
+
+The one write to a slot otherwise fixed at construction. Internal to this package on
+purpose: `cl-gbdt/src/all' re-exports only what this file's `:export' clause names, so a
+helper left out of that clause never reaches `CL-GBDT' and never becomes a compatibility
+obligation under policy section 14. Both backends' `protocol.lisp' import it by name,
+exactly as both `api.lisp' already import `%reject-best-num-iteration' from here.
+
+Not a `setf' expander on `booster-best-iteration' either: that reader IS public, and a
+`setf' on it would hand every caller a write that belongs to one.
+
+That one caller is `train', on both backends, which calls this exactly once per run and
+only when the early-stopping watcher produced a value. The ordering is what forces the
+function to exist at all: `train' delegates its booster's construction to `create-booster',
+which builds the handle before the first iteration, while the best iteration is not known
+until the loop ends. A run that produced none never calls this and keeps the slot's NIL
+initform, which is what `%resolve-best-num-iteration' reads as \"no answer\"."
+  (setf (slot-value booster 'best-iteration) iteration))
 
 (defun handle-released-p (handle)
   "Return true when HANDLE has already been released."
