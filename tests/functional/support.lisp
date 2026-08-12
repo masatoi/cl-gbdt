@@ -21,7 +21,8 @@
            #:*prediction-tolerance*
            #:predictions-agree-p
            #:dense-to-csr
-           #:array-interface-json))
+           #:array-interface-json
+           #:model-path))
 
 (in-package #:cl-gbdt/tests/functional/support)
 
@@ -97,6 +98,16 @@ macro in the same `deftest' would still run with no library loaded."
        (if (null ,path)
            (skip (missing-library-message ,backend))
            (progn ,@body)))))
+
+(defun model-path (name)
+  "Return a pathname for NAME in the system's temporary directory.
+
+Shared by the functional tests that need a model-file pathname. The two standalone files
+cannot reach it -- they name their backend's public package and `rove' and nothing else,
+this file reaching the unified API through `dense-to-csr' -- so each of those carries its
+own copy; that duplication is forced by the isolation those files exist to prove, and this
+one is not."
+  (merge-pathnames name (uiop:temporary-directory)))
 
 (defun resolve-via-cffi-default (backend default-name)
   "Return the pathname CFFI's `:default' designator resolves DEFAULT-NAME to, with

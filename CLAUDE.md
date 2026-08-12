@@ -36,7 +36,7 @@ over both backends.
 
 **Status: functional.** Both backends implement
 all 13 generic functions of the unified API -- `make-dataset`, `train`, `predict`, and
-the rest -- against the real shared libraries, exercised by 820 functional assertions across
+the rest -- against the real shared libraries, exercised by 946 functional assertions across
 15 test files in `cl-gbdt/tests/functional` (layer 2) on top of 551 assertions across 21
 test files that need no shared library at all (layer 1).
 
@@ -54,23 +54,22 @@ loads `/unified`; loading only Layer 1 and calling a portable generic signals
 `backend-methods-not-loaded`, which names the system to load.
 `tools/ci/check-layer-separation.lisp` fails the build if a Layer 1 file's dependency closure
 ever reaches `cl-gbdt/src/protocol`, the training files, or the bare `cl-gbdt`.
-**A Layer 1 caller trains and predicts**, both backends: `create-dataset`, `create-booster`,
-`update-one-iteration`, `predict`, `free-dataset` and `free-booster` are published from
+**A Layer 1 caller trains, predicts, persists and reports**, both backends: `create-dataset`,
+`create-booster`, `update-one-iteration`, `predict`, `free-dataset`, `free-booster`,
+`save-model`, `load-model`, `model-to-string`, `feature-importance`, `evaluation`,
+`dataset-num-rows` and `dataset-num-features` -- thirteen operations -- are published from
 `api.lisp` and proven with no unified API in the image by
 `tests/functional/{lightgbm,xgboost}-standalone.lisp`, each of which names its backend's
 public package and no other system **of this project** -- `rove` aside, they declare
-nothing. Five of the 13 methods delegate their whole procedure to these; `train` is the one
-whose Layer 1 counterpart exists and is not called, for the reason its own creation call
-records. The delegation left the unified API's own behaviour alone but for one ordering,
-recorded in both backends' `predict` docstrings: `predict` now refuses a bad `:kind` *below*
-its `:missing` gate and its `:best` resolution rather than above them, so a call wrong in two
-ways at once gets a typed `cl-gbdt` condition where an untyped `sb-kernel:case-failure` used
-to escape. What a Layer 1 caller still cannot do is `save-model`,
-`load-model`, `model-to-string`, `feature-importance`, `evaluation`, `dataset-num-rows` or
-`dataset-num-features` -- the next increment's work, tracked as the first bullet of
-`docs/cl-gbdt-layered-api-implementation-policy.md`'s フォローアップ section -- and the
-training report, early stopping and the `:objective`/`:evaluation` callbacks, which are
-`train`'s own concepts and stay Layer 2.
+nothing. Twelve of the 13 methods delegate their whole procedure to these; `train` is the one
+whose Layer 1 counterpart, `create-booster`, exists and is not called, for the reason its own
+creation call records, unchanged by this delegation. The delegation left the unified API's own
+behaviour alone but for one ordering, recorded in both backends' `predict` docstrings:
+`predict` now refuses a bad `:kind` *below* its `:missing` gate and its `:best` resolution
+rather than above them, so a call wrong in two ways at once gets a typed `cl-gbdt` condition
+where an untyped `sb-kernel:case-failure` used to escape. What a Layer 1 caller still cannot
+do is the training report, early stopping and the `:objective`/`:evaluation` callbacks, which
+are `train`'s own concepts and stay Layer 2.
 
 `train` returns a `training-report`
 as its secondary value, and takes `:record-history` (default `t`) to turn the per-iteration
@@ -229,11 +228,11 @@ a `defun` is a library-reaching entry point with no `defmethod` left to inherit 
 from, so it must wrap its own whole body the same way -- LightGBM's
 `booster-eval`/`booster-eval-names` and XGBoost's `evaluate-one-iteration` were the first
 functions this applied to, all three in `native.lisp`; every exported `defun` in either
-backend's `api.lisp` is one too -- the six finished operations on both, plus XGBoost's
-`slice-model`, which lives there rather than in `native.lisp` because it builds a booster
-handle and so must name the concrete class `classes.lisp` defines. All four file names are
-globbed by that check's `+BACKEND-FILE-PATTERNS+`; a backend file under some other name
-would be scanned by nothing.
+backend's `api.lisp` is one too -- thirteen operations on LightGBM, fourteen on XGBoost,
+the extra one being `slice-model`, which lives there rather than in `native.lisp` because
+it builds a booster handle and so must name the concrete class `classes.lisp` defines. All
+four file names are globbed by that check's `+BACKEND-FILE-PATTERNS+`; a backend file
+under some other name would be scanned by nothing.
 SBCL enables the `:invalid`, `:divide-by-zero` and `:overflow` floating-point traps by
 default on x86-64 and none of them on aarch64; LightGBM and XGBoost are C code written
 and tested against the opposite (masked) convention, where an intermediate NaN or

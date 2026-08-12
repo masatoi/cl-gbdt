@@ -134,9 +134,11 @@
 ;;; Floating-point trap safety
 ;;;
 ;;; Almost nothing here wraps itself in `with-foreign-float-traps-masked' -- almost every
-;;; function in this file is only ever called from inside a `cl-gbdt/src/xgboost/protocol'
-;;; `defmethod' body that already established the mask, at method-body granularity, before
-;;; making any of the calls below. See that file's identical commentary, and
+;;; function in this file is only ever called from inside an already-masked body: a
+;;; `cl-gbdt/src/xgboost/protocol' `defmethod' for a caller that went through the unified API,
+;;; or a `cl-gbdt/src/xgboost/api' `defun' for a caller that reached this backend's Layer 1
+;;; directly -- either establishes the mask, at operation-body granularity, before making any
+;;; of the calls below. See that file's identical commentary, and
 ;;; `with-foreign-float-traps-masked''s own docstring in `cl-gbdt/src/foreign', for why:
 ;;; SBCL enables floating-point traps by default on x86-64 and not on aarch64, and
 ;;; XGBoost's own numeric code -- confirmed for the softmax normalization behind a
@@ -155,11 +157,14 @@
 ;;; `tools/ci/check-float-traps.lisp' checks this directly: it reads the sibling `all.lisp''s
 ;;; public `:export' clause and requires every `defun' named there to open with this macro,
 ;;; the same rule it already applied to every `defmethod' in `protocol.lisp'. The other public
-;;; entry points this backend has -- `slice-model' and the six finished operations
-;;; `create-dataset', `create-booster', `update-one-iteration', `predict', `free-dataset' and
-;;; `free-booster' -- are covered by the identical rule but live in `api.lisp' rather than
-;;; here, each wrapping its own whole body there; see the Model slicing section below for why
-;;; `slice-model' in particular could never live in this file.
+;;; entry points this backend has -- `slice-model' and the thirteen finished operations
+;;; `create-dataset', `create-booster', `update-one-iteration', `predict', `free-dataset',
+;;; `free-booster', `save-model', `load-model', `model-to-string', `feature-importance',
+;;; `evaluation', `dataset-num-rows' and `dataset-num-features' -- are covered by the identical
+;;; rule but live in `api.lisp' rather than here, each wrapping its own whole body there; see
+;;; the Model slicing section below for why `slice-model' in particular could never live in
+;;; this file. Thirteen plus `slice-model' is fourteen, which is what `check-float-traps'
+;;; prints for that file.
 
 ;;; ---------------------------------------------------------------------------
 ;;; Error checking
@@ -229,12 +234,14 @@ Every caller-supplied dataset argument -- `train''s DATASET and each entry of it
 :VALID-SETS, and the same two arguments of `create-booster' -- must pass through here
 before reaching a foreign call that expects a `DMatrixHandle'. `handle-live-pointer' alone
 is not enough: it only guards against a released handle or a closed backend, and happily
-returns *any* handle's pointer regardless of kind, including a booster's -- `train'
-dispatches on the backend and `create-booster', a `defun', on nothing at all, so neither
-dispatches on the handle and unlike `dataset-num-rows' or `free-dataset' there is no CLOS
-specializer already ruling out the wrong kind of handle. A booster's own pointer reaching
-`XGBoosterCreate''s DMatrix array is exactly the corruption this check exists to prevent
--- the identical hazard killed the process across several threads on the LightGBM branch.
+returns *any* handle's pointer regardless of kind, including a booster's. Nothing in
+`cl-gbdt/src/xgboost/api' dispatches on a handle any more -- `dataset-num-rows' and
+`free-dataset' were `defmethod's until the Layer 1 split and are plain `defun's now -- so
+every operation there makes its kind check explicitly, this function or
+`%check-object-class' depending on whether it needs the handle to be live. A booster's own
+pointer reaching `XGBoosterCreate''s DMatrix array is exactly the corruption this check
+exists to prevent -- the identical hazard killed the process across several threads on the
+LightGBM branch.
 
 Signals `wrong-backend-reference' when DATASET is not of type DATASET-CLASS -- built by a
 different backend, or not a dataset at all -- and whatever `handle-live-pointer' signals
@@ -896,11 +903,11 @@ the call itself to this file instead of naming `xg-booster-free' directly."
 (defun %free-booster-unchecked (pointer)
   "Free the booster at POINTER via `XGBoosterFree' without checking its returned status.
 
-`cl-gbdt/src/xgboost/protocol''s `train' and `load-model', and
-`cl-gbdt/src/xgboost/api''s `create-booster' and `slice-model', each call this from their
-cleanup path when ownership of a partially or newly built booster never transferred to a
-handle -- see `%free-dmatrix-unchecked''s docstring for why a signal already unwinding the
-stack there must not be replaced by a status-check failure from this best-effort free."
+`cl-gbdt/src/xgboost/protocol''s `train', and `cl-gbdt/src/xgboost/api''s `create-booster',
+`load-model' and `slice-model', each call this from their cleanup path when ownership of a
+partially or newly built booster never transferred to a handle -- see
+`%free-dmatrix-unchecked''s docstring for why a signal already unwinding the stack there must
+not be replaced by a status-check failure from this best-effort free."
   (xg-booster-free pointer))
 
 ;;; ---------------------------------------------------------------------------
@@ -1297,7 +1304,7 @@ interface it hands `XGDMatrixCreateFromDense'."
   "Save the booster at POINTER to FILENAME via `XGBoosterSaveModel', signalling
 `foreign-call-error' when the library reports failure.
 
-Extracted so `cl-gbdt/src/xgboost/protocol''s `save-model' delegates the call itself to
+Extracted so `cl-gbdt/src/xgboost/api''s `save-model' delegates the call itself to
 this file instead of naming `xg-booster-save-model' directly."
   (check-xgb (xg-booster-save-model pointer filename) "XGBoosterSaveModel"))
 
@@ -1305,7 +1312,7 @@ this file instead of naming `xg-booster-save-model' directly."
   "Load a model from FILENAME into the booster at BOOSTER-POINTER via
 `XGBoosterLoadModel', signalling `foreign-call-error' when the library reports failure.
 
-Extracted so `cl-gbdt/src/xgboost/protocol''s `load-model' delegates the call itself to
+Extracted so `cl-gbdt/src/xgboost/api''s `load-model' delegates the call itself to
 this file instead of naming `xg-booster-load-model' directly."
   (check-xgb (xg-booster-load-model booster-pointer filename) "XGBoosterLoadModel"))
 
@@ -1314,7 +1321,7 @@ this file instead of naming `xg-booster-load-model' directly."
 `XGBoosterSaveModelToBuffer', writing OUT-LEN and OUT-DPTR, and signal
 `foreign-call-error' when the library reports failure.
 
-Extracted so `cl-gbdt/src/xgboost/protocol''s `model-to-string' delegates the call itself
+Extracted so `cl-gbdt/src/xgboost/api''s `model-to-string' delegates the call itself
 to this file instead of naming `xg-booster-save-model-to-buffer' directly. `model-to-string'
 still owns copying OUT-DPTR's contents out via OUT-LEN afterward."
   (check-xgb (xg-booster-save-model-to-buffer pointer config out-len out-dptr)
@@ -1391,7 +1398,7 @@ equal to out_n_scores\" per that same header -- confirmed empirically here too, 
 every tree-booster case measured, multi-class included, which all report OUT-DIM 1.
 
 `feature-importance' promises one entry per feature, matching
-`cl-gbdt/src/lightgbm/protocol''s own `feature-importance': `LGBM_BoosterFeatureImportance'
+`cl-gbdt/src/lightgbm/api''s own `feature-importance': `LGBM_BoosterFeatureImportance'
 has no shape output at all, and, confirmed empirically, already sums a multi-class
 model's per-class contributions into one number per feature inside the library before
 this ever sees it. XGBoost's per-class matrix has no such library-computed summary for
@@ -1426,7 +1433,7 @@ OUT-SCORES is read."
 OUT-N-FEATURES, OUT-FEATURES, OUT-DIM, OUT-SHAPE and OUT-SCORES, and signal
 `foreign-call-error' when the library reports failure.
 
-Extracted so `cl-gbdt/src/xgboost/protocol''s `feature-importance' delegates the call
+Extracted so `cl-gbdt/src/xgboost/api''s `feature-importance' delegates the call
 itself to this file instead of naming `xg-booster-feature-score' directly.
 `feature-importance' still owns interpreting the five out parameters afterward, via
 `%check-feature-score-dim', `%booster-num-features' and `%feature-score-index'."
@@ -1723,8 +1730,8 @@ fresh list of (INDEX METRIC-NAME VALUE) lists, via `%eval-one-iter', `%parse-eva
 are `%parse-eval-result''s own reading of `XGBoosterEvalOneIter''s formatted output for it.
 Names each entry of DATASET-POINTERS to `%eval-one-iter' by its own decimal index -- \"0\",
 \"1\", ... -- built from `(length dataset-pointers)' alone, exactly as
-`cl-gbdt/src/xgboost/protocol''s `evaluation' method does today; `%split-eval-label' takes
-each result label back apart against those same names.
+`cl-gbdt/src/xgboost/api''s `evaluation' describes doing; `%split-eval-label' takes each
+result label back apart against those same names.
 
 Also returns RAW, the exact string `%eval-one-iter' wrote, as a second value: `evaluation''s
 own `:value-source :parsed-text :raw' provenance needs it verbatim, and once this function
@@ -1734,10 +1741,11 @@ The caller owns every guard this needs before calling: BOOSTER-POINTER and every
 DATASET-POINTERS must already be live handles' pointers built by the `:xgboost' backend, and
 the whole call must already be inside `with-foreign-float-traps-masked''s dynamic extent --
 like every other `%'-function in this file, this does not establish any of those itself.
-`cl-gbdt/src/xgboost/protocol''s `evaluation' method and `train''s per-iteration recording
-loop both call this same function, on the pointers each already has in hand, rather than
-each computing entries its own way -- that is what keeps the numbers `evaluation' reports
-after training and the numbers recorded during training from ever being able to disagree."
+`cl-gbdt/src/xgboost/api''s `evaluation' -- what `cl-gbdt/src/xgboost/protocol''s method of
+the same name now delegates to wholly -- and `train''s per-iteration recording loop both call
+this same function, on the pointers each already has in hand, rather than each computing
+entries its own way -- that is what keeps the numbers `evaluation' reports after training and
+the numbers recorded during training from ever being able to disagree."
   (let* (;; `~D', not `princ-to-string': `~D' binds `*print-base*' to 10 itself, so a
          ;; caller who has bound it to something else gets the decimal names this
          ;; function's docstring promises rather than that base's digits.

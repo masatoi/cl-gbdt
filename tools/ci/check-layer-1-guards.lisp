@@ -54,7 +54,7 @@
 ;;;; OF check-float-traps.lisp below.
 ;;;;
 ;;;; The first-argument name filter is what separates an operation over a caller-supplied
-;;;; foreign object from one over plain data. It is also, today, no filter at all: all 17
+;;;; foreign object from one over plain data. It is also, today, no filter at all: all 31
 ;;;; public `defun's in these four files take exactly such an argument. It exists so that a
 ;;;; future public helper over numbers or strings is not reported as unguarded.
 ;;;;
@@ -101,7 +101,9 @@
 ;;;; level down.
 ;;;;
 ;;;; "The first thing its body does" is the first form EVALUATED, not the first form written,
-;;;; and the two differ in nine of the seventeen. Every body opens with
+;;;; and the two differ in seventeen of the thirty-one -- counted fresh against today's set,
+;;;; entry point by entry point, not carried over from when this comment was written against
+;;;; seventeen entry points total. Every body opens with
 ;;;; `with-foreign-float-traps-masked' (see `tools/ci/check-float-traps.lisp', which is what
 ;;;; holds them to that), so the guard is at best the first form INSIDE it; and most of these
 ;;;; operations need the checked pointer, so the guard is the initialization form of the first
@@ -184,7 +186,7 @@
 ;;;;     +HANDLE-PARAMETER-NAMES+.
 ;;;;   - A guard DELETED together with the entry point that held it. The floor below notices a
 ;;;;     count that falls under +MINIMUM-ENTRY-POINTS+, which is what catches a whole file
-;;;;     going unread; it cannot notice one operation of seventeen being removed on purpose.
+;;;;     going unread; it cannot notice one operation of thirty-one being removed on purpose.
 ;;;;     Raise that constant when the set grows, so the same protection applies at the new
 ;;;;     size.
 
@@ -263,7 +265,7 @@ it neither would be recognised as reaching `wrong-backend-reference'.
 A guard whose definition is not found under these patterns is NOT taken on trust -- it fails
 as though it were no class check at all, which is loud and fail-closed. The floor this
 parameter needs is therefore automatic: a list that matched nothing would fail every one of
-the seventeen entry points at once rather than passing them.")
+the thirty-one entry points at once rather than passing them.")
 
 (defparameter +minimum-entry-point-files+ 4
   "Fewer scanned files than this means nothing was walked, and fails.
@@ -272,16 +274,17 @@ Four is what the two backends' `api.lisp' and `native.lisp' come to. A third bac
 the real number and still clears the floor; a wrong working directory or a rename drops it to
 zero, which is the case this catches. See THE FLOOR.")
 
-(defparameter +minimum-entry-points+ 17
+(defparameter +minimum-entry-points+ 31
   "Fewer public entry points found in total than this means the scan lost sight of something,
 and fails.
 
-Seventeen is today's set: `create-dataset', `create-booster', `update-one-iteration',
-`predict', `free-dataset' and `free-booster' in each backend's `api.lisp', plus XGBoost's
-`slice-model' there; plus `booster-eval' and `booster-eval-names' in LightGBM's `native.lisp'
-and `evaluate-one-iteration' and `booster-boosted-rounds' in XGBoost's. Raise this when the
-set grows, so that a later disappearance is caught at the new size rather than absorbed by the
-old slack.")
+Thirty-one is today's set: `create-dataset', `create-booster', `update-one-iteration',
+`predict', `free-dataset', `free-booster', `save-model', `load-model', `model-to-string',
+`feature-importance', `evaluation', `dataset-num-rows' and `dataset-num-features' in each
+backend's `api.lisp', plus XGBoost's `slice-model' there; plus `booster-eval' and
+`booster-eval-names' in LightGBM's `native.lisp' and `evaluate-one-iteration' and
+`booster-boosted-rounds' in XGBoost's. Raise this when the set grows, so that a later
+disappearance is caught at the new size rather than absorbed by the old slack.")
 
 (defun %restart-associated-with-p (restart condition)
   "True when RESTART is associated with CONDITION specifically, rather than merely visible
@@ -555,7 +558,7 @@ argument tree. A guard on something DERIVED FROM the parameter is not a guard on
 parameter, and the difference is the whole defect: `(%check-object-class (handle-backend
 dataset) 'lightgbm-backend ...)' mentions DATASET, names a real class checker, and leaves
 DATASET's own class never asked about -- measured, it reported `free-dataset' as guarded and
-exited 0 while the first bug in this file's header was live again. Every one of the seventeen
+exited 0 while the first bug in this file's header was live again. Every one of the thirty-one
 guards passes its parameter bare and first, so this costs the passing set nothing.
 
 The other two conditions are no less load-bearing. The prefix alone would accept a check of

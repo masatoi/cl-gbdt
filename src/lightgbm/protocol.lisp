@@ -8,13 +8,16 @@
 ;;;;
 ;;;; A method here owns the PORTABLE CONTRACT and nothing else: the checks and translations
 ;;;; that exist because a unified generic promised a portable argument. The procedure a
-;;;; finished operation performs is Layer 1 and lives in `cl-gbdt/src/lightgbm/api' -- so far
+;;;; finished operation performs is Layer 1 and lives in `cl-gbdt/src/lightgbm/api' --
 ;;;; `make-dataset', which checks :MISSING and :CATEGORICAL-FEATURES and then calls that
-;;;; file's `create-dataset'; `predict', which checks :MISSING and resolves :BEST and then
-;;;; calls that file's `predict'; and `free-dataset', `update-one-iteration' and
-;;;; `free-booster', whose whole bodies were procedure and delegate entirely. A caller who
-;;;; loaded `cl-gbdt/lightgbm' alone reaches those functions with no method here in the image
-;;;; at all.
+;;;; file's `create-dataset'; `predict', `save-model' and `model-to-string', which each
+;;;; resolve :BEST -- `predict' also checking :MISSING -- and then call that file's function
+;;;; of the same name; and `free-dataset', `update-one-iteration', `free-booster',
+;;;; `load-model', `feature-importance', `evaluation', `dataset-num-rows' and
+;;;; `dataset-num-features', whose whole bodies were procedure and delegate entirely -- even
+;;;; `feature-importance''s :BEST refusal is Layer 1's to make, this operation never having
+;;;; resolved the keyword the way the other three do. A caller who loaded `cl-gbdt/lightgbm'
+;;;; alone reaches those functions with no method here in the image at all.
 ;;;;
 ;;;; `train' is the one exception, and deliberately so: it builds its booster itself rather
 ;;;; than calling `cl-gbdt/src/lightgbm/api''s `create-booster'. See the comment at its
@@ -28,34 +31,27 @@
                 #:%check-lightgbm-dataset
                 #:%parameter-string
                 #:%dataset-num-rows
-                #:%dataset-num-features
                 #:%create-booster
                 #:%add-valid-data
                 #:%update-one-iteration
                 #:%booster-predictions
                 #:%update-one-iteration-custom
-                #:%check-booster-datasets-live
                 #:%free-booster-unchecked
-                #:%resolve-num-iteration
-                #:%save-model
-                #:%create-booster-from-modelfile
-                #:%save-model-to-string
-                #:%feature-importance-type
-                #:%booster-num-features
-                #:%feature-importance
                 #:%read-evaluation)
   (:import-from #:cl-gbdt/src/lightgbm/classes
                 #:lightgbm-backend
                 #:lightgbm-dataset
                 #:lightgbm-booster)
-  ;; Layer 1's finished operations. `free-dataset', `update-one-iteration', `free-booster' and
-  ;; `predict' are deliberately absent from this clause: the `:import-from
-  ;; #:cl-gbdt/src/protocol' below names a GENERIC FUNCTION of each of those names, and each
-  ;; pair is two different symbols -- importing both would be a name conflict, not a re-import.
-  ;; The four methods that need the Layer 1 functions name them in full. `create-booster' is
-  ;; absent for an unrelated reason: no method here calls it, `train' building its own booster
-  ;; for the reason its creation call records, and an import naming a symbol nothing uses is
-  ;; one more claim to keep true.
+  ;; Layer 1's finished operations whose name collides with a `cl-gbdt/src/protocol' generic
+  ;; are deliberately absent from this clause: `free-dataset', `update-one-iteration',
+  ;; `free-booster', `predict', `save-model', `load-model', `model-to-string',
+  ;; `feature-importance', `evaluation', `dataset-num-rows' and `dataset-num-features' -- the
+  ;; `:import-from #:cl-gbdt/src/protocol' below names each of those as a GENERIC FUNCTION, and
+  ;; each pair is two different symbols -- importing both would be a name conflict, not a
+  ;; re-import. The eleven methods that need the Layer 1 functions name them in full.
+  ;; `create-booster' is absent for an unrelated reason: no method here calls it, `train'
+  ;; building its own booster for the reason its creation call records, and an import naming a
+  ;; symbol nothing uses is one more claim to keep true.
   (:import-from #:cl-gbdt/src/lightgbm/api
                 #:create-dataset)
   (:import-from #:cl-gbdt/src/backend
@@ -79,12 +75,8 @@
                 #:with-pointer-ownership
                 #:handle-live-pointer
                 #:handle-backend
-                #:booster-training-set
-                #:booster-validation-sets
-                #:%resolve-best-num-iteration
-                #:%reject-best-num-iteration)
+                #:%resolve-best-num-iteration)
   (:import-from #:cl-gbdt/src/conditions
-                #:foreign-call-error
                 #:unsupported-argument
                 #:capability-unavailable)
   (:import-from #:cl-gbdt/src/config/categorical-features
@@ -473,14 +465,22 @@ doing; see its own docstring."
                                      :parameters parameters :reference reference))))
 
 (defmethod dataset-num-rows ((dataset lightgbm-dataset))
-  "Return DATASET's row count, read via `LGBM_DatasetGetNumData'."
+  "Return DATASET's row count, read via `LGBM_DatasetGetNumData'.
+
+This method's whole body was procedure -- there was no portable argument here to check or
+translate -- so all of it is `cl-gbdt/src/lightgbm/api''s `dataset-num-rows', which is where
+the class guard the specializer above used to provide now lives too."
   (with-foreign-float-traps-masked
-    (%dataset-num-rows (handle-live-pointer dataset))))
+    ;; Named in full, not imported: `cl-gbdt/src/protocol''s `dataset-num-rows', the generic
+    ;; this method is defined on, is a DIFFERENT symbol of the same name, and this file
+    ;; imports that one.
+    (cl-gbdt/src/lightgbm/api:dataset-num-rows dataset)))
 
 (defmethod dataset-num-features ((dataset lightgbm-dataset))
-  "Return DATASET's feature count, read via `LGBM_DatasetGetNumFeature'."
+  "Return DATASET's feature count, read via `LGBM_DatasetGetNumFeature'. Delegates wholly, as
+`dataset-num-rows' above does and for the same reason."
   (with-foreign-float-traps-masked
-    (%dataset-num-features (handle-live-pointer dataset))))
+    (cl-gbdt/src/lightgbm/api:dataset-num-features dataset)))
 
 (defmethod free-dataset ((dataset lightgbm-dataset))
   "Free DATASET via `LGBM_DatasetFree'. Does nothing if it was already freed.
@@ -896,9 +896,10 @@ Signals `backend-not-open' before any of that when BACKEND is not open -- see
            (completed-rounds 0))
       ;; Built here rather than by `cl-gbdt/src/lightgbm/api''s `create-booster', which is the
       ;; Layer 1 function for exactly this. `train' is the ONE method in this file whose Layer
-      ;; 1 counterpart exists and is not called: five of the thirteen delegate their whole
-      ;; procedure -- `make-dataset', `predict', `update-one-iteration', `free-dataset' and
-      ;; `free-booster' -- and the other seven have no counterpart to delegate to at all.
+      ;; 1 counterpart exists and is not called: every other method delegates its whole
+      ;; procedure to one -- `make-dataset', `predict', `update-one-iteration', `free-dataset',
+      ;; `free-booster', `save-model', `load-model', `model-to-string', `feature-importance',
+      ;; `evaluation', `dataset-num-rows' and `dataset-num-features', twelve in all.
       ;; `booster-best-iteration' is what holds this one back, and it is a barrier rather than
       ;; a preference: a `:reader'-only slot (src/handle.lisp) whose sole writer is
       ;; `make-handle''s :BEST-ITERATION initarg, at construction, while the value comes from
@@ -1099,14 +1100,24 @@ duplicating a check the procedure already makes."
 
 NUM-ITERATION limits how many trees are saved, :BEST resolved by
 `%resolve-best-num-iteration' first; nil saves all of them, which LightGBM spells as 0.
-Returns PATH."
+Returns PATH.
+
+The procedure is Layer 1 and lives in `cl-gbdt/src/lightgbm/api''s `save-model'. What is left
+here is resolving :BEST, which reads `booster-best-iteration' -- a slot `train' writes and
+nothing else does, so the keyword has no meaning below this layer."
   (with-foreign-float-traps-masked
-    (let ((pointer (handle-live-pointer booster))
-          (resolved (%resolve-best-num-iteration booster num-iteration
+    ;; Read and discarded, and not redundant with the check inside the procedure: the old body
+    ;; read the pointer in the same `let' that resolved :BEST, and `let' evaluates its
+    ;; initialization forms in order, so a freed BOOSTER handed :BEST reported
+    ;; `released-handle-error' rather than `unsupported-argument'. Resolution now runs before
+    ;; the delegation, so without this line that order would silently reverse. `predict' above
+    ;; carries the same line for the same reason.
+    (handle-live-pointer booster)
+    (let ((resolved (%resolve-best-num-iteration booster num-iteration
                                                   "save-model's :num-iteration")))
-      (cffi:with-foreign-string (filename (namestring path))
-        (%save-model pointer (%resolve-num-iteration resolved) filename)))
-    path))
+      ;; Named in full, not imported, and not recursion -- see `update-one-iteration' above,
+      ;; which faces the same doubled name for the same reason.
+      (cl-gbdt/src/lightgbm/api:save-model booster path :num-iteration resolved))))
 
 (defmethod load-model ((backend lightgbm-backend) path)
   "Load a LightGBM model from PATH via `LGBM_BoosterCreateFromModelfile' and
@@ -1123,32 +1134,29 @@ mirroring `cl-gbdt/src/xgboost/protocol''s `load-model', which reaches for the s
 otherwise be orphaned rather than freed.
 
 Signals `backend-not-open' before the foreign call when BACKEND is not open --
-see `%check-backend-open'."
+see `%check-backend-open'.
+
+This method's whole body was procedure -- there was no portable argument here to check or
+translate -- so all of it is `cl-gbdt/src/lightgbm/api''s `load-model', which is where the
+ownership window, the null-handle check and the backend guard now live."
   (with-foreign-float-traps-masked
-    (%check-backend-open backend)
-    (let ((booster-pointer
-            (cffi:with-foreign-string (filename (namestring path))
-              (cffi:with-foreign-objects ((out-num-iterations :int) (out :pointer))
-                (%create-booster-from-modelfile filename out-num-iterations out)
-                (cffi:mem-ref out :pointer)))))
-      (when (cffi:null-pointer-p booster-pointer)
-        (error 'foreign-call-error
-               :function-name "LGBM_BoosterCreateFromModelfile"
-               :code 0
-               :message "reported success but returned a null booster handle"))
-      (with-pointer-ownership (booster-pointer #'%free-booster-unchecked take-ownership)
-        (take-ownership 'lightgbm-booster backend :booster)))))
+    (cl-gbdt/src/lightgbm/api:load-model backend path)))
 
 (defmethod model-to-string ((booster lightgbm-booster) &key num-iteration)
   "Return BOOSTER's model as a string via `LGBM_BoosterSaveModelToString'.
 
 NUM-ITERATION's :BEST is resolved by `%resolve-best-num-iteration' before
-`%resolve-num-iteration' ever sees it, exactly as `predict' and `save-model' resolve it."
+`%resolve-num-iteration' ever sees it, exactly as `predict' and `save-model' resolve it.
+
+The procedure is Layer 1 and lives in `cl-gbdt/src/lightgbm/api''s `model-to-string'. What is
+left here is resolving :BEST, exactly as `save-model' above."
   (with-foreign-float-traps-masked
-    (%save-model-to-string
-     (handle-live-pointer booster)
-     (%resolve-num-iteration
-      (%resolve-best-num-iteration booster num-iteration "model-to-string's :num-iteration")))))
+    ;; See `save-model' above: discarded, and load-bearing for the order two wrong arguments
+    ;; are reported in.
+    (handle-live-pointer booster)
+    (let ((resolved (%resolve-best-num-iteration booster num-iteration
+                                                  "model-to-string's :num-iteration")))
+      (cl-gbdt/src/lightgbm/api:model-to-string booster :num-iteration resolved))))
 
 ;;; ---------------------------------------------------------------------------
 ;;; Feature importance
@@ -1163,20 +1171,15 @@ unbound.
 
 NUM-ITERATION does not accept :BEST, unlike `predict', `save-model' and
 `model-to-string' -- `%reject-best-num-iteration' signals `unsupported-argument' for it
-rather than letting it reach `LGBM_BoosterFeatureImportance' as raw, uninterpreted data."
+rather than letting it reach `LGBM_BoosterFeatureImportance' as raw, uninterpreted data.
+
+The procedure is `cl-gbdt/src/lightgbm/api''s `feature-importance', and so is the :BEST
+refusal: unlike `save-model' and `model-to-string', this operation never RESOLVED :BEST, and a
+refusal is something Layer 1 can make for itself with the same argument name and the same
+condition. Nothing is left here."
   (with-foreign-float-traps-masked
-    (let* ((pointer (handle-live-pointer booster))
-           (importance-type (%feature-importance-type kind))
-           (count (%booster-num-features pointer))
-           (result (make-array count :element-type 'double-float))
-           (resolved (%reject-best-num-iteration booster num-iteration
-                                                  "feature-importance's :num-iteration")))
-      (cffi:with-foreign-object (buffer :double count)
-        (%feature-importance pointer (%resolve-num-iteration resolved) importance-type
-                              buffer)
-        (dotimes (index count)
-          (setf (aref result index) (cffi:mem-aref buffer :double index))))
-      result)))
+    (cl-gbdt/src/lightgbm/api:feature-importance booster :kind kind
+                                                          :num-iteration num-iteration)))
 
 ;;; ---------------------------------------------------------------------------
 ;;; Evaluation
@@ -1195,8 +1198,8 @@ every dataset rather than re-read per index.
 
 DATASET-INDEX is passed straight through to `LGBM_BoosterGetEval' as its `data_idx':
 this backend's own numbering already is the portable contract's numbering, 0 for the
-training set and 1 upward for each `:VALID-SETS' entry in order, so nothing here
-renumbers anything. The datasets are counted from BOOSTER's own retained handles rather
+training set and 1 upward for each `:VALID-SETS' entry in order, with no renumbering
+along the way. The datasets are counted from BOOSTER's own retained handles rather
 than asked of the library, which has no entry point reporting how many are attached; a
 `load-model' booster retains none, and is the case that count is 0 for. LightGBM does
 answer `data_idx' 0 for such a booster -- with an empty result, confirmed against the
@@ -1205,20 +1208,29 @@ that index for the portable contract to name, so it is not evaluated at all rath
 reported as index 0.
 
 The values are `LGBM_BoosterGetEval''s own doubles, returned unmodified, which is what
-the secondary value's `:value-source :library-doubles' says; unlike XGBoost's, nothing
-here parses text, so there is no :RAW to keep and no VALUE is ever NIL.
+the secondary value's `:value-source :library-doubles' says; unlike XGBoost's, none of
+it is parsed from text, so there is no :RAW to keep and no VALUE is ever NIL.
 
-`%check-booster-datasets-live' runs before any foreign call this method makes, including
-inside `%read-evaluation': `LGBM_BoosterGetEval' evaluates each attached validation set
-through the metric objects built over that dataset's own label and weight arrays, none of
-which `LGBM_DatasetFree' clears from the booster, so evaluating after one of them was
-freed is a use-after-free rather than a catchable condition -- the identical hazard
-`update-one-iteration' guards against with the same call."
+This method's whole body was procedure, so all of it -- the per-dataset reading, the
+`data_idx' passthrough and the value-source plist alike -- is
+`cl-gbdt/src/lightgbm/api''s `evaluation'. That function checks BOOSTER's own kind and
+pointer through `%check-lightgbm-booster' first, then calls `%check-booster-datasets-live'
+before any foreign call, including inside `%read-evaluation': `LGBM_BoosterGetEval'
+evaluates each attached validation set through the metric objects built over that
+dataset's own label and weight arrays, none of which `LGBM_DatasetFree' clears from the
+booster, so evaluating after one of them was freed is a use-after-free rather than a
+catchable condition -- the identical hazard `update-one-iteration' guards against with
+the same call.
+
+Two things changed with the move. First, the kind check now runs before
+`%check-booster-datasets-live' rather than after, so a value that is not a booster at
+all is answered with `wrong-backend-reference' where it used to reach
+`booster-training-set' and produce a bare CLOS `no-applicable-method'. Second, that same
+reorder means a booster that is ITSELF released and also still retains a released
+dataset now signals `released-handle-error' naming the BOOSTER -- from
+`%check-lightgbm-booster''s own live-pointer check, which now runs first -- where the
+Layer 2 method's old order, `%check-booster-datasets-live' before the booster's own
+pointer, named the DATASET instead. Same condition type either way, so nothing a caller
+dispatches on changed; every other order is as it was."
   (with-foreign-float-traps-masked
-    (%check-booster-datasets-live booster)
-    (let ((pointer (handle-live-pointer booster))
-          (dataset-count (if (booster-training-set booster)
-                             (1+ (length (booster-validation-sets booster)))
-                             0)))
-      (values (%read-evaluation pointer dataset-count)
-              (list :value-source :library-doubles)))))
+    (cl-gbdt/src/lightgbm/api:evaluation booster)))

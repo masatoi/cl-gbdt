@@ -43,16 +43,18 @@
 ;;;; `xgboost-dataset' or `xgboost-booster' before the Layer 1 split, and that specializer WAS
 ;;;; the check. A plain `defun' takes whatever it is given. `%check-xgboost-dataset' and
 ;;;; `%check-xgboost-booster' are what the operations that require a LIVE handle use;
-;;;; `%check-object-class' below is what the two frees use, they being the two that must keep
-;;;; working on a handle that is neither.
+;;;; `%check-object-class' below is what `free-dataset' and `free-booster' use instead, they
+;;;; being the two that must keep working on a handle that is neither, and what
+;;;; `dataset-num-rows' and `dataset-num-features' pair with `handle-live-pointer' for, neither
+;;;; having a BACKEND argument of its own to hand `%check-xgboost-dataset' for its report.
 ;;;;
-;;;; The two operations that take a caller-supplied BACKEND rather than a handle --
-;;;; `create-dataset' and `create-booster' -- are under the identical rule for the identical
-;;;; reason, and `%check-object-class' is their check too, handed `xgboost-backend' where the
-;;;; frees hand it a handle class. Their `defmethod' ancestors specialized on `xgboost-backend',
-;;;; so the backend argument was type-checked by the same mechanism the handle arguments were,
-;;;; and `%check-backend-open' does not replace it: that function asks whether the object is
-;;;; OPEN, not whose it is.
+;;;; The three operations that take a caller-supplied BACKEND rather than a handle --
+;;;; `create-dataset', `create-booster' and `load-model' -- are under the identical rule for
+;;;; the identical reason, and `%check-object-class' is their check too, handed
+;;;; `xgboost-backend' where the frees hand it a handle class. Their `defmethod' ancestors
+;;;; specialized on `xgboost-backend', so the backend argument was type-checked by the same
+;;;; mechanism the handle arguments were, and `%check-backend-open' does not replace it: that
+;;;; function asks whether the object is OPEN, not whose it is.
 
 (uiop:define-package #:cl-gbdt/src/xgboost/api
   (:use #:cl)
@@ -62,26 +64,36 @@
                 #:xgboost-booster
                 #:xgboost-dataset)
   (:import-from #:cl-gbdt/src/xgboost/native
+                #:%booster-num-features
                 #:%check-backend-open
                 #:%check-booster-datasets-live
+                #:%check-feature-score-dim
                 #:%check-unsupported
                 #:%check-xgboost-booster
                 #:%check-xgboost-dataset
                 #:%create-booster
                 #:%create-dmatrix
                 #:%create-dmatrix-from-csr
+                #:%dataset-num-features
                 #:%dataset-num-rows
+                #:%feature-importance-type
+                #:%feature-score
+                #:%feature-score-index
                 #:%free-booster
                 #:%free-booster-unchecked
                 #:%free-dmatrix
                 #:%free-dmatrix-unchecked
+                #:%load-model
                 #:%predict-config-json
                 #:%predict-from-csr
                 #:%predict-from-dmatrix
                 #:%predict-ncol
                 #:%predict-type
+                #:%read-evaluation
                 #:%reported-shape
                 #:%resolve-num-iteration
+                #:%save-model
+                #:%save-model-to-buffer
                 #:%set-feature-names
                 #:%set-feature-types
                 #:%set-group-field
@@ -111,6 +123,7 @@
   (:import-from #:cl-gbdt/src/handle
                 #:%reject-best-num-iteration
                 #:booster-training-set
+                #:booster-validation-sets
                 #:handle-backend
                 #:handle-live-pointer
                 #:handle-released-p
@@ -119,9 +132,16 @@
   (:export #:%creation-function-name
            #:create-booster
            #:create-dataset
+           #:dataset-num-features
+           #:dataset-num-rows
+           #:evaluation
+           #:feature-importance
            #:free-booster
            #:free-dataset
+           #:load-model
+           #:model-to-string
            #:predict
+           #:save-model
            #:slice-model
            #:update-one-iteration))
 
@@ -162,13 +182,20 @@ library that has neither."
 (defun %check-object-class (object class noun argument-description)
   "Signal `wrong-backend-reference' unless OBJECT is of type CLASS, reporting NOUN as the kind
 of thing that was wanted and ARGUMENT-DESCRIPTION as the argument OBJECT came from. Returns
-no useful value, and reads nothing else about OBJECT at all. Four callers, in two pairs:
+no useful value, and reads nothing else about OBJECT at all. Seven callers, in three groups:
 `free-dataset' and `free-booster', where this is what stands between a wrong-kind pointer and
-`XGDMatrixFree' or `XGBoosterFree' dereferencing it, and `create-dataset' and `create-booster',
-where OBJECT is the BACKEND -- which is why this is not named for handles -- and where it runs
-ahead of `%check-backend-open', that check asking only whether the object is OPEN. All four
-were `defmethod's specialized on the concrete class before the Layer 1 split, and that
-specializer was this check.
+`XGDMatrixFree' or `XGBoosterFree' dereferencing it; `create-dataset', `create-booster' and
+`load-model', where OBJECT is the BACKEND -- which is why this is not named for handles -- and
+where each calls this FIRST, ahead of `%check-backend-open', that check asking only whether
+the object is OPEN; and `dataset-num-rows' and `dataset-num-features', which need a LIVE
+handle, unlike the frees, but have no BACKEND argument of their own to hand
+`%check-xgboost-dataset' for its report -- neither signature takes one, both being readers of
+an existing DATASET rather than builders -- so each pairs this check with `handle-live-pointer'
+instead, calling it only once this one has already confirmed DATASET's kind:
+`wrong-backend-reference' for the wrong kind, and whatever `handle-live-pointer' signals
+otherwise, `released-handle-error' for an already-freed DATASET or `backend-not-open' for one
+whose backend has since closed. All seven were `defmethod's specialized on the concrete class
+before the Layer 1 split, and that specializer was this check.
 
 The mirror of `cl-gbdt/src/lightgbm/api''s function of the same name, WHICH CARRIES THE WHOLE
 ARGUMENT: why the two frees cannot use `%check-xgboost-dataset' or `%check-xgboost-booster'
@@ -176,7 +203,7 @@ the way every operation in this file that requires a live handle does, why the c
 openness check does not subsume this one and why their call must precede it, why a `typep'
 against the CONCRETE class subsumes kind and backend where `cl-gbdt/src/handle''s
 `%check-handle-kind' needs a pair, why NOUN is passed rather than derived from CLASS, and what
-the two libraries measurably did without the check at either pair of call sites. None of it is
+the two libraries measurably did without the check at either group of call sites. None of it is
 repeated here: the reasoning is identical for both backends -- it is about the shape of a
 Layer 1 `defun' and of a package-inferred dependency edge, not about either C API -- so a
 second copy would be a second thing to keep true. Read it there. Measured on this side,
@@ -782,6 +809,217 @@ one itself."
                     (warn "Freeing predict's temporary XGBoost dataset failed: the ~
                            foreign dataset was not freed and its memory is leaked. ~A"
                           condition))))))))))
+
+;;; ---------------------------------------------------------------------------
+;;; Persistence
+;;;
+;;; `save-model' and `model-to-string' below repeat the same shape: a class guard on BOOSTER
+;;; as the very first thing the body evaluates, then the foreign call -- no :BEST refusal
+;;; here, since neither takes a NUM-ITERATION at all, unlike LightGBM's identical two, which
+;;; do and carry that middle step. The repetition is load-bearing all the same:
+;;; `tools/ci/check-layer-1-guards.lisp' requires that first form to be a `%CHECK-'-prefixed
+;;; call on BOOSTER itself, and neither a shared macro nor a body-taking function wrapping it
+;;; is a shape its walk recognises, so folding the duplication away would report both entry
+;;; points unguarded rather than remove it.
+
+(defun save-model (booster path)
+  "Save BOOSTER's model to PATH via `XGBoosterSaveModel', and return PATH.
+
+Takes no iteration limit, unlike `cl-gbdt/src/lightgbm/api''s `save-model':
+`XGBoosterSaveModel' has no such parameter and always writes every boosted round. The
+argument is therefore ABSENT here rather than refused -- a Layer 1 caller who names it gets
+Common Lisp's own unknown-keyword error, which is the right report for a keyword that does
+not exist. `cl-gbdt/src/xgboost/protocol''s method is where `unsupported-argument' is
+signalled, because that refusal exists only because the unified API promised a portable
+:NUM-ITERATION that LightGBM honours.
+
+XGBoost selects its serialization format from PATH's extension -- `.json' and `.ubj' are the
+current ones -- and reports an unrecognized extension itself, as `foreign-call-error'.
+
+Signals `wrong-backend-reference' when BOOSTER is not a booster built by this backend -- a
+dataset, a LightGBM booster, or not a handle at all. This function dispatches on nothing, so
+`%check-xgboost-booster' is the only thing between such a handle's pointer and
+`XGBoosterSaveModel'; see `%check-object-class' above on what wrong-kind pointers did when
+measured against the vendored library. `released-handle-error' and `backend-not-open' come
+from the `handle-live-pointer' inside that same check."
+  (with-foreign-float-traps-masked
+    (let ((pointer (%check-xgboost-booster booster "save-model's booster argument")))
+      (cffi:with-foreign-string (filename (namestring path))
+        (%save-model pointer filename)))
+    path))
+
+(defun load-model (backend path)
+  "Load an XGBoost model from PATH and return a new booster built against BACKEND.
+
+Unlike LightGBM's `LGBM_BoosterCreateFromModelfile', which allocates the booster and loads the
+model in one call, XGBoost splits the two: `XGBoosterCreate' first builds a booster with no
+DMatrix handles at all, and only then does `XGBoosterLoadModel' populate it from PATH.
+
+The returned booster has no training set -- see the `booster' class' documentation -- since
+PATH names a model, not a dataset. `evaluation' on it therefore reports nothing, and
+`update-one-iteration' signals `missing-training-set'.
+
+`with-pointer-ownership' spans exactly the window in which the raw booster is owned by
+nobody: any exit that has not called TAKE-OWNERSHIP -- a failing `XGBoosterLoadModel' the
+likeliest -- frees it here instead of orphaning it.
+
+Signals `wrong-backend-reference' when BACKEND is not an `xgboost-backend', checked FIRST,
+ahead of `%check-backend-open', which asks only whether the object is open and answers that
+truthfully for the wrong library. Signals `backend-not-open' when BACKEND is closed."
+  (with-foreign-float-traps-masked
+    (%check-object-class backend 'xgboost-backend "backend" "load-model's backend argument")
+    (%check-backend-open backend)
+    (let ((booster-pointer (%create-booster nil)))
+      (with-pointer-ownership (booster-pointer #'%free-booster-unchecked take-ownership)
+        (cffi:with-foreign-string (filename (namestring path))
+          (%load-model booster-pointer filename))
+        (take-ownership 'xgboost-booster backend :booster)))))
+
+(defun model-to-string (booster)
+  "Return BOOSTER's model as a JSON string via `XGBoosterSaveModelToBuffer'.
+
+Takes no iteration limit, for the reason `save-model' above states: that entry point's config
+JSON has only a `\"format\"' key. The text this returns is a complete model document and can
+be written to a `.json' file and handed back to `load-model'.
+
+`out_dptr' is XGBoost's own memory, copied out via `foreign-string-to-lisp' with an explicit
+`:count' from `out_len' rather than trusted to be null-terminated at the right place.
+
+Signals `wrong-backend-reference', `released-handle-error' and `backend-not-open' exactly as
+`save-model' does, and for the same reason: this function dispatches on nothing."
+  (with-foreign-float-traps-masked
+    (let ((pointer (%check-xgboost-booster booster "model-to-string's booster argument")))
+      (cffi:with-foreign-string (config "{\"format\":\"json\"}")
+        (cffi:with-foreign-objects ((out-len :uint64) (out-dptr :pointer))
+          (%save-model-to-buffer pointer config out-len out-dptr)
+          (cffi:foreign-string-to-lisp (cffi:mem-ref out-dptr :pointer)
+                                        :count (cffi:mem-ref out-len :uint64)))))))
+
+;;; ---------------------------------------------------------------------------
+;;; Feature importance
+
+(defun feature-importance (booster &key (kind :split))
+  "Return BOOSTER's per-feature importances via `XGBoosterFeatureScore', as a fresh
+`(simple-array double-float (*))' with one entry per feature, indexed by column -- zero for a
+feature never used in a split.
+
+`XGBoosterFeatureScore' itself reports the opposite: `out_n_features' and `out_scores' cover
+only features that appear in at least one split, so a feature never split on is absent from
+its report rather than present with a zero. Left as it comes back, the result's length would
+be the number of USED features and its indices would not correspond to columns -- sparse where
+LightGBM's equivalent is always dense. This builds a dense vector of `%booster-num-features'
+entries instead and scatters each reported score into the column `%feature-score-index'
+recovers from its feature name.
+
+KIND is `:split' or `:gain', mapped by `%feature-importance-type' onto `\"weight\"' and
+`\"total_gain\"' -- the latter deliberately, XGBoost's own `\"gain\"' being an average where
+LightGBM's `:gain' and this project's contract mean the total.
+
+Takes no :NUM-ITERATION, unlike `cl-gbdt/src/lightgbm/api''s `feature-importance':
+`XGBoosterFeatureScore''s config JSON has no iteration-limiting key. The argument is absent
+here rather than refused; `cl-gbdt/src/xgboost/protocol''s method is where
+`unsupported-argument' is signalled, that refusal existing only because LightGBM honours the
+argument.
+
+Signals `unsupported-argument' instead of returning a result at all when
+`XGBoosterFeatureScore' reports more than one score per feature -- see
+`%check-feature-score-dim'. In practice that is a `gblinear' booster's `:split' importance on
+a multi-class model, whose scores are a per-class matrix with no single value to derive from
+it.
+
+Signals `wrong-backend-reference' when BOOSTER is not a booster built by this backend, and
+`released-handle-error' or `backend-not-open' from the `handle-live-pointer' inside that
+check, which runs before anything else is read."
+  (with-foreign-float-traps-masked
+    (let ((pointer (%check-xgboost-booster booster "feature-importance's booster argument"))
+          (importance-type (%feature-importance-type kind)))
+      (cffi:with-foreign-string
+          (config (format nil "{\"importance_type\":\"~A\"}" importance-type))
+        (cffi:with-foreign-objects ((out-n-features :uint64) (out-features :pointer)
+                                     (out-dim :uint64) (out-shape :pointer)
+                                     (out-scores :pointer))
+          (%feature-score
+           pointer config out-n-features out-features out-dim out-shape out-scores)
+          (%check-feature-score-dim (handle-backend booster) out-dim out-shape)
+          (let ((used-count (cffi:mem-ref out-n-features :uint64))
+                (features-pointer (cffi:mem-ref out-features :pointer))
+                (scores-pointer (cffi:mem-ref out-scores :pointer))
+                (result (make-array (%booster-num-features pointer)
+                                     :element-type 'double-float :initial-element 0.0d0)))
+            (dotimes (used-index used-count result)
+              (let* ((name (cffi:foreign-string-to-lisp
+                            (cffi:mem-aref features-pointer :pointer used-index)))
+                     (column (%feature-score-index name)))
+                (setf (aref result column)
+                      (coerce (cffi:mem-aref scores-pointer :float used-index)
+                              'double-float))))))))))
+
+;;; ---------------------------------------------------------------------------
+;;; Evaluation
+
+(defun evaluation (booster)
+  "Return BOOSTER's evaluation metrics as two values: a list of (DATASET-INDEX METRIC-NAME
+VALUE) entries, and a plist stating where the values came from.
+
+`XGBoosterEvalOneIter' evaluates whatever DMatrices it is handed and consults nothing the
+booster was built with, so what this evaluates is BOOSTER's own retained handles: its training
+set first, then each validation set in the order it was given. That is what makes
+DATASET-INDEX mean here what it means on LightGBM, which can only evaluate what training
+attached. A booster from `load-model' retains none, and is the case an empty result comes
+from.
+
+Each dataset is named to the C call by its own decimal index -- \"0\", \"1\" -- because the
+call requires one name per DMatrix and builds each result label by joining that name to the
+metric's with a hyphen; `%split-eval-label' takes the label back apart against those same
+names, which is the only way to recover the metric name. Those names are an argument to a C
+call, never a dataset name this API reports.
+
+The second value is `(:value-source :parsed-text :raw TEXT)': VALUE is `%parse-eval-result''s
+reading of formatted output, and :RAW carries that output unmodified so nothing the library
+wrote is lost to the parse. A field the parser could not read as a `double-float' -- XGBoost
+spells a non-finite one \"inf\" or \"nan\" -- keeps its entry with VALUE NIL rather than
+disappearing.
+
+The kind check runs first and every retained dataset is then read through
+`handle-live-pointer', so a freed booster or a freed retained dataset signals
+`released-handle-error' here; unlike `cl-gbdt/src/lightgbm/api''s `evaluation', this needs no
+separate `%check-booster-datasets-live', every dataset it evaluates being one it resolves and
+checks explicitly before any foreign call."
+  (with-foreign-float-traps-masked
+    (let* ((booster-pointer (%check-xgboost-booster booster "evaluation's booster argument"))
+           (training-set (booster-training-set booster))
+           (datasets (if training-set
+                         (cons training-set (booster-validation-sets booster))
+                         '()))
+           (dataset-pointers (mapcar #'handle-live-pointer datasets)))
+      (multiple-value-bind (entries raw) (%read-evaluation booster-pointer dataset-pointers)
+        (values entries (list :value-source :parsed-text :raw raw))))))
+
+;;; ---------------------------------------------------------------------------
+;;; Dataset metadata
+
+(defun dataset-num-rows (dataset)
+  "Return DATASET's row count, read via `XGDMatrixNumRow'.
+
+Signals `wrong-backend-reference' when DATASET is not an `xgboost-dataset' -- a booster, the
+other backend's dataset, or not a handle at all. This function dispatches on nothing, so
+`%check-object-class' is the only thing between a wrong-kind pointer and the foreign call.
+Unlike the frees, which use that same check and then tolerate a released handle, this requires
+a LIVE one and reads it through `handle-live-pointer' immediately after."
+  (with-foreign-float-traps-masked
+    (%check-object-class dataset 'xgboost-dataset "dataset"
+                         "dataset-num-rows's dataset argument")
+    (%dataset-num-rows (handle-live-pointer dataset))))
+
+(defun dataset-num-features (dataset)
+  "Return DATASET's feature count, read via `XGDMatrixNumCol'.
+
+Signals what `dataset-num-rows' above signals, on the same terms and through the same two
+calls."
+  (with-foreign-float-traps-masked
+    (%check-object-class dataset 'xgboost-dataset "dataset"
+                         "dataset-num-features's dataset argument")
+    (%dataset-num-features (handle-live-pointer dataset))))
 
 ;;; ---------------------------------------------------------------------------
 ;;; Model slicing

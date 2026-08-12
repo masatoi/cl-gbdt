@@ -510,3 +510,179 @@ compared."
             (progn
               (cl-gbdt/xgboost:free-booster booster)
               (cl-gbdt/xgboost:free-dataset data))))))))
+
+(defun model-path (name)
+  "Return a pathname for NAME in the system's temporary directory.
+
+`uiop' rather than a new dependency clause: this file's own package form is
+`uiop:define-package', so UIOP is already named here, and ASDF vendors it -- unlike anything
+under `cl-gbdt/src/', naming it does not widen the closure `tools/ci/check-leaf-systems.lisp'
+loads."
+  (merge-pathnames name (uiop:temporary-directory)))
+
+(deftest layer-1-alone-saves-loads-and-renders-a-model
+  (testing "a caller with only cl-gbdt/xgboost loaded can persist a model and read it back"
+    (with-open-backend (backend)
+      (multiple-value-bind (matrix label-vector) (fixture)
+        (let ((data (cl-gbdt/xgboost:create-dataset backend matrix :label label-vector))
+              ;; `.json', not an arbitrary name: XGBoost picks its serialization format from
+              ;; the extension, and an unrecognized one is its own error rather than this
+              ;; test's subject.
+              (path (model-path "cl-gbdt-xgboost-standalone.json"))
+              (echoed (model-path "cl-gbdt-xgboost-standalone-echo.json")))
+          (unwind-protect
+               (let ((booster (cl-gbdt/xgboost:create-booster backend data
+                                                               :parameters *parameters*)))
+                 (unwind-protect
+                      (progn
+                        (dotimes (round 20)
+                          (cl-gbdt/xgboost:update-one-iteration booster))
+                        (ok (equal path (cl-gbdt/xgboost:save-model booster path))
+                            "save-model returns the path it was given")
+                        (ok (probe-file path) "save-model wrote the file")
+                        (let ((reloaded (cl-gbdt/xgboost:load-model backend path)))
+                          (unwind-protect
+                               (progn
+                                 (ok (null (cl-gbdt/xgboost:booster-training-set reloaded))
+                                     "a loaded booster has no training set")
+                                 (ok (equalp (cl-gbdt/xgboost:predict booster matrix)
+                                             (cl-gbdt/xgboost:predict reloaded matrix))
+                                     "the reloaded model predicts what the original did"))
+                            (cl-gbdt/xgboost:free-booster reloaded)))
+                        ;; Asserted by round trip rather than against any substring of
+                        ;; XGBoost's JSON: write what it returned, load THAT, require the same
+                        ;; predictions.
+                        (let ((text (cl-gbdt/xgboost:model-to-string booster)))
+                          (ok (and (stringp text) (plusp (length text)))
+                              "model-to-string returns a non-empty string")
+                          (with-open-file (stream echoed :direction :output
+                                                          :if-exists :supersede)
+                            (write-string text stream))
+                          (let ((from-string (cl-gbdt/xgboost:load-model backend echoed)))
+                            (unwind-protect
+                                 (ok (equalp (cl-gbdt/xgboost:predict booster matrix)
+                                             (cl-gbdt/xgboost:predict from-string matrix))
+                                     "model-to-string's text is itself a loadable model")
+                              (cl-gbdt/xgboost:free-booster from-string))))
+                        ;; The specializer each of these lost. `handler-case', not rove's
+                        ;; `signals', which does not reliably catch a condition raised inside
+                        ;; `restart-case'.
+                        (ok (handler-case (progn (cl-gbdt/xgboost:save-model data path) nil)
+                              (cl-gbdt/xgboost:wrong-backend-reference () t))
+                            "save-model accepted a dataset as its booster")
+                        (ok (handler-case (progn (cl-gbdt/xgboost:model-to-string data) nil)
+                              (cl-gbdt/xgboost:wrong-backend-reference () t))
+                            "model-to-string accepted a dataset as its booster")
+                        (ok (handler-case (progn (cl-gbdt/xgboost:load-model data path) nil)
+                              (cl-gbdt/xgboost:wrong-backend-reference () t))
+                            "load-model accepted a dataset as its backend")
+                        (ok (handler-case (progn (cl-gbdt/xgboost:load-model nil path) nil)
+                              (cl-gbdt/xgboost:wrong-backend-reference () t))
+                            "load-model accepted NIL as its backend"))
+                   (cl-gbdt/xgboost:free-booster booster)))
+            (progn
+              (cl-gbdt/xgboost:free-dataset data)
+              (when (probe-file path) (delete-file path))
+              (when (probe-file echoed) (delete-file echoed)))))))))
+
+(deftest layer-1-alone-reports-importance-evaluation-and-shape
+  (testing "a caller with only cl-gbdt/xgboost loaded can ask what it just trained"
+    (with-open-backend (backend)
+      (multiple-value-bind (matrix label-vector) (fixture)
+        (let ((data (cl-gbdt/xgboost:create-dataset backend matrix :label label-vector)))
+          (unwind-protect
+               (let ((booster (cl-gbdt/xgboost:create-booster backend data
+                                                               :parameters *parameters*)))
+                 (unwind-protect
+                      (progn
+                        (dotimes (round 20)
+                          (cl-gbdt/xgboost:update-one-iteration booster))
+                        (ok (= 16 (cl-gbdt/xgboost:dataset-num-rows data))
+                            "dataset-num-rows reports the fixture's row count")
+                        (ok (= 2 (cl-gbdt/xgboost:dataset-num-features data))
+                            "dataset-num-features reports its column count")
+                        ;; One entry per FEATURE, which XGBoost's own report is NOT:
+                        ;; `XGBoosterFeatureScore' covers only features that appear in a
+                        ;; split, so this length is the scatter working rather than the
+                        ;; library's own answer passed through.
+                        (let ((split (cl-gbdt/xgboost:feature-importance booster))
+                              (gain (cl-gbdt/xgboost:feature-importance booster :kind :gain)))
+                          (ok (= 2 (length split))
+                              (format nil ":split importance has ~D entries" (length split)))
+                          (ok (= 2 (length gain))
+                              (format nil ":gain importance has ~D entries" (length gain)))
+                          (ok (every (lambda (value) (typep value 'double-float)) split)
+                              "every :split entry is a double-float")
+                          (ok (>= (aref split 0) (aref split 1))
+                              (format nil ":split importance ~S ranks column 0 first" split))
+                          (ok (>= (aref gain 0) (aref gain 1))
+                              (format nil ":gain importance ~S ranks column 0 first" gain))
+                          (ok (plusp (aref gain 0))
+                              "the signal-carrying column has non-zero gain, so the model split"))
+                        (multiple-value-bind (entries provenance)
+                            (cl-gbdt/xgboost:evaluation booster)
+                          (ok (consp entries) "evaluation reports the training set's metrics")
+                          (ok (every (lambda (entry)
+                                       (and (= 3 (length entry))
+                                            (integerp (first entry))
+                                            (stringp (second entry))
+                                            (or (null (third entry))
+                                                (typep (third entry) 'double-float))))
+                                     entries)
+                              "each entry is (dataset-index metric-name value-or-nil)")
+                          (ok (every (lambda (entry) (zerop (first entry))) entries)
+                              "with no validation set every entry is at index 0")
+                          (ok (eq :parsed-text (getf provenance :value-source))
+                              "evaluation states that it parsed the library's text")
+                          (ok (stringp (getf provenance :raw))
+                              "and keeps that text unmodified"))
+                        ;; The specializer each of these lost.
+                        (ok (handler-case
+                                (progn (cl-gbdt/xgboost:feature-importance data) nil)
+                              (cl-gbdt/xgboost:wrong-backend-reference () t))
+                            "feature-importance accepted a dataset as its booster")
+                        (ok (handler-case (progn (cl-gbdt/xgboost:evaluation data) nil)
+                              (cl-gbdt/xgboost:wrong-backend-reference () t))
+                            "evaluation accepted a dataset as its booster")
+                        (ok (handler-case
+                                (progn (cl-gbdt/xgboost:dataset-num-rows booster) nil)
+                              (cl-gbdt/xgboost:wrong-backend-reference () t))
+                            "dataset-num-rows accepted a booster as its dataset")
+                        (ok (handler-case
+                                (progn (cl-gbdt/xgboost:dataset-num-features booster) nil)
+                              (cl-gbdt/xgboost:wrong-backend-reference () t))
+                            "dataset-num-features accepted a booster as its dataset"))
+                   (cl-gbdt/xgboost:free-booster booster)))
+            (cl-gbdt/xgboost:free-dataset data)))))))
+
+;;; The `load-model' case, separated for the reason its LightGBM twin is separated: it needs a
+;;; second booster and a file, and an empty result is the case a reader is most likely to
+;;; mistake for an error.
+
+(deftest layer-1-alone-evaluates-a-loaded-model-as-empty
+  (testing "a booster with no retained dataset has nothing to evaluate"
+    (with-open-backend (backend)
+      (multiple-value-bind (matrix label-vector) (fixture)
+        (let ((data (cl-gbdt/xgboost:create-dataset backend matrix :label label-vector))
+              (path (model-path "cl-gbdt-xgboost-standalone-eval.json")))
+          (unwind-protect
+               (let ((booster (cl-gbdt/xgboost:create-booster backend data
+                                                               :parameters *parameters*)))
+                 (unwind-protect
+                      (progn
+                        (dotimes (round 5)
+                          (cl-gbdt/xgboost:update-one-iteration booster))
+                        (cl-gbdt/xgboost:save-model booster path)
+                        (let ((reloaded (cl-gbdt/xgboost:load-model backend path)))
+                          (unwind-protect
+                               (progn
+                                 (ok (null (cl-gbdt/xgboost:evaluation reloaded))
+                                     "a loaded booster evaluates to no entries")
+                                 (ok (= 2 (length (cl-gbdt/xgboost:feature-importance
+                                                   reloaded)))
+                                     "but still reports one importance per feature"))
+                            (cl-gbdt/xgboost:free-booster reloaded))))
+                   (cl-gbdt/xgboost:free-booster booster)))
+            (progn
+              (cl-gbdt/xgboost:free-dataset data)
+              (when (probe-file path) (delete-file path)))))))))
