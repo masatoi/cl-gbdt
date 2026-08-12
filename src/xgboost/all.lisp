@@ -50,29 +50,33 @@
 ;;; public surface by accident -- exactly what this task's brief warns an accidental export
 ;;; becomes: a compatibility obligation.
 ;;;
-;;; Thirteen symbols from those three packages, each pulled explicitly by name. `xgboost-backend'
+;;; Seventeen symbols from those three packages, each pulled explicitly by name. `xgboost-backend'
 ;;; from `classes' is the CLOS class a caller can specialize methods on or check with `typep';
 ;;; `evaluate-one-iteration'
 ;;; (docs/superpowers/specs/2026-08-06-evaluation-api-design.md) and `booster-boosted-rounds',
 ;;; the round count `slice-model''s interval is expressed against, come from `native'.
 ;;; `slice-model' itself, the capability work's Layer 1 addition, and `create-dataset',
 ;;; `free-dataset', `create-booster', `update-one-iteration', `free-booster', `predict',
-;;; `save-model', `load-model' and `model-to-string', the finished operations, come from `api'.
-;;; Eight of those nine are procedure lifted out of `cl-gbdt/src/xgboost/protocol' --
+;;; `save-model', `load-model', `model-to-string', `feature-importance', `evaluation',
+;;; `dataset-num-rows' and `dataset-num-features', the finished operations, come from `api'.
+;;; Twelve of those thirteen are procedure lifted out of `cl-gbdt/src/xgboost/protocol' --
 ;;; `free-dataset', `update-one-iteration', `free-booster', `predict', `save-model',
-;;; `load-model' and `model-to-string' out of the methods of those very names, and
-;;; `create-dataset' out of `make-dataset', whose portable name it does not share -- each of
-;;; those methods now checking its portable arguments and calling the function here.
-;;; `create-booster' is the ninth and is not lifted from anything: no protocol method ever built
-;;; a booster OVER A DATASET on its own, `train' having always built one inline as part of a
-;;; run. (`load-model' builds one too, but from a file and with no dataset in sight, so it is
+;;; `load-model', `model-to-string', `feature-importance', `evaluation', `dataset-num-rows' and
+;;; `dataset-num-features' out of the methods of those very names, and `create-dataset' out of
+;;; `make-dataset', whose portable name it does not share -- each of those methods now checking
+;;; whatever portable arguments it still has and calling the function here.
+;;; `create-booster' is the thirteenth and is not lifted from anything: no protocol method ever
+;;; built a booster OVER A DATASET on its own, `train' having always built one inline as part of
+;;; a run. (`load-model' builds one too, but from a file and with no dataset in sight, so it is
 ;;; not this function under another name.) Together they are a whole training run at this layer,
-;;; the inference that follows it, and now persistence besides: build a dataset, build a booster
-;;; on it, advance it, score with it, save the model or reload one, render it as text, free both.
+;;; the inference that follows it, and now persistence and introspection besides: build a
+;;; dataset, build a booster on it, advance it, score with it, save the model or reload one,
+;;; render it as text, ask what it split on and how it scored, free both.
 ;;; `create-booster' is the one with no caller inside this library -- `train' builds its own
 ;;; booster, for the reason its creation call records -- so it is published on the strength of
 ;;; its own contract rather than of a method that exercises it. `free-dataset', `free-booster',
-;;; `update-one-iteration', `predict', `save-model', `load-model' and `model-to-string' here are
+;;; `update-one-iteration', `predict', `save-model', `load-model', `model-to-string',
+;;; `feature-importance', `evaluation', `dataset-num-rows' and `dataset-num-features' here are
 ;;; NOT `cl-gbdt''s generics of those names: they are plain functions and different symbols, so
 ;;; a caller who has both packages in an image must name which one they mean, exactly as they
 ;;; already must for anything else two packages export under one name. `slice-model' was
@@ -81,11 +85,11 @@
 ;;; symbol a caller reaches is unchanged by that move -- this clause is the only thing that had
 ;;; to notice.
 ;;;
-;;; All thirteen are policy section 3's Layer 1, mirroring `cl-gbdt/lightgbm''s identical shape.
+;;; All seventeen are policy section 3's Layer 1, mirroring `cl-gbdt/lightgbm''s identical shape.
 ;;; Nothing else from `native' is published here: none of its remaining exports is a reviewed,
 ;;; Lisp-level XGBoost-specific operation. `api' is `:import-from'ed rather than
 ;;; `:use-reexport'ed for the reason `classes' is, and the reason survives that package's
-;;; `:export' clause holding nothing but those ten operations and one helper today:
+;;; `:export' clause holding nothing but those fourteen operations and one helper today:
 ;;; `:use-reexport' would publish whatever that clause grows next automatically, and the
 ;;; `:export' clause below is what `tools/ci/check-float-traps.lisp' reads to decide which
 ;;; `defun's are entry points -- see the paragraph on that check below, which is why a name
@@ -148,7 +152,7 @@
 ;;; been freed.
 ;;;
 ;;; None of those nine is a symbol of this package's own: they are the very symbols
-;;; `cl-gbdt/src/data' and `cl-gbdt/src/handle' define, so unlike `predict' and the six other
+;;; `cl-gbdt/src/data' and `cl-gbdt/src/handle' define, so unlike `predict' and the ten other
 ;;; doubled operation names above, a caller holding both `cl-gbdt' and `cl-gbdt/xgboost' sees
 ;;; one symbol reached two ways and has nothing to disambiguate.
 ;;;
@@ -158,12 +162,13 @@
 ;;; `tools/ci/check-float-traps.lisp' reads exactly this `:export' to decide which `defun's
 ;;; are entry points reached without a `defmethod' to inherit a float-trap mask from, so a
 ;;; public `defun' that appeared here only by way of `:use-reexport' would slip that check
-;;; silently. That scan does reach all ten `api' functions: its +BACKEND-FILE-PATTERNS+ globs
-;;; `src/*/api.lisp' and `src/*/classes.lisp' alongside `src/*/native.lisp' and
+;;; silently. That scan does reach all fourteen `api' functions: its +BACKEND-FILE-PATTERNS+
+;;; globs `src/*/api.lisp' and `src/*/classes.lisp' alongside `src/*/native.lisp' and
 ;;; `src/*/protocol.lisp', so a public `defun' in either is both named here and matched there --
-;;; the scan reports `api.lisp' as "0 defmethods, 10 public defuns, 0 unmasked" and `classes.lisp'
+;;; the scan reports `api.lisp' as "0 defmethods, 14 public defuns, 0 unmasked" and `classes.lisp'
 ;;; as "2 defmethods, 0 public defuns, 0 unmasked" now that `slice-model' has moved and
-;;; `predict', `save-model', `load-model' and `model-to-string' have arrived. A future Layer 1
+;;; `predict', `save-model', `load-model', `model-to-string', `feature-importance',
+;;; `evaluation', `dataset-num-rows' and `dataset-num-features' have arrived. A future Layer 1
 ;;; addition is listed here for the same reasons; a CLOS class such as `xgboost-backend' needs
 ;;; no entry, having no body to mask.
 ;;; None of the shared-basis additions are `defun's in THIS file either -- `open-backend' and

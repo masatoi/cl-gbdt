@@ -29,13 +29,15 @@
 ;;;; `lightgbm-dataset' or `lightgbm-booster' before the Layer 1 split, and that specializer WAS
 ;;;; the check. A plain `defun' takes whatever it is given. `%check-lightgbm-dataset' and
 ;;;; `%check-lightgbm-booster' are what the operations that require a LIVE handle use;
-;;;; `%check-object-class' below is what the two frees use, they being the two that must keep
-;;;; working on a handle that is neither.
+;;;; `%check-object-class' below is what `free-dataset' and `free-booster' use instead, they
+;;;; being the two that must keep working on a handle that is neither, and what
+;;;; `dataset-num-rows' and `dataset-num-features' pair with `handle-live-pointer' for, neither
+;;;; having a BACKEND argument of its own to hand `%check-lightgbm-dataset' for its report.
 ;;;;
-;;;; The two operations that take a caller-supplied BACKEND rather than a handle --
-;;;; `create-dataset' and `create-booster' -- are under the identical rule for the identical
-;;;; reason, and `%check-object-class' is their check too, handed `lightgbm-backend' where the
-;;;; frees hand it a handle class. Their `defmethod' ancestors specialized on
+;;;; The three operations that take a caller-supplied BACKEND rather than a handle --
+;;;; `create-dataset', `create-booster' and `load-model' -- are under the identical rule for the
+;;;; identical reason, and `%check-object-class' is their check too, handed `lightgbm-backend'
+;;;; where the frees hand it a handle class. Their `defmethod' ancestors specialized on
 ;;;; `lightgbm-backend', so the backend argument was type-checked by the same mechanism the
 ;;;; handle arguments were, and `%check-backend-open' does not replace it: that function asks
 ;;;; whether the object is OPEN, not whose it is.

@@ -43,8 +43,10 @@
 ;;;; `xgboost-dataset' or `xgboost-booster' before the Layer 1 split, and that specializer WAS
 ;;;; the check. A plain `defun' takes whatever it is given. `%check-xgboost-dataset' and
 ;;;; `%check-xgboost-booster' are what the operations that require a LIVE handle use;
-;;;; `%check-object-class' below is what the two frees use, they being the two that must keep
-;;;; working on a handle that is neither.
+;;;; `%check-object-class' below is what `free-dataset' and `free-booster' use instead, they
+;;;; being the two that must keep working on a handle that is neither, and what
+;;;; `dataset-num-rows' and `dataset-num-features' pair with `handle-live-pointer' for, neither
+;;;; having a BACKEND argument of its own to hand `%check-xgboost-dataset' for its report.
 ;;;;
 ;;;; The three operations that take a caller-supplied BACKEND rather than a handle --
 ;;;; `create-dataset', `create-booster' and `load-model' -- are under the identical rule for

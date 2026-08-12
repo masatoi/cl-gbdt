@@ -8,13 +8,16 @@
 ;;;;
 ;;;; A method here owns the PORTABLE CONTRACT and nothing else: the checks and translations
 ;;;; that exist because a unified generic promised a portable argument. The procedure a
-;;;; finished operation performs is Layer 1 and lives in `cl-gbdt/src/lightgbm/api' -- so far
+;;;; finished operation performs is Layer 1 and lives in `cl-gbdt/src/lightgbm/api' --
 ;;;; `make-dataset', which checks :MISSING and :CATEGORICAL-FEATURES and then calls that
-;;;; file's `create-dataset'; `predict', which checks :MISSING and resolves :BEST and then
-;;;; calls that file's `predict'; and `free-dataset', `update-one-iteration' and
-;;;; `free-booster', whose whole bodies were procedure and delegate entirely. A caller who
-;;;; loaded `cl-gbdt/lightgbm' alone reaches those functions with no method here in the image
-;;;; at all.
+;;;; file's `create-dataset'; `predict', `save-model' and `model-to-string', which each
+;;;; resolve :BEST -- `predict' also checking :MISSING -- and then call that file's function
+;;;; of the same name; and `free-dataset', `update-one-iteration', `free-booster',
+;;;; `load-model', `feature-importance', `evaluation', `dataset-num-rows' and
+;;;; `dataset-num-features', whose whole bodies were procedure and delegate entirely -- even
+;;;; `feature-importance''s :BEST refusal is Layer 1's to make, this operation never having
+;;;; resolved the keyword the way the other three do. A caller who loaded `cl-gbdt/lightgbm'
+;;;; alone reaches those functions with no method here in the image at all.
 ;;;;
 ;;;; `train' is the one exception, and deliberately so: it builds its booster itself rather
 ;;;; than calling `cl-gbdt/src/lightgbm/api''s `create-booster'. See the comment at its
@@ -39,14 +42,16 @@
                 #:lightgbm-backend
                 #:lightgbm-dataset
                 #:lightgbm-booster)
-  ;; Layer 1's finished operations. `free-dataset', `update-one-iteration', `free-booster' and
-  ;; `predict' are deliberately absent from this clause: the `:import-from
-  ;; #:cl-gbdt/src/protocol' below names a GENERIC FUNCTION of each of those names, and each
-  ;; pair is two different symbols -- importing both would be a name conflict, not a re-import.
-  ;; The four methods that need the Layer 1 functions name them in full. `create-booster' is
-  ;; absent for an unrelated reason: no method here calls it, `train' building its own booster
-  ;; for the reason its creation call records, and an import naming a symbol nothing uses is
-  ;; one more claim to keep true.
+  ;; Layer 1's finished operations whose name collides with a `cl-gbdt/src/protocol' generic
+  ;; are deliberately absent from this clause: `free-dataset', `update-one-iteration',
+  ;; `free-booster', `predict', `save-model', `load-model', `model-to-string',
+  ;; `feature-importance', `evaluation', `dataset-num-rows' and `dataset-num-features' -- the
+  ;; `:import-from #:cl-gbdt/src/protocol' below names each of those as a GENERIC FUNCTION, and
+  ;; each pair is two different symbols -- importing both would be a name conflict, not a
+  ;; re-import. The eleven methods that need the Layer 1 functions name them in full.
+  ;; `create-booster' is absent for an unrelated reason: no method here calls it, `train'
+  ;; building its own booster for the reason its creation call records, and an import naming a
+  ;; symbol nothing uses is one more claim to keep true.
   (:import-from #:cl-gbdt/src/lightgbm/api
                 #:create-dataset)
   (:import-from #:cl-gbdt/src/backend
@@ -891,9 +896,10 @@ Signals `backend-not-open' before any of that when BACKEND is not open -- see
            (completed-rounds 0))
       ;; Built here rather than by `cl-gbdt/src/lightgbm/api''s `create-booster', which is the
       ;; Layer 1 function for exactly this. `train' is the ONE method in this file whose Layer
-      ;; 1 counterpart exists and is not called: five of the thirteen delegate their whole
-      ;; procedure -- `make-dataset', `predict', `update-one-iteration', `free-dataset' and
-      ;; `free-booster' -- and the other seven have no counterpart to delegate to at all.
+      ;; 1 counterpart exists and is not called: every other method delegates its whole
+      ;; procedure to one -- `make-dataset', `predict', `update-one-iteration', `free-dataset',
+      ;; `free-booster', `save-model', `load-model', `model-to-string', `feature-importance',
+      ;; `evaluation', `dataset-num-rows' and `dataset-num-features', twelve in all.
       ;; `booster-best-iteration' is what holds this one back, and it is a barrier rather than
       ;; a preference: a `:reader'-only slot (src/handle.lisp) whose sole writer is
       ;; `make-handle''s :BEST-ITERATION initarg, at construction, while the value comes from

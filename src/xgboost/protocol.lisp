@@ -9,15 +9,18 @@
 ;;;;
 ;;;; A method here owns the PORTABLE CONTRACT and nothing else: the checks and translations
 ;;;; that exist because a unified generic promised a portable argument. The procedure a
-;;;; finished operation performs is Layer 1 and lives in `cl-gbdt/src/xgboost/api' -- so far
+;;;; finished operation performs is Layer 1 and lives in `cl-gbdt/src/xgboost/api' --
 ;;;; `make-dataset', which checks :MISSING and :CATEGORICAL-FEATURES, refuses :REFERENCE and
 ;;;; :PARAMETERS, renders the feature-type strings and then calls that file's `create-dataset';
 ;;;; `predict', which checks :MISSING's capability and resolves :BEST and then calls that
 ;;;; file's `predict'; `save-model' and `model-to-string', which resolve :BEST and refuse a
 ;;;; :NUM-ITERATION this library has no route for and then call that file's functions of the
-;;;; same name; and `free-dataset', `update-one-iteration', `free-booster' and `load-model',
-;;;; whose whole bodies were procedure and delegate entirely. A caller who loaded
-;;;; `cl-gbdt/xgboost' alone reaches those functions with no method here in the image at all.
+;;;; same name; `feature-importance', which refuses :BEST explicitly and then any other
+;;;; :NUM-ITERATION the same way, before calling that file's `feature-importance'; and
+;;;; `free-dataset', `update-one-iteration', `free-booster', `load-model', `evaluation',
+;;;; `dataset-num-rows' and `dataset-num-features', whose whole bodies were procedure and
+;;;; delegate entirely. A caller who loaded `cl-gbdt/xgboost' alone reaches those functions
+;;;; with no method here in the image at all.
 ;;;;
 ;;;; `train' is the one exception, and deliberately so: it builds its booster itself rather
 ;;;; than calling `cl-gbdt/src/xgboost/api''s `create-booster'. See the comment at its creation
@@ -43,14 +46,16 @@
                 #:xgboost-backend
                 #:xgboost-dataset
                 #:xgboost-booster)
-  ;; Layer 1's finished operations. `free-dataset', `update-one-iteration', `free-booster' and
-  ;; `predict' are deliberately absent from this clause: the `:import-from
-  ;; #:cl-gbdt/src/protocol' below names a GENERIC FUNCTION of each of those names, and each
-  ;; pair is two different symbols -- importing both would be a name conflict, not a re-import.
-  ;; The four methods that need the Layer 1 functions name them in full. `create-booster' is
-  ;; absent for an unrelated reason: no method here calls it, `train' building its own booster
-  ;; for the reason its creation call records, and an import naming a symbol nothing uses is
-  ;; one more claim to keep true.
+  ;; Layer 1's finished operations whose name collides with a `cl-gbdt/src/protocol' generic
+  ;; are deliberately absent from this clause: `free-dataset', `update-one-iteration',
+  ;; `free-booster', `predict', `save-model', `load-model', `model-to-string',
+  ;; `feature-importance', `evaluation', `dataset-num-rows' and `dataset-num-features' -- the
+  ;; `:import-from #:cl-gbdt/src/protocol' below names each of those as a GENERIC FUNCTION, and
+  ;; each pair is two different symbols -- importing both would be a name conflict, not a
+  ;; re-import. The eleven methods that need the Layer 1 functions name them in full.
+  ;; `create-booster' is absent for an unrelated reason: no method here calls it, `train'
+  ;; building its own booster for the reason its creation call records, and an import naming a
+  ;; symbol nothing uses is one more claim to keep true.
   (:import-from #:cl-gbdt/src/xgboost/api
                 #:%creation-function-name
                 #:create-dataset)
@@ -873,10 +878,11 @@ Signals `backend-not-open' before any of that when BACKEND is not open -- see
            (completed-rounds 0))
       ;; Built here rather than by `cl-gbdt/src/xgboost/api''s `create-booster', which is the
       ;; Layer 1 function for exactly this. `train' is the ONE method in this file whose Layer 1
-      ;; counterpart exists and is not called: five of the thirteen delegate their whole
-      ;; procedure -- `make-dataset', `predict', `update-one-iteration', `free-dataset' and
-      ;; `free-booster' -- and the other seven have no counterpart to delegate to at all. What
-      ;; holds this one back is `booster-best-iteration', the same barrier that keeps
+      ;; counterpart exists and is not called: every other method delegates its whole procedure
+      ;; to one -- `make-dataset', `predict', `update-one-iteration', `free-dataset',
+      ;; `free-booster', `save-model', `load-model', `model-to-string', `feature-importance',
+      ;; `evaluation', `dataset-num-rows' and `dataset-num-features', twelve in all. What holds
+      ;; this one back is `booster-best-iteration', the same barrier that keeps
       ;; `cl-gbdt/src/lightgbm/protocol''s `train' building its own, and a property of the
       ;; shared `handle' class rather than of either library: a `:reader'-only slot
       ;; (src/handle.lisp) whose sole writer is `make-handle''s :BEST-ITERATION initarg, at
@@ -1269,17 +1275,16 @@ the parse. A field whose value the parser could not read as a `double-float' -- 
 spells a non-finite one \"inf\" or \"nan\" -- keeps its entry with VALUE NIL rather than
 disappearing from the result.
 
-This method reads BOOSTER and every dataset it evaluates through `handle-live-pointer'
-itself, before calling `%read-evaluation', so a freed booster or a freed retained dataset
-signals `released-handle-error' right here; unlike `cl-gbdt/src/lightgbm/protocol''s
-method, this one needs no separate `%check-booster-datasets-live', since every dataset it
-evaluates is one it resolves and checks explicitly, by its own handle, before any foreign
-call.
-
-This method's whole body was procedure, so all of it is `cl-gbdt/src/xgboost/api''s
-`evaluation' -- the per-dataset pointer resolution, the decimal naming, the parse and the
-provenance plist alike. The one thing that changed with the move is that the booster's kind is
-now checked before its pointer is read, so a value that is not a booster gets
-`wrong-backend-reference' rather than whatever `handle-live-pointer' made of it."
+This method's whole body was procedure, so all of it -- the per-dataset pointer resolution,
+the decimal naming, the parse and the provenance plist alike -- is
+`cl-gbdt/src/xgboost/api''s `evaluation'. That function reads BOOSTER and every dataset it
+evaluates through `handle-live-pointer' before calling `%read-evaluation', so a freed
+booster or a freed retained dataset signals `released-handle-error' there; unlike
+`cl-gbdt/src/lightgbm/protocol''s method, this backend needs no separate
+`%check-booster-datasets-live', since every dataset it evaluates is one the delegate
+resolves and checks explicitly, by its own handle, before any foreign call. The one thing
+that changed with the move is that the booster's kind is now checked before its pointer is
+read, so a value that is not a booster gets `wrong-backend-reference' rather than whatever
+`handle-live-pointer' made of it."
   (with-foreign-float-traps-masked
     (cl-gbdt/src/xgboost/api:evaluation booster)))

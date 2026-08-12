@@ -131,8 +131,10 @@
 ;;; Floating-point trap safety
 ;;;
 ;;; Almost nothing here wraps itself in `with-foreign-float-traps-masked' -- almost every
-;;; function in this file is only ever called from inside a `cl-gbdt/src/lightgbm/protocol'
-;;; `defmethod' body that already established the mask, at method-body granularity, before
+;;; function in this file is only ever called from inside an already-masked body: a
+;;; `cl-gbdt/src/lightgbm/protocol' `defmethod' for a caller that went through the unified
+;;; API, or a `cl-gbdt/src/lightgbm/api' `defun' for a caller that reached this backend's
+;;; Layer 1 directly -- either establishes the mask, at operation-body granularity, before
 ;;; making any of the calls below. See that file's identical commentary, and
 ;;; `with-foreign-float-traps-masked''s own docstring in `cl-gbdt/src/foreign', for why:
 ;;; SBCL enables floating-point traps by default on x86-64 and not on aarch64, and
@@ -857,9 +859,9 @@ no VALID-SETS."
   "Free the booster at POINTER via `LGBM_BoosterFree' without checking its
 returned status.
 
-`cl-gbdt/src/lightgbm/protocol''s `train' and `load-model', and
-`cl-gbdt/src/lightgbm/api''s `create-booster', each call this from their cleanup
-path when ownership of a partially built booster never transferred to a handle
+`cl-gbdt/src/lightgbm/protocol''s `train', and `cl-gbdt/src/lightgbm/api''s `create-booster'
+and `load-model', each call this from their cleanup path when ownership of a
+partially built booster never transferred to a handle
 -- see `%free-dataset-unchecked''s docstring for why a signal already unwinding
 the stack there must not be replaced by a status-check failure from this
 best-effort free."
@@ -986,7 +988,7 @@ points."
 NUM-ITERATION trees (0 for all of them -- `%resolve-num-iteration''s wire form),
 and signal `foreign-call-error' when the library reports failure.
 
-Extracted so `cl-gbdt/src/lightgbm/protocol''s `save-model' delegates the call
+Extracted so `cl-gbdt/src/lightgbm/api''s `save-model' delegates the call
 itself to this file instead of naming `lgbm-booster-save-model' directly."
   (check-lgbm (lgbm-booster-save-model
                pointer 0 num-iteration +c-api-feature-importance-split+ filename)
@@ -997,7 +999,7 @@ itself to this file instead of naming `lgbm-booster-save-model' directly."
 OUT-NUM-ITERATIONS and OUT, and signal `foreign-call-error' when the library
 reports failure.
 
-Extracted so `cl-gbdt/src/lightgbm/protocol''s `load-model' delegates the call
+Extracted so `cl-gbdt/src/lightgbm/api''s `load-model' delegates the call
 itself to this file instead of naming `lgbm-booster-create-from-modelfile'
 directly. `load-model' still owns checking OUT for a null pointer afterward."
   (check-lgbm (lgbm-booster-create-from-modelfile filename out-num-iterations out)
@@ -1056,7 +1058,7 @@ came from `train' or `load-model', unlike a booster's training set, which
 NUM-ITERATION and IMPORTANCE-TYPE, writing BUFFER, and signal
 `foreign-call-error' when the library reports failure.
 
-Extracted so `cl-gbdt/src/lightgbm/protocol''s `feature-importance' delegates
+Extracted so `cl-gbdt/src/lightgbm/api''s `feature-importance' delegates
 the call itself to this file instead of naming `lgbm-booster-feature-importance'
 directly. `feature-importance' still owns sizing BUFFER from
 `%booster-num-features' and copying its contents out afterward."
@@ -1178,11 +1180,12 @@ The caller owns every guard this needs before calling: BOOSTER-POINTER must alre
 live handle's pointer, `%check-booster-datasets-live' must already have run for the booster
 these datasets belong to, and the whole call must already be inside
 `with-foreign-float-traps-masked''s dynamic extent -- like every other `%'-function in this
-file, this does not establish any of those itself. `cl-gbdt/src/lightgbm/protocol''s
-`evaluation' method and `train''s per-iteration recording loop both call this same function,
-on the pointer and dataset count each already has in hand, rather than each computing
-entries its own way -- that is what keeps the numbers `evaluation' reports after training and
-the numbers recorded during training from ever being able to disagree."
+file, this does not establish any of those itself. `cl-gbdt/src/lightgbm/api''s `evaluation'
+-- what `cl-gbdt/src/lightgbm/protocol''s method of the same name now delegates to wholly --
+and `train''s per-iteration recording loop both call this same function, on the pointer and
+dataset count each already has in hand, rather than each computing entries its own way --
+that is what keeps the numbers `evaluation' reports after training and the numbers recorded
+during training from ever being able to disagree."
   (let* ((count (%booster-eval-count booster-pointer))
          (names (%booster-eval-names booster-pointer count)))
     (loop :for index :below dataset-count
