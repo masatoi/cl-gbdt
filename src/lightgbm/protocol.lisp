@@ -46,7 +46,9 @@
   ;; `feature-importance', `evaluation', `dataset-num-rows' and `dataset-num-features' -- the
   ;; `:import-from #:cl-gbdt/src/protocol' below names each of those as a GENERIC FUNCTION, and
   ;; each pair is two different symbols -- importing both would be a name conflict, not a
-  ;; re-import. The eleven methods that need the Layer 1 functions name them in full.
+  ;; re-import. The twelve methods that need the Layer 1 functions name them in full: those
+  ;; eleven, plus `train', whose own name does not collide but whose cleanup still names the
+  ;; doubled `free-booster' in full.
   (:import-from #:cl-gbdt/src/lightgbm/api
                 #:create-booster
                 #:create-dataset)
@@ -710,8 +712,7 @@ report it still returns as its secondary value has an empty series list over the
 NUM-ROUNDS -- `training-report-from-history' over an empty history, the same shape a run
 with `metric=none' produces.
 
-A read that fails propagates, freeing the booster through the `with-pointer-ownership'
-form below rather
+A read that fails propagates, freeing the booster through the `unwind-protect' below rather
 than returning a report whose series are shorter than the run: a short series is
 indistinguishable from one a buggy loop recorded, and \"one value per iteration\" is the
 invariant a caller reading the report relies on.
@@ -765,8 +766,8 @@ so the caller's Lisp arithmetic runs under the masked convention on x86-64 as we
 aarch64 -- `(/ 1.0d0 0.0d0)' yields infinity there rather than signalling
 `division-by-zero'. Nothing about that is specific to a custom objective; it is simply where
 in `train' the caller's code now runs. A condition the caller's function does signal
-propagates out of `train' through the `with-pointer-ownership' form below, freeing the raw
-booster handle rather than orphaning it, exactly as a mid-loop foreign failure does.
+propagates out of `train' through the `unwind-protect' below, freeing the booster handle
+rather than orphaning it, exactly as a mid-loop foreign failure does.
 
 An objective that frees a handle this loop depends on, or closes BACKEND, is caught rather
 than crashed on: `%recheck-train-datasets' re-runs this method's own opening checks the
@@ -838,12 +839,12 @@ booster's view too, since both would be the same cons cells; the dataset
 `%check-booster-datasets-live' even though LightGBM still holds its pointer.
 Free the result with `free-booster' or wrap it in `with-booster'.
 
-The raw booster handle exists in C from the moment `LGBM_BoosterCreate' returns,
-but `make-handle' does not take ownership of it until the very end -- a stale
-VALID-SETS entry or a mid-loop failure can each signal first.
-`with-pointer-ownership' spans exactly that gap: the pointer is owned by nobody
-inside its body, and any exit that has not called TAKE-OWNERSHIP frees the raw
-booster here instead of orphaning it.
+BOOSTER is bound to a full handle already: `create-booster' manages the raw-pointer window
+between `LGBM_BoosterCreate' and its own `make-handle' call internally -- see its docstring
+-- and this method never touches a pointer that let does not already own. What the
+`unwind-protect' below manages instead is what happens to that handle from here: any exit
+from the loop or the report construction that does not reach the final `setf' frees BOOSTER
+rather than orphaning it.
 
 Signals `backend-not-open' before any of that when BACKEND is not open -- see
 `%check-backend-open'."
@@ -966,10 +967,18 @@ Signals `backend-not-open' before any of that when BACKEND is not open -- see
           ;; run leaves nothing behind rather than an unreferenced handle whose finalizer only
           ;; warns. Named in full, not imported: `cl-gbdt/src/protocol''s `free-booster', the
           ;; generic, is a DIFFERENT symbol of the same name and is what this file imports.
-          ;; It cannot mask the condition already unwinding -- it takes the closed-backend
-          ;; branch as a `warn', and its own `wrong-backend-reference' cannot fire on a
-          ;; handle `create-booster' just built.
-          (unless completed (cl-gbdt/src/lightgbm/api:free-booster booster)))))))
+          ;;
+          ;; Wrapped in `handler-case', mirroring `with-pointer-ownership''s own free, so a
+          ;; failing cleanup cannot replace the condition already unwinding (policy section
+          ;; 10). That is not hypothetical here: on the branch that actually runs -- an open
+          ;; backend and a live handle, since `create-booster' just built it -- this reaches
+          ;; `%free-booster', which signals `foreign-call-error' on a non-zero
+          ;; `LGBM_BoosterFree' status. The closed-backend branch only `warn's and cannot
+          ;; signal, and `wrong-backend-reference' cannot fire on a handle this method just
+          ;; built, but the wrap covers all three rather than relying on which one applies.
+          (unless completed
+            (handler-case (cl-gbdt/src/lightgbm/api:free-booster booster)
+              (error () nil))))))))
 
 (defmethod update-one-iteration ((booster lightgbm-booster))
   "Advance BOOSTER by one boosting iteration via `LGBM_BoosterUpdateOneIter'.

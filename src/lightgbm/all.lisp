@@ -71,9 +71,11 @@
 ;;; introspection besides: build a dataset, build a booster on it, advance it, score with it,
 ;;; save the model or reload one, render it as text, ask what it split on and how it scored,
 ;;; free both.
-;;; `create-booster' is the one with no caller inside this library -- `train' builds its own
-;;; booster, for the reason its creation call records -- so it is published on the strength of
-;;; its own contract rather than of a method that exercises it.
+;;; `create-booster' had no caller inside this library until `train' gained one:
+;;; `.superpowers/sdd/2026-08-12-train-create-booster-merge' made `train' call it for its
+;;; whole booster construction, the same way the other twelve already called their own Layer
+;;; 1 counterparts. It is published on its own contract regardless, exactly as they are;
+;;; having a caller here does not change what makes any of these thirteen public.
 ;;; `free-dataset', `free-booster', `update-one-iteration', `predict', `save-model',
 ;;; `load-model', `model-to-string', `feature-importance', `evaluation', `dataset-num-rows' and
 ;;; `dataset-num-features' here are NOT `cl-gbdt''s generics of those names: they are plain

@@ -1200,13 +1200,13 @@ test that only checked a single name/value pair could not pass by accident if
           (format nil "cl-gbdt/lightgbm exports ~A" name)))))
 
 ;;; Task 4 (.superpowers/sdd/2026-08-11-layer1-training-slice) added `create-booster' as the
-;;; Layer 1 counterpart of `train'; Task 2 (.superpowers/sdd/2026-08-12-train-create-booster-
-;;; merge) made `train' call it, the same way every other unified method already delegated to
-;;; its own Layer 1 counterpart. What this test still pins is that the machinery `train' wraps
-;;; around that shared construction -- history recording, an early-stopping watcher and the
-;;; report built from them -- does not change the model itself: a bare `create-booster' plus
-;;; an `update-one-iteration' loop over the same dataset and parameters must agree with what
-;;; `train' produces.
+;;; Layer 1 counterpart of `train'. Task 2
+;;; (.superpowers/sdd/2026-08-12-train-create-booster-merge) made `train' call it, the same
+;;; way every other unified method already delegated to its own Layer 1 counterpart. What
+;;; this test still pins is that the machinery `train' wraps around that shared construction
+;;; -- history recording, an early-stopping watcher and the report built from them -- does
+;;; not change the model itself: a bare `create-booster' plus an `update-one-iteration' loop
+;;; over the same dataset and parameters must agree with what `train' produces.
 ;;;
 ;;; It belongs with tests/functional/lightgbm-standalone.lisp, which is what proves
 ;;; `create-booster' trains at all -- but that file may not have the unified API in its image,
