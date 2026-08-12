@@ -812,6 +812,15 @@ one itself."
 
 ;;; ---------------------------------------------------------------------------
 ;;; Persistence
+;;;
+;;; `save-model' and `model-to-string' below repeat the same shape: a class guard on BOOSTER
+;;; as the very first thing the body evaluates, then the foreign call -- no :BEST refusal
+;;; here, since neither takes a NUM-ITERATION at all, unlike LightGBM's identical two, which
+;;; do and carry that middle step. The repetition is load-bearing all the same:
+;;; `tools/ci/check-layer-1-guards.lisp' requires that first form to be a `%CHECK-'-prefixed
+;;; call on BOOSTER itself, and neither a shared macro nor a body-taking function wrapping it
+;;; is a shape its walk recognises, so folding the duplication away would report both entry
+;;; points unguarded rather than remove it.
 
 (defun save-model (booster path)
   "Save BOOSTER's model to PATH via `XGBoosterSaveModel', and return PATH.

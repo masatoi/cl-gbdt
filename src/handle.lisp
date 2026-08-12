@@ -276,12 +276,20 @@ keeps meaning \"every round\" on every booster, this one included."
 
 For an entry point that accepts NUM-ITERATION but does not resolve :BEST against
 BOOSTER's `booster-best-iteration' the way the unified `predict', `save-model' and
-`model-to-string' do. Two cases today, for two different reasons: the
-`feature-importance' method of both backends, which simply does not offer :BEST; and
-each backend's LAYER 1 `predict', in `cl-gbdt/src/<backend>/api', where the keyword
-would name an empty slot -- only `train' writes a booster's `best-iteration', and
-`create-booster' builds one that has none. The unified `predict' method resolves :BEST
-itself, before delegating, so the integer is all that ever reaches those two.
+`model-to-string' do. Six call sites today, five of them Layer 1:
+`cl-gbdt/src/lightgbm/api''s `predict', `save-model', `model-to-string' and
+`feature-importance', and `cl-gbdt/src/xgboost/api''s `predict'. Each backend's LAYER 1
+`predict' is here because the keyword would name an empty slot -- only `train' writes a
+booster's `best-iteration', and `create-booster' builds one that has none -- and
+LightGBM's `save-model', `model-to-string' and `feature-importance' are here because
+that backend's own C calls take a NUM-ITERATION for all three, so Layer 1 is where each
+refuses it. The sixth site, and the only Layer 2 one, is
+`cl-gbdt/src/xgboost/protocol''s `feature-importance' method: XGBoost's Layer 1
+`save-model', `model-to-string' and `feature-importance' take no NUM-ITERATION at all,
+so unlike LightGBM's this backend's refusal for `feature-importance' cannot sit at Layer
+1 and stays in the method that still carries the argument. The unified `predict' method
+resolves :BEST itself, before delegating, so the integer is all that ever reaches its
+own two Layer 1 `predict' sites.
 
 Without this, :BEST reaches each backend's own NUM-ITERATION path as uninterpreted
 data: LightGBM's `%resolve-num-iteration' is `(or num-iteration 0)', so :BEST alone

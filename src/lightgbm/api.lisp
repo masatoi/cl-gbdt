@@ -741,6 +741,14 @@ call, it does not and should not decide what counts as a valid model output."
 
 ;;; ---------------------------------------------------------------------------
 ;;; Persistence
+;;;
+;;; `save-model' and `model-to-string' below repeat the same three-step shape: a class guard
+;;; on BOOSTER, then `%reject-best-num-iteration', then the foreign call. That repetition is
+;;; load-bearing, not an oversight to fold into one helper. `tools/ci/check-layer-1-guards.lisp'
+;;; requires the guard to be the very FIRST form each body evaluates, a `%CHECK-'-prefixed call
+;;; on BOOSTER itself -- and neither a shared macro nor a body-taking function wrapping that
+;;; sequence is a shape its walk recognises, so factoring the duplication out would report both
+;;; entry points unguarded rather than remove it.
 
 (defun save-model (booster path &key num-iteration)
   "Save BOOSTER's model to PATH via `LGBM_BoosterSaveModel', and return PATH.

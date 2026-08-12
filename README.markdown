@@ -18,7 +18,7 @@ file if you have it locally).
 `update-one-iteration`, `predict`, `save-model`, `load-model`, `model-to-string`,
 `feature-importance`, `evaluation`, `free-dataset` and `free-booster` -- against the real
 LightGBM and XGBoost shared libraries, exercised by 946 functional assertions across 15 test
-files (design doc section 12, layer 2), in addition to 552 assertions across 21 test files
+files (design doc section 12, layer 2), in addition to 551 assertions across 21 test files
 that need no shared library at all (layer 1). `train` also returns a `training-report` as
 its secondary value, and takes
 `:early-stopping` to end a run once a watched metric stops improving -- see

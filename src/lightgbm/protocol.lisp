@@ -1198,8 +1198,8 @@ every dataset rather than re-read per index.
 
 DATASET-INDEX is passed straight through to `LGBM_BoosterGetEval' as its `data_idx':
 this backend's own numbering already is the portable contract's numbering, 0 for the
-training set and 1 upward for each `:VALID-SETS' entry in order, so nothing here
-renumbers anything. The datasets are counted from BOOSTER's own retained handles rather
+training set and 1 upward for each `:VALID-SETS' entry in order, with no renumbering
+along the way. The datasets are counted from BOOSTER's own retained handles rather
 than asked of the library, which has no entry point reporting how many are attached; a
 `load-model' booster retains none, and is the case that count is 0 for. LightGBM does
 answer `data_idx' 0 for such a booster -- with an empty result, confirmed against the
@@ -1208,20 +1208,29 @@ that index for the portable contract to name, so it is not evaluated at all rath
 reported as index 0.
 
 The values are `LGBM_BoosterGetEval''s own doubles, returned unmodified, which is what
-the secondary value's `:value-source :library-doubles' says; unlike XGBoost's, nothing
-here parses text, so there is no :RAW to keep and no VALUE is ever NIL.
+the secondary value's `:value-source :library-doubles' says; unlike XGBoost's, none of
+it is parsed from text, so there is no :RAW to keep and no VALUE is ever NIL.
 
-`%check-booster-datasets-live' runs before any foreign call this method makes, including
-inside `%read-evaluation': `LGBM_BoosterGetEval' evaluates each attached validation set
-through the metric objects built over that dataset's own label and weight arrays, none of
-which `LGBM_DatasetFree' clears from the booster, so evaluating after one of them was
-freed is a use-after-free rather than a catchable condition -- the identical hazard
-`update-one-iteration' guards against with the same call.
+This method's whole body was procedure, so all of it -- the per-dataset reading, the
+`data_idx' passthrough and the value-source plist alike -- is
+`cl-gbdt/src/lightgbm/api''s `evaluation'. That function checks BOOSTER's own kind and
+pointer through `%check-lightgbm-booster' first, then calls `%check-booster-datasets-live'
+before any foreign call, including inside `%read-evaluation': `LGBM_BoosterGetEval'
+evaluates each attached validation set through the metric objects built over that
+dataset's own label and weight arrays, none of which `LGBM_DatasetFree' clears from the
+booster, so evaluating after one of them was freed is a use-after-free rather than a
+catchable condition -- the identical hazard `update-one-iteration' guards against with
+the same call.
 
-The procedure is `cl-gbdt/src/lightgbm/api''s `evaluation'. One thing about it changed with
-the move and is worth knowing here: the kind check now runs before
-`%check-booster-datasets-live' rather than after, so a value that is not a booster at all is
-answered with `wrong-backend-reference' where it used to reach `booster-training-set' and
-produce a bare CLOS `no-applicable-method'. Every other order is as it was."
+Two things changed with the move. First, the kind check now runs before
+`%check-booster-datasets-live' rather than after, so a value that is not a booster at
+all is answered with `wrong-backend-reference' where it used to reach
+`booster-training-set' and produce a bare CLOS `no-applicable-method'. Second, that same
+reorder means a booster that is ITSELF released and also still retains a released
+dataset now signals `released-handle-error' naming the BOOSTER -- from
+`%check-lightgbm-booster''s own live-pointer check, which now runs first -- where the
+Layer 2 method's old order, `%check-booster-datasets-live' before the booster's own
+pointer, named the DATASET instead. Same condition type either way, so nothing a caller
+dispatches on changed; every other order is as it was."
   (with-foreign-float-traps-masked
     (cl-gbdt/src/lightgbm/api:evaluation booster)))

@@ -1280,11 +1280,14 @@ the decimal naming, the parse and the provenance plist alike -- is
 `cl-gbdt/src/xgboost/api''s `evaluation'. That function reads BOOSTER and every dataset it
 evaluates through `handle-live-pointer' before calling `%read-evaluation', so a freed
 booster or a freed retained dataset signals `released-handle-error' there; unlike
-`cl-gbdt/src/lightgbm/protocol''s method, this backend needs no separate
+`cl-gbdt/src/lightgbm/api''s `evaluation', this backend needs no separate
 `%check-booster-datasets-live', since every dataset it evaluates is one the delegate
 resolves and checks explicitly, by its own handle, before any foreign call. The one thing
 that changed with the move is that the booster's kind is now checked before its pointer is
 read, so a value that is not a booster gets `wrong-backend-reference' rather than whatever
-`handle-live-pointer' made of it."
+`handle-live-pointer' made of it. Unlike LightGBM's twin, the booster was already checked
+before its retained datasets before the move, so a booster that is itself released and
+also retains a released dataset has always signalled `released-handle-error' naming the
+BOOSTER here, not the dataset."
   (with-foreign-float-traps-masked
     (cl-gbdt/src/xgboost/api:evaluation booster)))

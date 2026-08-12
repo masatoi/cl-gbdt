@@ -157,11 +157,14 @@
 ;;; `tools/ci/check-float-traps.lisp' checks this directly: it reads the sibling `all.lisp''s
 ;;; public `:export' clause and requires every `defun' named there to open with this macro,
 ;;; the same rule it already applied to every `defmethod' in `protocol.lisp'. The other public
-;;; entry points this backend has -- `slice-model' and the six finished operations
-;;; `create-dataset', `create-booster', `update-one-iteration', `predict', `free-dataset' and
-;;; `free-booster' -- are covered by the identical rule but live in `api.lisp' rather than
-;;; here, each wrapping its own whole body there; see the Model slicing section below for why
-;;; `slice-model' in particular could never live in this file.
+;;; entry points this backend has -- `slice-model' and the thirteen finished operations
+;;; `create-dataset', `create-booster', `update-one-iteration', `predict', `free-dataset',
+;;; `free-booster', `save-model', `load-model', `model-to-string', `feature-importance',
+;;; `evaluation', `dataset-num-rows' and `dataset-num-features' -- are covered by the identical
+;;; rule but live in `api.lisp' rather than here, each wrapping its own whole body there; see
+;;; the Model slicing section below for why `slice-model' in particular could never live in
+;;; this file. Thirteen plus `slice-model' is fourteen, which is what `check-float-traps'
+;;; prints for that file.
 
 ;;; ---------------------------------------------------------------------------
 ;;; Error checking
@@ -1395,7 +1398,7 @@ equal to out_n_scores\" per that same header -- confirmed empirically here too, 
 every tree-booster case measured, multi-class included, which all report OUT-DIM 1.
 
 `feature-importance' promises one entry per feature, matching
-`cl-gbdt/src/lightgbm/protocol''s own `feature-importance': `LGBM_BoosterFeatureImportance'
+`cl-gbdt/src/lightgbm/api''s own `feature-importance': `LGBM_BoosterFeatureImportance'
 has no shape output at all, and, confirmed empirically, already sums a multi-class
 model's per-class contributions into one number per feature inside the library before
 this ever sees it. XGBoost's per-class matrix has no such library-computed summary for
