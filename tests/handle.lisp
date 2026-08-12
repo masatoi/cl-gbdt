@@ -126,7 +126,8 @@ increments the car of COUNT-CELL each time it is called."
                                          :mock :booster)))
       (ok (null (cl-gbdt:booster-best-iteration booster))
           "the booster starts with no best iteration")
-      (%set-booster-best-iteration booster 12)
+      (ok (= 12 (%set-booster-best-iteration booster 12))
+          "the writer returns the iteration it set")
       (ok (= 12 (cl-gbdt:booster-best-iteration booster))
           "and reads back what the writer set")))
   ;; The case `train' does not produce -- it writes at most once, to a booster
