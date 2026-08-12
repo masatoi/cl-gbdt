@@ -3729,6 +3729,11 @@ everyone.
 `ffi-spec/ABI-BLACKLIST.md` records which C functions cl-gbdt must never call, and
 why, independent of whether they happen to be emitted.
 
+Every one of those 177 emitted functions is classified in
+`ffi-spec/BINDING-COVERAGE.md` as `wrapped`, `planned`, or `excluded`;
+`tools/ci/check-binding-coverage.lisp` fails the build on one that is none of the
+three.
+
 ## License
 
 MIT; see `LICENSE`.
