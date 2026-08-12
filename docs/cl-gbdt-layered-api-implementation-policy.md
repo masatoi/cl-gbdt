@@ -481,7 +481,7 @@ libraryにする、S1からS5までの五段階のプログラムが進行して
 `docs/superpowers/specs/2026-08-11-layer1-standalone-design.md` にのみ存在し、同ディレクトリは
 `.gitignore` の対象であるため、trackedな文書には一度も記録されていなかった。本節がその記録である。
 
-このプログラムは §12 の段階計画 (Phase 0〜4) とは別系統であり、Phase 4完了後に始まった。Phase 2は
+このプログラムは§12の段階計画 (Phase 0〜4) とは別系統であり、Phase 4完了後に始まった。Phase 2は
 「backend固有packageからexportする」ことを、Phase 4は「data / predictionの拡張」を主題としたのに
 対し、このプログラムはLayer 1が統合APIなしで単体のlibraryとして自足していることを主題とする。§12
 のPhase一覧には項目を足さない。
@@ -511,7 +511,7 @@ libraryにする、S1からS5までの五段階のプログラムが進行して
   unified methodはすべて、その手続きの少なくとも一部をLayer 1へ委譲する。委譲の程度が `train` の
   みほかの12と異なる理由 (boosting loop自体は `update-one-iteration` を経由しない) は既に上記の
   フォローアップに記録済みであり、ここでは繰り返さない。
-- **S3 — bindingのclassification。この branch (`ci/binding-coverage`) が実装しており、まだ
+- **S3 — bindingのclassification。このbranch (`ci/binding-coverage`) が実装しており、まだ
   masterへmergeされていない。** `src/*/c-api.lisp` が生成する177 bindingすべてを
   `ffi-spec/BINDING-COVERAGE.md` で `wrapped`/`planned`/`excluded` のいずれかに分類し、
   `tools/ci/check-binding-coverage.lisp` が未分類のbindingでbuildを失敗させる。
