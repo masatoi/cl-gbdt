@@ -390,11 +390,11 @@ backend-specific operation, only infrastructure the two backend systems already 
 internally. Backend-specific safe API -- LightGBM's `rollback-one-iteration`, `refit`, and
 the rest of policy section 3's Layer 1 examples -- is added here one contract at a time as
 it is designed and reviewed, not by widening today's re-export to cover `native` wholesale.
-The thirteen operations above are the most recent additions made that way, and they come from a
-third file, `src/<backend>/api.lisp`, rather than from `native.lisp` at all: `native.lisp`
-holds the `%`-functions that take and return raw pointers, `api.lisp` the finished
-operations built on top of them that take a backend or a handle and hand back a handle or a
-result.
+The thirteen operations above are what that incremental process has produced so far, and they
+come from a third file, `src/<backend>/api.lisp`, rather than from `native.lisp` at all:
+`native.lisp` holds the `%`-functions that take and return raw pointers, `api.lisp` the
+finished operations built on top of them that take a backend or a handle and hand back a
+handle or a result.
 
 ### Finding the shared library
 
