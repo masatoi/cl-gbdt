@@ -251,3 +251,96 @@
     (ok (handler-case (progn (cl-gbdt/src/docgen/all:render-lambda-list '((a b . c) other))
                               nil)
           (error (e) (search "dotted" (princ-to-string e)))))))
+
+(deftest render-documentation-fences-verbatim
+  (testing "the docstring is the file's own bytes, so a diff is a docstring diff"
+    (ok (string= (format nil "```text~%Two lines,~%hand wrapped.~%```~%")
+                 (cl-gbdt/src/docgen/all:render-documentation
+                  (format nil "Two lines,~%hand wrapped."))))))
+
+(deftest render-documentation-refuses-a-docstring-that-breaks-its-fence
+  (testing "a triple-backquote line is an error, not broken Markdown"
+    (ok (handler-case
+            (progn (cl-gbdt/src/docgen/all:render-documentation
+                    (format nil "Before~%```~%After"))
+                   nil)
+          (error () t)))))
+
+(deftest entry-anchor-is-stable-and-explicit
+  (testing "the generator writes its own anchors rather than guessing GitHub's slugger"
+    (ok (string= "cl-gbdt-lightgbm-predict"
+                 (cl-gbdt/src/docgen/all:entry-anchor "cl-gbdt/lightgbm" 'predict)))
+    (ok (string= "cl-gbdt-known-capabilities"
+                 (cl-gbdt/src/docgen/all:entry-anchor "cl-gbdt" '*known-capabilities*)))))
+
+(deftest render-entry-writes-a-function-entry
+  (testing "heading, kind, signature, exports and the fenced docstring, in that order"
+    (let ((text (with-output-to-string (stream)
+                  (cl-gbdt/src/docgen/all:render-entry
+                   (cl-gbdt/src/docgen/all:make-entry
+                    :symbol 'fixture-function :qualifier "cl-gbdt/tests/docgen"
+                    :exported-from '("cl-gbdt/tests/docgen") :kind :function
+                    :documentation "Add A and B." :lambda-list '(a b))
+                   stream))))
+      (ok (search "## `cl-gbdt/tests/docgen:fixture-function`" text))
+      (ok (search "- **Kind** function" text))
+      (ok (search "- **Signature** `(fixture-function a b)`" text))
+      (ok (search "```text" text))
+      (ok (search "Add A and B." text)))))
+
+(deftest render-entry-points-a-reader-at-its-type
+  (testing "the slot's text lives on the type; the reader entry is one line"
+    (let ((text (with-output-to-string (stream)
+                  (cl-gbdt/src/docgen/all:render-entry
+                   (cl-gbdt/src/docgen/all:make-entry
+                    :symbol 'fixture-documented-condition-code
+                    :qualifier "cl-gbdt/tests/docgen"
+                    :exported-from '("cl-gbdt/tests/docgen") :kind :generic-function
+                    :points-at '(:slot fixture-documented-condition code)
+                    :lambda-list '(condition))
+                   stream))))
+      (ok (search "Reader of `cl-gbdt/tests/docgen:fixture-documented-condition`'s `code` slot."
+                  text))
+      (ok (not (search "```text" text))))))
+
+(deftest render-entry-signature-line-for-a-zero-argument-function
+  (testing "a NIL lambda list still gets a Signature line, as (name) with no stray space"
+    (let ((text (with-output-to-string (stream)
+                  (cl-gbdt/src/docgen/all:render-entry
+                   (cl-gbdt/src/docgen/all:make-entry
+                    :symbol 'fixture-function :qualifier "cl-gbdt/tests/docgen"
+                    :exported-from '("cl-gbdt/tests/docgen") :kind :function
+                    :documentation "Add A and B." :lambda-list nil)
+                   stream))))
+      ;; Ruling 2 decides the line by KIND, not by whether LAMBDA-LIST is non-NIL, so a
+      ;; zero-argument function still gets one; the brief's own subseq-based body, once its
+      ;; guard is loosened to match, would print "(fixture-function )" with a stray space
+      ;; before the close paren -- the exact defect class ruling 1 exists to avoid.
+      (ok (search "- **Signature** `(fixture-function)`" text)))))
+
+(deftest render-entry-omits-signature-line-for-non-callable-kinds
+  (testing "a variable entry never gets a Signature line, whatever LAMBDA-LIST holds"
+    (let ((text (with-output-to-string (stream)
+                  (cl-gbdt/src/docgen/all:render-entry
+                   (cl-gbdt/src/docgen/all:make-entry
+                    :symbol '*fixture-variable* :qualifier "cl-gbdt/tests/docgen"
+                    :exported-from '("cl-gbdt/tests/docgen") :kind :variable
+                    :documentation "A variable fixture." :lambda-list '(should-not-appear))
+                   stream))))
+      (ok (not (search "**Signature**" text))))))
+
+(deftest render-entry-points-a-constructor-at-its-type
+  (testing "a structure constructor also renders as one line pointing at its type"
+    (let ((text (with-output-to-string (stream)
+                  (cl-gbdt/src/docgen/all:render-entry
+                   (cl-gbdt/src/docgen/all:make-entry
+                    :symbol 'cl-gbdt/tests/docgen/gamma:make-fixture-indexed-struct
+                    :qualifier "cl-gbdt/tests/docgen/gamma"
+                    :exported-from '("cl-gbdt/tests/docgen/gamma") :kind :function
+                    :points-at
+                    '(:constructor cl-gbdt/tests/docgen/gamma:fixture-indexed-struct)
+                    :lambda-list '(&key field))
+                   stream))))
+      (ok (search "Constructor of the `cl-gbdt/tests/docgen/gamma:fixture-indexed-struct`"
+                  text))
+      (ok (not (search "```text" text))))))

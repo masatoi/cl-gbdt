@@ -6,8 +6,27 @@
 
 (uiop:define-package #:cl-gbdt/src/docgen/render
   (:use #:cl)
+  ;; Every SLOT-INFO-* reader below is called package-qualified
+  ;; (CL-GBDT/SRC/DOCGEN/INTROSPECT:SLOT-INFO-...), so this names zero symbols -- the project's
+  ;; documented way to declare the dependency without importing anything.
+  (:import-from #:cl-gbdt/src/docgen/introspect)
   (:export #:render-lambda-list
-           #:render-method-signature))
+           #:render-method-signature
+           #:entry
+           #:make-entry
+           #:entry-symbol
+           #:entry-qualifier
+           #:entry-exported-from
+           #:entry-kind
+           #:entry-documentation
+           #:entry-lambda-list
+           #:entry-superclasses
+           #:entry-slots
+           #:entry-methods
+           #:entry-points-at
+           #:entry-anchor
+           #:render-documentation
+           #:render-entry))
 
 (in-package #:cl-gbdt/src/docgen/render)
 
@@ -93,3 +112,101 @@ parameters) to strip a stray space back out after the fact."
                                          (render-specializer specializer))))
          (tail (render-lambda-list-elements (nthcdr (length specializers) lambda-list))))
     (format nil "(~{~A~^ ~})" (list* (render-atom name) (append required tail)))))
+
+(defstruct (entry (:constructor make-entry))
+  "One published symbol as the reference describes it.
+
+POINTS-AT is non-NIL exactly for a reader, accessor or structure constructor: (:slot TYPE
+SLOT-NAME) or (:constructor TYPE). Such an entry renders as one line pointing at its type,
+because the slot's own text belongs on the type and appears there once."
+  (symbol nil) (qualifier nil) (exported-from nil) (kind nil) (documentation nil)
+  (lambda-list nil) (superclasses nil) (slots nil) (methods nil) (points-at nil))
+
+(defun entry-anchor (qualifier symbol)
+  "Return the explicit HTML anchor id for SYMBOL published as QUALIFIER.
+
+Explicit rather than inferred: GitHub's heading slugger is not a contract, and the index has to
+link to every entry. Every character outside a-z and 0-9 becomes a hyphen, runs collapse, and
+leading and trailing hyphens go."
+  (let* ((raw (format nil "~A-~A" qualifier (symbol-name symbol)))
+         (mapped (map 'string
+                      (lambda (character)
+                        (if (or (alphanumericp character)) (char-downcase character) #\-))
+                      raw))
+         (collapsed (with-output-to-string (out)
+                      (loop with previous = #\-
+                            for character across mapped
+                            unless (and (char= character #\-) (char= previous #\-))
+                              do (write-char character out)
+                            do (setf previous character)))))
+    (string-trim "-" collapsed)))
+
+(defun render-documentation (documentation)
+  "Return DOCUMENTATION inside a `text' fence, verbatim, or the empty string for NIL.
+
+Verbatim, not reflowed as Markdown prose: these docstrings are hand-wrapped inside 100 columns
+for `(documentation ...)' at the REPL, and they hold the Lisp `foo' convention, *earmuffed*
+names, ~A directives and lines beginning with a hyphen -- all of which Markdown would render as
+something else. It also keeps the byte-for-byte check honest: the file holds the docstring
+itself, so a diff is a docstring diff and never a rendering-rule diff."
+  (if (null documentation)
+      ""
+      (let ((lines (uiop:split-string documentation :separator '(#\Newline))))
+        (dolist (line lines)
+          (when (and (>= (length line) 3) (string= "```" (subseq line 0 3)))
+            (error "A docstring contains a line starting with a code fence, which would break ~
+out of the reference's own fence: ~S. Rewrite the docstring." line)))
+        (format nil "```text~%~A~%```~%" documentation))))
+
+(defun render-entry (entry stream)
+  "Write ENTRY to STREAM as one Markdown section."
+  (let ((name (string-downcase (symbol-name (entry-symbol entry)))))
+    (format stream "<a id=\"~A\"></a>~%~%## `~A:~A`~%~%"
+            (entry-anchor (entry-qualifier entry) (entry-symbol entry))
+            (entry-qualifier entry) name)
+    (format stream "- **Kind** ~(~A~)~%" (substitute #\Space #\- (string (entry-kind entry))))
+    ;; A Signature line is decided by KIND, not by whether LAMBDA-LIST happens to be non-NIL --
+    ;; a zero-argument function has a NIL lambda list too, and still needs `(name)' here rather
+    ;; than no line at all.
+    (when (member (entry-kind entry) '(:function :generic-function :macro))
+      (format stream "- **Signature** `~A`~%"
+              (render-lambda-list (cons (entry-symbol entry) (entry-lambda-list entry)))))
+    (when (entry-superclasses entry)
+      (format stream "- **Superclasses** ~{`~(~A~)`~^, ~}~%"
+              (mapcar #'symbol-name (entry-superclasses entry))))
+    (format stream "- **Exported from** ~{`~A`~^, ~}~%~%" (entry-exported-from entry))
+    (let ((target (entry-points-at entry)))
+      ;; Both branches below name the pointed-at TYPE using ENTRY's own QUALIFIER, i.e. they
+      ;; assume the reader and its type are published under the same package. Measured true for
+      ;; all 174 symbols this reference publishes today; if Task 5 ever assembles a reader whose
+      ;; type is qualified differently, this line would print the wrong package and needs its
+      ;; own signal rather than a silently wrong link.
+      (cond ((and target (eq (first target) :slot))
+             (format stream "Reader of `~A:~(~A~)`'s `~(~A~)` slot. See `~A:~(~A~)`.~%~%"
+                     (entry-qualifier entry) (symbol-name (second target))
+                     (symbol-name (third target))
+                     (entry-qualifier entry) (symbol-name (second target))))
+            ((and target (eq (first target) :constructor))
+             (format stream "Constructor of the `~A:~(~A~)` structure. See `~A:~(~A~)`.~%~%"
+                     (entry-qualifier entry) (symbol-name (second target))
+                     (entry-qualifier entry) (symbol-name (second target))))
+            (t (write-string (render-documentation (entry-documentation entry)) stream)
+               (terpri stream))))
+    (when (entry-slots entry)
+      (format stream "### Slots~%~%")
+      (dolist (slot (entry-slots entry))
+        (format stream "#### `~(~A~)`~%~%"
+                (symbol-name (cl-gbdt/src/docgen/introspect:slot-info-name slot)))
+        (let ((readers (cl-gbdt/src/docgen/introspect:slot-info-readers slot)))
+          (when readers
+            (format stream "- **Readers** ~{`~(~A~)`~^, ~}~%~%" (mapcar #'symbol-name readers))))
+        (write-string (render-documentation
+                       (cl-gbdt/src/docgen/introspect:slot-info-documentation slot))
+                      stream)
+        (terpri stream)))
+    (when (entry-methods entry)
+      (format stream "### Methods~%~%")
+      (dolist (method (entry-methods entry))
+        (format stream "#### `~A`~%~%" (car method))
+        (write-string (render-documentation (cdr method)) stream)
+        (terpri stream)))))
