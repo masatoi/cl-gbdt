@@ -228,11 +228,11 @@ a `defun` is a library-reaching entry point with no `defmethod` left to inherit 
 from, so it must wrap its own whole body the same way -- LightGBM's
 `booster-eval`/`booster-eval-names` and XGBoost's `evaluate-one-iteration` were the first
 functions this applied to, all three in `native.lisp`; every exported `defun` in either
-backend's `api.lisp` is one too -- the six finished operations on both, plus XGBoost's
-`slice-model`, which lives there rather than in `native.lisp` because it builds a booster
-handle and so must name the concrete class `classes.lisp` defines. All four file names are
-globbed by that check's `+BACKEND-FILE-PATTERNS+`; a backend file under some other name
-would be scanned by nothing.
+backend's `api.lisp` is one too -- thirteen operations on LightGBM, fourteen on XGBoost,
+the extra one being `slice-model`, which lives there rather than in `native.lisp` because
+it builds a booster handle and so must name the concrete class `classes.lisp` defines. All
+four file names are globbed by that check's `+BACKEND-FILE-PATTERNS+`; a backend file
+under some other name would be scanned by nothing.
 SBCL enables the `:invalid`, `:divide-by-zero` and `:overflow` floating-point traps by
 default on x86-64 and none of them on aarch64; LightGBM and XGBoost are C code written
 and tested against the opposite (masked) convention, where an intermediate NaN or
