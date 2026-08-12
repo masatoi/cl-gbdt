@@ -77,6 +77,16 @@ jobs:
         # cannot see.
         run: ros run -- --non-interactive --load tools/ci/check-layer-separation.lisp
 
+      - name: Every Layer 1 entry point checks the class it was handed
+        # Each of those entry points was a defmethod specialized on a concrete class before
+        # the Layer 1 split turned it into a plain defun, and THAT SPECIALIZER WAS THE TYPE
+        # CHECK -- so the conversion drops it with no diff to show for it: same body, same
+        # green tests, and the argument's class never asked about again. Review found two
+        # consequences, a measured SB-SYS:MEMORY-FAULT-ERROR in one and a silent return in
+        # another; see tools/ci/check-layer-1-guards.lisp's header for both, for how a guard
+        # is recognised without a list of checker names, and for WHAT THIS CANNOT CATCH.
+        run: ros run -- --non-interactive --load tools/ci/check-layer-1-guards.lisp
+
       - name: Every backend defmethod is float-trap masked
         # A source-level scan, not a dynamic one -- see tools/ci/check-float-traps.lisp's
         # own header for exactly what it catches and what it cannot. SBCL enables FP traps
