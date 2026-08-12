@@ -184,7 +184,10 @@
                 #:create-dataset
                 #:free-booster
                 #:free-dataset
+                #:load-model
+                #:model-to-string
                 #:predict
+                #:save-model
                 #:update-one-iteration)
   (:export #:lightgbm-backend
            #:booster-eval-names
@@ -193,7 +196,10 @@
            #:create-dataset
            #:free-booster
            #:free-dataset
+           #:load-model
+           #:model-to-string
            #:predict
+           #:save-model
            #:update-one-iteration
            #:csr-matrix
            #:csr-matrix-indices

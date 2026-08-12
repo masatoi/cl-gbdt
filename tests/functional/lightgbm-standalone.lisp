@@ -131,6 +131,16 @@ compared."
           (push (aref result row 0) positives)))
     (< (reduce #'max negatives) (reduce #'min positives))))
 
+(defun model-path (name)
+  "Return a pathname for NAME in the system's temporary directory.
+
+`uiop' rather than a new dependency clause: this file's own package form is
+`uiop:define-package', so UIOP is already named here, and ASDF vendors it -- unlike anything
+under `cl-gbdt/src/', naming it does not widen the closure `tools/ci/check-leaf-systems.lisp'
+loads. Writing into the current directory instead would leave a model file in whatever
+directory the suite happened to run from."
+  (merge-pathnames name (uiop:temporary-directory)))
+
 (deftest layer-1-alone-trains-and-predicts
   (testing "a caller with only cl-gbdt/lightgbm loaded can go from a matrix to predictions"
     (with-open-backend (backend)
@@ -375,3 +385,97 @@ compared."
             (progn
               (cl-gbdt/lightgbm:free-booster booster)
               (cl-gbdt/lightgbm:free-dataset data))))))))
+
+(deftest layer-1-alone-saves-loads-and-renders-a-model
+  (testing "a caller with only cl-gbdt/lightgbm loaded can persist a model and read it back"
+    (with-open-backend (backend)
+      (multiple-value-bind (matrix label-vector) (fixture)
+        (let ((data (cl-gbdt/lightgbm:create-dataset backend matrix :label label-vector
+                                                      :parameters *parameters*))
+              (path (model-path "cl-gbdt-lightgbm-standalone.txt"))
+              (echoed (model-path "cl-gbdt-lightgbm-standalone-echo.txt")))
+          (unwind-protect
+               (let ((booster (cl-gbdt/lightgbm:create-booster backend data
+                                                                :parameters *parameters*)))
+                 (unwind-protect
+                      (progn
+                        (dotimes (round 20)
+                          (cl-gbdt/lightgbm:update-one-iteration booster))
+                        (ok (equal path (cl-gbdt/lightgbm:save-model booster path))
+                            "save-model returns the path it was given")
+                        (ok (probe-file path) "save-model wrote the file")
+                        ;; The round trip, and the only assertion here that needs the file to
+                        ;; hold a real model rather than merely to exist: a reloaded booster
+                        ;; predicts what the original predicted, to the bit.
+                        (let ((reloaded (cl-gbdt/lightgbm:load-model backend path)))
+                          (unwind-protect
+                               (progn
+                                 (ok (null (cl-gbdt/lightgbm:booster-training-set reloaded))
+                                     "a loaded booster has no training set")
+                                 (ok (equalp (cl-gbdt/lightgbm:predict booster matrix)
+                                             (cl-gbdt/lightgbm:predict reloaded matrix))
+                                     "the reloaded model predicts what the original did"))
+                            (cl-gbdt/lightgbm:free-booster reloaded)))
+                        ;; `model-to-string' is asserted the same way rather than against any
+                        ;; substring of LightGBM's own model format: write what it returned to
+                        ;; a file, load THAT, and require the same predictions. Nothing here
+                        ;; then depends on how upstream words its header.
+                        (let ((text (cl-gbdt/lightgbm:model-to-string booster)))
+                          (ok (and (stringp text) (plusp (length text)))
+                              "model-to-string returns a non-empty string")
+                          (with-open-file (stream echoed :direction :output
+                                                          :if-exists :supersede)
+                            (write-string text stream))
+                          (let ((from-string (cl-gbdt/lightgbm:load-model backend echoed)))
+                            (unwind-protect
+                                 (ok (equalp (cl-gbdt/lightgbm:predict booster matrix)
+                                             (cl-gbdt/lightgbm:predict from-string matrix))
+                                     "model-to-string's text is itself a loadable model")
+                              (cl-gbdt/lightgbm:free-booster from-string))))
+                        ;; :NUM-ITERATION reaches the library rather than being ignored. A
+                        ;; one-tree save cannot predict what a twenty-round booster does, so
+                        ;; this fails if the argument is dropped on the way down.
+                        (cl-gbdt/lightgbm:save-model booster path :num-iteration 1)
+                        (let ((truncated (cl-gbdt/lightgbm:load-model backend path)))
+                          (unwind-protect
+                               (ok (not (equalp (cl-gbdt/lightgbm:predict booster matrix)
+                                                (cl-gbdt/lightgbm:predict truncated matrix)))
+                                   "save-model's :num-iteration limits what is written")
+                            (cl-gbdt/lightgbm:free-booster truncated)))
+                        ;; `handler-case', not rove's `signals', which does not reliably catch a
+                        ;; condition raised inside `restart-case'. On the condition TYPE: the
+                        ;; report's wording is not what a caller dispatches on.
+                        (ok (handler-case
+                                (progn (cl-gbdt/lightgbm:save-model booster path
+                                                                     :num-iteration :best)
+                                       nil)
+                              (cl-gbdt/lightgbm:unsupported-argument () t))
+                            "save-model refuses :best, which only train can resolve")
+                        (ok (handler-case
+                                (progn (cl-gbdt/lightgbm:model-to-string booster
+                                                                          :num-iteration :best)
+                                       nil)
+                              (cl-gbdt/lightgbm:unsupported-argument () t))
+                            "model-to-string refuses :best for the same reason")
+                        ;; The specializer each of these lost.
+                        (ok (handler-case
+                                (progn (cl-gbdt/lightgbm:save-model data path) nil)
+                              (cl-gbdt/lightgbm:wrong-backend-reference () t))
+                            "save-model accepted a dataset as its booster")
+                        (ok (handler-case
+                                (progn (cl-gbdt/lightgbm:model-to-string data) nil)
+                              (cl-gbdt/lightgbm:wrong-backend-reference () t))
+                            "model-to-string accepted a dataset as its booster")
+                        (ok (handler-case
+                                (progn (cl-gbdt/lightgbm:load-model data path) nil)
+                              (cl-gbdt/lightgbm:wrong-backend-reference () t))
+                            "load-model accepted a dataset as its backend")
+                        (ok (handler-case
+                                (progn (cl-gbdt/lightgbm:load-model nil path) nil)
+                              (cl-gbdt/lightgbm:wrong-backend-reference () t))
+                            "load-model accepted NIL as its backend"))
+                   (cl-gbdt/lightgbm:free-booster booster)))
+            (progn
+              (cl-gbdt/lightgbm:free-dataset data)
+              (when (probe-file path) (delete-file path))
+              (when (probe-file echoed) (delete-file echoed)))))))))

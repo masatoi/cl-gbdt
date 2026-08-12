@@ -37,9 +37,6 @@
                 #:%check-booster-datasets-live
                 #:%free-booster-unchecked
                 #:%resolve-num-iteration
-                #:%save-model
-                #:%create-booster-from-modelfile
-                #:%save-model-to-string
                 #:%feature-importance-type
                 #:%booster-num-features
                 #:%feature-importance
@@ -84,7 +81,6 @@
                 #:%resolve-best-num-iteration
                 #:%reject-best-num-iteration)
   (:import-from #:cl-gbdt/src/conditions
-                #:foreign-call-error
                 #:unsupported-argument
                 #:capability-unavailable)
   (:import-from #:cl-gbdt/src/config/categorical-features
@@ -1099,14 +1095,24 @@ duplicating a check the procedure already makes."
 
 NUM-ITERATION limits how many trees are saved, :BEST resolved by
 `%resolve-best-num-iteration' first; nil saves all of them, which LightGBM spells as 0.
-Returns PATH."
+Returns PATH.
+
+The procedure is Layer 1 and lives in `cl-gbdt/src/lightgbm/api''s `save-model'. What is left
+here is resolving :BEST, which reads `booster-best-iteration' -- a slot `train' writes and
+nothing else does, so the keyword has no meaning below this layer."
   (with-foreign-float-traps-masked
-    (let ((pointer (handle-live-pointer booster))
-          (resolved (%resolve-best-num-iteration booster num-iteration
+    ;; Read and discarded, and not redundant with the check inside the procedure: the old body
+    ;; read the pointer in the same `let' that resolved :BEST, and `let' evaluates its
+    ;; initialization forms in order, so a freed BOOSTER handed :BEST reported
+    ;; `released-handle-error' rather than `unsupported-argument'. Resolution now runs before
+    ;; the delegation, so without this line that order would silently reverse. `predict' above
+    ;; carries the same line for the same reason.
+    (handle-live-pointer booster)
+    (let ((resolved (%resolve-best-num-iteration booster num-iteration
                                                   "save-model's :num-iteration")))
-      (cffi:with-foreign-string (filename (namestring path))
-        (%save-model pointer (%resolve-num-iteration resolved) filename)))
-    path))
+      ;; Named in full, not imported, and not recursion -- see `update-one-iteration' above,
+      ;; which faces the same doubled name for the same reason.
+      (cl-gbdt/src/lightgbm/api:save-model booster path :num-iteration resolved))))
 
 (defmethod load-model ((backend lightgbm-backend) path)
   "Load a LightGBM model from PATH via `LGBM_BoosterCreateFromModelfile' and
@@ -1123,32 +1129,29 @@ mirroring `cl-gbdt/src/xgboost/protocol''s `load-model', which reaches for the s
 otherwise be orphaned rather than freed.
 
 Signals `backend-not-open' before the foreign call when BACKEND is not open --
-see `%check-backend-open'."
+see `%check-backend-open'.
+
+This method's whole body was procedure -- there was no portable argument here to check or
+translate -- so all of it is `cl-gbdt/src/lightgbm/api''s `load-model', which is where the
+ownership window, the null-handle check and the backend guard now live."
   (with-foreign-float-traps-masked
-    (%check-backend-open backend)
-    (let ((booster-pointer
-            (cffi:with-foreign-string (filename (namestring path))
-              (cffi:with-foreign-objects ((out-num-iterations :int) (out :pointer))
-                (%create-booster-from-modelfile filename out-num-iterations out)
-                (cffi:mem-ref out :pointer)))))
-      (when (cffi:null-pointer-p booster-pointer)
-        (error 'foreign-call-error
-               :function-name "LGBM_BoosterCreateFromModelfile"
-               :code 0
-               :message "reported success but returned a null booster handle"))
-      (with-pointer-ownership (booster-pointer #'%free-booster-unchecked take-ownership)
-        (take-ownership 'lightgbm-booster backend :booster)))))
+    (cl-gbdt/src/lightgbm/api:load-model backend path)))
 
 (defmethod model-to-string ((booster lightgbm-booster) &key num-iteration)
   "Return BOOSTER's model as a string via `LGBM_BoosterSaveModelToString'.
 
 NUM-ITERATION's :BEST is resolved by `%resolve-best-num-iteration' before
-`%resolve-num-iteration' ever sees it, exactly as `predict' and `save-model' resolve it."
+`%resolve-num-iteration' ever sees it, exactly as `predict' and `save-model' resolve it.
+
+The procedure is Layer 1 and lives in `cl-gbdt/src/lightgbm/api''s `model-to-string'. What is
+left here is resolving :BEST, exactly as `save-model' above."
   (with-foreign-float-traps-masked
-    (%save-model-to-string
-     (handle-live-pointer booster)
-     (%resolve-num-iteration
-      (%resolve-best-num-iteration booster num-iteration "model-to-string's :num-iteration")))))
+    ;; See `save-model' above: discarded, and load-bearing for the order two wrong arguments
+    ;; are reported in.
+    (handle-live-pointer booster)
+    (let ((resolved (%resolve-best-num-iteration booster num-iteration
+                                                  "model-to-string's :num-iteration")))
+      (cl-gbdt/src/lightgbm/api:model-to-string booster :num-iteration resolved))))
 
 ;;; ---------------------------------------------------------------------------
 ;;; Feature importance

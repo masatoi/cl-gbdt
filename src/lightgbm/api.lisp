@@ -56,6 +56,7 @@
                 #:%check-lightgbm-booster
                 #:%check-lightgbm-dataset
                 #:%create-booster
+                #:%create-booster-from-modelfile
                 #:%create-dataset
                 #:%create-dataset-from-csr
                 #:%data-type
@@ -70,6 +71,8 @@
                 #:%predict-type
                 #:%reference-pointer
                 #:%resolve-num-iteration
+                #:%save-model
+                #:%save-model-to-string
                 #:%set-feature-names
                 #:%set-group-field
                 #:%set-info-field
@@ -104,7 +107,10 @@
            #:create-dataset
            #:free-booster
            #:free-dataset
+           #:load-model
+           #:model-to-string
            #:predict
+           #:save-model
            #:update-one-iteration))
 
 (in-package #:cl-gbdt/src/lightgbm/api)
@@ -709,3 +715,78 @@ call, it does not and should not decide what counts as a valid model output."
                                                 (%data-type element-type) nrow ncol
                                                 predict-type iteration-count
                                                 parameter-cstring out-len buffer)))))))))
+
+;;; ---------------------------------------------------------------------------
+;;; Persistence
+
+(defun save-model (booster path &key num-iteration)
+  "Save BOOSTER's model to PATH via `LGBM_BoosterSaveModel', and return PATH.
+
+NUM-ITERATION is a positive integer limiting how many trees are written, or NIL for all of
+them -- which LightGBM spells as 0, and `%resolve-num-iteration' is what writes it that way.
+:BEST is REFUSED, with `unsupported-argument' naming this backend and \"save-model's
+:num-iteration\": only `train' writes a booster's `best-iteration', so at this layer the
+keyword would name an empty slot. The refusal is invisible to Layer 2, whose method resolves
+:BEST first and calls this with the integer that resolution produced.
+
+Signals `wrong-backend-reference' when BOOSTER is not a booster built by this backend -- a
+dataset, an XGBoost booster, or not a handle at all. This function dispatches on nothing, so
+`%check-lightgbm-booster' is the only thing between such a handle's pointer and
+`LGBM_BoosterSaveModel'; see `%check-object-class' above on what wrong-kind pointers did when
+measured against the vendored library. It also signals `released-handle-error' for a freed
+BOOSTER and `backend-not-open' for a closed backend, both from the `handle-live-pointer'
+inside that check, which runs before NUM-ITERATION is examined."
+  (with-foreign-float-traps-masked
+    (let ((pointer (%check-lightgbm-booster booster "save-model's booster argument")))
+      (%reject-best-num-iteration booster num-iteration "save-model's :num-iteration")
+      (cffi:with-foreign-string (filename (namestring path))
+        (%save-model pointer (%resolve-num-iteration num-iteration) filename)))
+    path))
+
+(defun load-model (backend path)
+  "Load a LightGBM model from PATH via `LGBM_BoosterCreateFromModelfile' and return a new
+booster built against BACKEND.
+
+The returned booster has no training set -- see the `booster' class' documentation -- since
+PATH names a model, not a dataset. `evaluation' on it therefore reports nothing, and
+`update-one-iteration' signals `missing-training-set'.
+
+The raw booster handle exists in C from the moment `LGBM_BoosterCreateFromModelfile' returns,
+but `make-handle' does not take ownership of it until it also succeeds; `with-pointer-ownership'
+spans exactly that gap, freeing the raw handle on any exit that has not taken ownership rather
+than orphaning it.
+
+Signals `wrong-backend-reference' when BACKEND is not a `lightgbm-backend' -- the other
+backend's, a handle, or not a backend at all -- checked FIRST, ahead of `%check-backend-open',
+which asks only whether the object is open and answers that truthfully for the wrong library.
+Signals `backend-not-open' when BACKEND is closed, and `foreign-call-error' when the library
+reports success but returns a null handle."
+  (with-foreign-float-traps-masked
+    (%check-object-class backend 'lightgbm-backend "backend" "load-model's backend argument")
+    (%check-backend-open backend)
+    (let ((booster-pointer
+            (cffi:with-foreign-string (filename (namestring path))
+              (cffi:with-foreign-objects ((out-num-iterations :int) (out :pointer))
+                (%create-booster-from-modelfile filename out-num-iterations out)
+                (cffi:mem-ref out :pointer)))))
+      (when (cffi:null-pointer-p booster-pointer)
+        (error 'foreign-call-error
+               :function-name "LGBM_BoosterCreateFromModelfile"
+               :code 0
+               :message "reported success but returned a null booster handle"))
+      (with-pointer-ownership (booster-pointer #'%free-booster-unchecked take-ownership)
+        (take-ownership 'lightgbm-booster backend :booster)))))
+
+(defun model-to-string (booster &key num-iteration)
+  "Return BOOSTER's model as a string via `LGBM_BoosterSaveModelToString'.
+
+NUM-ITERATION means what it means for `save-model' above, :BEST refused on the same terms and
+by the same call. The text this returns is the text `save-model' writes, so it can be written
+to a file and handed back to `load-model'.
+
+Signals `wrong-backend-reference', `released-handle-error' and `backend-not-open' exactly as
+`save-model' does, and for the same reason: this function dispatches on nothing."
+  (with-foreign-float-traps-masked
+    (let ((pointer (%check-lightgbm-booster booster "model-to-string's booster argument")))
+      (%reject-best-num-iteration booster num-iteration "model-to-string's :num-iteration")
+      (%save-model-to-string pointer (%resolve-num-iteration num-iteration)))))
