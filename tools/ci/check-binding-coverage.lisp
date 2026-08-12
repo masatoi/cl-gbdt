@@ -43,6 +43,12 @@
 ;;;;    or fewer than 150 `defcfun' forms in total across them. 150 is below today's 177
 ;;;;    and far above zero -- it catches a glob that matched one file instead of two,
 ;;;;    without failing the day someone regenerates against a smaller upstream header.
+;;;;    Beside the floors, the glob's file count must equal `+BACKENDS+''s own length
+;;;;    exactly: CHECK A-D further down iterate the fixed `+BACKENDS+' list, not the glob,
+;;;;    so a third `c-api.lisp' the glob finds -- a new backend added under `src/' but not
+;;;;    yet to `+BACKENDS+' -- would be counted by the floors and checked by nothing. A
+;;;;    mismatch fails immediately, naming both counts and saying to add the backend to
+;;;;    `+BACKENDS+'.
 ;;;; 2. Empty-parse guard: `classified-entries' finding zero rows in
 ;;;;    ffi-spec/BINDING-COVERAGE.md fails before any of the checks below run, worded like
 ;;;;    check-abi-blacklist.lisp's own -- a check that silently matches nothing is worse
@@ -55,16 +61,28 @@
 ;;;;    say, or one row that precedes the file's first `## ' heading at all, leaving it with
 ;;;;    no section) would fall through to CHECK D's `excluded-names' bucket by default,
 ;;;;    silently reclassifying rather than failing anything.
-;;;; 4. CHECK A -- every `defcfun' C name across both backends is wrapped, planned, or
+;;;; 4. Duplicate check: every name `classified-entries' recorded must appear at most once,
+;;;;    whichever section carried it; a name listed twice fails, naming it once, before
+;;;;    CHECK A-D run. Guards CHECK D specifically, on its permissive side: CLASSIFIED-NAMES
+;;;;    and EXCLUDED-NAMES further down are both built by filtering ENTRIES, never by
+;;;;    uniqueness, so a name left classified under both `## Planned' and an `## Excluded'
+;;;;    heading -- the stale half of a copy-paste, this file's dominant editing pattern --
+;;;;    still satisfies EXCLUDED-NAMES' membership test and so still passes CHECK D,
+;;;;    regardless of which row is the mistake. This is a different door onto the hole the
+;;;;    section-vocabulary check above closes one side of: that check catches an
+;;;;    *unrecognised* heading falling into `excluded-names' by default; this one catches a
+;;;;    name under two *recognised* headings doing the same, because nothing else ever
+;;;;    required a classified name to have one entry rather than two.
+;;;; 5. CHECK A -- every `defcfun' C name across both backends is wrapped, planned, or
 ;;;;    excluded. This is the point of the whole file; an unclassified name fails, named
 ;;;;    individually.
-;;;; 5. CHECK B -- every classified name (planned or excluded) is a real `defcfun' on some
+;;;; 6. CHECK B -- every classified name (planned or excluded) is a real `defcfun' on some
 ;;;;    backend. One that is not fails: a typo in the row, or a function upstream removed
 ;;;;    while the row stayed behind.
-;;;; 6. CHECK C -- no classified name is also wrapped. One that is fails: someone wrapped
+;;;; 7. CHECK C -- no classified name is also wrapped. One that is fails: someone wrapped
 ;;;;    it and left the row behind -- the failure ffi-spec/BINDING-COVERAGE.md's own header
 ;;;;    names as the one this file is most likely to develop.
-;;;; 7. CHECK D -- every function ffi-spec/ABI-BLACKLIST.md's "still present in the
+;;;; 8. CHECK D -- every function ffi-spec/ABI-BLACKLIST.md's "still present in the
 ;;;;    generated bindings" table names, intersected with the `defcfun' names actually
 ;;;;    emitted, is classified `excluded' here. That intersection needs no awareness of
 ;;;;    which of ABI-BLACKLIST.md's two tables a name is in: its two tables are "still
@@ -117,7 +135,13 @@ Used for the floor checks below instead of a fixed per-backend list (contrast
 +BACKENDS+ further down, and tools/ci/check-abi-blacklist.lisp's own): `directory' on a
 glob that matches nothing returns NIL rather than signalling, so running this script from
 the wrong directory -- ffi-spec/, say -- trips the file-count floor with a clear message
-instead of an unhandled file-system error the moment some fixed path is opened.")
+instead of an unhandled file-system error the moment some fixed path is opened.
+
+Its file count is also checked, immediately after the floor, for exact equality against
++BACKENDS+' own length -- reconciling the two sources this docstring names rather than
+just naming them: CHECK A-D further down iterate +BACKENDS+ alone, so a file this glob
+finds beyond what +BACKENDS+ enumerates would otherwise be counted here and checked by
+nothing there.")
 
 (defparameter +minimum-c-api-files+ 2
   "Floor on how many `c-api.lisp' files +C-API-GLOB+ must find. Below today's two backends
@@ -327,6 +351,35 @@ turn into a failure instead."
                   "a row with no `## ' heading above it")))
     bad))
 
+(defun check-duplicate-entries (entries)
+  "Fail on every name that appears more than once among ENTRIES (a `classified-entries'
+result), whichever sections carried the duplicates, naming each offending name once.
+Returns the offending names, deduplicated.
+
+Exists because CLASSIFIED-NAMES and EXCLUDED-NAMES further down are both built by
+filtering ENTRIES, never by uniqueness, and nothing else compares a backend's own
+wrapped + planned + excluded sum against its `defcfun' count. A name left classified
+under both `## Planned' and an `## Excluded' heading -- the stale half of a copy-paste
+never deleted when the other row was added, which this file's header already names as its
+dominant editing pattern -- passes CHECK A either way, and still satisfies CHECK D's
+EXCLUDED-NAMES membership test regardless of which row is the mistake: EXCLUDED-NAMES is
+built as \"every classified name whose section is not the planned one\", and a name with
+one entry in each section is in that set through its excluded copy alone. That is the
+same permissive hole `check-section-vocabulary' above closes the *unrecognised*-heading
+side of, reached instead through two *recognised* headings at once -- a different door
+onto CHECK D, not a different check of it."
+  (let ((dupes (remove-duplicates
+                (loop :for (name . nil) :in entries
+                      :when (< 1 (count name entries :key #'car :test #'string=))
+                        :collect name)
+                :test #'string=)))
+    (dolist (name dupes)
+      (format *error-output*
+              "~&FAIL ~A is classified more than once in ~A -- listed under two rows, ~
+               possibly two different sections. Delete the stale row.~%"
+              name +coverage-path+))
+    dupes))
+
 ;;; ---- The wrapped set, and the four checks ----
 
 (defun wrapped-c-names (name-map c-api-package-name backend-path)
@@ -414,6 +467,17 @@ came from. Returns the offending names."
              bindings file may also be missing.~%"
             (length c-api-files) +c-api-glob+ +minimum-c-api-files+)
     (uiop:quit 1))
+  ;; Reconcile the glob against +BACKENDS+: CHECK A-D below iterate +BACKENDS+ alone, so a
+  ;; file the glob finds beyond what +BACKENDS+ enumerates would otherwise be counted here
+  ;; and checked by nothing there -- see this file's header, item 1.
+  (when (/= (length c-api-files) (length +backends+))
+    (format *error-output*
+            "~&FAIL: found ~D c-api.lisp file~:P matching ~A, but +BACKENDS+ lists ~D. ~
+             CHECK A-D below iterate +BACKENDS+ alone, so a file the glob finds beyond it ~
+             would be counted here and checked by nothing. Add the missing backend to ~
+             +BACKENDS+.~%"
+            (length c-api-files) +c-api-glob+ (length +backends+))
+    (uiop:quit 1))
   (let ((defcfun-total (reduce #'+ c-api-files
                                 :key (lambda (path) (hash-table-count (c-name-map path))))))
     (format t "~&~D defcfun form~:P total across those file~:P~%" defcfun-total)
@@ -444,6 +508,11 @@ came from. Returns the offending names."
     (let ((bad-sections (check-section-vocabulary entries)))
       (when bad-sections
         (uiop:quit 1)))
+    ;; Duplicate check: fails before CHECK A-D run, same reasoning as the two guards
+    ;; above -- see this file's header, item 4.
+    (let ((dupes (check-duplicate-entries entries)))
+      (when dupes
+        (uiop:quit 1)))
     (let* ((classified-names (mapcar #'car entries))
            (excluded-names (mapcar #'car (remove-if (lambda (e) (planned-section-p (cdr e)))
                                                       entries)))
@@ -461,7 +530,7 @@ came from. Returns the offending names."
               (length blacklist) +blacklist-path+)
       ;; CHECK D depends on BLACKLIST being non-empty; an unguarded empty parse would
       ;; report "check D: 0 ..." having examined nothing, the same failure shape the
-      ;; empty-parse guard above exists to prevent -- see this file's header, item 7.
+      ;; empty-parse guard above exists to prevent -- see this file's header, item 8.
       (when (null blacklist)
         (format *error-output*
                 "~&FAIL: parsed zero blacklisted function names from ~A. CHECK D depends ~
