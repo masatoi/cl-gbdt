@@ -903,11 +903,14 @@ the call itself to this file instead of naming `xg-booster-free' directly."
 (defun %free-booster-unchecked (pointer)
   "Free the booster at POINTER via `XGBoosterFree' without checking its returned status.
 
-`cl-gbdt/src/xgboost/protocol''s `train', and `cl-gbdt/src/xgboost/api''s `create-booster',
-`load-model' and `slice-model', each call this from their cleanup path when ownership of a
-partially or newly built booster never transferred to a handle -- see
-`%free-dmatrix-unchecked''s docstring for why a signal already unwinding the stack there must
-not be replaced by a status-check failure from this best-effort free."
+`cl-gbdt/src/xgboost/api''s `create-booster', `load-model' and `slice-model' each call this
+from their cleanup path when ownership of a partially or newly built booster never
+transferred to a handle -- see `%free-dmatrix-unchecked''s docstring for why a signal
+already unwinding the stack there must not be replaced by a status-check failure from this
+best-effort free.
+`cl-gbdt/src/xgboost/protocol''s `train' no longer calls this: it now holds a handle from
+`create-booster' rather than a raw pointer, so its own cleanup calls `free-booster' instead,
+wrapped the same way for the same reason -- see the comment at its own cleanup."
   (xg-booster-free pointer))
 
 ;;; ---------------------------------------------------------------------------

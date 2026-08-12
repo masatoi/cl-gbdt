@@ -1537,18 +1537,14 @@ closed [BEGIN, END] reading would make this 6.")
       (ok (eq :external status)
           (format nil "cl-gbdt/xgboost exports ~A" name)))))
 
-;;; Task 8 (.superpowers/sdd/2026-08-11-layer1-training-slice): `create-booster' is the one
-;;; Layer 1 operation with no caller inside this library. `train' does NOT delegate to it --
-;;; see the comment at `train''s own `%create-booster' call in src/xgboost/protocol.lisp for
-;;; the two measured reasons, a `:reader'-only `best-iteration' slot that can only be set at
-;;; construction and an ownership form that has to free the raw pointer if the loop signals --
-;;; so the two are separate copies of one procedure: build the array of DMatrix handles with
-;;; the training set first, hand it to `XGBoosterCreate', apply the parameters afterwards one
-;;; `XGBoosterSetParam' at a time, drive `XGBoosterUpdateOneIter'. Every other test in this
-;;; file exercises `train''s copy and none exercises `create-booster''s alongside it, so
-;;; nothing held the two together; the pair could drift and both halves stay green. This is
-;;; what notices, and it is the exact counterpart of
-;;; `lightgbm-api-create-booster-and-train-agree' in tests/functional/lightgbm-api.lisp.
+;;; Task 8 (.superpowers/sdd/2026-08-11-layer1-training-slice) added `create-booster' as the
+;;; Layer 1 counterpart of `train'. Task 3
+;;; (.superpowers/sdd/2026-08-12-train-create-booster-merge) made `train' call it, the same
+;;; way every other unified method already delegated to its own Layer 1 counterpart. What
+;;; this test still pins is that the machinery `train' wraps around that shared construction
+;;; -- history recording, an early-stopping watcher and the report built from them -- does
+;;; not change the model itself: a bare `create-booster' plus an `update-one-iteration' loop
+;;; over the same dataset and parameters must agree with what `train' produces.
 ;;;
 ;;; It belongs with tests/functional/xgboost-standalone.lisp, which is what proves
 ;;; `create-booster' trains at all -- but that file may not have the unified API in its image,
@@ -1605,8 +1601,9 @@ their measurements out of date for no gain.")
                (dotimes (round *agreement-rounds*)
                  (cl-gbdt/xgboost:update-one-iteration layer-1-booster))
                ;; Layer 2: the same fixture, the same parameters, the same number of rounds,
-               ;; through the unified API -- whose `train' builds and advances its booster
-               ;; itself rather than calling either function above.
+               ;; through the unified API -- whose `train' now calls the same `create-booster'
+               ;; used above, then drives its own loop rather than calling
+               ;; `update-one-iteration' directly.
                (setf unified-dataset (cl-gbdt:make-dataset
                                       backend matrix :label label-vector))
                (setf unified-booster (cl-gbdt:train backend unified-dataset

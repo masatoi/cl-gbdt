@@ -52,10 +52,11 @@
 ;;;; of `update-one-iteration' produces the same model as `cl-gbdt:train'. That comparison
 ;;;; needs both APIs in one image, which is the one thing this file may not have, so it lives
 ;;;; in tests/functional/xgboost-api.lisp as `xgboost-api-create-booster-and-train-agree' --
-;;;; see the commentary there. The split is not cosmetic: `train' does not call
-;;;; `create-booster' (see the comment at its own `%create-booster' call in
-;;;; src/xgboost/protocol.lisp for the two measured reasons), so the two are separate copies
-;;;; of one procedure and something has to hold them together.
+;;;; see the commentary there, which carries the other half of this note. The split is not
+;;;; cosmetic even now that `train' calls `create-booster' for its whole construction
+;;;; (.superpowers/sdd/2026-08-12-train-create-booster-merge): this file's only dependency is
+;;;; `cl-gbdt/xgboost', Layer 1 alone, so `train' is not a name it can even read here, let
+;;;; alone call to check against.
 
 (uiop:define-package #:cl-gbdt/tests/functional/xgboost-standalone
   (:use #:cl #:rove)
