@@ -7,18 +7,48 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 @prompts/repl-driven-development.md
 @prompts/common-lisp-expert.md
 
+### How this project is developed
+
+This project is developed with cl-mcp's tools, the way `cl-mcp`'s own CLAUDE.md says it
+develops itself. Lisp code operations — searching, reading, editing, evaluating, and
+running one test — go through them. Two steps at the start of **every** session decide
+whether that holds:
+
+1. **`fs-set-project-root`** with this repository's path. `repl-driven-development.md`
+   calls this its critical initial step, and it is the easiest thing here to skip.
+2. **`pool-status`.** The prompt's shell prohibition lapses **only when the server is
+   down**, and this is what establishes whether it is. A session that never asks has not
+   earned the fallback. That failure has happened here — a whole feature branch developed
+   through `Bash`, `grep`, `sed` and `awk` with the server up the entire time.
+
+| Instead of | Use |
+|---|---|
+| `grep`/`rg` over `.lisp` | `clgrep-search` |
+| `cat`/`head`/`sed`/`awk` over `.lisp` | `lisp-read-file` |
+| `Read` on a 1200-line source to see one function | `lisp-read-file` with `name_pattern="^that-function$"` |
+| editing a `defun`/`defmethod` | `lisp-edit-form`, or `lisp-patch-form` for a sub-form |
+| re-running a whole suite to check one change | `run-tests` with `test:` or `tests:` |
+
+**Shell is for** `git` and `gh`, the gates in [Testing & Linting](#testing--linting),
+`mallet`, and anything asked for directly. `Read`/`Edit`/`Write` remain right for
+non-Lisp files — Markdown, YAML, this file.
+
+**This split has to reach implementation plans and subagent briefs**, because that is
+where it failed rather than here. A plan that writes out `ros run …`, `grep`, `sed` and
+`awk` as *the way to do the work* hands that shape to every subagent it dispatches,
+whatever this file says. Name the tool for anything in the table above; reserve exact
+command lines for the gates, where the exact command is the point.
+
 ### How those prompts apply here
 
 Both prompts were imported verbatim from the `cl-mcp` project and describe *its*
 environment, not this one. Where they conflict with this file, **this file wins**:
 
-- **cl-mcp tools require a running server.** `repl-driven-development.md` assumes the MCP
-  tools (`repl-eval`, `lisp-edit-form`, `clgrep-search`, `run-tests`, …) are always
-  available. Here they come from the HTTP server declared in `.mcp.json` — see
-  [MCP Setup](#mcp-setup). If the server is down, the tools are absent; fall back to
-  `Read`/`Edit`/`Grep`/`Bash` rather than treating its shell-command prohibition as
-  binding. The underlying **EXPLORE → EXPERIMENT → PERSIST → VERIFY** loop always
-  applies: prototype in the REPL, then persist to `src/`.
+- **cl-mcp tools come from a server that can be down.** They are served by the HTTP
+  server declared in `.mcp.json` — see [MCP Setup](#mcp-setup) — where the prompt assumes
+  they are always present. `pool-status` is how you find out; see the section above for
+  what follows from each answer. The **EXPLORE → EXPERIMENT → PERSIST → VERIFY** loop
+  applies either way: prototype in the REPL, then persist to `src/`.
 - **The test framework is rove**, matching the prompt's assumption, so `run-tests` and
   `(rove:run-test ...)` work as described.
 - **FFI is expected.** LightGBM and XGBoost are C libraries; `common-lisp-expert.md`'s
@@ -293,23 +323,48 @@ conversion -- before it, that clause was never parsed for dependency inference.
 
 ## Testing & Linting
 
-Load and test (layer 1 — no shared library required):
+Two different activities live here. Conflating them is what turns checking one change
+from a second into forty.
 
-```lisp
-(ql:quickload :cl-gbdt/tests)
-(asdf:test-system :cl-gbdt/tests)
+### The development loop — the MCP `run-tests` tool
+
+The system names are `cl-gbdt/tests` (layer 1, no shared library) and
+`cl-gbdt/tests/functional` (layer 2, calls the real libraries; needs
+`./tools/fetch-libs.sh` first). While iterating, run **one test**:
+
+```text
+run-tests  system: "cl-gbdt/tests"
+           test:   "cl-gbdt/tests/handle::booster-retains-best-iteration"
 ```
 
-Via the MCP `run-tests` tool, the system name is `cl-gbdt/tests`. Single test from the
-REPL: `(rove:run-test 'cl-gbdt/tests/backend::some-test-name)` — substitute whichever
-`cl-gbdt/tests/*` package the test actually lives in; `cl-gbdt/tests` itself is a
-defsystem name only, no file defines a package by that name.
+`test:` takes one fully-qualified name and `tests:` an array of them. Substitute whichever
+`cl-gbdt/tests/*` package the test actually lives in — `cl-gbdt/tests` is a defsystem name
+only, and no file defines a package by that name. A misspelled name fails loudly (`No test
+found for …`) rather than reporting a green run of nothing.
 
-The functional suite (layer 2, calls the real shared libraries; needs
-`./tools/fetch-libs.sh` first) is `cl-gbdt/tests/functional`, tested the same way.
+Measured 2026-08-12: one layer 1 test 8 ms, one functional test 17 ms, against roughly 40 s
+and 3 min for the corresponding whole suites through the gates below. `load-system` is the
+tool for reloading after an edit, in preference to `repl-eval` with `asdf:load-system`.
 
-`asdf:test-system` exits 0 even when tests fail, so it is not what CI runs. The
-authoritative checks, runnable locally, are:
+**`run-tests`' `Passed:` count is not what this project's plans call assertions, and its
+unit is not stable across its own two modes.** Measured on the layer 1 suite the same day:
+
+| Where the number comes from | Layer 1 reads | Unit |
+|---|---|---|
+| `run-tests` on the whole system | 207 | `deftest` forms |
+| `run-tests` with `test:` / `tests:` | 1, 2, 3 … | `testing` blocks |
+| `tools/ci/run-tests.lisp` | 21 | test *files* |
+| `grep -c "✓ "` minus one | 555 | assertions |
+
+207 matches `grep -c '^(deftest' tests/*.lisp` exactly. The two MCP modes genuinely differ;
+rove's source was not read to find out why. **Never write a `run-tests` count into a plan
+as a gate** — it will not match what CI reports, and the final `✓ N tests completed` line
+is why the assertion count is one less than a naive `grep -c`.
+
+### The gates — Bash, and they stay Bash
+
+`asdf:test-system` exits 0 even when tests fail, and `run-tests` counts something else
+again. These are what CI runs and where a plan's numbers come from:
 
 ```bash
 CL_GBDT_TEST_SYSTEM=cl-gbdt/tests ros run -- --non-interactive \
@@ -320,9 +375,16 @@ ros run -- --non-interactive --load tools/ci/lint.lisp   # mallet + column-width
 ros run -- --non-interactive --load tools/ci/check-leaf-systems.lisp
 ros run -- --non-interactive --load tools/ci/check-layer-separation.lisp
 ros run -- --non-interactive --load tools/ci/check-float-traps.lisp
+ros run -- --non-interactive --load tools/ci/check-layer-1-guards.lisp
 ros run -- --non-interactive --load tools/ci/check-abi-blacklist.lisp
 ros run -- --non-interactive --load tools/ci/check-binding-coverage.lisp
 ```
+
+Five of those have no MCP equivalent at all — float traps, layer-1 guards, layer
+separation, ABI blacklist, lint. Run the whole block before committing, and at the end of
+any task whose plan states numbers. **Add a line here whenever `tools/ci/` gains a
+script**: `check-layer-1-guards.lisp` arrived in PR #28 and was missing from this list
+until 2026-08-12.
 
 `sbcl` is not on `PATH` in this environment; every command above goes through
 `ros run -- --non-interactive ...`, not a bare `sbcl` invocation.
