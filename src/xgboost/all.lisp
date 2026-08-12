@@ -211,7 +211,10 @@
                 #:create-dataset
                 #:free-booster
                 #:free-dataset
+                #:load-model
+                #:model-to-string
                 #:predict
+                #:save-model
                 #:slice-model
                 #:update-one-iteration)
   (:export #:xgboost-backend
@@ -222,7 +225,10 @@
            #:create-dataset
            #:free-booster
            #:free-dataset
+           #:load-model
+           #:model-to-string
            #:predict
+           #:save-model
            #:update-one-iteration
            #:csr-matrix
            #:csr-matrix-indices

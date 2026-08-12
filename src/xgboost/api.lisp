@@ -75,6 +75,7 @@
                 #:%free-booster-unchecked
                 #:%free-dmatrix
                 #:%free-dmatrix-unchecked
+                #:%load-model
                 #:%predict-config-json
                 #:%predict-from-csr
                 #:%predict-from-dmatrix
@@ -82,6 +83,8 @@
                 #:%predict-type
                 #:%reported-shape
                 #:%resolve-num-iteration
+                #:%save-model
+                #:%save-model-to-buffer
                 #:%set-feature-names
                 #:%set-feature-types
                 #:%set-group-field
@@ -121,7 +124,10 @@
            #:create-dataset
            #:free-booster
            #:free-dataset
+           #:load-model
+           #:model-to-string
            #:predict
+           #:save-model
            #:slice-model
            #:update-one-iteration))
 
@@ -782,6 +788,82 @@ one itself."
                     (warn "Freeing predict's temporary XGBoost dataset failed: the ~
                            foreign dataset was not freed and its memory is leaked. ~A"
                           condition))))))))))
+
+;;; ---------------------------------------------------------------------------
+;;; Persistence
+
+(defun save-model (booster path)
+  "Save BOOSTER's model to PATH via `XGBoosterSaveModel', and return PATH.
+
+Takes no iteration limit, unlike `cl-gbdt/src/lightgbm/api''s `save-model':
+`XGBoosterSaveModel' has no such parameter and always writes every boosted round. The
+argument is therefore ABSENT here rather than refused -- a Layer 1 caller who names it gets
+Common Lisp's own unknown-keyword error, which is the right report for a keyword that does
+not exist. `cl-gbdt/src/xgboost/protocol''s method is where `unsupported-argument' is
+signalled, because that refusal exists only because the unified API promised a portable
+:NUM-ITERATION that LightGBM honours.
+
+XGBoost selects its serialization format from PATH's extension -- `.json' and `.ubj' are the
+current ones -- and reports an unrecognized extension itself, as `foreign-call-error'.
+
+Signals `wrong-backend-reference' when BOOSTER is not a booster built by this backend -- a
+dataset, a LightGBM booster, or not a handle at all. This function dispatches on nothing, so
+`%check-xgboost-booster' is the only thing between such a handle's pointer and
+`XGBoosterSaveModel'; see `%check-object-class' above on what wrong-kind pointers did when
+measured against the vendored library. `released-handle-error' and `backend-not-open' come
+from the `handle-live-pointer' inside that same check."
+  (with-foreign-float-traps-masked
+    (let ((pointer (%check-xgboost-booster booster "save-model's booster argument")))
+      (cffi:with-foreign-string (filename (namestring path))
+        (%save-model pointer filename)))
+    path))
+
+(defun load-model (backend path)
+  "Load an XGBoost model from PATH and return a new booster built against BACKEND.
+
+Unlike LightGBM's `LGBM_BoosterCreateFromModelfile', which allocates the booster and loads the
+model in one call, XGBoost splits the two: `XGBoosterCreate' first builds a booster with no
+DMatrix handles at all, and only then does `XGBoosterLoadModel' populate it from PATH.
+
+The returned booster has no training set -- see the `booster' class' documentation -- since
+PATH names a model, not a dataset. `evaluation' on it therefore reports nothing, and
+`update-one-iteration' signals `missing-training-set'.
+
+`with-pointer-ownership' spans exactly the window in which the raw booster is owned by
+nobody: any exit that has not called TAKE-OWNERSHIP -- a failing `XGBoosterLoadModel' the
+likeliest -- frees it here instead of orphaning it.
+
+Signals `wrong-backend-reference' when BACKEND is not an `xgboost-backend', checked FIRST,
+ahead of `%check-backend-open', which asks only whether the object is open and answers that
+truthfully for the wrong library. Signals `backend-not-open' when BACKEND is closed."
+  (with-foreign-float-traps-masked
+    (%check-object-class backend 'xgboost-backend "backend" "load-model's backend argument")
+    (%check-backend-open backend)
+    (let ((booster-pointer (%create-booster nil)))
+      (with-pointer-ownership (booster-pointer #'%free-booster-unchecked take-ownership)
+        (cffi:with-foreign-string (filename (namestring path))
+          (%load-model booster-pointer filename))
+        (take-ownership 'xgboost-booster backend :booster)))))
+
+(defun model-to-string (booster)
+  "Return BOOSTER's model as a JSON string via `XGBoosterSaveModelToBuffer'.
+
+Takes no iteration limit, for the reason `save-model' above states: that entry point's config
+JSON has only a `\"format\"' key. The text this returns is a complete model document and can
+be written to a `.json' file and handed back to `load-model'.
+
+`out_dptr' is XGBoost's own memory, copied out via `foreign-string-to-lisp' with an explicit
+`:count' from `out_len' rather than trusted to be null-terminated at the right place.
+
+Signals `wrong-backend-reference', `released-handle-error' and `backend-not-open' exactly as
+`save-model' does, and for the same reason: this function dispatches on nothing."
+  (with-foreign-float-traps-masked
+    (let ((pointer (%check-xgboost-booster booster "model-to-string's booster argument")))
+      (cffi:with-foreign-string (config "{\"format\":\"json\"}")
+        (cffi:with-foreign-objects ((out-len :uint64) (out-dptr :pointer))
+          (%save-model-to-buffer pointer config out-len out-dptr)
+          (cffi:foreign-string-to-lisp (cffi:mem-ref out-dptr :pointer)
+                                        :count (cffi:mem-ref out-len :uint64)))))))
 
 ;;; ---------------------------------------------------------------------------
 ;;; Model slicing

@@ -37,9 +37,6 @@
                 #:%free-booster-unchecked
                 #:%booster-predictions
                 #:%train-one-iteration-custom
-                #:%save-model
-                #:%load-model
-                #:%save-model-to-buffer
                 #:%feature-importance-type
                 #:%booster-num-features
                 #:%feature-score-index
@@ -1125,17 +1122,20 @@ same check exactly as an explicit integer would -- not special-cased around it. 
 who wants a file that stops at the best iteration slices to it first with
 `cl-gbdt/xgboost:slice-model' and saves the slice instead.
 
-Returns PATH."
+Returns PATH.
+
+The procedure is Layer 1 and lives in `cl-gbdt/src/xgboost/api''s `save-model', which takes no
+:NUM-ITERATION at all. What is left here is the refusal above, which exists because the
+unified API promised a portable argument LightGBM honours and this library has no route for."
   (with-foreign-float-traps-masked
     (let ((resolved (%resolve-best-num-iteration booster num-iteration
                                                   "save-model's :num-iteration")))
       (%check-unsupported
        (handle-backend booster) "save-model's :num-iteration" resolved
        "XGBoosterSaveModel has no iteration limit; every boosted round is saved"))
-    (let ((pointer (handle-live-pointer booster)))
-      (cffi:with-foreign-string (filename (namestring path))
-        (%save-model pointer filename)))
-    path))
+    ;; Named in full, not imported, and not recursion -- see `update-one-iteration' above,
+    ;; which faces the same doubled name for the same reason.
+    (cl-gbdt/src/xgboost/api:save-model booster path)))
 
 (defmethod load-model ((backend xgboost-backend) path)
   "Load an XGBoost model from PATH and return a new booster.
@@ -1155,14 +1155,13 @@ nobody inside its body, and any exit that has not called TAKE-OWNERSHIP -- a fai
 `XGBoosterLoadModel' the likeliest -- frees the raw booster here instead of orphaning it.
 
 Signals `backend-not-open' before any of that when BACKEND is not open -- see
-`%check-backend-open'."
+`%check-backend-open'.
+
+This method's whole body was procedure -- there was no portable argument here to check or
+translate -- so all of it is `cl-gbdt/src/xgboost/api''s `load-model', which is where the
+two-call construction, the ownership window and the backend guard now live."
   (with-foreign-float-traps-masked
-    (%check-backend-open backend)
-    (let ((booster-pointer (%create-booster nil)))
-      (with-pointer-ownership (booster-pointer #'%free-booster-unchecked take-ownership)
-        (cffi:with-foreign-string (filename (namestring path))
-          (%load-model booster-pointer filename))
-        (take-ownership 'xgboost-booster backend :booster)))))
+    (cl-gbdt/src/xgboost/api:load-model backend path)))
 
 (defmethod model-to-string ((booster xgboost-booster) &key num-iteration)
   "Return BOOSTER's model as a JSON string via `XGBoosterSaveModelToBuffer'.
@@ -1175,18 +1174,18 @@ meets this same check exactly as an explicit integer would.
 
 `out_dptr' is XGBoost's own memory, copied out via `foreign-string-to-lisp' with an
 explicit `:count' from `out_len' rather than trusted to be null-terminated at the right
-place."
+place.
+
+The procedure is Layer 1 and lives in `cl-gbdt/src/xgboost/api''s `model-to-string', which
+takes no :NUM-ITERATION at all. What is left here is the refusal above, which exists because
+the unified API promised a portable argument LightGBM honours and this library has no route
+for."
   (with-foreign-float-traps-masked
     (let ((resolved (%resolve-best-num-iteration booster num-iteration
                                                   "model-to-string's :num-iteration")))
       (%check-unsupported (handle-backend booster) "model-to-string's :num-iteration"
                            resolved "XGBoosterSaveModelToBuffer has no iteration limit"))
-    (let ((pointer (handle-live-pointer booster)))
-      (cffi:with-foreign-string (config "{\"format\":\"json\"}")
-        (cffi:with-foreign-objects ((out-len :uint64) (out-dptr :pointer))
-          (%save-model-to-buffer pointer config out-len out-dptr)
-          (cffi:foreign-string-to-lisp (cffi:mem-ref out-dptr :pointer)
-                                        :count (cffi:mem-ref out-len :uint64)))))))
+    (cl-gbdt/src/xgboost/api:model-to-string booster)))
 
 ;;; ---------------------------------------------------------------------------
 ;;; Feature importance
