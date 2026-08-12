@@ -395,17 +395,17 @@ that point."
 ;;; Boosters
 ;;;
 ;;; `cl-gbdt/src/xgboost/protocol''s `train' calls `create-booster' for its whole
-;;; construction (`.superpowers/sdd/2026-08-12-train-create-booster-merge'), the same way
-;;; every other Layer 1 operation's method already called its own counterpart. What used to
-;;; hold `train' back was `booster-best-iteration' being a `:reader'-only slot writable only
-;;; at construction, while the value `train' has to write comes from its own loop's watcher
-;;; afterward -- `cl-gbdt/src/handle''s `%set-booster-best-iteration' removed that barrier,
-;;; so `train' now holds a full handle from this function's own `make-handle' call and writes
-;;; the best iteration back once its loop ends, rather than building the handle itself only
-;;; at the end. See `train''s own call site for that write and the reasoning behind it -- and
-;;; note the same is true of `cl-gbdt/src/lightgbm/api''s `create-booster': this was a
-;;; property of the shared `handle' class, not of either library, which is why both backends'
-;;; `train' carried the same barrier and both lost it together. The two small functions below
+;;; construction, the same way every other Layer 1 operation's method already called its own
+;;; counterpart. What used to hold `train' back was `booster-best-iteration' being a
+;;; `:reader'-only slot writable only at construction, while the value `train' has to write
+;;; comes from its own loop's watcher afterward -- `cl-gbdt/src/handle''s
+;;; `%set-booster-best-iteration' removed that barrier, so `train' now holds a full handle
+;;; from this function's own `make-handle' call and writes the best iteration back once its
+;;; loop ends, rather than building the handle itself only at the end. See `train''s own call
+;;; site for that write and the reasoning behind it -- and note the same is true of
+;;; `cl-gbdt/src/lightgbm/api''s `create-booster': this was a property of the shared `handle'
+;;; class, not of either library, which is why both backends' `train' carried the same
+;;; barrier and both lost it together. The two small functions below
 ;;; ARE what their methods call, wholesale.
 
 (defun create-booster (backend dataset &key parameters valid-sets)

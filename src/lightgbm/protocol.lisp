@@ -776,6 +776,12 @@ nothing after the caller's code uses a pointer read before it. See that function
 each of the three re-checks is for. This is the only place the loop needs it -- the
 OBJECTIVE NIL branch beside it runs no caller code at all.
 
+Such a run also leaves this method's own cleanup to run against a closed BACKEND:
+`free-booster' then emits an unfreed-handle warning instead of signalling, and the
+foreign booster is genuinely leaked, since the library may already be unmapped by the
+time that cleanup runs -- see the comment on the `unwind-protect' below for why letting
+that warning escape is correct.
+
 Neither RECORD-HISTORY nor EARLY-STOPPING is disabled by OBJECTIVE, and neither is made
 meaningful by it: a metric configured through PARAMETERS relates to the library's own
 objective, not to the caller's, and this method neither signals nor warns about that -- see
@@ -891,12 +897,17 @@ Signals `backend-not-open' before any of that when BACKEND is not open -- see
            ;; it is also what makes an early-stopped run report its true, shortened length
            ;; with nothing further to do here.
            (completed-rounds 0))
-      ;; Delegated to `cl-gbdt/src/lightgbm/api''s `create-booster'. Every method in this file
-      ;; now hands its whole procedure to that file; `train' was the last that did not, and
-      ;; what held it back was `booster-best-iteration' -- a `:reader'-only slot whose only
-      ;; writer was `make-handle''s initarg, at construction, while this method's value comes
-      ;; from the watcher after the loop. `cl-gbdt/src/handle''s `%set-booster-best-iteration'
-      ;; is what removed the barrier; see its docstring for why it is internal.
+      ;; Delegated to `cl-gbdt/src/lightgbm/api''s `create-booster', for its whole
+      ;; construction -- not for this method's whole procedure, which the loop below still
+      ;; does not hand over: it calls `%update-one-iteration', `%booster-predictions' and
+      ;; `%read-evaluation' in `cl-gbdt/src/lightgbm/native' directly rather than this
+      ;; file's own `update-one-iteration', which would re-check every handle on every
+      ;; iteration. Every OTHER method in this file hands its whole procedure to
+      ;; `cl-gbdt/src/lightgbm/api'; what held even this much back from `train' was
+      ;; `booster-best-iteration' -- a `:reader'-only slot whose only writer was
+      ;; `make-handle''s initarg, at construction, while this method's value comes from the
+      ;; watcher after the loop. `cl-gbdt/src/handle''s `%set-booster-best-iteration' is what
+      ;; removed the barrier; see its docstring for why it is internal.
       ;;
       ;; The datasets are checked twice as a result: once in the `let*' above, with this
       ;; method's own argument descriptions, and once inside `create-booster' with its. The
@@ -973,9 +984,25 @@ Signals `backend-not-open' before any of that when BACKEND is not open -- see
           ;; 10). That is not hypothetical here: on the branch that actually runs -- an open
           ;; backend and a live handle, since `create-booster' just built it -- this reaches
           ;; `%free-booster', which signals `foreign-call-error' on a non-zero
-          ;; `LGBM_BoosterFree' status. The closed-backend branch only `warn's and cannot
-          ;; signal, and `wrong-backend-reference' cannot fire on a handle this method just
-          ;; built, but the wrap covers all three rather than relying on which one applies.
+          ;; `LGBM_BoosterFree' status; that signal runs inside FREE-FUNCTION, which
+          ;; `release-handle' calls BEFORE marking the handle released or cancelling its
+          ;; finalizer, so catching it here already leaves the handle unreleased with a live
+          ;; finalizer that later warns `unfreed-handle-warning' about a handle its caller
+          ;; never held. `wrong-backend-reference' cannot fire on a handle this method just
+          ;; built, but the wrap covers it too rather than relying on which branch applies.
+          ;;
+          ;; A caller's OBJECTIVE or EVALUATION can also reach this cleanup by calling
+          ;; `close-backend' itself: that turns `%recheck-train-datasets''s next re-check
+          ;; into a `backend-not-open' this loop does not catch, so `free-booster' runs
+          ;; against a handle whose backend has already closed and takes its closed-backend
+          ;; branch, which `warn's instead of signalling. That `warn' ESCAPES this wrap BY
+          ;; DESIGN, not by oversight: the `error' clause exists only to stop a failing
+          ;; cleanup from replacing the condition already unwinding (policy section 10), and
+          ;; a `warn' never transfers control, so it poses no such risk and there is nothing
+          ;; here for it to be caught FOR. Letting it print is also how the caller learns
+          ;; anything went wrong: the foreign booster is genuinely leaked on this branch,
+          ;; since `shutdown-backend' has already unmapped the library and there is nothing
+          ;; left for a free to call.
           (unless completed
             (handler-case (cl-gbdt/src/lightgbm/api:free-booster booster)
               (error () nil))))))))

@@ -37,7 +37,7 @@ over both backends.
 **Status: functional.** Both backends implement
 all 13 generic functions of the unified API -- `make-dataset`, `train`, `predict`, and
 the rest -- against the real shared libraries, exercised by 946 functional assertions across
-15 test files in `cl-gbdt/tests/functional` (layer 2) on top of 554 assertions across 21
+15 test files in `cl-gbdt/tests/functional` (layer 2) on top of 555 assertions across 21
 test files that need no shared library at all (layer 1).
 
 **Each backend is two systems.** `cl-gbdt/<backend>` is that backend's **Layer 1 alone**:
@@ -61,8 +61,11 @@ ever reaches `cl-gbdt/src/protocol`, the training files, or the bare `cl-gbdt`.
 `api.lisp` and proven with no unified API in the image by
 `tests/functional/{lightgbm,xgboost}-standalone.lisp`, each of which names its backend's
 public package and no other system **of this project** -- `rove` aside, they declare
-nothing. All thirteen methods delegate their whole procedure to these; `train` is the one
-that also writes the best iteration back afterward, through the internal
+nothing. Twelve of the thirteen methods delegate their whole procedure to these; `train`
+calls `create-booster` for its whole construction only -- its loop still calls
+`native.lisp`'s functions directly rather than `api.lisp`'s `update-one-iteration`, which
+would re-check every handle on every iteration -- and is the one that also writes the best
+iteration back afterward, through the internal
 `%set-booster-best-iteration` in `src/handle.lisp`, once its loop ends. The delegation left
 the unified API's own behaviour alone but for one ordering, recorded in both backends'
 `predict` docstrings:
