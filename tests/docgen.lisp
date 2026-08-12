@@ -201,3 +201,53 @@
     (let ((method (first (sb-mop:generic-function-methods #'fixture-dispatch))))
       (ok (string= "(fixture-dispatch (object fixture-class) (other t))"
                    (cl-gbdt/src/docgen/all:render-method-signature 'fixture-dispatch method))))))
+
+(defgeneric fixture-key-method (x &key mode other)
+  (:documentation "Fixture generic exercising a &key tail."))
+
+(defmethod fixture-key-method ((x integer) &key (mode :normal) other)
+  "Method exercising a &key tail."
+  (list x mode other))
+
+(deftest render-method-signature-renders-key-tail
+  (testing "a &key tail renders with each parameter, defaults kept as pairs"
+    (let ((method (first (sb-mop:generic-function-methods #'fixture-key-method))))
+      (ok (string= "(fixture-key-method (x integer) &key (mode :normal) other)"
+                   (cl-gbdt/src/docgen/all:render-method-signature 'fixture-key-method
+                                                                    method))))))
+
+(defgeneric fixture-zero-req-method (&key mode)
+  (:documentation "Fixture generic with zero required parameters."))
+
+(defmethod fixture-zero-req-method (&key (mode :normal))
+  "Method with zero required parameters."
+  mode)
+
+(deftest render-method-signature-renders-zero-required-parameters
+  (testing "an empty required list contributes nothing; no double space before &key"
+    (let ((method (first (sb-mop:generic-function-methods #'fixture-zero-req-method))))
+      (ok (string= "(fixture-zero-req-method &key (mode :normal))"
+                   (cl-gbdt/src/docgen/all:render-method-signature 'fixture-zero-req-method
+                                                                    method))))))
+
+(defgeneric fixture-aux-method (x)
+  (:documentation "Fixture generic whose method tail is only &aux."))
+
+(defmethod fixture-aux-method ((x integer) &aux (y 1))
+  "Method whose tail is only &aux, dropped entirely rather than left as a trailing space."
+  (list x y))
+
+(deftest render-method-signature-drops-aux-only-tail
+  (testing "an &aux-only tail leaves no trailing space"
+    (let ((method (first (sb-mop:generic-function-methods #'fixture-aux-method))))
+      (ok (string= "(fixture-aux-method (x integer))"
+                   (cl-gbdt/src/docgen/all:render-method-signature 'fixture-aux-method
+                                                                    method))))))
+
+(deftest render-lambda-list-refuses-dotted-lambda-lists
+  (testing "a dotted lambda list is refused rather than silently flattened"
+    (ok (handler-case (progn (cl-gbdt/src/docgen/all:render-lambda-list '(a b . c)) nil)
+          (error (e) (search "dotted" (princ-to-string e)))))
+    (ok (handler-case (progn (cl-gbdt/src/docgen/all:render-lambda-list '((a b . c) other))
+                              nil)
+          (error (e) (search "dotted" (princ-to-string e)))))))
