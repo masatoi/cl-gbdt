@@ -1333,3 +1333,85 @@ Matches `lightgbm-api-round-trip''s round count; nothing about the comparison ne
             (when xgboost-booster (cl-gbdt:free-booster xgboost-booster))
             (when xgboost-set (cl-gbdt:free-dataset xgboost-set))
             (cl-gbdt:close-backend xgboost)))))))
+
+;;; The sibling of the test above, one argument over. `create-dataset' and `create-booster'
+;;; take a BACKEND where those four take a handle, and their `defmethod' ancestors specialized
+;;; on `lightgbm-backend' -- so the backend argument's type was checked by the very same
+;;; mechanism, and was left unchecked when the handle arguments' checks were restored.
+;;; `%check-backend-open', the one check those two already made, is not a substitute: it asks
+;;; whether the object is OPEN, and an open XGBoost backend answers yes.
+;;;
+;;; Measured with `%check-lightgbm-backend' removed, `create-dataset' handed the XGBoost
+;;; backend ACCEPTED it and returned a `lightgbm-dataset' -- `LGBM_DatasetCreateFromMat' built
+;;; it, that C entry point never seeing a backend object -- whose `handle-backend' is the
+;;; XGBoost backend that did not build it. Every later liveness question about that handle then
+;;; reads the wrong library's state: after `close-backend' on the LightGBM backend that DID
+;;; build it, the handle still read live, and freeing it called `LGBM_DatasetFree' into a
+;;; library `close-backend' had unloaded and RETURNED NORMALLY. That silent return is why this
+;;; is asserted here rather than left to the library to complain about: there is nothing to
+;;; observe at the call, and nothing a caller could have handled.
+;;;
+;;; It sits here, and not in tests/functional/lightgbm-standalone.lisp, for the same reason its
+;;; sibling does: it needs BOTH backends in one image, and that file's whole claim is that it
+;;; has only one -- its package form imports `cl-gbdt/lightgbm' alone, so it cannot so much as
+;;; NAME an XGBoost backend object. It sits here rather than in the backend-neutral
+;;; `cl-gbdt/tests/functional/evaluation' because it is not a portable contract asserted
+;;; against both backends: it is about *LightGBM's* two creators refusing a foreign backend.
+;;; tests/functional/xgboost-api.lisp carries its mirror.
+;;;
+;;; Unlike its sibling it opens both LIBRARIES, and that is forced. Isolating the backend
+;;; argument as the one thing wrong means handing `create-booster' a genuine
+;;; `lightgbm-dataset', which only the LightGBM library can build; give it an XGBoost dataset
+;;; instead and `%check-lightgbm-dataset' refuses that, as it already did before this fix, and
+;;; the assertion would pass with no backend check present at all.
+
+(deftest lightgbm-api-layer-1-refuses-the-other-backends-backend
+  (with-backend-library (:lightgbm)
+    (with-backend-library (:xgboost)
+      (multiple-value-bind (matrix label-vector) (make-separable-dataset)
+        (let ((lightgbm (cl-gbdt:open-backend :lightgbm))
+              (xgboost (cl-gbdt:open-backend :xgboost))
+              (dataset nil))
+          (unwind-protect
+               (progn
+                 (setf dataset (cl-gbdt/lightgbm:create-dataset
+                                lightgbm matrix :label label-vector
+                                :parameters *dataset-parameters*))
+                 ;; `handler-case', not rove's `signals', which does not reliably catch a
+                 ;; condition raised inside `restart-case'. On the condition TYPE throughout:
+                 ;; the report's wording is not what a caller dispatches on. Each form frees
+                 ;; whatever it was wrongly handed back, so that a run with the check removed
+                 ;; -- which is how these assertions were shown to have power -- reddens
+                 ;; without leaking the foreign object it should never have built.
+                 (testing "create-dataset rejects the XGBoost backend"
+                   (ok (handler-case
+                           (let ((accepted (cl-gbdt/lightgbm:create-dataset
+                                            xgboost matrix :label label-vector
+                                            :parameters *dataset-parameters*)))
+                             (cl-gbdt/lightgbm:free-dataset accepted)
+                             nil)
+                         (cl-gbdt:wrong-backend-reference () t))
+                       "LightGBM's create-dataset accepted the XGBoost backend"))
+                 (testing "create-booster rejects the XGBoost backend"
+                   (ok (handler-case
+                           (let ((accepted (cl-gbdt/lightgbm:create-booster
+                                            xgboost dataset
+                                            :parameters *booster-parameters*)))
+                             (cl-gbdt/lightgbm:free-booster accepted)
+                             nil)
+                         (cl-gbdt:wrong-backend-reference () t))
+                       "LightGBM's create-booster accepted the XGBoost backend"))
+                 (testing "and its own backend still builds a booster over that same dataset"
+                   ;; The control, and not a formality: both refusals above would also hold
+                   ;; for a broken fixture -- a DATASET this backend rejected for some reason
+                   ;; of its own would signal the same condition type from
+                   ;; `%check-lightgbm-dataset' instead. This is what says the only thing
+                   ;; wrong up there was the backend.
+                   (let ((booster (cl-gbdt/lightgbm:create-booster
+                                   lightgbm dataset :parameters *booster-parameters*)))
+                     (ok booster "LightGBM's create-booster refused its own backend")
+                     (cl-gbdt/lightgbm:free-booster booster))))
+            (progn
+              (when dataset (cl-gbdt/lightgbm:free-dataset dataset))
+              (cl-gbdt:close-backend xgboost)
+              (cl-gbdt:close-backend lightgbm))))))))
