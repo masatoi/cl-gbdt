@@ -41,9 +41,12 @@
 ;;;; EXPORTS, and whose FIRST REQUIRED ARGUMENT is named `backend', `dataset' or `booster',
 ;;;; must call a class check on that argument as the first thing its body does.
 ;;;;
-;;;; Public means the `:export' clause of the SECOND `uiop:define-package' form in the sibling
-;;;; `all.lisp' -- `cl-gbdt/lightgbm' or `cl-gbdt/xgboost', the reviewed public surface both
-;;;; files document in their own headers. Nothing else counts: `native.lisp''s own `:export'
+;;;; Public means the `:export' clause of the LAST `uiop:define-package' form in the sibling
+;;;; `all.lisp' -- which is the SECOND of the two both files hold: an internal aggregation
+;;;; first, then `cl-gbdt/lightgbm' or `cl-gbdt/xgboost', the reviewed public surface both
+;;;; files document in their own headers. Read as "the last" so that it stays the public one
+;;;; if a third form ever appears, and `public-export-names' says the same. Nothing else
+;;;; counts: `native.lisp''s own `:export'
 ;;;; clause publishes every `%'-function and the library-discovery internals, none of which a
 ;;;; caller reaches and every one of which runs after a public guard has already passed. That
 ;;;; is the same test `tools/ci/check-float-traps.lisp' applies to decide which `defun's are
@@ -62,23 +65,40 @@
 ;;;; arriving by a different door. Three conditions, all structural:
 ;;;;
 ;;;;   1. the call's head is a symbol whose name begins with `%CHECK-';
-;;;;   2. its arguments mention the parameter symbol -- a check of some object the operation
-;;;;      found for itself establishes nothing about what the caller handed in;
+;;;;   2. its FIRST ARGUMENT IS THE PARAMETER ITSELF -- identically, not merely mentioned
+;;;;      somewhere among the arguments;
 ;;;;   3. the function it names can REFUSE AN OBJECT FOR ITS CLASS, which is read off that
-;;;;      function's own `defun': its body signals `wrong-backend-reference', directly or
+;;;;      function's own `defun': its body NAMES `wrong-backend-reference', directly or
 ;;;;      through another `%CHECK-' function it calls. `%check-object-class' signals it
 ;;;;      itself; `%check-lightgbm-booster' and `%check-xgboost-booster' reach it through
 ;;;;      `src/handle.lisp''s `%check-handle-kind', which is why that file is read too.
 ;;;;
-;;;; Condition 3 is not decoration, and it is the one thing here that is not obvious. With
-;;;; only 1 and 2, deleting `create-dataset''s class gate outright PASSES: the form left
-;;;; behind is `(%check-backend-open backend)', whose name carries the prefix and whose
-;;;; argument is the parameter. That is not a hypothetical -- it is the exact shape of the
-;;;; second bug listed above, the one where the XGBoost backend built a LightGBM dataset. A
-;;;; check that green-lights the bug it was written for is worse than no check, so the
-;;;; recognition asks what the named function can actually do, and asks the source rather than
-;;;; a list. Adding a class checker under any new name needs no edit here; adding a
+;;;; Conditions 2 and 3 are each the difference between this check working and this check
+;;;; certifying the very bugs it was written for. Both were measured, by deleting a real guard
+;;;; and running:
+;;;;
+;;;;   - With 2 relaxed to "mentions the parameter anywhere", `free-dataset' rewritten to
+;;;;     `(%check-object-class (handle-backend dataset) 'lightgbm-backend ...)' reports 6
+;;;;     guarded, 0 unguarded, PASS, exit 0 -- while DATASET's own class is never asked about
+;;;;     and the first bug listed above is live again. A guard on something DERIVED FROM the
+;;;;     parameter is not a guard on the parameter.
+;;;;   - With 3 absent, deleting `create-dataset''s class gate outright PASSES: the form left
+;;;;     behind is `(%check-backend-open backend)', whose name carries the prefix and whose
+;;;;     first argument is the parameter. That is the exact shape of the second bug above.
+;;;;
+;;;; So the recognition asks what the named function can actually do, and asks the SOURCE
+;;;; rather than a list: adding a class checker under any new name needs no edit here, and a
 ;;;; `%check-'-named function that checks something else can never be mistaken for one.
+;;;;
+;;;; Condition 3 tests that the definition NAMES the condition, not that it signals it, and
+;;;; the weaker test is the right one to want. A `defun' that merely mentions
+;;;; `wrong-backend-reference' in a `handler-case' would qualify -- but only if EVERY
+;;;; definition of that name did, which is what `class-check-p''s `every' over same-named
+;;;; definitions buys: `%check-object-class' is defined once per backend, so mutating one
+;;;; file's copy does not vouch for the other's. Testing for `(error 'wrong-backend-reference
+;;;; ...)' as a shape instead would be tighter here and would break the moment a checker
+;;;; signals through a helper, which is exactly how `%check-handle-kind' already works one
+;;;; level down.
 ;;;;
 ;;;; "The first thing its body does" is the first form EVALUATED, not the first form written,
 ;;;; and the two differ in nine of the seventeen. Every body opens with
@@ -118,6 +138,8 @@
 ;;;; examined nothing is a failure instead:
 ;;;;
 ;;;;   - a file pattern matching no file (being run from the wrong directory, or a rename);
+;;;;   - a file that matches a pattern and cannot be read -- see `read-top-level-forms', which
+;;;;     reports it as one line rather than letting it reach the top level as a backtrace;
 ;;;;   - fewer files than +MINIMUM-ENTRY-POINT-FILES+;
 ;;;;   - a sibling `all.lisp' that is missing, holds no package form, or whose public package
 ;;;;     exports nothing -- `check-float-traps.lisp' returns NIL there and silently checks
@@ -318,16 +340,30 @@ The handler is for this project's own qualified references. `src/lightgbm/protoc
 that name, and the scanned files carry similar tokens; reading one needs the named package to
 EXIST, and nothing here loads project code to make it. The token is read as a bare symbol of
 the same name instead, which loses nothing this script uses -- every form below is inspected by
-NAME and never by symbol identity."
+NAME and never by symbol identity.
+
+A file that matches a pattern but cannot be READ -- unreadable to this process, truncated
+mid-form, or naming a package in a way the narrow handler above declines to resolve -- is
+reported as `scan-error', one line like every other floor state, rather than reaching the
+top level as a backtrace. It fails either way; the difference is whether the reader of a red
+build is told which file and why in the first line they see."
   (let ((*package* (or (find-package '#:cl-gbdt/tools/ci/layer-1-guard-scratch)
                        (make-package '#:cl-gbdt/tools/ci/layer-1-guard-scratch
                                      :use '(#:cl))))
         (*read-eval* nil))
-    (handler-bind ((package-error #'%intern-unresolvable-qualified-symbol))
-      (with-open-file (in path)
-        (loop :for form := (read in nil :eof)
-              :until (eq form :eof)
-              :collect form)))))
+    (handler-case
+        (handler-bind ((package-error #'%intern-unresolvable-qualified-symbol))
+          (with-open-file (in path)
+            (loop :for form := (read in nil :eof)
+                  :until (eq form :eof)
+                  :collect form)))
+      ((or file-error stream-error reader-error) (condition)
+        ;; Newlines squeezed out: several of these conditions report over two or three lines,
+        ;; and the promise above is one line.
+        (error 'scan-error
+               :path (enough-namestring path (uiop:getcwd))
+               :detail (format nil "cannot be read as data: ~A"
+                               (substitute #\Space #\Newline (princ-to-string condition))))))))
 
 (defun symbol-name-string= (symbol name)
   "True when SYMBOL's name is the string NAME, regardless of SYMBOL's package."
@@ -355,8 +391,9 @@ root, and a scan of no files is not a passing scan. See THE FLOOR."
         (unless matched
           (error 'scan-error
                  :path pattern
-                 :detail (format nil "matched no file under ~A -- run this check from the ~
-                                      repository root, or update the pattern list naming it"
+                 :detail (format nil "matched no file under ~A -- either this check is not ~
+                                      being run from the repository root, or what the pattern ~
+                                      names has moved and the list naming it is stale"
                                  (uiop:getcwd))))
         (setf files (append files matched))))
     (sort (remove-duplicates files :test #'equal) #'string< :key #'namestring)))
@@ -505,18 +542,27 @@ which also makes a cycle among checkers terminate."
     (qualifies-p name '())))
 
 (defun guard-call-p (form parameter definitions)
-  "True when FORM is a call to a +GUARD-NAME-PREFIX+ function that mentions PARAMETER and can
-refuse an object for its class -- the three conditions in HOW A GUARD IS RECOGNISED.
+  "True when FORM is a call to a +GUARD-NAME-PREFIX+ function whose FIRST ARGUMENT IS
+PARAMETER ITSELF and which can refuse an object for its class -- the three conditions in HOW A
+GUARD IS RECOGNISED.
 
-All three matter. The prefix alone would accept a check of some unrelated object; mentioning
-PARAMETER alone would accept any function that happens to read it; and the two together
-accept `(%check-backend-open backend)', which is exactly what deleting `create-dataset''s
-class gate leaves behind -- measured, and the reason `class-check-p' exists."
+PARAMETER identically, in first argument position, and not merely mentioned somewhere in the
+argument tree. A guard on something DERIVED FROM the parameter is not a guard on the
+parameter, and the difference is the whole defect: `(%check-object-class (handle-backend
+dataset) 'lightgbm-backend ...)' mentions DATASET, names a real class checker, and leaves
+DATASET's own class never asked about -- measured, it reported `free-dataset' as guarded and
+exited 0 while the first bug in this file's header was live again. Every one of the seventeen
+guards passes its parameter bare and first, so this costs the passing set nothing.
+
+The other two conditions are no less load-bearing. The prefix alone would accept a check of
+some unrelated object; and prefix plus a first argument accept `(%check-backend-open
+backend)', which is exactly what deleting `create-dataset''s class gate leaves behind --
+measured, and the reason `class-check-p' exists."
   (and (consp form)
        (symbolp (car form))
        (car form)
        (uiop:string-prefix-p +guard-name-prefix+ (symbol-name (car form)))
-       (mentions-symbol-p (cdr form) (symbol-name parameter))
+       (symbol-name-string= (second form) (symbol-name parameter))
        (class-check-p (symbol-name (car form)) definitions)))
 
 (defun binding-initialization-form (bindings body)
@@ -585,22 +631,27 @@ to, not a listing."
         (*print-length* 3))
     (if form (format nil "~S" form) "an empty body")))
 
-(defun violation-description (form parameter last-form)
+(defun violation-description (form parameter last-form definitions)
   "Return the sentence reported for an unguarded entry point FORM.
 
-A leading `%CHECK-' call that mentions PARAMETER but cannot refuse it for its class gets a
-sentence of its own: it is the near miss worth naming, since the reader is looking at
-something that appears to be a guard and is not one."
-  (if (and (consp last-form)
-           (symbolp (car last-form))
-           (car last-form)
-           (uiop:string-prefix-p +guard-name-prefix+ (symbol-name (car last-form)))
-           (mentions-symbol-p (cdr last-form) (symbol-name parameter)))
-      (format nil "~(~A~) reaches ~(~A~) on ~(~A~) first, which cannot signal ~(~A~) and so ~
-                   establishes nothing about its class"
-              (second form) (car last-form) parameter +class-refusal-condition+)
-      (format nil "~(~A~) does not check ~(~A~)'s class first -- it evaluates ~A"
-              (second form) parameter (leading-form-description last-form))))
+Three sentences, because a `%CHECK-' call that is not a guard is a NEAR MISS and the reader
+is owed which of the two conditions it missed on: it cannot refuse anything for its class, or
+it can but was pointed at something other than PARAMETER. Anything else gets the plain
+sentence naming the form that ran instead."
+  (let ((head (and (consp last-form) (symbolp (car last-form)) (car last-form))))
+    (cond
+      ((not (and head (uiop:string-prefix-p +guard-name-prefix+ (symbol-name head))))
+       (format nil "~(~A~) does not check ~(~A~)'s class first -- it evaluates ~A"
+               (second form) parameter (leading-form-description last-form)))
+      ((not (class-check-p (symbol-name head) definitions))
+       (format nil "~(~A~) does not check ~(~A~)'s class first -- it reaches ~(~A~), which ~
+                    cannot signal ~(~A~) and so establishes no object's class"
+               (second form) parameter head +class-refusal-condition+))
+      (t
+       (format nil "~(~A~) does not check ~(~A~)'s class first -- it reaches ~(~A~) on ~A, ~
+                    not on ~(~A~) itself"
+               (second form) parameter head (leading-form-description (second last-form))
+               parameter)))))
 
 (defun check-file (path public-names definitions)
   "Return (VALUES ENTRY-POINT-COUNT VIOLATIONS) for PATH. VIOLATIONS is a list of readable
@@ -613,7 +664,7 @@ checking the class of its first required argument (see `leading-guard')."
       (let ((parameter (first-required-parameter (third form))))
         (multiple-value-bind (guard last-form) (leading-guard form parameter definitions)
           (unless guard
-            (push (violation-description form parameter last-form) violations)))))
+            (push (violation-description form parameter last-form definitions) violations)))))
     (values (length entry-points) (nreverse violations))))
 
 (defun report-file (path definitions)
