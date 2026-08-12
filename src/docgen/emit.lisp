@@ -27,14 +27,48 @@ The order is the whole rule: a symbol is named by the first package here that ex
 `cl-gbdt:predict' and `cl-gbdt/lightgbm:predict' -- different symbols, one name -- get
 different headings, each one a name that works at a REPL.")
 
+(defun specializer-sort-key (specializer)
+  "Return SPECIALIZER as a key unique across packages, unlike RENDER-SPECIALIZER's display text.
+
+RENDER-SPECIALIZER names a class specializer via bare `symbol-name', dropping its package, so
+two classes with the same name in different packages render identically. This key keeps the
+package, so it never conflates them."
+  (if (typep specializer 'sb-mop:eql-specializer)
+      (format nil "(EQL ~S)" (sb-mop:eql-specializer-object specializer))
+      (let ((name (class-name specializer)))
+        (format nil "~A::~A" (package-name (symbol-package name)) (symbol-name name)))))
+
+(defun method-sort-key (method)
+  "Return a key that totally, and uniquely, orders METHOD among its generic's other methods.
+
+CLHS 7.6.6 forbids a generic function from holding two methods with the same qualifiers and the
+same specializer list, so QUALIFIERS paired with each specializer's own package-aware key (see
+`specializer-sort-key') is unique per method -- unlike sorting by RENDER-METHOD-SIGNATURE's
+display text, which can tie across packages, or relying on
+`sb-mop:generic-function-methods' returning a stable, meaningful order, which it does not
+promise."
+  (format nil "~{~S~^ ~}|~{~A~^ ~}"
+          (sb-mop:method-qualifiers method)
+          (mapcar #'specializer-sort-key (sb-mop:method-specializers method))))
+
 (defun entry-methods-of (symbol kind)
-  "Return (SIGNATURE . DOCSTRING) for each method of SYMBOL, sorted by signature."
+  "Return (SIGNATURE . DOCSTRING) for each method of SYMBOL, sorted by a total, unique key.
+
+Sorted by `method-sort-key', not by the rendered signature text: `render-method-signature'
+prints a specializer's class name via bare `symbol-name', so two methods specializing on
+same-named classes from different packages can render identical text and tie under `string<'
+on that text -- and `sort' is not required to be stable, while
+`sb-mop:generic-function-methods' returns methods in an implementation-defined order. Sorting
+by a key that is unique per CLHS 7.6.6 avoids depending on either."
   (when (eq kind :generic-function)
-    (sort (mapcar (lambda (method)
-                    (cons (cl-gbdt/src/docgen/render:render-method-signature symbol method)
-                          (documentation method t)))
-                  (sb-mop:generic-function-methods (fdefinition symbol)))
-          #'string< :key #'car)))
+    (mapcar (lambda (keyed) (cons (second keyed) (third keyed)))
+            (sort (mapcar (lambda (method)
+                            (list (method-sort-key method)
+                                  (cl-gbdt/src/docgen/render:render-method-signature
+                                   symbol method)
+                                  (documentation method t)))
+                          (sb-mop:generic-function-methods (fdefinition symbol)))
+                  #'string< :key #'first))))
 
 (defun entry-lambda-list-of (symbol kind)
   "Return SYMBOL's lambda list, or NIL for a kind that has none."

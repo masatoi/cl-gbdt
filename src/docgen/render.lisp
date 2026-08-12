@@ -183,9 +183,10 @@ out of the reference's own fence: ~S. Rewrite the docstring." line)))
     (let ((target (entry-points-at entry)))
       ;; Both branches below name the pointed-at TYPE using ENTRY's own QUALIFIER, i.e. they
       ;; assume the reader and its type are published under the same package. Measured true for
-      ;; all 174 symbols this reference publishes today; if Task 5 ever assembles a reader whose
-      ;; type is qualified differently, this line would print the wrong package and needs its
-      ;; own signal rather than a silently wrong link.
+      ;; all 174 symbols this reference publishes today, and enforced, not merely assumed:
+      ;; src/docgen/emit.lisp's COLLECT-ENTRIES calls CHECK-READER-TYPE-QUALIFIER before it ever
+      ;; builds a POINTS-AT entry, and that function signals rather than let a mismatch reach
+      ;; this line as a silently wrong link.
       (cond ((and target (eq (first target) :slot))
              (format stream "Reader of `~A:~(~A~)`'s `~(~A~)` slot. See `~A:~(~A~)`.~%~%"
                      (entry-qualifier entry) (symbol-name (second target))

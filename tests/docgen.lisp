@@ -490,3 +490,82 @@
                    (search "FIXTURE-MISMATCHED-CONDITION" message)
                    (search "cl-gbdt/tests/docgen/zeta" message)
                    (search "cl-gbdt/tests/docgen/epsilon" message))))))))
+
+(defpackage #:cl-gbdt/tests/docgen/eta-a
+  (:use #:cl)
+  (:export #:widget))
+
+(in-package #:cl-gbdt/tests/docgen/eta-a)
+
+(defclass widget () ())
+
+(in-package #:cl-gbdt/tests/docgen)
+
+(defpackage #:cl-gbdt/tests/docgen/eta-b
+  (:use #:cl)
+  (:export #:widget))
+
+(in-package #:cl-gbdt/tests/docgen/eta-b)
+
+(defclass widget () ())
+
+(in-package #:cl-gbdt/tests/docgen)
+
+(defpackage #:cl-gbdt/tests/docgen/theta
+  (:use #:cl)
+  (:export #:fixture-tie-generic))
+
+(in-package #:cl-gbdt/tests/docgen/theta)
+
+(defgeneric fixture-tie-generic (object)
+  (:documentation "Fixture generic whose two methods render identical signature text."))
+
+(defmethod fixture-tie-generic ((object cl-gbdt/tests/docgen/eta-a:widget))
+  "Method on eta-a's widget."
+  object)
+
+(defmethod fixture-tie-generic ((object cl-gbdt/tests/docgen/eta-b:widget))
+  "Method on eta-b's widget."
+  object)
+
+(in-package #:cl-gbdt/tests/docgen)
+
+(deftest collect-entries-orders-tied-methods-by-specializer-package
+  (testing "two methods whose rendered signature text ties still sort deterministically"
+    (let* ((entries (cl-gbdt/src/docgen/all:collect-entries '("cl-gbdt/tests/docgen/theta")))
+           (entry (find 'cl-gbdt/tests/docgen/theta:fixture-tie-generic entries
+                        :key #'cl-gbdt/src/docgen/all:entry-symbol))
+           (methods (cl-gbdt/src/docgen/all:entry-methods entry)))
+      (ok (= 2 (length methods)))
+      ;; Both specializers print as "widget" once RENDER-SPECIALIZER drops their package --
+      ;; confirming the fixture really does tie under the old (rendered-text) sort key.
+      (ok (string= (car (first methods)) (car (second methods))))
+      ;; The docstrings differ, so which one landed first still pins the actual order: eta-a
+      ;; sorts before eta-b by package name, independent of SB-MOP's own method-list order.
+      (ok (string= "Method on eta-a's widget." (cdr (first methods))))
+      (ok (string= "Method on eta-b's widget." (cdr (second methods)))))))
+
+(defpackage #:cl-gbdt/tests/docgen/iota
+  (:use #:cl)
+  (:export #:fixture-self-documented-condition #:fixture-self-documented-condition-code))
+
+(in-package #:cl-gbdt/tests/docgen/iota)
+
+(define-condition fixture-self-documented-condition (error)
+  ((code :initarg :code :reader fixture-self-documented-condition-code
+         :documentation "The slot's own text, which the reader's entry must not show."))
+  (:documentation "A condition fixture whose reader carries its own separate documentation."))
+
+(setf (documentation 'fixture-self-documented-condition-code 'function)
+      "The reader's own text, which must win over a pointer to its slot.")
+
+(in-package #:cl-gbdt/tests/docgen)
+
+(deftest collect-entries-does-not-point-a-self-documented-reader-at-its-type
+  (testing "a reader with its own docstring keeps it; no pointer line, no ruling-1 signal"
+    (let* ((entries (cl-gbdt/src/docgen/all:collect-entries '("cl-gbdt/tests/docgen/iota")))
+           (entry (find 'cl-gbdt/tests/docgen/iota:fixture-self-documented-condition-code
+                        entries :key #'cl-gbdt/src/docgen/all:entry-symbol)))
+      (ok (null (cl-gbdt/src/docgen/all:entry-points-at entry)))
+      (ok (string= "The reader's own text, which must win over a pointer to its slot."
+                   (cl-gbdt/src/docgen/all:entry-documentation entry))))))
