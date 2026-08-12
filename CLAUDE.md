@@ -11,15 +11,32 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 This project is developed with cl-mcp's tools, the way `cl-mcp`'s own CLAUDE.md says it
 develops itself. Lisp code operations — searching, reading, editing, evaluating, and
-running one test — go through them. Two steps at the start of **every** session decide
-whether that holds:
+running one test — go through them. **There is no Bash fallback for those operations.**
 
-1. **`fs-set-project-root`** with this repository's path. `repl-driven-development.md`
-   calls this its critical initial step, and it is the easiest thing here to skip.
-2. **`pool-status`.** The prompt's shell prohibition lapses **only when the server is
-   down**, and this is what establishes whether it is. A session that never asks has not
-   earned the fallback. That failure has happened here — a whole feature branch developed
-   through `Bash`, `grep`, `sed` and `awk` with the server up the entire time.
+Start every session with **`fs-set-project-root`**, this repository's path.
+`repl-driven-development.md` calls it the critical initial step and it is the easiest
+thing here to skip. `pool-status` is worth a call too, as a positive confirmation that a
+worker is there, but it is not a permission gate — see below.
+
+**When the cl-mcp tools are unavailable, stop and ask; do not develop around them.** They
+are unavailable in two ways, and either is sufficient evidence on its own:
+
+- **Not registered at all.** The server must be up *before* Claude Code starts, or the
+  tools are never offered — see [MCP Setup](#mcp-setup). In that session `pool-status`
+  cannot be called either, so it is not the test for this; the tools' absence is.
+- **A call fails**, because the server died mid-session.
+
+In both cases: say so, and ask the user to start the server. Do not substitute `Grep`,
+`Read`, `Edit` or shell tools for the table below and carry on — a Lisp change made that
+way skips the REPL loop this project develops through, and the session that did it will
+report success without ever having been in a position to earn it. Work that needs none of
+those tools is not blocked: `git` and `gh`, the Bash gates in
+[Testing & Linting](#testing--linting), and non-Lisp files are all still fine while the
+server is down, so say which of those you can still do while asking.
+
+The failure this section exists to prevent has already happened once, in the other
+direction: a whole feature branch developed through `Bash`, `grep`, `sed` and `awk` with
+the server **up** the entire time and never queried.
 
 | Instead of | Use |
 |---|---|
@@ -44,11 +61,13 @@ command lines for the gates, where the exact command is the point.
 Both prompts were imported verbatim from the `cl-mcp` project and describe *its*
 environment, not this one. Where they conflict with this file, **this file wins**:
 
-- **cl-mcp tools come from a server that can be down.** They are served by the HTTP
-  server declared in `.mcp.json` — see [MCP Setup](#mcp-setup) — where the prompt assumes
-  they are always present. `pool-status` is how you find out; see the section above for
-  what follows from each answer. The **EXPLORE → EXPERIMENT → PERSIST → VERIFY** loop
-  applies either way: prototype in the REPL, then persist to `src/`.
+- **cl-mcp tools come from a server that can be down**, where the prompt assumes they are
+  always present. They are served by the HTTP server declared in `.mcp.json` — see
+  [MCP Setup](#mcp-setup). What follows from their absence is in the section above, and it
+  is *not* the shell fallback the prompt's own environment can assume: here, stop and ask.
+  The **EXPLORE → EXPERIMENT → PERSIST → VERIFY** loop is not optional either — prototype
+  in the REPL, then persist to `src/` — which is the other reason there is nothing to fall
+  back to.
 - **The test framework is rove**, matching the prompt's assumption, so `run-tests` and
   `(rove:run-test ...)` work as described.
 - **FFI is expected.** LightGBM and XGBoost are C libraries; `common-lisp-expert.md`'s
@@ -380,11 +399,11 @@ ros run -- --non-interactive --load tools/ci/check-abi-blacklist.lisp
 ros run -- --non-interactive --load tools/ci/check-binding-coverage.lisp
 ```
 
-Five of those have no MCP equivalent at all — float traps, layer-1 guards, layer
-separation, ABI blacklist, lint. Run the whole block before committing, and at the end of
-any task whose plan states numbers. **Add a line here whenever `tools/ci/` gains a
-script**: `check-layer-1-guards.lisp` arrived in PR #28 and was missing from this list
-until 2026-08-12.
+Six of those have no MCP equivalent at all — float traps, layer-1 guards, layer
+separation, ABI blacklist, binding coverage, lint. Run the whole block before committing,
+and at the end of any task whose plan states numbers. **Add a line here whenever
+`tools/ci/` gains a script**: `check-layer-1-guards.lisp` arrived in PR #28 and was
+missing from this list until 2026-08-12.
 
 `sbcl` is not on `PATH` in this environment; every command above goes through
 `ros run -- --non-interactive ...`, not a bare `sbcl` invocation.
