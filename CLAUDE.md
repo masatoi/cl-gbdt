@@ -321,6 +321,7 @@ ros run -- --non-interactive --load tools/ci/check-leaf-systems.lisp
 ros run -- --non-interactive --load tools/ci/check-layer-separation.lisp
 ros run -- --non-interactive --load tools/ci/check-float-traps.lisp
 ros run -- --non-interactive --load tools/ci/check-abi-blacklist.lisp
+ros run -- --non-interactive --load tools/ci/check-binding-coverage.lisp
 ```
 
 `sbcl` is not on `PATH` in this environment; every command above goes through
