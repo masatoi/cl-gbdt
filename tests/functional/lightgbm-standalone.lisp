@@ -318,7 +318,7 @@ compared."
 ;;; this test does not merely redden: the first assertion below faults at #xFFFFFFFFFFFFFFF8
 ;;; inside `LGBM_DatasetFree', and the image then aborts -- glibc's "free(): invalid pointer",
 ;;; SIGABRT -- when the cleanup form goes on to free that same booster properly, so the other
-;;; three assertions never get to run. `%check-handle-class' in src/lightgbm/api.lisp carries
+;;; three assertions never get to run. `%check-object-class' in src/lightgbm/api.lisp carries
 ;;; the rest of that measurement.
 ;;;
 ;;; This test covers the wrong-KIND half -- a booster where a dataset was wanted and the other

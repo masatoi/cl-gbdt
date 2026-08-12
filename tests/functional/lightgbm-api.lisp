@@ -1341,7 +1341,7 @@ Matches `lightgbm-api-round-trip''s round count; nothing about the comparison ne
 ;;; `%check-backend-open', the one check those two already made, is not a substitute: it asks
 ;;; whether the object is OPEN, and an open XGBoost backend answers yes.
 ;;;
-;;; Measured with `%check-lightgbm-backend' removed, `create-dataset' handed the XGBoost
+;;; Measured with the backend check removed, `create-dataset' handed the XGBoost
 ;;; backend ACCEPTED it and returned a `lightgbm-dataset' -- `LGBM_DatasetCreateFromMat' built
 ;;; it, that C entry point never seeing a backend object -- whose `handle-backend' is the
 ;;; XGBoost backend that did not build it. Every later liveness question about that handle then
@@ -1401,6 +1401,36 @@ Matches `lightgbm-api-round-trip''s round count; nothing about the comparison ne
                              nil)
                          (cl-gbdt:wrong-backend-reference () t))
                        "LightGBM's create-booster accepted the XGBoost backend"))
+                 ;; The second shape of wrong backend, and the one a caller typo actually
+                 ;; produces: not the other backend's object but no backend at all. These
+                 ;; forms need no defensive free, unlike the two above -- a value with no
+                 ;; backend behind it cannot produce a handle even with the check removed, in
+                 ;; which case `%check-backend-open' reaches `backend-open-p' with it and gets
+                 ;; a bare CLOS `no-applicable-method'. Converting exactly that into a typed
+                 ;; condition is the other half of what the check restored, and it is what
+                 ;; these two blocks pin.
+                 (testing "create-dataset rejects a value that is not a backend at all"
+                   (ok (handler-case
+                           (progn (cl-gbdt/lightgbm:create-dataset nil matrix) nil)
+                         (cl-gbdt:wrong-backend-reference () t))
+                       "LightGBM's create-dataset accepted NIL as its backend")
+                   ;; A dataset where the backend goes: the argument-order slip, and the one
+                   ;; wrong value that IS a cl-gbdt object of this very backend.
+                   (ok (handler-case
+                           (progn (cl-gbdt/lightgbm:create-dataset dataset matrix) nil)
+                         (cl-gbdt:wrong-backend-reference () t))
+                       "LightGBM's create-dataset accepted a dataset as its backend"))
+                 (testing "create-booster rejects a value that is not a backend at all"
+                   (ok (handler-case
+                           (progn (cl-gbdt/lightgbm:create-booster nil dataset) nil)
+                         (cl-gbdt:wrong-backend-reference () t))
+                       "LightGBM's create-booster accepted NIL as its backend")
+                   ;; The backend's NAME rather than the backend: what a caller who read
+                   ;; `open-backend''s argument and not its return value passes.
+                   (ok (handler-case
+                           (progn (cl-gbdt/lightgbm:create-booster "lightgbm" dataset) nil)
+                         (cl-gbdt:wrong-backend-reference () t))
+                       "LightGBM's create-booster accepted the backend's name as its backend"))
                  (testing "and its own backend still builds a booster over that same dataset"
                    ;; The control, and not a formality: both refusals above would also hold
                    ;; for a broken fixture -- a DATASET this backend rejected for some reason

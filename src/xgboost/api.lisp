@@ -35,7 +35,7 @@
 ;;;; the image, and these functions are the whole of what they can call.
 ;;;;
 ;;;; Loads after `classes.lisp' and cannot precede it: every operation below takes or returns an
-;;;; `xgboost-dataset' or an `xgboost-booster', and `make-handle' and `%check-handle-class' are
+;;;; `xgboost-dataset' or an `xgboost-booster', and `make-handle' and `%check-object-class' are
 ;;;; each handed a class name as a symbol.
 ;;;;
 ;;;; Every operation below that takes a caller-supplied HANDLE checks its kind before letting
@@ -43,15 +43,16 @@
 ;;;; `xgboost-dataset' or `xgboost-booster' before the Layer 1 split, and that specializer WAS
 ;;;; the check. A plain `defun' takes whatever it is given. `%check-xgboost-dataset' and
 ;;;; `%check-xgboost-booster' are what the operations that require a LIVE handle use;
-;;;; `%check-handle-class' below is what the two frees use, they being the two that must keep
+;;;; `%check-object-class' below is what the two frees use, they being the two that must keep
 ;;;; working on a handle that is neither.
 ;;;;
 ;;;; The two operations that take a caller-supplied BACKEND rather than a handle --
 ;;;; `create-dataset' and `create-booster' -- are under the identical rule for the identical
-;;;; reason, and `%check-xgboost-backend' below is their check. Their `defmethod' ancestors
-;;;; specialized on `xgboost-backend', so the backend argument was type-checked by the same
-;;;; mechanism the handle arguments were, and `%check-backend-open' does not replace it: that
-;;;; function asks whether the object is OPEN, not whose it is.
+;;;; reason, and `%check-object-class' is their check too, handed `xgboost-backend' where the
+;;;; frees hand it a handle class. Their `defmethod' ancestors specialized on `xgboost-backend',
+;;;; so the backend argument was type-checked by the same mechanism the handle arguments were,
+;;;; and `%check-backend-open' does not replace it: that function asks whether the object is
+;;;; OPEN, not whose it is.
 
 (uiop:define-package #:cl-gbdt/src/xgboost/api
   (:use #:cl)
@@ -156,62 +157,31 @@ library that has neither."
            :backend (backend-name backend) :capability :sparse-input)))
 
 ;;; ---------------------------------------------------------------------------
-;;; The creators' backend gate
+;;; The class gate, for the frees and the creators
 
-(defun %check-xgboost-backend (backend argument-description)
-  "Signal `wrong-backend-reference' unless BACKEND is an `xgboost-backend', reporting
-ARGUMENT-DESCRIPTION as the argument BACKEND came from. Returns no useful value, and reads
-nothing else about BACKEND at all. `create-dataset' and `create-booster' are the only callers
--- the two operations in this file that take a BACKEND rather than a handle -- and each calls
-this FIRST, ahead of `%check-backend-open', which asks only whether the object it is handed is
-OPEN and so would answer truthfully about the wrong shared library.
-
-The mirror of `cl-gbdt/src/lightgbm/api''s function of the same shape, WHICH CARRIES THE WHOLE
-ARGUMENT: why both creators' `defmethod' ancestors made this check for free and a plain
-`defun' does not, why the openness check does not subsume it, why a `typep' against the
-concrete class is the whole check needed, and what the wrong backend measurably produced --
-a handle recording a backend that did not build it, still reading live after the library that
-did was unloaded, and a free into that unloaded library that returned normally. None of it is
-repeated here: the reasoning is about the shape of a Layer 1 `defun' and of a package-inferred
-dependency edge, not about either C API. Read it there. Measured on this side with the check
-absent, `create-dataset' handed a LIGHTGBM backend likewise ACCEPTED it and returned an
-`xgboost-dataset' whose `handle-backend' names `:lightgbm'.
-
-`%check-xgboost-dataset' remains what `create-booster' checks its DATASET and :VALID-SETS
-entries with, and it stays deliberately identity-blind: two `xgboost-backend' instances over
-the same shared library are a legitimate way for a caller to hold datasets. This function
-rules out the other BACKEND CLASS, a different fault -- a different library entirely, not a
-second handle on the same one.
-
-The two definitions are structurally forced even though the reasoning is not: each names its
-own backend's concrete class, and `src/lightgbm/api.lisp' and this file depend on neither each
-other nor any shared file that could hold one copy."
-  (unless (typep backend 'xgboost-backend)
-    (error 'wrong-backend-reference
-           :backend :xgboost
-           :given (class-name (class-of backend))
-           :argument argument-description
-           :expected "backend")))
-
-;;; ---------------------------------------------------------------------------
-;;; The frees' handle-kind gate
-
-(defun %check-handle-class (object class noun argument-description)
+(defun %check-object-class (object class noun argument-description)
   "Signal `wrong-backend-reference' unless OBJECT is of type CLASS, reporting NOUN as the kind
-of handle that was wanted and ARGUMENT-DESCRIPTION as the argument OBJECT came from. Returns
-no useful value, and reads nothing else about OBJECT at all. `free-dataset' and `free-booster'
-are the only callers, and this is what stands between a wrong-kind pointer and `XGDMatrixFree'
-or `XGBoosterFree' dereferencing it -- both were `defmethod's specialized on the concrete
-class before the Layer 1 split, and that specializer was this check.
+of thing that was wanted and ARGUMENT-DESCRIPTION as the argument OBJECT came from. Returns
+no useful value, and reads nothing else about OBJECT at all. Four callers, in two pairs:
+`free-dataset' and `free-booster', where this is what stands between a wrong-kind pointer and
+`XGDMatrixFree' or `XGBoosterFree' dereferencing it, and `create-dataset' and `create-booster',
+where OBJECT is the BACKEND -- which is why this is not named for handles -- and where it runs
+ahead of `%check-backend-open', that check asking only whether the object is OPEN. All four
+were `defmethod's specialized on the concrete class before the Layer 1 split, and that
+specializer was this check.
 
 The mirror of `cl-gbdt/src/lightgbm/api''s function of the same name, WHICH CARRIES THE WHOLE
 ARGUMENT: why the two frees cannot use `%check-xgboost-dataset' or `%check-xgboost-booster'
-the way every other operation in this file does, why a `typep' against the CONCRETE class
-subsumes kind and backend where `cl-gbdt/src/handle''s `%check-handle-kind' needs a pair, why
-NOUN is passed rather than derived from CLASS, and what the two libraries measurably did
-without the check. None of it is repeated here: the reasoning is identical for both backends
--- it is about the shape of a free and of a package-inferred dependency edge, not about either
-C API -- so a second copy would be a second thing to keep true. Read it there.
+the way every operation in this file that requires a live handle does, why the creators'
+openness check does not subsume this one and why their call must precede it, why a `typep'
+against the CONCRETE class subsumes kind and backend where `cl-gbdt/src/handle''s
+`%check-handle-kind' needs a pair, why NOUN is passed rather than derived from CLASS, and what
+the two libraries measurably did without the check at either pair of call sites. None of it is
+repeated here: the reasoning is identical for both backends -- it is about the shape of a
+Layer 1 `defun' and of a package-inferred dependency edge, not about either C API -- so a
+second copy would be a second thing to keep true. Read it there. Measured on this side,
+`create-dataset' handed a LIGHTGBM backend likewise ACCEPTED it and returned an
+`xgboost-dataset' whose `handle-backend' names `:lightgbm'.
 
 The two definitions are structurally forced even though the reasoning is not: each names its
 own backend's concrete classes, and `src/lightgbm/api.lisp' and this file depend on neither
@@ -323,7 +293,7 @@ measurement behind it.
 Signals `wrong-backend-reference' when BACKEND is not an `xgboost-backend' -- the other
 backend's object, or not a backend at all -- before anything else is read from it and ahead of
 the openness check below, which for another backend's object would answer about the wrong
-shared library; see `%check-xgboost-backend'. Signals `backend-not-open' before any foreign
+shared library; see `%check-object-class'. Signals `backend-not-open' before any foreign
 call when BACKEND is not open -- see `%check-backend-open'. Signals `capability-unavailable'
 naming `:sparse-input' when MATRIX is a `csr-matrix' and that capability reads false -- see
 `%check-sparse-input'. Signals `foreign-call-error' when the creation call reports success but
@@ -337,7 +307,8 @@ way). `with-pointer-ownership' spans exactly that gap: the pointer is owned by n
 its body, and any exit that has not called TAKE-OWNERSHIP frees the raw DMatrix here instead of
 orphaning it."
   (with-foreign-float-traps-masked
-    (%check-xgboost-backend backend "create-dataset's backend argument")
+    (%check-object-class backend 'xgboost-backend "backend"
+                         "create-dataset's backend argument")
     (%check-backend-open backend)
     (multiple-value-bind (dataset-pointer function-name)
         (%dataset-pointer backend matrix missing)
@@ -365,7 +336,7 @@ useful value.
 
 Signals `wrong-backend-reference' when DATASET is not an `xgboost-dataset' -- a booster, a
 dataset built by another backend, or not a handle at all -- before anything is read from it
-and before any foreign call. This function dispatches on nothing, so `%check-handle-class' is
+and before any foreign call. This function dispatches on nothing, so `%check-object-class' is
 the only thing between a wrong-kind pointer and `XGDMatrixFree' dereferencing it; see that
 function for why the frees cannot use the same check the rest of this file uses.
 
@@ -383,7 +354,7 @@ library may no longer be mapped into the process, so that call cannot be trusted
 -- and a `warn' reports the foreign memory as leaked, since it is genuinely unreclaimable at
 that point."
   (with-foreign-float-traps-masked
-    (%check-handle-class dataset 'xgboost-dataset "dataset"
+    (%check-object-class dataset 'xgboost-dataset "dataset"
                          "free-dataset's dataset argument")
     (if (backend-open-p (handle-backend dataset))
         (release-handle dataset (lambda (pointer) (%free-dmatrix pointer)))
@@ -445,7 +416,7 @@ held that dataset's pointer.
 Signals `wrong-backend-reference' when BACKEND is not an `xgboost-backend' -- the other
 backend's object, or not a backend at all -- before anything else is read from it and ahead of
 the openness check, which for another backend's object would answer about the wrong shared
-library; see `%check-xgboost-backend'. Signals `backend-not-open' before any foreign call when
+library; see `%check-object-class'. Signals `backend-not-open' before any foreign call when
 BACKEND is not open -- see `%check-backend-open' -- `wrong-backend-reference' when DATASET or
 a VALID-SETS entry is not an `xgboost-dataset', and `released-handle-error' or
 `backend-not-open' when one is but has already been freed or had its own backend closed; see
@@ -477,7 +448,8 @@ instead is `%add-valid-data' refusing a mismatched bin mapper. The asymmetry is 
 docstring opens with, reaching all the way down: parameters go in at creation there and after
 creation here."
   (with-foreign-float-traps-masked
-    (%check-xgboost-backend backend "create-booster's backend argument")
+    (%check-object-class backend 'xgboost-backend "backend"
+                         "create-booster's backend argument")
     (%check-backend-open backend)
     ;; `let', not `let*': no binding here reads another, so the sequential scope `let*' adds
     ;; would claim a dependency that is not there. Ordering is NOT what separates the two --
@@ -580,14 +552,14 @@ useful value.
 Signals `wrong-backend-reference' when BOOSTER is not an `xgboost-booster' -- a dataset, a
 booster built by another backend, or not a handle at all -- before anything is read from it
 and before any foreign call, for the reason `free-dataset' above states and by the same
-`%check-handle-class'.
+`%check-object-class'.
 
 See `free-dataset' above for why this does not signal `backend-not-open' when BOOSTER's
 backend has already been closed, but marks the handle released and `warn's the foreign memory
 leaked instead -- the same cleanup-form reasoning applies here, whether the `unwind-protect'
 is the caller's own or the one inside `cl-gbdt''s `with-booster'."
   (with-foreign-float-traps-masked
-    (%check-handle-class booster 'xgboost-booster "booster"
+    (%check-object-class booster 'xgboost-booster "booster"
                          "free-booster's booster argument")
     (if (backend-open-p (handle-backend booster))
         (release-handle booster (lambda (pointer) (%free-booster pointer)))

@@ -456,7 +456,7 @@ compared."
 ;;; the checks removed, all four assertions below redden and three of them do so through an
 ;;; SBCL CORRUPTION WARNING -- memory faults at the DMatrix's own address, at #x10 and at NIL
 ;;; -- rather than through anything either library reported. The image survived that run and
-;;; the sibling's did not, which is the spread `%check-handle-class' in src/xgboost/api.lisp
+;;; the sibling's did not, which is the spread `%check-object-class' in src/xgboost/api.lisp
 ;;; points at: what a wrong handle does in C is not a property a caller can be told to handle.
 ;;;
 ;;; The wrong-KIND half needs one backend and so belongs in this file, which has exactly one;
