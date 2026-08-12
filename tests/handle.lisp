@@ -8,7 +8,8 @@
   (:import-from #:cffi)
   (:import-from #:cl-gbdt/src/handle
                 #:%make-finalizer #:%check-handle-kind
-                #:%resolve-best-num-iteration #:%reject-best-num-iteration)
+                #:%resolve-best-num-iteration #:%reject-best-num-iteration
+                #:%set-booster-best-iteration)
   (:import-from #:cl-gbdt))
 
 (in-package #:cl-gbdt/tests/handle)
@@ -118,6 +119,27 @@ increments the car of COUNT-CELL each time it is called."
     (let ((booster (cl-gbdt:make-handle 'cl-gbdt:booster (cffi:make-pointer 2)
                                          :mock :booster)))
       (ok (null (cl-gbdt:booster-best-iteration booster))))))
+
+(deftest booster-best-iteration-is-writable-after-construction
+  (testing "the writer sets a value on a booster built without one"
+    (let ((booster (cl-gbdt:make-handle 'cl-gbdt:booster (cffi:make-pointer 2)
+                                         :mock :booster)))
+      (ok (null (cl-gbdt:booster-best-iteration booster))
+          "the booster starts with no best iteration")
+      (ok (= 12 (%set-booster-best-iteration booster 12))
+          "the writer returns the iteration it set")
+      (ok (= 12 (cl-gbdt:booster-best-iteration booster))
+          "and reads back what the writer set")))
+  ;; The case `train' does not produce -- it writes at most once, to a booster
+  ;; `create-booster' built without the initarg -- and the one that pins the writer as an
+  ;; ordinary slot write rather than a set-once latch. A latch would leave 7 in place here,
+  ;; silently, and no other assertion in this file would notice.
+  (testing "the writer replaces a value the constructor set"
+    (let ((booster (cl-gbdt:make-handle 'cl-gbdt:booster (cffi:make-pointer 2)
+                                         :mock :booster :best-iteration 7)))
+      (%set-booster-best-iteration booster 3)
+      (ok (= 3 (cl-gbdt:booster-best-iteration booster))
+          "the constructor's value is gone"))))
 
 ;;; `%check-handle-kind' is the guard the two backends' Layer 1 entry points use where CLOS
 ;;; cannot make the check for them, and getting it wrong means a handle allocated by one

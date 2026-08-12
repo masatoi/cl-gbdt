@@ -66,20 +66,22 @@
 ;;; `make-dataset', whose portable name it does not share -- each of those methods now checking
 ;;; whatever portable arguments it still has and calling the function here.
 ;;; `create-booster' is the thirteenth and is not lifted from anything: no protocol method ever
-;;; built a booster OVER A DATASET on its own, `train' having always built one inline as part of
-;;; a run. (`load-model' builds one too, but from a file and with no dataset in sight, so it is
+;;; built a booster OVER A DATASET on its own, `train' having built one inline at the time.
+;;; (`load-model' builds one too, but from a file and with no dataset in sight, so it is
 ;;; not this function under another name.) Together they are a whole training run at this layer,
 ;;; the inference that follows it, and now persistence and introspection besides: build a
 ;;; dataset, build a booster on it, advance it, score with it, save the model or reload one,
 ;;; render it as text, ask what it split on and how it scored, free both.
-;;; `create-booster' is the one with no caller inside this library -- `train' builds its own
-;;; booster, for the reason its creation call records -- so it is published on the strength of
-;;; its own contract rather than of a method that exercises it. `free-dataset', `free-booster',
-;;; `update-one-iteration', `predict', `save-model', `load-model', `model-to-string',
-;;; `feature-importance', `evaluation', `dataset-num-rows' and `dataset-num-features' here are
-;;; NOT `cl-gbdt''s generics of those names: they are plain functions and different symbols, so
-;;; a caller who has both packages in an image must name which one they mean, exactly as they
-;;; already must for anything else two packages export under one name. `slice-model' was
+;;; `create-booster' had no caller inside this library until `train' gained one, calling it
+;;; for its whole booster construction the same way the other twelve already called their
+;;; own Layer 1 counterparts. It is published on its own contract regardless, exactly as they are;
+;;; having a caller here does not change what makes any of these thirteen public.
+;;; `free-dataset', `free-booster', `update-one-iteration', `predict', `save-model',
+;;; `load-model', `model-to-string', `feature-importance', `evaluation', `dataset-num-rows' and
+;;; `dataset-num-features' here are NOT `cl-gbdt''s generics of those names: they are plain
+;;; functions and different symbols, so a caller who has both packages in an image must name
+;;; which one they mean, exactly as they already must for anything else two packages export
+;;; under one name. `slice-model' was
 ;;; imported from `classes' until `api' existed; it moved because it is
 ;;; an operation over the booster class rather than part of the library's lifetime, and the
 ;;; symbol a caller reaches is unchanged by that move -- this clause is the only thing that had

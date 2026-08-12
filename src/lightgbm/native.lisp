@@ -859,12 +859,13 @@ no VALID-SETS."
   "Free the booster at POINTER via `LGBM_BoosterFree' without checking its
 returned status.
 
-`cl-gbdt/src/lightgbm/protocol''s `train', and `cl-gbdt/src/lightgbm/api''s `create-booster'
-and `load-model', each call this from their cleanup path when ownership of a
-partially built booster never transferred to a handle
--- see `%free-dataset-unchecked''s docstring for why a signal already unwinding
-the stack there must not be replaced by a status-check failure from this
-best-effort free."
+`cl-gbdt/src/lightgbm/api''s `create-booster' and `load-model' each call this from their
+cleanup path when ownership of a partially built booster never transferred to a handle --
+see `%free-dataset-unchecked''s docstring for why a signal already unwinding the stack there
+must not be replaced by a status-check failure from this best-effort free.
+`cl-gbdt/src/lightgbm/protocol''s `train' no longer calls this: it now holds a handle from
+`create-booster' rather than a raw pointer, so its own cleanup calls `free-booster' instead,
+wrapped the same way for the same reason -- see the comment at its own cleanup."
   (lgbm-booster-free pointer))
 
 (defun %free-booster (pointer)

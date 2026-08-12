@@ -725,9 +725,10 @@ takes."
           (cl-gbdt:close-backend backend))))))
 
 (deftest an-error-inside-the-objective-propagates-and-frees-the-booster
-  ;; `train' builds a raw booster handle before the loop and only takes ownership of it at the
-  ;; end. A condition raised from the caller's own function must unwind through that same
-  ;; path, or the run leaks a handle the caller has no way to free.
+  ;; `train' holds a full booster handle from `create-booster' before the loop starts, and
+  ;; frees it through an `unwind-protect' if the run does not complete. A condition raised
+  ;; from the caller's own function must unwind through that same path, or the run leaks a
+  ;; handle the caller has no way to free.
   (dolist (name '(:lightgbm :xgboost))
     (support:with-backend-library (name)
       (let ((backend (cl-gbdt:open-backend name)))
