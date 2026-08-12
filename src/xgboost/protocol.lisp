@@ -13,9 +13,11 @@
 ;;;; `make-dataset', which checks :MISSING and :CATEGORICAL-FEATURES, refuses :REFERENCE and
 ;;;; :PARAMETERS, renders the feature-type strings and then calls that file's `create-dataset';
 ;;;; `predict', which checks :MISSING's capability and resolves :BEST and then calls that
-;;;; file's `predict'; and `free-dataset', `update-one-iteration' and `free-booster', whose
-;;;; whole bodies were procedure and delegate entirely. A caller who loaded `cl-gbdt/xgboost'
-;;;; alone reaches those functions with no method here in the image at all.
+;;;; file's `predict'; `save-model' and `model-to-string', which resolve :BEST and refuse a
+;;;; :NUM-ITERATION this library has no route for and then call that file's functions of the
+;;;; same name; and `free-dataset', `update-one-iteration', `free-booster' and `load-model',
+;;;; whose whole bodies were procedure and delegate entirely. A caller who loaded
+;;;; `cl-gbdt/xgboost' alone reaches those functions with no method here in the image at all.
 ;;;;
 ;;;; `train' is the one exception, and deliberately so: it builds its booster itself rather
 ;;;; than calling `cl-gbdt/src/xgboost/api''s `create-booster'. See the comment at its creation

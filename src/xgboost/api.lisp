@@ -46,13 +46,13 @@
 ;;;; `%check-object-class' below is what the two frees use, they being the two that must keep
 ;;;; working on a handle that is neither.
 ;;;;
-;;;; The two operations that take a caller-supplied BACKEND rather than a handle --
-;;;; `create-dataset' and `create-booster' -- are under the identical rule for the identical
-;;;; reason, and `%check-object-class' is their check too, handed `xgboost-backend' where the
-;;;; frees hand it a handle class. Their `defmethod' ancestors specialized on `xgboost-backend',
-;;;; so the backend argument was type-checked by the same mechanism the handle arguments were,
-;;;; and `%check-backend-open' does not replace it: that function asks whether the object is
-;;;; OPEN, not whose it is.
+;;;; The three operations that take a caller-supplied BACKEND rather than a handle --
+;;;; `create-dataset', `create-booster' and `load-model' -- are under the identical rule for
+;;;; the identical reason, and `%check-object-class' is their check too, handed
+;;;; `xgboost-backend' where the frees hand it a handle class. Their `defmethod' ancestors
+;;;; specialized on `xgboost-backend', so the backend argument was type-checked by the same
+;;;; mechanism the handle arguments were, and `%check-backend-open' does not replace it: that
+;;;; function asks whether the object is OPEN, not whose it is.
 
 (uiop:define-package #:cl-gbdt/src/xgboost/api
   (:use #:cl)
@@ -168,13 +168,13 @@ library that has neither."
 (defun %check-object-class (object class noun argument-description)
   "Signal `wrong-backend-reference' unless OBJECT is of type CLASS, reporting NOUN as the kind
 of thing that was wanted and ARGUMENT-DESCRIPTION as the argument OBJECT came from. Returns
-no useful value, and reads nothing else about OBJECT at all. Four callers, in two pairs:
+no useful value, and reads nothing else about OBJECT at all. Five callers, in two groups:
 `free-dataset' and `free-booster', where this is what stands between a wrong-kind pointer and
-`XGDMatrixFree' or `XGBoosterFree' dereferencing it, and `create-dataset' and `create-booster',
-where OBJECT is the BACKEND -- which is why this is not named for handles -- and where it runs
-ahead of `%check-backend-open', that check asking only whether the object is OPEN. All four
-were `defmethod's specialized on the concrete class before the Layer 1 split, and that
-specializer was this check.
+`XGDMatrixFree' or `XGBoosterFree' dereferencing it, and `create-dataset', `create-booster'
+and `load-model', where OBJECT is the BACKEND -- which is why this is not named for handles --
+and where each calls this FIRST, ahead of `%check-backend-open', that check asking only
+whether the object is OPEN. All five were `defmethod's specialized on the concrete class
+before the Layer 1 split, and that specializer was this check.
 
 The mirror of `cl-gbdt/src/lightgbm/api''s function of the same name, WHICH CARRIES THE WHOLE
 ARGUMENT: why the two frees cannot use `%check-xgboost-dataset' or `%check-xgboost-booster'
@@ -182,7 +182,7 @@ the way every operation in this file that requires a live handle does, why the c
 openness check does not subsume this one and why their call must precede it, why a `typep'
 against the CONCRETE class subsumes kind and backend where `cl-gbdt/src/handle''s
 `%check-handle-kind' needs a pair, why NOUN is passed rather than derived from CLASS, and what
-the two libraries measurably did without the check at either pair of call sites. None of it is
+the two libraries measurably did without the check at either group of call sites. None of it is
 repeated here: the reasoning is identical for both backends -- it is about the shape of a
 Layer 1 `defun' and of a package-inferred dependency edge, not about either C API -- so a
 second copy would be a second thing to keep true. Read it there. Measured on this side,
