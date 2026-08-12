@@ -13,6 +13,12 @@
   :class :package-inferred-system
   :depends-on ("cl-gbdt/src/regen/all"))
 
+(defsystem "cl-gbdt/docgen"
+  :description "API-reference emitter. Development only; never part of a build."
+  :license "MIT"
+  :class :package-inferred-system
+  :depends-on ("cl-gbdt/src/docgen/all"))
+
 ;;; Layer 1 alone: the library's lifetime, the backend's CLOS types, and its own
 ;;; LightGBM-specific operations. Loading this does NOT define the `cl-gbdt' package -- the
 ;;; unified API's methods live in the `/unified' system defined just below.
@@ -76,7 +82,8 @@ with them. This is what a caller of cl-gbdt:train loads."
                "cl-gbdt/tests/feature-names"
                "cl-gbdt/tests/prediction-shape"
                "cl-gbdt/tests/objective"
-               "cl-gbdt/tests/custom-metric")
+               "cl-gbdt/tests/custom-metric"
+               "cl-gbdt/tests/docgen")
   :perform (test-op (op c) (symbol-call :rove :run c)))
 
 ;;; Named for its path, like every other system here. That is not only for consistency:
