@@ -19,9 +19,11 @@
 ;;;; resolved the keyword the way the other three do. A caller who loaded `cl-gbdt/lightgbm'
 ;;;; alone reaches those functions with no method here in the image at all.
 ;;;;
-;;;; `train' is the one exception, and deliberately so: it builds its booster itself rather
-;;;; than calling `cl-gbdt/src/lightgbm/api''s `create-booster'. See the comment at its
-;;;; creation call, which measures why.
+;;;; `train' delegates too, and is the one method that also writes a result back afterward:
+;;;; it calls `cl-gbdt/src/lightgbm/api''s `create-booster' for its whole construction, then
+;;;; writes the best iteration the early-stopping watcher found, through the internal
+;;;; `%set-booster-best-iteration' in `cl-gbdt/src/handle', once the loop ends. See the
+;;;; comment at its creation call for why that write could not happen any earlier.
 
 (uiop:define-package #:cl-gbdt/src/lightgbm/protocol
   (:use #:cl)
@@ -29,14 +31,10 @@
   (:import-from #:cl-gbdt/src/lightgbm/native
                 #:%check-backend-open
                 #:%check-lightgbm-dataset
-                #:%parameter-string
                 #:%dataset-num-rows
-                #:%create-booster
-                #:%add-valid-data
                 #:%update-one-iteration
                 #:%booster-predictions
                 #:%update-one-iteration-custom
-                #:%free-booster-unchecked
                 #:%read-evaluation)
   (:import-from #:cl-gbdt/src/lightgbm/classes
                 #:lightgbm-backend
@@ -49,10 +47,8 @@
   ;; `:import-from #:cl-gbdt/src/protocol' below names each of those as a GENERIC FUNCTION, and
   ;; each pair is two different symbols -- importing both would be a name conflict, not a
   ;; re-import. The eleven methods that need the Layer 1 functions name them in full.
-  ;; `create-booster' is absent for an unrelated reason: no method here calls it, `train'
-  ;; building its own booster for the reason its creation call records, and an import naming a
-  ;; symbol nothing uses is one more claim to keep true.
   (:import-from #:cl-gbdt/src/lightgbm/api
+                #:create-booster
                 #:create-dataset)
   (:import-from #:cl-gbdt/src/backend
                 #:backend-name
@@ -72,10 +68,10 @@
                 #:evaluation
                 #:free-booster)
   (:import-from #:cl-gbdt/src/handle
-                #:with-pointer-ownership
                 #:handle-live-pointer
                 #:handle-backend
-                #:%resolve-best-num-iteration)
+                #:%resolve-best-num-iteration
+                #:%set-booster-best-iteration)
   (:import-from #:cl-gbdt/src/conditions
                 #:unsupported-argument
                 #:capability-unavailable)
@@ -894,84 +890,86 @@ Signals `backend-not-open' before any of that when BACKEND is not open -- see
            ;; it is also what makes an early-stopped run report its true, shortened length
            ;; with nothing further to do here.
            (completed-rounds 0))
-      ;; Built here rather than by `cl-gbdt/src/lightgbm/api''s `create-booster', which is the
-      ;; Layer 1 function for exactly this. `train' is the ONE method in this file whose Layer
-      ;; 1 counterpart exists and is not called: every other method delegates its whole
-      ;; procedure to one -- `make-dataset', `predict', `update-one-iteration', `free-dataset',
-      ;; `free-booster', `save-model', `load-model', `model-to-string', `feature-importance',
-      ;; `evaluation', `dataset-num-rows' and `dataset-num-features', twelve in all.
-      ;; `booster-best-iteration' is what holds this one back, and it is a barrier rather than
-      ;; a preference: a `:reader'-only slot (src/handle.lisp) whose sole writer is
-      ;; `make-handle''s :BEST-ITERATION initarg, at construction, while the value comes from
-      ;; the watcher AFTER the loop -- so this method must still own the raw pointer when the
-      ;; loop ends, and `create-booster' builds its handle before the first iteration. Giving
-      ;; the slot a writer to merge the two is not this file's to do.
+      ;; Delegated to `cl-gbdt/src/lightgbm/api''s `create-booster'. Every method in this file
+      ;; now hands its whole procedure to that file; `train' was the last that did not, and
+      ;; what held it back was `booster-best-iteration' -- a `:reader'-only slot whose only
+      ;; writer was `make-handle''s initarg, at construction, while this method's value comes
+      ;; from the watcher after the loop. `cl-gbdt/src/handle''s `%set-booster-best-iteration'
+      ;; is what removed the barrier; see its docstring for why it is internal.
       ;;
-      ;; A second reason stood here and is DEMOTED to a preference: that this ownership form
-      ;; is what frees the raw booster when the loop signals, where a handle built up front
-      ;; would be left unreferenced with a finalizer that only warns. True of the code as
-      ;; written, but a `train' that built the handle first could free it from an
-      ;; `unwind-protect' just as well, so it argues for the shape this method already has
-      ;; rather than against the merge. It also came with a claim about coverage that does not
-      ;; hold: the two tests named after leaking --
-      ;; `lightgbm-api-make-dataset-wrong-length-label-signals-without-leaking' and its
-      ;; XGBoost twin -- are about a raw DATASET pointer, not a booster, and each asserts only
-      ;; that `make-dataset' signals. A leaked raw C pointer has no Lisp object or finalizer
-      ;; whose absence a test could observe, which is exactly what the LightGBM one's own
-      ;; commentary says.
-      (let ((booster-pointer
-              (%create-booster train-data-pointer
-                               (%parameter-string
-                                (if objective (objective-parameters parameters) parameters)))))
-        (with-pointer-ownership (booster-pointer #'%free-booster-unchecked take-ownership)
-          (%add-valid-data booster-pointer valid-set-pointers)
-          ;; ROUND is 1-based, which is the numbering `observe-iteration' answers
-          ;; `watcher-best-iteration' in and the report publishes.
-          (loop :for round :from 1 :to num-rounds
-                :do (if objective
-                        (let ((scores (%booster-predictions
-                                       booster-pointer 0
-                                       (%dataset-num-rows train-data-pointer))))
-                          (multiple-value-bind (grad hess) (funcall objective scores)
-                            ;; Before anything else this iteration does, and before the
-                            ;; next one reads TRAIN-DATA-POINTER again: the caller's
-                            ;; own code has just run and may have freed a handle this
-                            ;; loop holds a raw pointer to.
-                            (setf train-data-pointer
-                                  (%recheck-train-datasets backend dataset valid-sets))
-                            (check-objective-result grad hess
-                                                    (array-dimension scores 0)
-                                                    (array-dimension scores 1))
-                            (%update-one-iteration-custom booster-pointer grad hess)))
-                        (%update-one-iteration booster-pointer))
-                    (incf completed-rounds)
-                    (let ((entries (when record-history
-                                     (%read-evaluation booster-pointer dataset-count))))
-                      ;; Appended after every library entry, and before the push and
-                      ;; the watcher, so the history and the watcher see one list.
-                      (when evaluation
-                        (multiple-value-bind (custom pointer)
-                            (%custom-evaluation-entries
-                             backend evaluation booster-pointer dataset valid-sets
-                             row-counts entries (= round 1) name-pin)
-                          (setf entries (append entries custom)
-                                train-data-pointer pointer)))
-                      (when record-history
-                        (push entries history))
-                      (when (and watcher (observe-iteration watcher entries round))
-                        (return))))
-          (let* ((best-iteration (and watcher (watcher-best-iteration watcher)))
-                 (report (training-report-from-history
-                          (reverse history) completed-rounds dataset-names
-                          :best-iteration best-iteration
-                          :best-score (and watcher (watcher-best-score watcher))
-                          :early-stopped-p (and watcher (watcher-stopped-p watcher)
-                                            (< completed-rounds num-rounds)))))
-            (values (take-ownership 'lightgbm-booster backend :booster
-                                    :training-set dataset
-                                    :validation-sets valid-sets
-                                    :best-iteration best-iteration)
-                    report)))))))
+      ;; The datasets are checked twice as a result: once in the `let*' above, with this
+      ;; method's own argument descriptions, and once inside `create-booster' with its. The
+      ;; first pair is what a caller ever sees -- a bad DATASET signals there, naming
+      ;; "train's dataset argument" -- and the second can only pass. That redundancy is the
+      ;; price of the descriptions being right, and it is one slot read per dataset.
+      (let ((booster (create-booster backend dataset
+                                     :parameters (if objective
+                                                     (objective-parameters parameters)
+                                                     parameters)
+                                     :valid-sets valid-sets))
+            (completed nil))
+        (unwind-protect
+             ;; Read once, unlike TRAIN-DATA-POINTER, which `%recheck-train-datasets'
+             ;; refreshes after every caller callback because the caller can free a dataset
+             ;; mid-loop. BOOSTER cannot be freed the same way: nothing outside this method
+             ;; holds it until the method returns it.
+             (let ((booster-pointer (handle-live-pointer booster)))
+               ;; ROUND is 1-based, which is the numbering `observe-iteration' answers
+               ;; `watcher-best-iteration' in and the report publishes.
+               (loop :for round :from 1 :to num-rounds
+                     :do (if objective
+                             (let ((scores (%booster-predictions
+                                            booster-pointer 0
+                                            (%dataset-num-rows train-data-pointer))))
+                               (multiple-value-bind (grad hess) (funcall objective scores)
+                                 ;; Before anything else this iteration does, and before the
+                                 ;; next one reads TRAIN-DATA-POINTER again: the caller's
+                                 ;; own code has just run and may have freed a handle this
+                                 ;; loop holds a raw pointer to.
+                                 (setf train-data-pointer
+                                       (%recheck-train-datasets backend dataset valid-sets))
+                                 (check-objective-result grad hess
+                                                         (array-dimension scores 0)
+                                                         (array-dimension scores 1))
+                                 (%update-one-iteration-custom booster-pointer grad hess)))
+                             (%update-one-iteration booster-pointer))
+                         (incf completed-rounds)
+                         (let ((entries (when record-history
+                                          (%read-evaluation booster-pointer dataset-count))))
+                           ;; Appended after every library entry, and before the push and
+                           ;; the watcher, so the history and the watcher see one list.
+                           (when evaluation
+                             (multiple-value-bind (custom pointer)
+                                 (%custom-evaluation-entries
+                                  backend evaluation booster-pointer dataset valid-sets
+                                  row-counts entries (= round 1) name-pin)
+                               (setf entries (append entries custom)
+                                     train-data-pointer pointer)))
+                           (when record-history
+                             (push entries history))
+                           (when (and watcher (observe-iteration watcher entries round))
+                             (return))))
+               (let* ((best-iteration (and watcher (watcher-best-iteration watcher)))
+                      (report (training-report-from-history
+                               (reverse history) completed-rounds dataset-names
+                               :best-iteration best-iteration
+                               :best-score (and watcher (watcher-best-score watcher))
+                               :early-stopped-p (and watcher (watcher-stopped-p watcher)
+                                                 (< completed-rounds num-rounds)))))
+                 (when best-iteration
+                   (%set-booster-best-iteration booster best-iteration))
+                 (setf completed t)
+                 (values booster report)))
+          ;; Every exit that did not reach the `setf' above frees the booster. Where the old
+          ;; body's `with-pointer-ownership' freed a RAW pointer, this frees the handle:
+          ;; `free-booster' also marks it released and cancels its finalizer, so a signalling
+          ;; run leaves nothing behind rather than an unreferenced handle whose finalizer only
+          ;; warns. Named in full, not imported: `cl-gbdt/src/protocol''s `free-booster', the
+          ;; generic, is a DIFFERENT symbol of the same name and is what this file imports.
+          ;; It cannot mask the condition already unwinding -- it takes the closed-backend
+          ;; branch as a `warn', and its own `wrong-backend-reference' cannot fire on a
+          ;; handle `create-booster' just built.
+          (unless completed (cl-gbdt/src/lightgbm/api:free-booster booster)))))))
 
 (defmethod update-one-iteration ((booster lightgbm-booster))
   "Advance BOOSTER by one boosting iteration via `LGBM_BoosterUpdateOneIter'.
