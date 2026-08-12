@@ -19,6 +19,25 @@
   (:import-from #:cl-gbdt/tests/docgen/alpha #:shared)
   (:export #:shared #:only-beta))
 
+(defpackage #:cl-gbdt/tests/docgen/gamma
+  (:use #:cl)
+  (:export #:fixture-indexed-struct
+           #:fixture-indexed-struct-field
+           #:make-fixture-indexed-struct
+           #:fixture-indexed-condition
+           #:fixture-indexed-condition-code))
+
+(in-package #:cl-gbdt/tests/docgen/gamma)
+
+(defstruct fixture-indexed-struct "An indexed structure fixture." (field nil))
+
+(define-condition fixture-indexed-condition (error)
+  ((code :initarg :code :reader fixture-indexed-condition-code
+         :documentation "A code."))
+  (:documentation "An indexed condition fixture."))
+
+(in-package #:cl-gbdt/tests/docgen)
+
 (deftest published-symbols-qualifies-by-priority-order
   (testing "a symbol exported from two packages is qualified by the earlier one"
     (let* ((names '("cl-gbdt/tests/docgen/alpha" "cl-gbdt/tests/docgen/beta"))
@@ -142,22 +161,3 @@
                    cl-gbdt/tests/docgen/gamma::code)
                  (gethash 'cl-gbdt/tests/docgen/gamma:fixture-indexed-condition-code
                           index))))))
-
-(defpackage #:cl-gbdt/tests/docgen/gamma
-  (:use #:cl)
-  (:export #:fixture-indexed-struct
-           #:fixture-indexed-struct-field
-           #:make-fixture-indexed-struct
-           #:fixture-indexed-condition
-           #:fixture-indexed-condition-code))
-
-(in-package #:cl-gbdt/tests/docgen/gamma)
-
-(defstruct fixture-indexed-struct "An indexed structure fixture." (field nil))
-
-(define-condition fixture-indexed-condition (error)
-  ((code :initarg :code :reader fixture-indexed-condition-code
-         :documentation "A code."))
-  (:documentation "An indexed condition fixture."))
-
-(in-package #:cl-gbdt/tests/docgen)

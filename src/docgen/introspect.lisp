@@ -150,12 +150,20 @@ answers for both, so there is one mechanism here rather than two."
   (documentation nil :read-only t))
 
 (defun type-slots (type-symbol)
-  "Return TYPE-SYMBOL's DIRECT slots as `slot-info' structs, in the order they were written.
+  "Return TYPE-SYMBOL's slots as `slot-info' structs, in the order they were written.
 
-Direct, not inherited: an inherited slot is documented under the type that declares it, once.
-The order is `class-direct-slots'', which is the order of the defining form."
+The two branches answer a different question, because their underlying primitives do. The CLOS
+branch calls `class-direct-slots', so it answers only TYPE-SYMBOL's own direct slots -- an
+inherited slot is documented once, under the type that declares it. The structure branch has no
+such filter: `sb-kernel:dd-slots' returns every slot TYPE-SYMBOL's `defstruct' description
+holds, including any inherited through `:include'."
   (let ((class (find-class type-symbol)))
     (if (typep class 'structure-class)
+        ;; No published structure uses :include today, so DD-SLOTS never actually returns an
+        ;; inherited slot here. If one ever does, this branch would need to filter DD-SLOTS down
+        ;; to the slots TYPE-SYMBOL's own DEFSTRUCT form added -- e.g. by comparing against the
+        ;; :include'd description's own DD-SLOTS -- the way the CLOS branch already gets that
+        ;; filtering for free from CLASS-DIRECT-SLOTS.
         (let ((description (sb-kernel:find-defstruct-description type-symbol)))
           (mapcar (lambda (dsd)
                     (%make-slot-info :name (sb-kernel:dsd-name dsd)
