@@ -442,6 +442,24 @@ directory the suite happened to run from."
                                                 (cl-gbdt/lightgbm:predict truncated matrix)))
                                    "save-model's :num-iteration limits what is written")
                             (cl-gbdt/lightgbm:free-booster truncated)))
+                        ;; `model-to-string' gets the identical proof, closed the same way:
+                        ;; render at one round, write that text to a file, load it back, and
+                        ;; require the predictions to differ from the full booster's. Without
+                        ;; this, a :NUM-ITERATION silently dropped between this function and
+                        ;; the library would pass -- neither the non-empty-string check above
+                        ;; nor the :best refusal below would catch a truncated render standing
+                        ;; in for a full one.
+                        (let ((rendered (cl-gbdt/lightgbm:model-to-string
+                                         booster :num-iteration 1)))
+                          (with-open-file (stream echoed :direction :output
+                                                          :if-exists :supersede)
+                            (write-string rendered stream))
+                          (let ((truncated (cl-gbdt/lightgbm:load-model backend echoed)))
+                            (unwind-protect
+                                 (ok (not (equalp (cl-gbdt/lightgbm:predict booster matrix)
+                                                  (cl-gbdt/lightgbm:predict truncated matrix)))
+                                     "model-to-string's :num-iteration limits what is written")
+                              (cl-gbdt/lightgbm:free-booster truncated))))
                         ;; `handler-case', not rove's `signals', which does not reliably catch a
                         ;; condition raised inside `restart-case'. On the condition TYPE: the
                         ;; report's wording is not what a caller dispatches on.
