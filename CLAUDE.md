@@ -360,6 +360,9 @@ tools/ci/     The scripts CI actually runs: run-tests.lisp, lint.lisp,
               check-leaf-systems.lisp
 tools/        regen.lisp (regenerates src/*/c-api.lisp) and the shell scripts it and
               CI call
-ffi-spec/     Vendored C headers and the c2ffi specs generated from them
+ffi-spec/     Vendored C headers and the c2ffi specs generated from them;
+              BINDING-COVERAGE.md classifies every generated binding as wrapped,
+              planned, or excluded, and is what answers "what of the C API does this
+              wrap"
 prompts/      System prompts for AI agents (imported from cl-mcp)
 ```
