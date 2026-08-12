@@ -473,6 +473,58 @@ Phase 4完了時点、およびその後のLayer 1 / Layer 2分離作業で判�
 
 迷った場合は、共通APIへ入れて情報を減らすより、backend-specific safe APIとして完全な情報を保持する方を選ぶこと。その後、実利用例と両backendの意味を確認してから共通APIへ昇格させる。
 
+## 18. Layer 1 standalone-library化プログラム (S1〜S5)
+
+2026-08-11以降、`cl-gbdt/lightgbm` と `cl-gbdt/xgboost` を、統合API
+(`cl-gbdt/lightgbm/unified`、`cl-gbdt/xgboost/unified`) を一切loadしなくても実用に足る独立した
+libraryにする、S1からS5までの五段階のプログラムが進行している。この定義はこれまで
+`docs/superpowers/specs/2026-08-11-layer1-standalone-design.md` にのみ存在し、同ディレクトリは
+`.gitignore` の対象であるため、trackedな文書には一度も記録されていなかった。本節がその記録である。
+
+このプログラムは§12の段階計画 (Phase 0〜4) とは別系統であり、Phase 4完了後に始まった。Phase 2は
+「backend固有packageからexportする」ことを、Phase 4は「data / predictionの拡張」を主題としたのに
+対し、このプログラムはLayer 1が統合APIなしで単体のlibraryとして自足していることを主題とする。§12
+のPhase一覧には項目を足さない。
+
+プログラム全体を拘束する決定は次の五つである。
+
+1. coverageはclassification (分類の網羅) で保証し、percentageでは保証しない。
+2. `cl-gbdt/<backend>` はLayer 1のみを意味する。統合APIの13 methodは
+   `cl-gbdt/<backend>/unified` が担う。
+3. one C function, one Lisp functionとする。C呼出し規約は変換し (out parameterを戻り値または
+   multiple valuesへ、foreign bufferをLisp objectへ、error codeを型付きconditionへ)、C APIが
+   initとfreeを対で提供する箇所には `with-*` macroも用意する。
+4. docstringを文書の一次情報源とする。API referenceはdocstringから生成し、`src/*/c-api.lisp` と
+   同様byte-for-byteで検査する。
+5. 公開symbolには機械的に検査されるfunctional testを要求する。
+
+各段階の現状は次のとおりである。
+
+- **S1 — 層の分離。完了 (PR #26)。** concrete classとlibrary lifecycle
+  (`initialize-backend`/`shutdown-backend`) をLayer 1へ移し、`cl-gbdt/<backend>` をLayer 1のみの
+  systemとし、所有権パターンを `with-pointer-ownership` 一つへ集約した。
+- **S2 — 各操作の手続きをLayer 1へ移す。完了 (PR #27、#29、#30)。** PR #27で両backend各6操作
+  (`create-dataset`、`create-booster`、`update-one-iteration`、`predict`、`free-dataset`、
+  `free-booster`)、PR #29で残り7操作 (`save-model`、`load-model`、`model-to-string`、
+  `feature-importance`、`evaluation`、`dataset-num-rows`、`dataset-num-features`)、PR #30で
+  `train` のbooster構築を、それぞれ両backendの `src/<backend>/api.lisp` へ移した。結果、13の
+  unified methodはすべて、その手続きの少なくとも一部をLayer 1へ委譲する。委譲の程度が `train` の
+  みほかの12と異なる理由 (boosting loop自体は `update-one-iteration` を経由しない) は既に上記の
+  フォローアップに記録済みであり、ここでは繰り返さない。
+- **S3 — bindingのclassification。完了 (PR #31)。** `src/*/c-api.lisp` が生成する177 bindingすべてを
+  `ffi-spec/BINDING-COVERAGE.md` で `wrapped`/`planned`/`excluded` のいずれかに分類し、
+  `tools/ci/check-binding-coverage.lisp` が未分類のbindingでbuildを失敗させる。
+- **S4 — 未着手。** docstringからAPI referenceを生成しbyte-for-byteで検査する仕組み、および公開
+  symbolすべてにfunctional testが存在することを機械的に検査する仕組みを追加する。
+- **S5 — 未着手。** まだ誰も公開していないC functionを公開する。作業一覧は
+  `ffi-spec/BINDING-COVERAGE.md` の `## Planned` 節である。同節にはLightGBMの
+  `LGBM_BoosterRollbackOneIter`/`LGBM_BoosterRefit`/`LGBM_BoosterResetParameter`、および両
+  backendのfile input (`LGBM_DatasetCreateFromFile`/`XGDMatrixCreateFromURI`) の行があり、これら
+  は上記のフォローアップが既に個別に記録している未実装項目と同じものを指す。フォローアップの
+  「shapeを保持するXGBoost feature score」は別である。`XGBoosterFeatureScore` 自体は既にwrapped
+  済みであり、この項目は既存bindingの戻し方を変える実装課題であって、S5が公開すべきbindingの一覧
+  には現れない。
+
 ---
 
 対象リポジトリ: <https://github.com/masatoi/cl-gbdt>

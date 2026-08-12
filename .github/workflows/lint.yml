@@ -105,6 +105,13 @@ jobs:
         # "checked and clean," and for both checks' "WHAT THIS CANNOT CATCH."
         run: ros run -- --non-interactive --load tools/ci/check-abi-blacklist.lisp
 
+      - name: Every generated binding is wrapped, planned, or excluded
+        # ffi-spec/BINDING-COVERAGE.md classifies all 177 functions src/*/c-api.lisp
+        # generate; this fails the build the moment a regenerated binding arrives with no
+        # recorded position. See tools/ci/check-binding-coverage.lisp's header for its four
+        # checks, its two floors, and its empty-parse guard.
+        run: ros run -- --non-interactive --load tools/ci/check-binding-coverage.lisp
+
       - name: Compile every system without warnings
         # All eight systems, not just the three non-test ones: cl-gbdt/regen and the two
         # test systems went unchecked before, which is how tests/functional/lightgbm.lisp
