@@ -342,11 +342,15 @@ EXIST, and nothing here loads project code to make it. The token is read as a ba
 the same name instead, which loses nothing this script uses -- every form below is inspected by
 NAME and never by symbol identity.
 
-A file that matches a pattern but cannot be READ -- unreadable to this process, truncated
-mid-form, or naming a package in a way the narrow handler above declines to resolve -- is
-reported as `scan-error', one line like every other floor state, rather than reaching the
-top level as a backtrace. It fails either way; the difference is whether the reader of a red
-build is told which file and why in the first line they see."
+A file that matches a pattern but cannot be READ -- unreadable to this process, or truncated
+mid-form -- is reported as `scan-error', one line like every other floor state, rather than
+reaching the top level as a backtrace. It fails either way; the difference is whether the
+reader of a red build is told which file and why in the first line they see. Those two cases
+only: a package-lock violation in a scanned file, which
+`%intern-unresolvable-qualified-symbol' declines and which is no `file-error',
+`stream-error' or `reader-error', still escapes as an unhandled condition. That is
+deliberate and is not widened here -- failing loudly on a locked package is the outcome the
+narrowing above exists for."
   (let ((*package* (or (find-package '#:cl-gbdt/tools/ci/layer-1-guard-scratch)
                        (make-package '#:cl-gbdt/tools/ci/layer-1-guard-scratch
                                      :use '(#:cl))))
@@ -522,7 +526,7 @@ one of them vouch for the other."
   "True when the function called NAME can refuse an object for its CLASS -- the third
 condition in HOW A GUARD IS RECOGNISED.
 
-Its body signals +CLASS-REFUSAL-CONDITION+, or it calls another +GUARD-NAME-PREFIX+ function
+Its body names +CLASS-REFUSAL-CONDITION+, or it calls another +GUARD-NAME-PREFIX+ function
 that does. False for a name DEFINITIONS does not hold at all: a guard whose definition this
 scan cannot read is not taken on trust.
 
