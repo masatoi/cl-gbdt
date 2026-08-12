@@ -31,7 +31,6 @@
                 #:%check-xgboost-dataset
                 #:%check-unsupported
                 #:%dataset-num-rows
-                #:%dataset-num-features
                 #:%create-booster
                 #:%set-parameters
                 #:%boosted-rounds
@@ -39,11 +38,6 @@
                 #:%free-booster-unchecked
                 #:%booster-predictions
                 #:%train-one-iteration-custom
-                #:%feature-importance-type
-                #:%booster-num-features
-                #:%feature-score-index
-                #:%check-feature-score-dim
-                #:%feature-score
                 #:%read-evaluation)
   (:import-from #:cl-gbdt/src/xgboost/classes
                 #:xgboost-backend
@@ -81,8 +75,6 @@
                 #:with-pointer-ownership
                 #:handle-live-pointer
                 #:handle-backend
-                #:booster-training-set
-                #:booster-validation-sets
                 #:%resolve-best-num-iteration
                 #:%reject-best-num-iteration)
   (:import-from #:cl-gbdt/src/conditions
@@ -419,14 +411,22 @@ handle's ownership is that function's doing; see its own docstring."
                                      :missing missing :feature-types feature-types))))
 
 (defmethod dataset-num-rows ((dataset xgboost-dataset))
-  "Return DATASET's row count, read via `XGDMatrixNumRow'."
+  "Return DATASET's row count, read via `XGDMatrixNumRow'.
+
+This method's whole body was procedure -- there was no portable argument here to check or
+translate -- so all of it is `cl-gbdt/src/xgboost/api''s `dataset-num-rows', which is where
+the class guard the specializer above used to provide now lives too."
   (with-foreign-float-traps-masked
-    (%dataset-num-rows (handle-live-pointer dataset))))
+    ;; Named in full, not imported: `cl-gbdt/src/protocol''s `dataset-num-rows', the generic
+    ;; this method is defined on, is a DIFFERENT symbol of the same name, and this file
+    ;; imports that one.
+    (cl-gbdt/src/xgboost/api:dataset-num-rows dataset)))
 
 (defmethod dataset-num-features ((dataset xgboost-dataset))
-  "Return DATASET's feature count, read via `XGDMatrixNumCol'."
+  "Return DATASET's feature count, read via `XGDMatrixNumCol'. Delegates wholly, as
+`dataset-num-rows' above does and for the same reason."
   (with-foreign-float-traps-masked
-    (%dataset-num-features (handle-live-pointer dataset))))
+    (cl-gbdt/src/xgboost/api:dataset-num-features dataset)))
 
 (defmethod free-dataset ((dataset xgboost-dataset))
   "Free DATASET via `XGDMatrixFree'. Does nothing if it was already freed.
@@ -1223,33 +1223,16 @@ inventing a reduction XGBoost itself does not define.
 NUM-ITERATION does not accept :BEST, unlike `predict', `save-model' and
 `model-to-string' -- `%reject-best-num-iteration' signals `unsupported-argument' for it
 explicitly, ahead of the blanket rejection just below that would otherwise catch it only
-incidentally, as any other non-NIL value."
+incidentally, as any other non-NIL value.
+
+The procedure is `cl-gbdt/src/xgboost/api''s `feature-importance', which takes no
+:NUM-ITERATION at all. Both refusals stay here, in this order: :BEST explicitly, ahead of the
+blanket refusal that would otherwise catch it only incidentally as any other non-NIL value."
   (with-foreign-float-traps-masked
     (%reject-best-num-iteration booster num-iteration "feature-importance's :num-iteration")
     (%check-unsupported (handle-backend booster) "feature-importance's :num-iteration"
                          num-iteration "XGBoosterFeatureScore has no iteration limit")
-    (let ((pointer (handle-live-pointer booster))
-          (importance-type (%feature-importance-type kind)))
-      (cffi:with-foreign-string
-          (config (format nil "{\"importance_type\":\"~A\"}" importance-type))
-        (cffi:with-foreign-objects ((out-n-features :uint64) (out-features :pointer)
-                                     (out-dim :uint64) (out-shape :pointer)
-                                     (out-scores :pointer))
-          (%feature-score
-           pointer config out-n-features out-features out-dim out-shape out-scores)
-          (%check-feature-score-dim (handle-backend booster) out-dim out-shape)
-          (let ((used-count (cffi:mem-ref out-n-features :uint64))
-                (features-pointer (cffi:mem-ref out-features :pointer))
-                (scores-pointer (cffi:mem-ref out-scores :pointer))
-                (result (make-array (%booster-num-features pointer)
-                                     :element-type 'double-float :initial-element 0.0d0)))
-            (dotimes (used-index used-count result)
-              (let* ((name (cffi:foreign-string-to-lisp
-                            (cffi:mem-aref features-pointer :pointer used-index)))
-                     (column (%feature-score-index name)))
-                (setf (aref result column)
-                      (coerce (cffi:mem-aref scores-pointer :float used-index)
-                              'double-float))))))))))
+    (cl-gbdt/src/xgboost/api:feature-importance booster :kind kind)))
 
 ;;; ---------------------------------------------------------------------------
 ;;; Evaluation
@@ -1291,13 +1274,12 @@ itself, before calling `%read-evaluation', so a freed booster or a freed retaine
 signals `released-handle-error' right here; unlike `cl-gbdt/src/lightgbm/protocol''s
 method, this one needs no separate `%check-booster-datasets-live', since every dataset it
 evaluates is one it resolves and checks explicitly, by its own handle, before any foreign
-call."
+call.
+
+This method's whole body was procedure, so all of it is `cl-gbdt/src/xgboost/api''s
+`evaluation' -- the per-dataset pointer resolution, the decimal naming, the parse and the
+provenance plist alike. The one thing that changed with the move is that the booster's kind is
+now checked before its pointer is read, so a value that is not a booster gets
+`wrong-backend-reference' rather than whatever `handle-live-pointer' made of it."
   (with-foreign-float-traps-masked
-    (let* ((booster-pointer (handle-live-pointer booster))
-           (training-set (booster-training-set booster))
-           (datasets (if training-set
-                         (cons training-set (booster-validation-sets booster))
-                         '()))
-           (dataset-pointers (mapcar #'handle-live-pointer datasets)))
-      (multiple-value-bind (entries raw) (%read-evaluation booster-pointer dataset-pointers)
-        (values entries (list :value-source :parsed-text :raw raw))))))
+    (cl-gbdt/src/xgboost/api:evaluation booster)))

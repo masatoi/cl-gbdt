@@ -212,6 +212,10 @@
   (:import-from #:cl-gbdt/src/xgboost/api
                 #:create-booster
                 #:create-dataset
+                #:dataset-num-features
+                #:dataset-num-rows
+                #:evaluation
+                #:feature-importance
                 #:free-booster
                 #:free-dataset
                 #:load-model
@@ -226,6 +230,10 @@
            #:slice-model
            #:create-booster
            #:create-dataset
+           #:dataset-num-features
+           #:dataset-num-rows
+           #:evaluation
+           #:feature-importance
            #:free-booster
            #:free-dataset
            #:load-model
