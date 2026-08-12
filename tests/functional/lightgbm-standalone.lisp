@@ -479,3 +479,118 @@ directory the suite happened to run from."
               (cl-gbdt/lightgbm:free-dataset data)
               (when (probe-file path) (delete-file path))
               (when (probe-file echoed) (delete-file echoed)))))))))
+
+(deftest layer-1-alone-reports-importance-evaluation-and-shape
+  (testing "a caller with only cl-gbdt/lightgbm loaded can ask what it just trained"
+    (with-open-backend (backend)
+      (multiple-value-bind (matrix label-vector) (fixture)
+        (let ((data (cl-gbdt/lightgbm:create-dataset backend matrix :label label-vector
+                                                      :parameters *parameters*)))
+          (unwind-protect
+               (let ((booster (cl-gbdt/lightgbm:create-booster backend data
+                                                                :parameters *parameters*)))
+                 (unwind-protect
+                      (progn
+                        (dotimes (round 20)
+                          (cl-gbdt/lightgbm:update-one-iteration booster))
+                        ;; The dataset's own shape, read from the library rather than from the
+                        ;; array it was built from.
+                        (ok (= 16 (cl-gbdt/lightgbm:dataset-num-rows data))
+                            "dataset-num-rows reports the fixture's row count")
+                        (ok (= 2 (cl-gbdt/lightgbm:dataset-num-features data))
+                            "dataset-num-features reports its column count")
+                        ;; One entry per FEATURE, not per feature that happened to be split
+                        ;; on. That is the property a dense result has and a sparse one does
+                        ;; not, and it is what makes the two backends' results comparable.
+                        (let ((split (cl-gbdt/lightgbm:feature-importance booster))
+                              (gain (cl-gbdt/lightgbm:feature-importance booster :kind :gain)))
+                          (ok (= 2 (length split))
+                              (format nil ":split importance has ~D entries" (length split)))
+                          (ok (= 2 (length gain))
+                              (format nil ":gain importance has ~D entries" (length gain)))
+                          (ok (every (lambda (value) (typep value 'double-float)) split)
+                              "every :split entry is a double-float")
+                          ;; Column 0 carries the whole signal and column 1 none, so the
+                          ;; ordering holds however the library breaks ties. Equality is not
+                          ;; asserted: a tie is a legitimate outcome for a boosted model that
+                          ;; ran out of useful splits.
+                          (ok (>= (aref split 0) (aref split 1))
+                              (format nil ":split importance ~S ranks column 0 first" split))
+                          (ok (>= (aref gain 0) (aref gain 1))
+                              (format nil ":gain importance ~S ranks column 0 first" gain))
+                          (ok (plusp (aref gain 0))
+                              "the signal-carrying column has non-zero gain, so the model split"))
+                        ;; The metric the objective configured, at the index the portable
+                        ;; contract numbers the training set with.
+                        (multiple-value-bind (entries provenance)
+                            (cl-gbdt/lightgbm:evaluation booster)
+                          (ok (consp entries) "evaluation reports the training set's metrics")
+                          (ok (every (lambda (entry)
+                                       (and (= 3 (length entry))
+                                            (integerp (first entry))
+                                            (stringp (second entry))
+                                            (typep (third entry) 'double-float)))
+                                     entries)
+                              "each entry is (dataset-index metric-name value)")
+                          (ok (every (lambda (entry) (zerop (first entry))) entries)
+                              "with no validation set every entry is at index 0")
+                          (ok (eq :library-doubles (getf provenance :value-source))
+                              "and evaluation states where its values came from"))
+                        ;; The specializer each of these lost.
+                        (ok (handler-case
+                                (progn (cl-gbdt/lightgbm:feature-importance data) nil)
+                              (cl-gbdt/lightgbm:wrong-backend-reference () t))
+                            "feature-importance accepted a dataset as its booster")
+                        (ok (handler-case (progn (cl-gbdt/lightgbm:evaluation data) nil)
+                              (cl-gbdt/lightgbm:wrong-backend-reference () t))
+                            "evaluation accepted a dataset as its booster")
+                        (ok (handler-case
+                                (progn (cl-gbdt/lightgbm:dataset-num-rows booster) nil)
+                              (cl-gbdt/lightgbm:wrong-backend-reference () t))
+                            "dataset-num-rows accepted a booster as its dataset")
+                        (ok (handler-case
+                                (progn (cl-gbdt/lightgbm:dataset-num-features booster) nil)
+                              (cl-gbdt/lightgbm:wrong-backend-reference () t))
+                            "dataset-num-features accepted a booster as its dataset")
+                        (ok (handler-case
+                                (progn (cl-gbdt/lightgbm:feature-importance
+                                        booster :num-iteration :best)
+                                       nil)
+                              (cl-gbdt/lightgbm:unsupported-argument () t))
+                            "feature-importance refuses :best, which only train can resolve"))
+                   (cl-gbdt/lightgbm:free-booster booster)))
+            (cl-gbdt/lightgbm:free-dataset data)))))))
+
+;;; A booster from `load-model' retains no dataset at all, which is the one case `evaluation'
+;;; returns nothing for. It is asserted separately rather than folded into the test above
+;;; because it needs a second booster and a file, and because it is the case a reader is most
+;;; likely to believe is an error rather than a result.
+
+(deftest layer-1-alone-evaluates-a-loaded-model-as-empty
+  (testing "a booster with no retained dataset has nothing to evaluate"
+    (with-open-backend (backend)
+      (multiple-value-bind (matrix label-vector) (fixture)
+        (let ((data (cl-gbdt/lightgbm:create-dataset backend matrix :label label-vector
+                                                      :parameters *parameters*))
+              (path (model-path "cl-gbdt-lightgbm-standalone-eval.txt")))
+          (unwind-protect
+               (let ((booster (cl-gbdt/lightgbm:create-booster backend data
+                                                                :parameters *parameters*)))
+                 (unwind-protect
+                      (progn
+                        (dotimes (round 5)
+                          (cl-gbdt/lightgbm:update-one-iteration booster))
+                        (cl-gbdt/lightgbm:save-model booster path)
+                        (let ((reloaded (cl-gbdt/lightgbm:load-model backend path)))
+                          (unwind-protect
+                               (progn
+                                 (ok (null (cl-gbdt/lightgbm:evaluation reloaded))
+                                     "a loaded booster evaluates to no entries")
+                                 (ok (= 2 (length (cl-gbdt/lightgbm:feature-importance
+                                                   reloaded)))
+                                     "but still reports one importance per feature"))
+                            (cl-gbdt/lightgbm:free-booster reloaded))))
+                   (cl-gbdt/lightgbm:free-booster booster)))
+            (progn
+              (cl-gbdt/lightgbm:free-dataset data)
+              (when (probe-file path) (delete-file path)))))))))

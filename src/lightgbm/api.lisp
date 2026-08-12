@@ -60,6 +60,10 @@
                 #:%create-dataset
                 #:%create-dataset-from-csr
                 #:%data-type
+                #:%dataset-num-features
+                #:%dataset-num-rows
+                #:%feature-importance
+                #:%feature-importance-type
                 #:%free-booster
                 #:%free-booster-unchecked
                 #:%free-dataset
@@ -69,6 +73,7 @@
                 #:%predict-for-mat
                 #:%predict-ncol
                 #:%predict-type
+                #:%read-evaluation
                 #:%reference-pointer
                 #:%resolve-num-iteration
                 #:%save-model
@@ -99,12 +104,19 @@
                 #:with-foreign-float-traps-masked)
   (:import-from #:cl-gbdt/src/handle
                 #:%reject-best-num-iteration
+                #:booster-training-set
+                #:booster-validation-sets
                 #:handle-backend
+                #:handle-live-pointer
                 #:handle-released-p
                 #:release-handle
                 #:with-pointer-ownership)
   (:export #:create-booster
            #:create-dataset
+           #:dataset-num-features
+           #:dataset-num-rows
+           #:evaluation
+           #:feature-importance
            #:free-booster
            #:free-dataset
            #:load-model
@@ -148,8 +160,9 @@ on a library that has neither."
 of thing that was wanted and ARGUMENT-DESCRIPTION as the argument OBJECT came from. Returns
 no useful value, and reads nothing else about OBJECT at all.
 
-Four callers, in two pairs, and OBJECT is a handle for one pair and a BACKEND for the other --
-which is why this is not named for handles. Each pair reaches it for its own reason:
+Seven callers, in three groups, and OBJECT is a handle for two of the groups and a BACKEND
+for the third -- which is why this is not named for handles. Each group reaches it for its
+own reason:
 
 `free-dataset' and `free-booster' cannot use `%check-lightgbm-dataset' or
 `%check-lightgbm-booster', which every operation in this file that requires a LIVE handle
@@ -160,13 +173,21 @@ since been closed `warn's the memory leaked and returns -- so routing either fre
 check that signals `released-handle-error' or `backend-not-open' would break both promises for
 the sake of the kind check. This checks the kind and nothing else.
 
-`create-dataset' and `create-booster' have no handle to check at all: their caller-supplied
-object is the BACKEND, and each calls this FIRST, ahead of `%check-backend-open'. That order
-is the point rather than a detail. `%check-backend-open' asks only whether the object it is
-handed is OPEN, and for another backend's object that is a truthful answer to a question about
-the wrong shared library, which lets the call proceed; for a value that is no backend at all,
-it reaches `backend-open-p' and produces a bare CLOS `no-applicable-method' instead of a typed
-condition.
+`create-dataset', `create-booster' and `load-model' have no handle to check at all: their
+caller-supplied object is the BACKEND, and each calls this FIRST, ahead of
+`%check-backend-open'. That order is the point rather than a detail. `%check-backend-open'
+asks only whether the object it is handed is OPEN, and for another backend's object that is a
+truthful answer to a question about the wrong shared library, which lets the call proceed; for
+a value that is no backend at all, it reaches `backend-open-p' and produces a bare CLOS
+`no-applicable-method' instead of a typed condition.
+
+`dataset-num-rows' and `dataset-num-features' need a LIVE handle, unlike the frees, but have
+no BACKEND argument of their own to hand `%check-lightgbm-dataset' for its report -- neither
+signature takes one, both being readers of an existing DATASET rather than builders -- so each
+pairs this check with `handle-live-pointer' instead, calling it only once this one has already
+confirmed DATASET's kind: `wrong-backend-reference' for the wrong kind, and whatever
+`handle-live-pointer' signals otherwise, `released-handle-error' for an already-freed DATASET
+or `backend-not-open' for one whose backend has since closed.
 
 A `typep' against the CONCRETE class subsumes kind and backend together, where
 `cl-gbdt/src/handle''s `%check-handle-kind' needs a (kind, backend-name) pair: that function
@@ -181,11 +202,11 @@ lightgbm-dataset built by LIGHTGBM\" and say the backend twice. \"backend\" is t
 NOUN takes, after \"dataset\" and \"booster\", and the one that condition's `:report' words
 differently: a backend object is not something the backend BUILT, so it reads as its OWN.
 
-All four call sites were `defmethod's specialized on the concrete class before the Layer 1
+All seven call sites were `defmethod's specialized on the concrete class before the Layer 1
 split, and that specializer WAS this check; a plain `defun' takes whatever it is given, so it
-is made here or nowhere. What each pair lets through without it was measured against the
-vendored libraries, and both measurements are worth reading for their SPREAD rather than for
-any one number.
+is made here or nowhere. What the frees and the creators let through without it was measured
+against the vendored libraries, and both measurements are worth reading for their SPREAD
+rather than for any one number.
 
 The frees hand the pointer of whatever handle they are given straight to `LGBM_DatasetFree' or
 `LGBM_BoosterFree': a `lightgbm-booster' passed to `free-dataset' faulted at
@@ -790,3 +811,99 @@ Signals `wrong-backend-reference', `released-handle-error' and `backend-not-open
     (let ((pointer (%check-lightgbm-booster booster "model-to-string's booster argument")))
       (%reject-best-num-iteration booster num-iteration "model-to-string's :num-iteration")
       (%save-model-to-string pointer (%resolve-num-iteration num-iteration)))))
+
+;;; ---------------------------------------------------------------------------
+;;; Feature importance
+
+(defun feature-importance (booster &key (kind :split) num-iteration)
+  "Return BOOSTER's per-feature importances via `LGBM_BoosterFeatureImportance', as a fresh
+`(simple-array double-float (*))' with one entry per feature, indexed by column.
+
+The width comes from `LGBM_BoosterGetNumFeature', which answers whether BOOSTER came from
+`create-booster' or from `load-model' -- unlike a booster's training set, which `load-model'
+leaves unbound. A feature never used in a split is reported as zero rather than omitted.
+
+KIND is `:split' or `:gain', mapped onto LightGBM's own `C_API_FEATURE_IMPORTANCE_*' constant
+by `%feature-importance-type', which signals for anything else. NUM-ITERATION is a positive
+integer or NIL for every iteration; :BEST is refused by `%reject-best-num-iteration', as it is
+in `save-model' and `predict' and for the same reason. KIND is checked BEFORE NUM-ITERATION,
+preserving the order the Layer 2 method's own `let*' established.
+
+Signals `wrong-backend-reference' when BOOSTER is not a booster built by this backend, and
+`released-handle-error' or `backend-not-open' from the `handle-live-pointer' inside that
+check, which runs before anything else is read."
+  (with-foreign-float-traps-masked
+    (let* ((pointer (%check-lightgbm-booster booster "feature-importance's booster argument"))
+           (importance-type (%feature-importance-type kind))
+           (count (%booster-num-features pointer))
+           (result (make-array count :element-type 'double-float))
+           (resolved (%reject-best-num-iteration booster num-iteration
+                                                  "feature-importance's :num-iteration")))
+      (cffi:with-foreign-object (buffer :double count)
+        (%feature-importance pointer (%resolve-num-iteration resolved) importance-type buffer)
+        (dotimes (index count)
+          (setf (aref result index) (cffi:mem-aref buffer :double index))))
+      result)))
+
+;;; ---------------------------------------------------------------------------
+;;; Evaluation
+
+(defun evaluation (booster)
+  "Return BOOSTER's evaluation metrics as two values: a list of (DATASET-INDEX METRIC-NAME
+VALUE) entries, and a plist stating where the values came from.
+
+Reads one `LGBM_BoosterGetEval' result per dataset BOOSTER retains, in the order they were
+attached, through `%read-evaluation' -- the same pointer-level reader `train''s per-iteration
+recording loop uses, so the two can never disagree. DATASET-INDEX is 0 for the training set
+and 1 upward for each validation set, which is `LGBM_BoosterGetEval''s own `data_idx'; nothing
+here renumbers anything. The datasets are counted from BOOSTER's own retained handles rather
+than asked of the library, which has no entry point reporting how many are attached. A
+`load-model' booster retains none, and is the case the count is 0 for.
+
+The second value is always `(:value-source :library-doubles)': these are
+`LGBM_BoosterGetEval''s own doubles, returned unmodified. Unlike `cl-gbdt/src/xgboost/api''s
+`evaluation', nothing here parses text, so there is no :RAW to keep and no VALUE is ever NIL.
+
+The kind check runs FIRST and `%check-booster-datasets-live' second, which is the opposite of
+the order the Layer 2 method used. It has to be: `%check-booster-datasets-live' reads
+`booster-training-set' off whatever it is handed, so a DATASET reaching it produced a bare
+CLOS `no-applicable-method' error instead of a typed condition -- the same defect
+`update-one-iteration' was measured to have and fixed the same way. That check is still owed
+before any foreign call, `LGBM_BoosterGetEval' evaluating each attached validation set through
+metric objects built over that dataset's own arrays, none of which `LGBM_DatasetFree' clears
+from the booster."
+  (with-foreign-float-traps-masked
+    (let ((pointer (%check-lightgbm-booster booster "evaluation's booster argument")))
+      (%check-booster-datasets-live booster)
+      (let ((dataset-count (if (booster-training-set booster)
+                               (1+ (length (booster-validation-sets booster)))
+                               0)))
+        (values (%read-evaluation pointer dataset-count)
+                (list :value-source :library-doubles))))))
+
+;;; ---------------------------------------------------------------------------
+;;; Dataset metadata
+
+(defun dataset-num-rows (dataset)
+  "Return DATASET's row count, read via `LGBM_DatasetGetNumData'.
+
+Signals `wrong-backend-reference' when DATASET is not a `lightgbm-dataset' -- a booster, the
+other backend's dataset, or not a handle at all. This function dispatches on nothing, so
+`%check-object-class' is the only thing between a wrong-kind pointer and the foreign call.
+Unlike the frees, which use that same check and then tolerate a released handle, this requires
+a LIVE one and reads it through `handle-live-pointer' immediately after: `released-handle-error'
+for a freed DATASET, `backend-not-open' for a closed backend."
+  (with-foreign-float-traps-masked
+    (%check-object-class dataset 'lightgbm-dataset "dataset"
+                         "dataset-num-rows's dataset argument")
+    (%dataset-num-rows (handle-live-pointer dataset))))
+
+(defun dataset-num-features (dataset)
+  "Return DATASET's feature count, read via `LGBM_DatasetGetNumFeature'.
+
+Signals what `dataset-num-rows' above signals, on the same terms and through the same two
+calls."
+  (with-foreign-float-traps-masked
+    (%check-object-class dataset 'lightgbm-dataset "dataset"
+                         "dataset-num-features's dataset argument")
+    (%dataset-num-features (handle-live-pointer dataset))))

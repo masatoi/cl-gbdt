@@ -218,15 +218,15 @@ constraint during that backend's own Phase 1 split.
 Every caller-supplied dataset argument that reaches this file -- `make-dataset''s
 :REFERENCE, `train''s DATASET and each entry of its :VALID-SETS, and the same two
 arguments of `create-booster' -- must pass through here before reaching a foreign
-call that expects a `DatasetHandle'. `handle-live-pointer' alone is not enough:
-it only guards against a released handle or a closed backend, and happily returns
-*any* handle's pointer regardless of kind, including a booster's --
-`make-dataset' and `train' dispatch on the backend and `create-booster', a
-`defun', on nothing at all, so none of the three dispatches on the handle and
-unlike `dataset-num-rows' or `free-dataset' there is no CLOS specializer already
-ruling out the wrong kind of handle. A booster's own pointer reaching
-`LGBM_BoosterCreate' as its training-set argument is exactly the corruption
-this check exists to prevent.
+call that expects a `DatasetHandle'. `handle-live-pointer' alone is not enough: it
+only guards against a released handle or a closed backend, and happily returns
+*any* handle's pointer regardless of kind, including a booster's. Nothing in
+`cl-gbdt/src/lightgbm/api' dispatches on a handle any more -- `dataset-num-rows'
+and `free-dataset' were `defmethod's until the Layer 1 split and are plain
+`defun's now -- so every operation there makes its kind check explicitly, this
+function or `%check-object-class' depending on whether it needs the handle to be
+live. A booster's own pointer reaching `LGBM_BoosterCreate' as its training-set
+argument is exactly the corruption this check exists to prevent.
 
 Signals `wrong-backend-reference' when DATASET is not of type DATASET-CLASS --
 built by a different backend, or not a dataset at all -- and whatever

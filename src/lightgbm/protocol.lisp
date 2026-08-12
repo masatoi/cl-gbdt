@@ -28,18 +28,12 @@
                 #:%check-lightgbm-dataset
                 #:%parameter-string
                 #:%dataset-num-rows
-                #:%dataset-num-features
                 #:%create-booster
                 #:%add-valid-data
                 #:%update-one-iteration
                 #:%booster-predictions
                 #:%update-one-iteration-custom
-                #:%check-booster-datasets-live
                 #:%free-booster-unchecked
-                #:%resolve-num-iteration
-                #:%feature-importance-type
-                #:%booster-num-features
-                #:%feature-importance
                 #:%read-evaluation)
   (:import-from #:cl-gbdt/src/lightgbm/classes
                 #:lightgbm-backend
@@ -76,10 +70,7 @@
                 #:with-pointer-ownership
                 #:handle-live-pointer
                 #:handle-backend
-                #:booster-training-set
-                #:booster-validation-sets
-                #:%resolve-best-num-iteration
-                #:%reject-best-num-iteration)
+                #:%resolve-best-num-iteration)
   (:import-from #:cl-gbdt/src/conditions
                 #:unsupported-argument
                 #:capability-unavailable)
@@ -469,14 +460,22 @@ doing; see its own docstring."
                                      :parameters parameters :reference reference))))
 
 (defmethod dataset-num-rows ((dataset lightgbm-dataset))
-  "Return DATASET's row count, read via `LGBM_DatasetGetNumData'."
+  "Return DATASET's row count, read via `LGBM_DatasetGetNumData'.
+
+This method's whole body was procedure -- there was no portable argument here to check or
+translate -- so all of it is `cl-gbdt/src/lightgbm/api''s `dataset-num-rows', which is where
+the class guard the specializer above used to provide now lives too."
   (with-foreign-float-traps-masked
-    (%dataset-num-rows (handle-live-pointer dataset))))
+    ;; Named in full, not imported: `cl-gbdt/src/protocol''s `dataset-num-rows', the generic
+    ;; this method is defined on, is a DIFFERENT symbol of the same name, and this file
+    ;; imports that one.
+    (cl-gbdt/src/lightgbm/api:dataset-num-rows dataset)))
 
 (defmethod dataset-num-features ((dataset lightgbm-dataset))
-  "Return DATASET's feature count, read via `LGBM_DatasetGetNumFeature'."
+  "Return DATASET's feature count, read via `LGBM_DatasetGetNumFeature'. Delegates wholly, as
+`dataset-num-rows' above does and for the same reason."
   (with-foreign-float-traps-masked
-    (%dataset-num-features (handle-live-pointer dataset))))
+    (cl-gbdt/src/lightgbm/api:dataset-num-features dataset)))
 
 (defmethod free-dataset ((dataset lightgbm-dataset))
   "Free DATASET via `LGBM_DatasetFree'. Does nothing if it was already freed.
@@ -1166,20 +1165,15 @@ unbound.
 
 NUM-ITERATION does not accept :BEST, unlike `predict', `save-model' and
 `model-to-string' -- `%reject-best-num-iteration' signals `unsupported-argument' for it
-rather than letting it reach `LGBM_BoosterFeatureImportance' as raw, uninterpreted data."
+rather than letting it reach `LGBM_BoosterFeatureImportance' as raw, uninterpreted data.
+
+The procedure is `cl-gbdt/src/lightgbm/api''s `feature-importance', and so is the :BEST
+refusal: unlike `save-model' and `model-to-string', this operation never RESOLVED :BEST, and a
+refusal is something Layer 1 can make for itself with the same argument name and the same
+condition. Nothing is left here."
   (with-foreign-float-traps-masked
-    (let* ((pointer (handle-live-pointer booster))
-           (importance-type (%feature-importance-type kind))
-           (count (%booster-num-features pointer))
-           (result (make-array count :element-type 'double-float))
-           (resolved (%reject-best-num-iteration booster num-iteration
-                                                  "feature-importance's :num-iteration")))
-      (cffi:with-foreign-object (buffer :double count)
-        (%feature-importance pointer (%resolve-num-iteration resolved) importance-type
-                              buffer)
-        (dotimes (index count)
-          (setf (aref result index) (cffi:mem-aref buffer :double index))))
-      result)))
+    (cl-gbdt/src/lightgbm/api:feature-importance booster :kind kind
+                                                          :num-iteration num-iteration)))
 
 ;;; ---------------------------------------------------------------------------
 ;;; Evaluation
@@ -1216,12 +1210,12 @@ inside `%read-evaluation': `LGBM_BoosterGetEval' evaluates each attached validat
 through the metric objects built over that dataset's own label and weight arrays, none of
 which `LGBM_DatasetFree' clears from the booster, so evaluating after one of them was
 freed is a use-after-free rather than a catchable condition -- the identical hazard
-`update-one-iteration' guards against with the same call."
+`update-one-iteration' guards against with the same call.
+
+The procedure is `cl-gbdt/src/lightgbm/api''s `evaluation'. One thing about it changed with
+the move and is worth knowing here: the kind check now runs before
+`%check-booster-datasets-live' rather than after, so a value that is not a booster at all is
+answered with `wrong-backend-reference' where it used to reach `booster-training-set' and
+produce a bare CLOS `no-applicable-method'. Every other order is as it was."
   (with-foreign-float-traps-masked
-    (%check-booster-datasets-live booster)
-    (let ((pointer (handle-live-pointer booster))
-          (dataset-count (if (booster-training-set booster)
-                             (1+ (length (booster-validation-sets booster)))
-                             0)))
-      (values (%read-evaluation pointer dataset-count)
-              (list :value-source :library-doubles)))))
+    (cl-gbdt/src/lightgbm/api:evaluation booster)))

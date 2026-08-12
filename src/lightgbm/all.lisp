@@ -182,6 +182,10 @@
   (:import-from #:cl-gbdt/src/lightgbm/api
                 #:create-booster
                 #:create-dataset
+                #:dataset-num-features
+                #:dataset-num-rows
+                #:evaluation
+                #:feature-importance
                 #:free-booster
                 #:free-dataset
                 #:load-model
@@ -194,6 +198,10 @@
            #:booster-eval
            #:create-booster
            #:create-dataset
+           #:dataset-num-features
+           #:dataset-num-rows
+           #:evaluation
+           #:feature-importance
            #:free-booster
            #:free-dataset
            #:load-model
