@@ -344,3 +344,65 @@
       (ok (search "Constructor of the `cl-gbdt/tests/docgen/gamma:fixture-indexed-struct`"
                   text))
       (ok (not (search "```text" text))))))
+
+(deftest render-entry-writes-a-type-entrys-superclasses-line
+  (testing "a type entry renders its Superclasses line and never a Signature line"
+    (let ((text (with-output-to-string (stream)
+                  (cl-gbdt/src/docgen/all:render-entry
+                   (cl-gbdt/src/docgen/all:make-entry
+                    :symbol 'fixture-documented-class :qualifier "cl-gbdt/tests/docgen"
+                    :exported-from '("cl-gbdt/tests/docgen") :kind :class
+                    :documentation "A class whose slot carries its own text."
+                    :superclasses '(standard-object))
+                   stream))))
+      (ok (search "- **Superclasses** `standard-object`" text))
+      (ok (not (search "- **Signature**" text))))))
+
+(deftest render-entry-writes-a-slots-section
+  (testing "each slot in the Slots section shows its name, its readers, and its fenced text"
+    (let* ((slots (cl-gbdt/src/docgen/all:type-slots 'fixture-documented-class))
+           (text (with-output-to-string (stream)
+                   (cl-gbdt/src/docgen/all:render-entry
+                    (cl-gbdt/src/docgen/all:make-entry
+                     :symbol 'fixture-documented-class :qualifier "cl-gbdt/tests/docgen"
+                     :exported-from '("cl-gbdt/tests/docgen") :kind :class
+                     :documentation "A class whose slot carries its own text."
+                     :slots slots)
+                    stream))))
+      (ok (search "### Slots" text))
+      (ok (search "#### `tag`" text))
+      (ok (search "- **Readers** `fixture-documented-class-tag`" text))
+      (ok (search "```text" text))
+      (ok (search "What this object is called." text)))))
+
+(deftest render-entry-writes-a-methods-section
+  (testing "each method in the Methods section shows its signature and its fenced docstring"
+    (let* ((method (first (sb-mop:generic-function-methods #'fixture-dispatch)))
+           (signature (cl-gbdt/src/docgen/all:render-method-signature 'fixture-dispatch method))
+           (text (with-output-to-string (stream)
+                   (cl-gbdt/src/docgen/all:render-entry
+                    (cl-gbdt/src/docgen/all:make-entry
+                     :symbol 'fixture-dispatch :qualifier "cl-gbdt/tests/docgen"
+                     :exported-from '("cl-gbdt/tests/docgen") :kind :generic-function
+                     :documentation "Two-argument fixture generic." :lambda-list '(object other)
+                     :methods (list (cons signature "Method on the class fixture.")))
+                    stream))))
+      (ok (search "### Methods" text))
+      (ok (search (format nil "#### `~A`" signature) text))
+      (ok (search "```text" text))
+      (ok (search "Method on the class fixture." text)))))
+
+(deftest render-entry-slots-section-omits-fence-for-an-undocumented-slot
+  (testing "a slot with no documentation contributes no fence at all, not an empty one"
+    (let* ((slots (cl-gbdt/src/docgen/all:type-slots 'fixture-struct))
+           (text (with-output-to-string (stream)
+                   (cl-gbdt/src/docgen/all:render-entry
+                    (cl-gbdt/src/docgen/all:make-entry
+                     :symbol 'fixture-struct :qualifier "cl-gbdt/tests/docgen"
+                     :exported-from '("cl-gbdt/tests/docgen") :kind :structure
+                     :slots slots)
+                    stream))))
+      ;; ENTRY-DOCUMENTATION is left NIL here on purpose, so the only way "```text" could
+      ;; appear in TEXT at all is through the Slots section -- isolating what this test pins.
+      (ok (search "#### `field`" text))
+      (ok (not (search "```text" text))))))

@@ -128,6 +128,11 @@ because the slot's own text belongs on the type and appears there once."
 Explicit rather than inferred: GitHub's heading slugger is not a contract, and the index has to
 link to every entry. Every character outside a-z and 0-9 becomes a hyphen, runs collapse, and
 leading and trailing hyphens go."
+  ;; This mapping is lossy by construction and can collide: (entry-anchor "cl-gbdt" 'foo-bar)
+  ;; and (entry-anchor "cl-gbdt-foo" 'bar) both yield "cl-gbdt-foo-bar", because the hyphen
+  ;; joining QUALIFIER to SYMBOL-NAME reads back identically to a hyphen standing in for some
+  ;; other character. This function does not detect that -- Task 5's check-anchors-unique is
+  ;; the guard, and it signals rather than silently emitting an index with an ambiguous link.
   (let* ((raw (format nil "~A-~A" qualifier (symbol-name symbol)))
          (mapped (map 'string
                       (lambda (character)
