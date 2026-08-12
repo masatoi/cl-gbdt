@@ -1,9 +1,24 @@
 ;;;; protocol.lisp --- LightGBM backend, Layer 2: all thirteen methods of the unified
-;;;; API's protocol, each delegating its C calls to `cl-gbdt/src/lightgbm/native'.
+;;;; API's protocol, each delegating its C calls to `cl-gbdt/src/lightgbm/native', or its
+;;;; whole procedure to `cl-gbdt/src/lightgbm/api', or both.
 ;;;;
 ;;;; The backend's CLOS classes and the `initialize-backend'/`shutdown-backend' pair that
 ;;;; opens and closes the shared library are Layer 1, not Layer 2, and live in
 ;;;; `cl-gbdt/src/lightgbm/classes' -- see that file's header for why.
+;;;;
+;;;; A method here owns the PORTABLE CONTRACT and nothing else: the checks and translations
+;;;; that exist because a unified generic promised a portable argument. The procedure a
+;;;; finished operation performs is Layer 1 and lives in `cl-gbdt/src/lightgbm/api' -- so far
+;;;; `make-dataset', which checks :MISSING and :CATEGORICAL-FEATURES and then calls that
+;;;; file's `create-dataset'; `predict', which checks :MISSING and resolves :BEST and then
+;;;; calls that file's `predict'; and `free-dataset', `update-one-iteration' and
+;;;; `free-booster', whose whole bodies were procedure and delegate entirely. A caller who
+;;;; loaded `cl-gbdt/lightgbm' alone reaches those functions with no method here in the image
+;;;; at all.
+;;;;
+;;;; `train' is the one exception, and deliberately so: it builds its booster itself rather
+;;;; than calling `cl-gbdt/src/lightgbm/api''s `create-booster'. See the comment at its
+;;;; creation call, which measures why.
 
 (uiop:define-package #:cl-gbdt/src/lightgbm/protocol
   (:use #:cl)
@@ -11,18 +26,9 @@
   (:import-from #:cl-gbdt/src/lightgbm/native
                 #:%check-backend-open
                 #:%check-lightgbm-dataset
-                #:%reference-pointer
                 #:%parameter-string
-                #:%data-type
-                #:%create-dataset
-                #:%create-dataset-from-csr
-                #:%set-info-field
-                #:%set-group-field
-                #:%set-feature-names
-                #:%free-dataset-unchecked
                 #:%dataset-num-rows
                 #:%dataset-num-features
-                #:%free-dataset
                 #:%create-booster
                 #:%add-valid-data
                 #:%update-one-iteration
@@ -30,13 +36,7 @@
                 #:%update-one-iteration-custom
                 #:%check-booster-datasets-live
                 #:%free-booster-unchecked
-                #:%free-booster
-                #:%predict-type
                 #:%resolve-num-iteration
-                #:%calc-num-predict
-                #:%predict-ncol
-                #:%predict-for-mat
-                #:%predict-for-csr
                 #:%save-model
                 #:%create-booster-from-modelfile
                 #:%save-model-to-string
@@ -48,10 +48,19 @@
                 #:lightgbm-backend
                 #:lightgbm-dataset
                 #:lightgbm-booster)
+  ;; Layer 1's finished operations. `free-dataset', `update-one-iteration', `free-booster' and
+  ;; `predict' are deliberately absent from this clause: the `:import-from
+  ;; #:cl-gbdt/src/protocol' below names a GENERIC FUNCTION of each of those names, and each
+  ;; pair is two different symbols -- importing both would be a name conflict, not a re-import.
+  ;; The four methods that need the Layer 1 functions name them in full. `create-booster' is
+  ;; absent for an unrelated reason: no method here calls it, `train' building its own booster
+  ;; for the reason its creation call records, and an import naming a symbol nothing uses is
+  ;; one more claim to keep true.
+  (:import-from #:cl-gbdt/src/lightgbm/api
+                #:create-dataset)
   (:import-from #:cl-gbdt/src/backend
                 #:backend-name
-                #:backend-supports-p
-                #:backend-open-p)
+                #:backend-supports-p)
   (:import-from #:cl-gbdt/src/protocol
                 #:make-dataset
                 #:dataset-num-rows
@@ -67,10 +76,8 @@
                 #:evaluation
                 #:free-booster)
   (:import-from #:cl-gbdt/src/handle
-                #:release-handle
                 #:with-pointer-ownership
                 #:handle-live-pointer
-                #:handle-released-p
                 #:handle-backend
                 #:booster-training-set
                 #:booster-validation-sets
@@ -80,21 +87,11 @@
                 #:foreign-call-error
                 #:unsupported-argument
                 #:capability-unavailable)
-  (:import-from #:cl-gbdt/src/data
-                #:with-foreign-matrix
-                #:csr-matrix
-                #:csr-matrix-indptr
-                #:csr-matrix-indices
-                #:csr-matrix-values
-                #:csr-matrix-num-columns
-                #:csr-matrix-num-rows)
   (:import-from #:cl-gbdt/src/config/categorical-features
                 #:categorical-feature-string)
   (:import-from #:cl-gbdt/src/config/objective
                 #:check-objective-result
                 #:objective-parameters)
-  (:import-from #:cl-gbdt/src/config/prediction-shape
-                #:contrib-shape)
   (:import-from #:cl-gbdt/src/parameters
                 #:normalize-parameters)
   (:import-from #:cl-gbdt/src/training/history
@@ -122,8 +119,11 @@
 ;;; Every method below that reaches into lib_lightgbm.so -- all thirteen protocol
 ;;; methods -- wraps its entire body in `with-foreign-float-traps-masked'.
 ;;; `initialize-backend' and `shutdown-backend', which load and unload the library
-;;; itself, are wrapped exactly the same way in `cl-gbdt/src/lightgbm/classes', where
-;;; they live; this rule is the backend's, not this file's.
+;;; itself, are wrapped exactly the same way in `cl-gbdt/src/lightgbm/classes', and every
+;;; Layer 1 operation in `cl-gbdt/src/lightgbm/api' the same way again, where they live;
+;;; this rule is the backend's, not this file's. A method that now delegates its procedure
+;;; to `api' keeps its own wrap regardless: the two nest harmlessly, and dropping it would
+;;; make the wrap depend on what the callee happens to do today.
 ;;; See that macro's docstring in `cl-gbdt/src/foreign' for why, and
 ;;; `cl-gbdt/src/xgboost/protocol''s identical commentary for the concrete case
 ;;; (XGBoost's `multi:softprob' softmax) that surfaced this: LightGBM has not tripped
@@ -134,26 +134,6 @@
 ;;; method below makes goes through `cl-gbdt/src/lightgbm/native', but the mask is
 ;;; established here, around the whole method body, not inside that file -- see its
 ;;; own header.
-
-;;; ---------------------------------------------------------------------------
-;;; The `:sparse-input' gate
-
-(defun %check-sparse-input (backend)
-  "Signal `capability-unavailable' when BACKEND's `:sparse-input' capability reads false.
-
-Policy section 7 requires the operation itself to re-check a capability rather than trusting
-the caller to have asked `backend-supports-p' first, so a caller who never asked gets a typed
-condition instead of a missing-symbol crash. Both operations this backend gates on
-`:sparse-input' call this -- `%dataset-pointer' below, on `make-dataset''s behalf, and
-`predict' -- so the two cannot come to disagree about which capability they name or which
-backend they blame.
-
-Only a `csr-matrix' argument ever reaches this. A dense matrix needs neither
-`LGBM_DatasetCreateFromCSR' nor `LGBM_BoosterPredictForCSR' to exist, and must keep working
-on a library that has neither."
-  (unless (backend-supports-p backend :sparse-input)
-    (error 'capability-unavailable
-           :backend (backend-name backend) :capability :sparse-input)))
 
 ;;; ---------------------------------------------------------------------------
 ;;; The `:missing-value' gate
@@ -178,9 +158,10 @@ and refusing the rest would make `:missing' mean something different here than o
 that takes any of them.
 
 Policy section 7 requires the operation itself to re-check the capability rather than trusting
-the caller to have asked `backend-supports-p' first -- the same rule `%check-sparse-input'
-above follows for `:sparse-input'. Mirrors `cl-gbdt/src/xgboost/protocol''s function of the
-same name, which is the same shape against an answer that is true.
+the caller to have asked `backend-supports-p' first -- the same rule
+`cl-gbdt/src/lightgbm/api''s `%check-sparse-input' follows for `:sparse-input'. Mirrors
+`cl-gbdt/src/xgboost/protocol''s function of the same name, which is the same shape against
+an answer that is true.
 
 Only a non-NIL :MISSING ever reaches this. NIL means the backend's own default -- what every
 caller has always got -- so a caller who passes nothing needs no capability at all, and every
@@ -197,13 +178,13 @@ existing call keeps working unchanged."
 false.
 
 Policy section 7 requires the operation itself to re-check a capability rather than trusting
-the caller to have asked `backend-supports-p' first -- the same rule `%check-sparse-input' and
-`%check-missing-value' above follow for their own. This backend answers true unconditionally,
-`*provided-capabilities*' naming it because the column list is a key in the parameter string
-and so has no C symbol to probe. That does not make the check redundant: it is what keeps the
-two backends' code saying the same thing, so `make-dataset' here and `make-dataset' in
-`cl-gbdt/src/xgboost/protocol' gate the argument identically and neither has to be read to
-know what the other does.
+the caller to have asked `backend-supports-p' first -- the same rule `%check-missing-value'
+above and `cl-gbdt/src/lightgbm/api''s `%check-sparse-input' follow for their own. This
+backend answers true unconditionally, `*provided-capabilities*' naming it because the column
+list is a key in the parameter string and so has no C symbol to probe. That does not make the
+check redundant: it is what keeps the two backends' code saying the same thing, so
+`make-dataset' here and `make-dataset' in `cl-gbdt/src/xgboost/protocol' gate the argument
+identically and neither has to be read to know what the other does.
 
 Written against `backend-supports-p' rather than against this backend's name, like both of
 those, so a caller who overwrites the capability plist is refused here rather than being
@@ -297,9 +278,9 @@ Only a non-NIL OBJECTIVE ever reaches either error: NIL means what every caller 
 got, the library computing its own gradient, so a caller who passes nothing needs no
 capability and cannot fail the type check either.
 Policy section 7 requires the operation itself to re-check rather than trusting the caller to
-have asked `backend-supports-p' first -- the same rule `%check-sparse-input',
-`%check-missing-value' and `%check-categorical-features' above follow for their own. Mirrors
-`cl-gbdt/src/xgboost/protocol''s function of the same name.
+have asked `backend-supports-p' first -- the same rule `%check-missing-value' and
+`%check-categorical-features' above, and `cl-gbdt/src/lightgbm/api''s `%check-sparse-input',
+follow for their own. Mirrors `cl-gbdt/src/xgboost/protocol''s function of the same name.
 
 Unlike `%check-categorical-features', whose answer this backend declares unconditionally in
 `*provided-capabilities*', this one's is PROBED: the four C functions `train''s custom loop
@@ -342,8 +323,8 @@ Only a non-NIL EVALUATION ever reaches any of the three: NIL means what every ca
 always got, the library's own metrics and nothing else, so a caller who passes nothing needs
 no capability and cannot fail either check. Policy section 7 requires the operation itself to
 re-check rather than trusting the caller to have asked `backend-supports-p' first -- the same
-rule `%check-sparse-input', `%check-missing-value', `%check-categorical-features' and
-`%check-custom-objective' above follow for their own. Mirrors
+rule `%check-missing-value', `%check-categorical-features' and `%check-custom-objective'
+above, and `cl-gbdt/src/lightgbm/api''s `%check-sparse-input', follow for their own. Mirrors
 `cl-gbdt/src/xgboost/protocol''s function of the same name, which reads the same capability
 out of that backend's `*provided-capabilities*' rather than out of a probe.
 
@@ -391,38 +372,6 @@ caller passed."
 ;;; ---------------------------------------------------------------------------
 ;;; Datasets
 
-(defun %dataset-pointer (backend matrix parameter-string reference-pointer)
-  "Return two values: the raw LightGBM dataset pointer built from MATRIX, and the name
-of the C function that produced it, for the null-handle check `make-dataset' makes
-afterward.
-
-MATRIX is either a `csr-matrix' -- `LGBM_DatasetCreateFromCSR', through
-`%create-dataset-from-csr' -- or anything `with-foreign-matrix' accepts --
-`LGBM_DatasetCreateFromMat', through `%create-dataset'. PARAMETER-STRING and
-REFERENCE-POINTER reach both entry points identically: neither argument means anything
-different for a sparse matrix than for a dense one, which is exactly what `make-dataset''s
-own contract promises about them.
-
-The `:sparse-input' capability is re-checked on the sparse branch rather than assumed --
-`%check-sparse-input' above, which carries the reasoning.
-
-A `defun', not a second `make-dataset' method specialized on `csr-matrix': `make-dataset'
-dispatches on BACKEND and MATRIX is its second required argument, so a method pair would
-split every one of the shared steps below -- the ownership dance, LABEL, WEIGHT, GROUP,
-FEATURE-NAMES -- across two bodies that must not drift, to vary one call. This keeps that
-whole method single and varies only the call that actually differs."
-  (if (typep matrix 'csr-matrix)
-      (progn
-        (%check-sparse-input backend)
-        (values (%create-dataset-from-csr (csr-matrix-indptr matrix)
-                                          (csr-matrix-indices matrix)
-                                          (csr-matrix-values matrix)
-                                          (csr-matrix-num-columns matrix)
-                                          parameter-string reference-pointer)
-                "LGBM_DatasetCreateFromCSR"))
-      (values (%create-dataset matrix parameter-string reference-pointer)
-              "LGBM_DatasetCreateFromMat")))
-
 (defmethod make-dataset ((backend lightgbm-backend) matrix
                           &key label weight group feature-names parameters reference missing
                             categorical-features)
@@ -433,11 +382,11 @@ See the `make-dataset' generic function's docstring for what each argument means
 including REFERENCE, and for what a `csr-matrix' changes about none of them.
 
 Signals `capability-unavailable' when MATRIX is a `csr-matrix' and this backend's
-`:sparse-input' capability reads false -- see `%dataset-pointer', which checks it. Every
-other argument behaves identically either way: PARAMETERS and REFERENCE reach the sparse
-entry point as the same two C parameters they reach the dense one as, and LABEL, WEIGHT,
-GROUP and FEATURE-NAMES are attached to the finished dataset by the calls below, which
-never see which entry point built it.
+`:sparse-input' capability reads false -- see `cl-gbdt/src/lightgbm/api''s
+`%dataset-pointer', which checks it. Every other argument behaves identically either way:
+PARAMETERS and REFERENCE reach the sparse entry point as the same two C parameters they
+reach the dense one as, and LABEL, WEIGHT, GROUP and FEATURE-NAMES are attached to the
+finished dataset by `create-dataset', which never sees which entry point built it.
 
 Signals `capability-unavailable' naming `:missing-value' for a non-NIL MISSING, whatever the
 value is and whatever form MATRIX takes -- this backend has no C-API route for a missing-value
@@ -482,16 +431,21 @@ when REFERENCE is supplied but is not a `lightgbm-dataset', `released-handle-err
 when it has already been freed, and `backend-not-open' when its backend has since
 been closed -- see `%reference-pointer'.
 
-The raw dataset handle exists in C from the moment the creation call returns, but
-`make-handle' does not take ownership of it until the very end -- attaching LABEL,
-WEIGHT, GROUP or FEATURE-NAMES can each signal first (a wrong-length `:label' is the
-commonest way). `with-pointer-ownership' spans exactly that gap: the pointer is owned by
-nobody inside its body, and any exit that has not called TAKE-OWNERSHIP frees the raw
-dataset here instead of orphaning it.
-
 Signals `backend-not-open' before any of that when BACKEND is not open -- see
-`%check-backend-open'."
+`%check-backend-open'.
+
+The procedure itself is Layer 1 and lives in `cl-gbdt/src/lightgbm/api''s `create-dataset':
+building the pointer, attaching LABEL, WEIGHT, GROUP and FEATURE-NAMES in that order, and the
+ownership dance that frees the raw dataset when one of those signals. What is left here is
+the portable contract -- the three checks above, and rendering CATEGORICAL-FEATURES into the
+one parameter-string key this backend states it as. Everything the paragraphs above promise
+about a null handle, about REFERENCE and about the raw handle's ownership is that function's
+doing; see its own docstring."
   (with-foreign-float-traps-masked
+    ;; Checked here as well as inside `create-dataset', which cannot omit it either: this
+    ;; method's contract is that a closed BACKEND is refused BEFORE the argument checks
+    ;; below, so a caller who closed the backend and also passed a bad :CATEGORICAL-FEATURES
+    ;; index still gets `backend-not-open' rather than `unsupported-argument'.
     (%check-backend-open backend)
     (when missing
       (%check-missing-value backend))
@@ -507,31 +461,16 @@ Signals `backend-not-open' before any of that when BACKEND is not open -- see
     ;; with nothing yet to free, and the string is built once for whichever creation entry
     ;; point MATRIX's own form selects. The renderer takes the caller's MATRIX, dense or
     ;; `csr-matrix', which is what makes both backends range-check the same column count.
+    ;; `create-dataset' below is handed the finished plist: the key is this backend's own
+    ;; vocabulary by then, and Layer 1 neither knows nor translates it.
     (let* ((categorical-string (categorical-feature-string categorical-features matrix
                                                            (backend-name backend)))
-           (reference-pointer (%reference-pointer backend reference 'lightgbm-dataset))
-           (parameter-string
-             (%parameter-string
-              (if categorical-string
-                  (append parameters (list :categorical-feature categorical-string))
-                  parameters))))
-      (multiple-value-bind (dataset-pointer function-name)
-          (%dataset-pointer backend matrix parameter-string reference-pointer)
-        (when (cffi:null-pointer-p dataset-pointer)
-          (error 'foreign-call-error
-                 :function-name function-name
-                 :code 0
-                 :message "reported success but returned a null dataset handle"))
-        (with-pointer-ownership (dataset-pointer #'%free-dataset-unchecked take-ownership)
-          (when label
-            (%set-info-field dataset-pointer "label" label))
-          (when weight
-            (%set-info-field dataset-pointer "weight" weight))
-          (when group
-            (%set-group-field dataset-pointer group))
-          (when feature-names
-            (%set-feature-names dataset-pointer feature-names))
-          (take-ownership 'lightgbm-dataset backend :dataset))))))
+           (parameters (if categorical-string
+                           (append parameters (list :categorical-feature categorical-string))
+                           parameters)))
+      (create-dataset backend matrix :label label :weight weight :group group
+                                     :feature-names feature-names
+                                     :parameters parameters :reference reference))))
 
 (defmethod dataset-num-rows ((dataset lightgbm-dataset))
   "Return DATASET's row count, read via `LGBM_DatasetGetNumData'."
@@ -546,24 +485,26 @@ Signals `backend-not-open' before any of that when BACKEND is not open -- see
 (defmethod free-dataset ((dataset lightgbm-dataset))
   "Free DATASET via `LGBM_DatasetFree'. Does nothing if it was already freed.
 
-Unlike every other operation in this file, this does not go through
+Unlike every other operation in this file -- `free-booster' below excepted, which
+takes this same path for this same reason -- this does not go through
 `handle-live-pointer' and so does not signal `backend-not-open' when DATASET's
 backend has already been closed. `free-dataset' runs from `with-dataset''s
 `unwind-protect' cleanup form, and a non-local exit is exactly when that cleanup
 runs; signalling there would replace whatever condition is already unwinding the
-stack instead of letting it propagate. So when the backend is closed, the handle is
-instead marked released without calling `LGBM_DatasetFree' -- the shared library may
-no longer be mapped into the process, so that call cannot be trusted not to crash --
-and a `warn' reports the foreign memory as leaked, since it is genuinely
-unreclaimable at that point."
+stack instead of letting it propagate. It `warn's instead, the foreign memory being
+genuinely unreclaimable by then.
+
+This method's whole body was procedure -- there was no portable argument here to check or
+translate -- so all of it is `cl-gbdt/src/lightgbm/api''s `free-dataset', which is where the
+closed-backend branch and the measurements behind it now live."
   (with-foreign-float-traps-masked
-    (if (backend-open-p (handle-backend dataset))
-        (release-handle dataset (lambda (pointer) (%free-dataset pointer)))
-        (let ((already-released (handle-released-p dataset)))
-          (release-handle dataset (lambda (pointer) (declare (ignore pointer))))
-          (unless already-released
-            (warn "Freeing a LightGBM dataset after its backend was closed: the foreign ~
-                   dataset was not freed and its memory is leaked."))))))
+    ;; Named in full, not imported: `cl-gbdt/src/protocol''s `free-dataset', the generic
+    ;; this method is defined on, is a DIFFERENT symbol of the same name, and this file
+    ;; imports that one. The `with-foreign-float-traps-masked' wrap stays even though the
+    ;; callee establishes its own -- the masks nest harmlessly, and every `defmethod' in
+    ;; this file carries one by the rule the header states, checked by
+    ;; `tools/ci/check-float-traps.lisp'.
+    (cl-gbdt/src/lightgbm/api:free-dataset dataset)))
 
 ;;; ---------------------------------------------------------------------------
 ;;; Training
@@ -953,6 +894,30 @@ Signals `backend-not-open' before any of that when BACKEND is not open -- see
            ;; it is also what makes an early-stopped run report its true, shortened length
            ;; with nothing further to do here.
            (completed-rounds 0))
+      ;; Built here rather than by `cl-gbdt/src/lightgbm/api''s `create-booster', which is the
+      ;; Layer 1 function for exactly this. `train' is the ONE method in this file whose Layer
+      ;; 1 counterpart exists and is not called: five of the thirteen delegate their whole
+      ;; procedure -- `make-dataset', `predict', `update-one-iteration', `free-dataset' and
+      ;; `free-booster' -- and the other seven have no counterpart to delegate to at all.
+      ;; `booster-best-iteration' is what holds this one back, and it is a barrier rather than
+      ;; a preference: a `:reader'-only slot (src/handle.lisp) whose sole writer is
+      ;; `make-handle''s :BEST-ITERATION initarg, at construction, while the value comes from
+      ;; the watcher AFTER the loop -- so this method must still own the raw pointer when the
+      ;; loop ends, and `create-booster' builds its handle before the first iteration. Giving
+      ;; the slot a writer to merge the two is not this file's to do.
+      ;;
+      ;; A second reason stood here and is DEMOTED to a preference: that this ownership form
+      ;; is what frees the raw booster when the loop signals, where a handle built up front
+      ;; would be left unreferenced with a finalizer that only warns. True of the code as
+      ;; written, but a `train' that built the handle first could free it from an
+      ;; `unwind-protect' just as well, so it argues for the shape this method already has
+      ;; rather than against the merge. It also came with a claim about coverage that does not
+      ;; hold: the two tests named after leaking --
+      ;; `lightgbm-api-make-dataset-wrong-length-label-signals-without-leaking' and its
+      ;; XGBoost twin -- are about a raw DATASET pointer, not a booster, and each asserts only
+      ;; that `make-dataset' signals. A leaked raw C pointer has no Lisp object or finalizer
+      ;; whose absence a test could observe, which is exactly what the LightGBM one's own
+      ;; commentary says.
       (let ((booster-pointer
               (%create-booster train-data-pointer
                                (%parameter-string
@@ -1010,101 +975,53 @@ Signals `backend-not-open' before any of that when BACKEND is not open -- see
 (defmethod update-one-iteration ((booster lightgbm-booster))
   "Advance BOOSTER by one boosting iteration via `LGBM_BoosterUpdateOneIter'.
 
-Returns false once an iteration produces no further split, per the generic
-function's contract. Signals `released-handle-error' when BOOSTER's training set,
+Returns false when the iteration just run produced no further split, per the generic
+function's contract -- about that call, not a latch for the rest of the run; see
+`cl-gbdt/src/lightgbm/api''s function of the same name, which spells that
+distinction out. Signals `released-handle-error' when BOOSTER's training set,
 or any of its validation sets, has already been freed -- see
-`%check-booster-datasets-live'."
+`%check-booster-datasets-live'.
+
+This method's whole body was procedure -- there was no portable argument here to check or
+translate -- so all of it is `cl-gbdt/src/lightgbm/api''s `update-one-iteration', which is
+where the liveness check and the `produced_empty_tree' inversion now live."
   (with-foreign-float-traps-masked
-    (%check-booster-datasets-live booster)
-    (zerop (%update-one-iteration (handle-live-pointer booster)))))
+    ;; Named in full, not imported: `cl-gbdt/src/protocol''s `update-one-iteration', the
+    ;; generic this method is defined on, is a DIFFERENT symbol of the same name, and this
+    ;; file imports that one. Not recursion. The `with-foreign-float-traps-masked' wrap stays
+    ;; even though the callee establishes its own, for the reason `free-dataset' above gives.
+    (cl-gbdt/src/lightgbm/api:update-one-iteration booster)))
 
 (defmethod free-booster ((booster lightgbm-booster))
   "Free BOOSTER via `LGBM_BoosterFree'. Does nothing if it was already freed.
 
 See `free-dataset''s docstring for why this does not signal `backend-not-open' when
 BOOSTER's backend has already been closed -- the same `with-booster' cleanup-form
-reasoning applies here."
+reasoning applies here.
+
+This method's whole body was procedure too, and is `cl-gbdt/src/lightgbm/api''s
+`free-booster' entirely, where the closed-backend branch now lives beside the identical one
+`free-dataset' takes."
   (with-foreign-float-traps-masked
-    (if (backend-open-p (handle-backend booster))
-        (release-handle booster (lambda (pointer) (%free-booster pointer)))
-        (let ((already-released (handle-released-p booster)))
-          (release-handle booster (lambda (pointer) (declare (ignore pointer))))
-          (unless already-released
-            (warn "Freeing a LightGBM booster after its backend was closed: the foreign ~
-                   booster was not freed and its memory is leaked."))))))
+    ;; Named in full, not imported, and not recursion -- see `update-one-iteration' above,
+    ;; which faces the same doubled name for the same reason.
+    (cl-gbdt/src/lightgbm/api:free-booster booster)))
 
 ;;; ---------------------------------------------------------------------------
 ;;; Inference
-
-(defun %prediction-shape (kind result element-count nrow booster-pointer)
-  "Return the shape `predict' states for its KIND result -- a list of integers in
-`array-dimensions' order -- or NIL where this backend states none.
-
-RESULT is the array `predict' is about to return, ELEMENT-COUNT the count
-`LGBM_BoosterCalcNumPredict' gave for it, NROW the row count whichever entry point just ran was
-handed, and BOOSTER-POINTER the booster it ran against.
-
-No SHAPE is read back from the library here, because there is no shape to read: this backend's
-prediction entry points report an element count and no axes at all, where XGBoost's write an
-`out_shape'/`out_dim' pair `cl-gbdt/src/xgboost/protocol''s `predict' hands back verbatim. Every
-value below is DERIVED, and each KIND gets only what can be derived from what is known.
-
-That is not to say this function makes no foreign call. The `:contrib' arm calls
-`%booster-num-features' -- `LGBM_BoosterGetNumFeature' -- for the feature count it derives a
-width from. That is the one library call this function makes, and it runs inside `predict''s
-`with-foreign-float-traps-masked' body wrap, which is the whole of this function's trap
-protection: `%prediction-shape' is `%'-prefixed and named by no `:export' clause, so
-`tools/ci/check-float-traps.lisp' does not police it -- that check holds `defun's the backend's
-PUBLIC package exports, read from the second `define-package' in `src/lightgbm/all.lisp'. So the
-constraint any future change has to preserve is stated here and nowhere else: a second library
-call added below, or a caller reaching this function from outside an already-masked dynamic
-extent, must establish the mask itself, and nothing in CI will notice if it does not.
-
-What each KIND gets:
-
-  `:normal', `:raw'  RESULT's own `array-dimensions'. One column per output group is the whole
-                     of what these hold and the array already says so, so there is nothing
-                     further to state.
-  `:contrib'         `contrib-shape''s (NROW classes width), width being one contribution per
-                     feature plus the bias and classes what is left of ELEMENT-COUNT once the
-                     other two divide out. That function answers NIL, never signalling and never
-                     guessing, for any of the FOUR cases its own docstring enumerates: NROW zero
-                     or negative, a negative feature count, a division leaving a remainder, and
-                     an exact division whose quotient is zero. The last two are its way of
-                     saying the layout is not the one this arithmetic describes; the first two,
-                     that the inputs never described a layout at all. Read that docstring rather
-                     than this summary -- the contract is the four cases, not just the division.
-                     The CLASS-MAJOR ordering the shape implies does not follow from
-                     the count, which divides identically with the last two axes swapped: it is
-                     a measured claim, held by
-                     `lightgbm-s-derived-contrib-shape-is-the-one-the-numbers-support' in
-                     tests/functional/prediction-shape.lisp, whose feature-major arm is the
-                     control that makes it a measurement rather than a restatement.
-  `:leaf-index'      NIL. ELEMENT-COUNT divides by iterations and output groups much as
-                     `:contrib''s divides by output groups and width, but this project has no
-                     property that tells the resulting orderings apart -- a leaf index is an
-                     opaque identifier, summing to nothing and agreeing with nothing -- and an
-                     ordering asserted without one is a guess. NIL means what it means
-                     everywhere `predict''s second value appears: no shape is stated. It is not
-                     an error and nothing signals.
-
-NROW rather than RESULT's first dimension, though the two are equal, because it is the count
-the entry point that just ran was handed and the one ELEMENT-COUNT was computed against --
-which for a `csr-matrix' is `csr-matrix-num-rows' and not any dimension of MATRIX."
-  (ecase kind
-    ((:normal :raw) (array-dimensions result))
-    (:contrib (contrib-shape element-count nrow (%booster-num-features booster-pointer)))
-    (:leaf-index nil)))
 
 (defmethod predict ((booster lightgbm-booster) matrix
                     &key (kind :normal) num-iteration missing)
   "Predict on MATRIX with BOOSTER -- a dense matrix via `LGBM_BoosterPredictForMat', a
 `csr-matrix' via `LGBM_BoosterPredictForCSR'.
 
-KIND and NUM-ITERATION are as the `predict' generic function documents, NUM-ITERATION's
-:BEST resolved by `%resolve-best-num-iteration' before `%resolve-num-iteration' ever
-sees it. Predictions start from iteration 0 -- the protocol exposes no start-iteration
-override.
+KIND and NUM-ITERATION are as the `predict' generic function documents. NUM-ITERATION's
+:BEST is resolved HERE, by `%resolve-best-num-iteration', and the integer it produces is what
+reaches the procedure: `booster-best-iteration' is written by `train' and by nothing else, so
+:BEST is a Layer 2 concept and `cl-gbdt/src/lightgbm/api''s `predict' takes an integer or NIL,
+refusing the keyword itself with `unsupported-argument' -- see its docstring, which says so
+from the other side. Predictions start from iteration 0 -- the protocol exposes no
+start-iteration override.
 
 Signals `capability-unavailable' naming `:missing-value' for a non-NIL MISSING, whatever the
 value is and whatever form MATRIX takes -- this backend has no C-API route for a
@@ -1116,101 +1033,63 @@ no check: every prediction that names no sentinel behaves exactly as it did befo
 argument existed.
 
 Signals `capability-unavailable' when MATRIX is a `csr-matrix' and this backend's
-`:sparse-input' capability reads false -- see `%check-sparse-input', which checks it before
-any foreign call. Everything else means exactly what it means for a dense matrix: both
-entry points take the same PREDICT-TYPE, the same START-ITERATION/NUM-ITERATION pair and
-the same parameter string, and both fill the same buffer in the same row-major order, so
-KIND and NUM-ITERATION are honoured identically on either path -- all four KINDs included,
-unlike `cl-gbdt/src/xgboost/protocol''s `predict', whose sparse entry point is XGBoost's
-inplace prediction and covers only two of them. A `csr-matrix' whose NUM-COLUMNS is not
-BOOSTER's own feature count is LightGBM's own mistake to catch, and it does, with a clean
-nonzero return this reports as `foreign-call-error' (\"The number of features in data (N) is
-not the same as it was in training data (M).\"); nothing here pre-empts that check.
+`:sparse-input' capability reads false -- see `cl-gbdt/src/lightgbm/api''s
+`%check-sparse-input', which checks it before any foreign call. Everything else means exactly
+what it means for a dense matrix, `csr-matrix' or not: KIND and NUM-ITERATION are honoured
+identically on either path -- all four KINDs included, unlike `cl-gbdt/src/xgboost/api''s
+`predict', whose sparse entry point is XGBoost's inplace prediction and covers only two of
+them.
 
-The output buffer's element count comes from `LGBM_BoosterCalcNumPredict', not
-from the row count alone: the row count is only correct for a single-class
-objective. That count is read the same way for either matrix kind -- it depends on
-BOOSTER, the row count, KIND and NUM-ITERATION, and on nothing about how the rows are
-laid out. The second array dimension is that count divided by the row count,
-guarded by `%predict-ncol'. Whichever entry point ran also writes its own
-element count back through OUT-LEN; this is asserted equal to
-`LGBM_BoosterCalcNumPredict''s count rather than trusted silently, since the
-buffer was sized from the latter and a mismatch would mean either an
-under-filled result or a write past the allocated buffer going unnoticed.
+Returns the result array and, as a second value, the SHAPE this backend states for it -- a
+list of integers in `array-dimensions' order, or NIL where it states none. Nothing here
+reports axes the way XGBoost's `out_shape'/`out_dim' pair does, so that value is DERIVED
+rather than read back: `:normal' and `:raw' get the result array's own dimensions, `:contrib'
+the three axes `contrib-shape' divides the element count into (NIL for any of the four cases
+that function's own docstring enumerates), and `:leaf-index' NIL. `%prediction-shape', beside
+the procedure in `cl-gbdt/src/lightgbm/api', is where that happens and carries the
+measurements. This backend declares `:prediction-shape' in `*provided-capabilities*' to say
+the mechanism is here; nothing re-checks that declaration, there being no argument to refuse.
 
-No prediction call here ever states the result's SHAPE, and that count is the whole of what one
-reports bearing on it: `LGBM_BoosterCalcNumPredict' returns a number and nothing else, and
-neither entry point reports axes the way XGBoost's `out_shape'/`out_dim' pair does -- so this
-method's SECOND value is DERIVED rather than reported. `%prediction-shape' above is where that
-happens, from the element count, the row count and BOOSTER's own feature count -- the last read
-by a further library call, `LGBM_BoosterGetNumFeature', which runs inside this method's own
-`with-foreign-float-traps-masked' body wrap like every other call it makes. It states a shape
-only for the KINDs those three determine one for: `:normal' and `:raw' get the result array's
-own dimensions, `:contrib' the three axes `contrib-shape' divides the count into (NIL for any
-of the four cases that function's own docstring enumerates), and `:leaf-index' NIL. This
-backend declares `:prediction-shape' in `*provided-capabilities*' to say the mechanism is here;
-nothing re-checks that declaration, there being no argument to refuse. The first value is
-untouched by all of it -- same dimensions, same elements, every KIND, either entry point.
+The procedure itself is Layer 1 and lives in `cl-gbdt/src/lightgbm/api''s `predict': the
+choice of entry point, the buffer sized from `LGBM_BoosterCalcNumPredict', the OUT-LEN
+assertion, the copy-out and the derived shape, together with the `:sparse-input' gate and the
+deliberate absence of any NaN or infinity scan over the result. Everything the paragraphs
+above promise about those is that function's doing; see its own docstring. What is left here
+is the portable contract: the :MISSING gate this backend answers with a refusal, and
+resolving :BEST.
 
-Deliberately does not scan the result for NaN or infinity -- see
-`cl-gbdt/src/xgboost/protocol''s `predict' for the identical reasoning, which
-applies here unchanged: `with-foreign-float-traps-masked' restores the C
-calling convention around this call, it does not and should not decide what
-counts as a valid model output."
+Refusing a KIND this backend has no prediction type for moved BELOW BOTH of those, and is
+the one thing about this method a caller can observe changing: `%predict-type''s `ecase'
+now runs inside the procedure rather than in the same `let' that read the pointer, so a
+call wrong in two ways at once is answered by whichever check still runs first. Measured
+through `cl-gbdt:predict' against the vendored library, on a booster trained without
+:EARLY-STOPPING and so with no best iteration: a bad KIND together with a non-NIL :MISSING
+signalled `sb-kernel:case-failure' before the split and signals `capability-unavailable'
+now; a bad KIND together with `:num-iteration :best' signalled `sb-kernel:case-failure' and
+signals `unsupported-argument'. A bad KIND alone is `sb-kernel:case-failure' either way.
+Both changes put a typed `cl-gbdt' condition where an untyped one used to escape, and the
+old order could not be restored without calling `%predict-type' here purely for effect,
+duplicating a check the procedure already makes."
   (with-foreign-float-traps-masked
-    (let ((pointer (handle-live-pointer booster))
-          (predict-type (%predict-type kind))
-          (iteration-count
-            (%resolve-num-iteration
-             (%resolve-best-num-iteration booster num-iteration "predict's :num-iteration"))))
+    ;; Read and discarded, and not redundant with the same call inside the procedure: this
+    ;; method's contract is that a freed BOOSTER, or one whose backend has since been closed,
+    ;; is refused BEFORE the two checks below -- so a caller who freed the booster and also
+    ;; passed :MISSING, or :BEST to a booster that has no best iteration, still gets
+    ;; `released-handle-error' rather than `capability-unavailable' or `unsupported-argument',
+    ;; exactly as they did when this method held the whole procedure and read the pointer
+    ;; first. `make-dataset' above keeps its own `%check-backend-open' for the same reason.
+    (handle-live-pointer booster)
+    ;; Resolved ABOVE the :MISSING gate, not in the delegation's argument list, because that is
+    ;; where the old body resolved it: `%resolve-best-num-iteration' sat in the same `let' that
+    ;; read the pointer, and the `when' came after. So a booster with no best iteration still
+    ;; reports THAT, rather than the `capability-unavailable' :MISSING always signals here.
+    (let ((resolved (%resolve-best-num-iteration booster num-iteration
+                                                 "predict's :num-iteration")))
       (when missing
         (%check-missing-value (handle-backend booster)))
-      ;; The buffer sizing, the OUT-LEN check and the copy-out are identical for both entry
-      ;; points and live here once; CALL is the only thing that differs between them, which
-      ;; is exactly how much of this method a `csr-matrix' changes.
-      (flet ((predict-into (nrow function-name call)
-               (let* ((element-count
-                        (%calc-num-predict pointer nrow predict-type 0 iteration-count))
-                      (ncol-result (%predict-ncol element-count nrow))
-                      (result (make-array (list nrow ncol-result)
-                                          :element-type 'double-float)))
-                 (cffi:with-foreign-string (parameter-cstring "")
-                   (cffi:with-foreign-objects ((out-len :int64)
-                                               (buffer :double element-count))
-                     (funcall call parameter-cstring out-len buffer)
-                     (assert (= element-count (cffi:mem-ref out-len :int64)) ()
-                             "~A wrote ~D elements, expected ~D from ~
-                              LGBM_BoosterCalcNumPredict"
-                             function-name (cffi:mem-ref out-len :int64) element-count)
-                     (dotimes (row nrow)
-                       (dotimes (col ncol-result)
-                         (setf (aref result row col)
-                               (cffi:mem-aref buffer :double
-                                              (+ (* row ncol-result) col)))))))
-                 ;; The second value. Derived from ELEMENT-COUNT and NROW, both of which this
-                 ;; method already held for its buffer sizing, plus BOOSTER's own feature
-                 ;; count -- nothing about how MATRIX is laid out enters into it, which is why
-                 ;; one call here serves both entry points. See `%prediction-shape' above.
-                 (values result (%prediction-shape kind result element-count nrow pointer)))))
-        (if (typep matrix 'csr-matrix)
-            (progn
-              (%check-sparse-input (handle-backend booster))
-              (predict-into (csr-matrix-num-rows matrix) "LGBM_BoosterPredictForCSR"
-                            (lambda (parameter-cstring out-len buffer)
-                              (%predict-for-csr pointer
-                                                (csr-matrix-indptr matrix)
-                                                (csr-matrix-indices matrix)
-                                                (csr-matrix-values matrix)
-                                                (csr-matrix-num-columns matrix)
-                                                predict-type iteration-count
-                                                parameter-cstring out-len buffer))))
-            (with-foreign-matrix (data-pointer nrow ncol element-type) matrix
-              (predict-into nrow "LGBM_BoosterPredictForMat"
-                            (lambda (parameter-cstring out-len buffer)
-                              (%predict-for-mat pointer data-pointer
-                                                (%data-type element-type) nrow ncol
-                                                predict-type iteration-count
-                                                parameter-cstring out-len buffer)))))))))
+      ;; Named in full, not imported, and not recursion -- see `update-one-iteration' above,
+      ;; which faces the same doubled name for the same reason.
+      (cl-gbdt/src/lightgbm/api:predict booster matrix :kind kind :num-iteration resolved))))
 
 ;;; ---------------------------------------------------------------------------
 ;;; Persistence

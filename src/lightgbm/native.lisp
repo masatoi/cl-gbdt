@@ -189,7 +189,13 @@ through the way `handle-live-pointer' does for every other operation in this
 file, since none exists yet. Each of them calls this first, before touching
 any foreign function, so a backend a caller has closed (or never opened) is
 never reached by `LGBM_DatasetCreateFromMat', `LGBM_BoosterCreate' or
-`LGBM_BoosterCreateFromModelfile' with a library that may no longer be mapped."
+`LGBM_BoosterCreateFromModelfile' with a library that may no longer be mapped.
+
+`cl-gbdt/src/lightgbm/api''s `create-dataset' and `create-booster' call it as
+well, for the same reason and ahead of the first two of those three C functions:
+they are Layer 1 entry points a caller reaches without going through
+`make-dataset' or `train' at all, so neither may inherit the check its Layer 2
+counterpart makes."
   (unless (backend-open-p backend)
     (error 'backend-not-open :backend (backend-name backend))))
 
@@ -203,19 +209,21 @@ DATASET-CLASS is a parameter, not a symbol named directly in this file, because
 this file cannot depend on `cl-gbdt/src/lightgbm/classes' -- that package reads
 this one's `*required-symbols*' and library-discovery parameters, so the edge
 already runs the other way and naming it here would close a cycle. Each caller --
-`%reference-pointer', and `cl-gbdt/src/lightgbm/protocol''s
-`train' at both of its own call sites -- passes `'lightgbm-dataset' explicitly
-instead. Mirrors `cl-gbdt/src/xgboost/native''s `%check-xgboost-dataset', which
-hit the identical constraint during that backend's own Phase 1 split.
+`%reference-pointer', `cl-gbdt/src/lightgbm/protocol''s `train' at both of its
+own call sites, and `cl-gbdt/src/lightgbm/api''s `create-booster' at both of its
+own -- passes `'lightgbm-dataset' explicitly instead. Mirrors
+`cl-gbdt/src/xgboost/native''s `%check-xgboost-dataset', which hit the identical
+constraint during that backend's own Phase 1 split.
 
-Every caller-supplied dataset argument in this file -- `make-dataset''s
-:REFERENCE, `train''s DATASET, and each entry of `train''s :VALID-SETS -- must
-pass through here before reaching a foreign call that expects a
-`DatasetHandle'. `handle-live-pointer' alone is not enough: it only guards
-against a released handle or a closed backend, and happily returns *any*
-handle's pointer regardless of kind, including a booster's -- `make-dataset'
-and `train' both dispatch on the backend, not on the handle, so unlike
-`dataset-num-rows' or `free-dataset' there is no CLOS specializer already
+Every caller-supplied dataset argument that reaches this file -- `make-dataset''s
+:REFERENCE, `train''s DATASET and each entry of its :VALID-SETS, and the same two
+arguments of `create-booster' -- must pass through here before reaching a foreign
+call that expects a `DatasetHandle'. `handle-live-pointer' alone is not enough:
+it only guards against a released handle or a closed backend, and happily returns
+*any* handle's pointer regardless of kind, including a booster's --
+`make-dataset' and `train' dispatch on the backend and `create-booster', a
+`defun', on nothing at all, so none of the three dispatches on the handle and
+unlike `dataset-num-rows' or `free-dataset' there is no CLOS specializer already
 ruling out the wrong kind of handle. A booster's own pointer reaching
 `LGBM_BoosterCreate' as its training-set argument is exactly the corruption
 this check exists to prevent.
@@ -445,9 +453,12 @@ its raw pointer. PARAMETER-STRING is `%parameter-string''s space-separated
 \"key=value\" form; REFERENCE-POINTER is `%reference-pointer''s result -- a
 `DatasetHandle' to align MATRIX's bin mapper to, or a null pointer for none.
 
-Extracted so `cl-gbdt/src/lightgbm/protocol''s `make-dataset' delegates the call
-itself to this file instead of naming `lgbm-dataset-create-from-mat' directly --
-see policy section 3's Layer 2 delegating to Layer 1. `make-dataset' still owns
+Extracted so `cl-gbdt/src/lightgbm/api''s `create-dataset' delegates the call
+itself to this file instead of naming `lgbm-dataset-create-from-mat' directly.
+Both files are policy section 3's Layer 1, so this is one Layer 1 file calling
+another rather than Layer 2 reaching down: the extraction predates `api.lisp'
+and was made for `cl-gbdt/src/lightgbm/protocol''s `make-dataset', which held
+this procedure until `create-dataset' took it over. `create-dataset' still owns
 checking the returned pointer for null afterward. Mirrors
 `cl-gbdt/src/xgboost/native''s `%create-dmatrix': MATRIX's element type decides
 LightGBM's `C_API_DTYPE_*' constant via `%data-type', the way `%create-dmatrix'
@@ -524,8 +535,8 @@ no such tag at all -- it is a plain `const int32_t*' -- which is why only two ar
 
 NINDPTR is INDPTR's own length, one more than the row count, and NELEM the number of stored
 elements, which `csr-matrix' guarantees equals both VALUES' length and INDPTR's last entry.
-`make-dataset' still owns checking the returned pointer for null afterward, as it does for
-the dense path."
+`cl-gbdt/src/lightgbm/api''s `create-dataset' still owns checking the returned pointer for
+null afterward, as it does for the dense path."
   (%call-with-pinned-csr
    indptr indices values
    (lambda (indptr-pointer indices-pointer values-pointer)
@@ -627,11 +638,13 @@ own backend has since closed."
   "Free the dataset at POINTER via `LGBM_DatasetFree' without checking its
 returned status.
 
-`make-dataset' calls this from its cleanup path when ownership of a partially
-built dataset never transferred to a handle -- a signal already unwinding the
-stack there must not be replaced by a status-check failure from this
-best-effort free. Mirrors `cl-gbdt/src/xgboost/native''s
-`%free-dmatrix-unchecked'."
+`cl-gbdt/src/lightgbm/api''s `create-dataset' calls this from its cleanup path
+when ownership of a partially built dataset never transferred to a handle -- a
+signal already unwinding the stack there must not be replaced by a status-check
+failure from this best-effort free. It is the only caller: `make-dataset' held
+that cleanup path until `create-dataset' took the whole procedure over, and now
+reaches this function through it rather than naming it at all. Mirrors
+`cl-gbdt/src/xgboost/native''s `%free-dmatrix-unchecked'."
   (lgbm-dataset-free pointer))
 
 (defun %dataset-num-rows (pointer)
@@ -651,8 +664,11 @@ best-effort free. Mirrors `cl-gbdt/src/xgboost/native''s
   "Free the dataset at POINTER via `LGBM_DatasetFree', signalling
 `foreign-call-error' when the library reports failure.
 
-Extracted so `cl-gbdt/src/lightgbm/protocol''s `free-dataset' delegates the call
-itself to this file instead of naming `lgbm-dataset-free' directly."
+Extracted so `cl-gbdt/src/lightgbm/api''s `free-dataset' delegates the call
+itself to this file instead of naming `lgbm-dataset-free' directly. That was
+`cl-gbdt/src/lightgbm/protocol''s `free-dataset' when the extraction was made;
+the method still bears the name, but its body is now the Layer 1 function of the
+same name, which is what passes this to `release-handle'."
   (check-lgbm (lgbm-dataset-free pointer) "LGBM_DatasetFree"))
 
 ;;; ---------------------------------------------------------------------------
@@ -663,9 +679,9 @@ itself to this file instead of naming `lgbm-dataset-free' directly."
 pointer.
 
 Signals `foreign-call-error' when creation reports success but writes a null
-handle -- the same guard `make-dataset' applies to `LGBM_DatasetCreateFromMat',
-for the same reason: every later call through this handle would otherwise
-dereference it blindly."
+handle -- the same guard `cl-gbdt/src/lightgbm/api''s `create-dataset' applies
+to `LGBM_DatasetCreateFromMat', for the same reason: every later call through
+this handle would otherwise dereference it blindly."
   (let ((booster-pointer
           (cffi:with-foreign-string (parameter-cstring parameter-string)
             (cffi:with-foreign-object (out :pointer)
@@ -683,13 +699,15 @@ dereference it blindly."
   "Attach each pointer in VALID-SET-POINTERS to BOOSTER-POINTER via
 `LGBM_BoosterAddValidData'.
 
-`train' has already run every entry of its VALID-SETS through
-`%check-lightgbm-dataset' -- type-checked and read to a live pointer -- before
-this is ever called, so this function makes no check of its own: it exists
-only to keep the foreign-call loop separate from that validation.
-`LGBM_BoosterAddValidData' dereferences each pointer directly, so a stale or
-wrong-kind one reaching this point is a segfault, not a catchable condition,
-which is exactly what the caller's validation pass exists to rule out first."
+Both callers -- `cl-gbdt/src/lightgbm/protocol''s `train' and
+`cl-gbdt/src/lightgbm/api''s `create-booster' -- have already run every entry
+of their own VALID-SETS through `%check-lightgbm-dataset', type-checked and
+read to a live pointer, before this is ever called, so this function makes no
+check of its own: it exists only to keep the foreign-call loop separate from
+that validation. `LGBM_BoosterAddValidData' dereferences each pointer directly,
+so a stale or wrong-kind one reaching this point is a segfault, not a catchable
+condition, which is exactly what the caller's validation pass exists to rule
+out first."
   (dolist (pointer valid-set-pointers)
     (check-lgbm (lgbm-booster-add-valid-data booster-pointer pointer)
                 "LGBM_BoosterAddValidData")))
@@ -839,10 +857,11 @@ no VALID-SETS."
   "Free the booster at POINTER via `LGBM_BoosterFree' without checking its
 returned status.
 
-`train' and `load-model' each call this from their cleanup path when ownership
-of a partially built booster never transferred to a handle -- see
-`%free-dataset-unchecked''s docstring for why a signal already unwinding the
-stack there must not be replaced by a status-check failure from this
+`cl-gbdt/src/lightgbm/protocol''s `train' and `load-model', and
+`cl-gbdt/src/lightgbm/api''s `create-booster', each call this from their cleanup
+path when ownership of a partially built booster never transferred to a handle
+-- see `%free-dataset-unchecked''s docstring for why a signal already unwinding
+the stack there must not be replaced by a status-check failure from this
 best-effort free."
   (lgbm-booster-free pointer))
 
@@ -850,8 +869,11 @@ best-effort free."
   "Free the booster at POINTER via `LGBM_BoosterFree', signalling
 `foreign-call-error' when the library reports failure.
 
-Extracted so `cl-gbdt/src/lightgbm/protocol''s `free-booster' delegates the call
-itself to this file instead of naming `lgbm-booster-free' directly."
+Extracted so `cl-gbdt/src/lightgbm/api''s `free-booster' delegates the call
+itself to this file instead of naming `lgbm-booster-free' directly -- the same
+move `%free-dataset' above describes, and the same relocation since: the
+protocol method of that name now delegates in turn to the Layer 1 function,
+which is what passes this to `release-handle'."
   (check-lgbm (lgbm-booster-free pointer) "LGBM_BoosterFree"))
 
 ;;; ---------------------------------------------------------------------------
@@ -908,10 +930,14 @@ rather than routed through the assertion below."
 described by DATA-POINTER/DATA-TYPE/NROW/NCOL, writing OUT-LEN and BUFFER, and
 signal `foreign-call-error' when the library reports failure.
 
-Extracted so `cl-gbdt/src/lightgbm/protocol''s `predict' delegates the call
-itself to this file instead of naming `lgbm-booster-predict-for-mat' directly --
-see policy section 3's Layer 2 delegating to Layer 1. `predict' still owns
-sizing BUFFER from `%calc-num-predict', deriving DATA-TYPE via `%data-type', and
+Extracted so `cl-gbdt/src/lightgbm/api''s `predict' delegates the call itself to
+this file instead of naming `lgbm-booster-predict-for-mat' directly. It was
+`cl-gbdt/src/lightgbm/protocol''s `predict' -- policy section 3's Layer 2
+delegating to Layer 1 -- when the extraction was made; that method now holds the
+portable contract only and delegates the procedure to the Layer 1 function of
+the same name, so both ends of this call are Layer 1 -- the identical move
+`%create-dataset' above records for ingestion. `predict' still owns sizing
+BUFFER from `%calc-num-predict', deriving DATA-TYPE via `%data-type', and
 copying BUFFER's contents out afterward."
   (check-lgbm (lgbm-booster-predict-for-mat
                pointer data-pointer data-type nrow ncol 1 predict-type 0
@@ -938,9 +964,10 @@ construction, so unlike `%predict-for-mat' there is no per-call element type to 
 
 NINDPTR is INDPTR's own length, one more than the row count, and NELEM the number of stored
 elements. START-ITERATION is 0, exactly as `%predict-for-mat' passes it: the protocol
-exposes no start-iteration override on either path. `predict' still owns sizing BUFFER from
-`%calc-num-predict', checking OUT-LEN against that size afterward, and copying BUFFER's
-contents out -- none of which differs between the two entry points."
+exposes no start-iteration override on either path. `cl-gbdt/src/lightgbm/api''s `predict'
+still owns sizing BUFFER from `%calc-num-predict', checking OUT-LEN against that size
+afterward, and copying BUFFER's contents out -- none of which differs between the two entry
+points."
   (%call-with-pinned-csr
    indptr indices values
    (lambda (indptr-pointer indices-pointer values-pointer)

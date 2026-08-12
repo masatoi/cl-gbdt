@@ -5,11 +5,14 @@
 ;;;;
 ;;;; Under src/config/ rather than directly under src/, and so deliberately absent from
 ;;;; src/all.lisp's `use-reexport' list, for the same reason `cl-gbdt/src/config/missing-value'
-;;;; is absent from it -- see that file's own header. Task 3 (LightGBM's `predict') is this
-;;;; file's only intended caller; publishing this from `CL-GBDT' would commit to a shape before
-;;;; there is a second caller to test it against.
+;;;; is absent from it -- see that file's own header. LightGBM's `predict' is this file's only
+;;;; intended caller; publishing this from `CL-GBDT' would commit to a shape before there is a
+;;;; second caller to test it against.
 ;;;;
-;;;; Consumers: `cl-gbdt/src/lightgbm/protocol' (Task 3).
+;;;; Consumers: `cl-gbdt/src/lightgbm/api', whose `%prediction-shape' is the one call. It was
+;;;; `cl-gbdt/src/lightgbm/protocol' when this file was written (Task 3), and moved with the
+;;;; prediction procedure when that became Layer 1's own `predict'; the protocol method no
+;;;; longer names this package at all.
 
 (uiop:define-package #:cl-gbdt/src/config/prediction-shape
   (:use #:cl)

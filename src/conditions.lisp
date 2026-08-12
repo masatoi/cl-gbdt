@@ -205,8 +205,9 @@ guarantee that order."))
    (given :initarg :given
           :initform nil
           :reader wrong-backend-reference-given
-          :documentation "The class of the object actually passed where a handle of kind
-EXPECTED, built by BACKEND, was expected.")
+          :documentation "The class of the object actually passed where EXPECTED was wanted:
+a handle of that kind built by BACKEND, or -- when EXPECTED is \"backend\" -- BACKEND's own
+backend object.")
    (argument :initarg :argument
              :initform nil
              :reader wrong-backend-reference-argument
@@ -215,20 +216,34 @@ value, e.g. \"make-dataset's :reference\" or \"train's dataset argument\", for t
    (expected :initarg :expected
              :initform "dataset"
              :reader wrong-backend-reference-expected
-             :documentation "What kind of handle the argument should have been, as a noun
+             :documentation "What kind of thing the argument should have been, as a noun
 for the report -- \"dataset\" (the default, and every caller before `booster-eval' and
-`booster-eval-names') or \"booster\". Defaulting to \"dataset\" means the two existing
-callers, `%check-lightgbm-dataset' and `%check-xgboost-dataset', need no change of their
-own to keep reporting exactly what they always have."))
+`booster-eval-names'), \"booster\", or \"backend\", the noun the two backends'
+`%check-object-class' passes for a Layer 1 `create-dataset' or `create-booster' handed the
+OTHER backend's object, or any non-backend value. Defaulting to \"dataset\" means the
+two oldest callers, `%check-lightgbm-dataset' and `%check-xgboost-dataset', need no change
+of their own to keep reporting exactly what they always have."))
   (:report
+   ;; Two readings, because EXPECTED's third noun is not a thing the backend BUILT. A dataset
+   ;; or a booster is built by the backend and belongs to it; the backend object IS the
+   ;; backend, so "must be a backend built by LIGHTGBM itself" reads as a category error. The
+   ;; handle wording is reproduced here EXACTLY as it stood when "dataset" and "booster" were
+   ;; the only nouns -- tests/functional/lightgbm-api.lisp asserts on the substrings "must be a
+   ;; dataset built by" and "must be a booster built by", so the two readings cannot be merged
+   ;; into one string without changing what those tests read.
    (lambda (condition stream)
-     (format stream "~A must be a ~A built by ~A itself, not ~A."
-             (or (wrong-backend-reference-argument condition) "The argument")
-             (wrong-backend-reference-expected condition)
-             (wrong-backend-reference-backend condition)
-             (wrong-backend-reference-given condition))))
+     (let ((expected (wrong-backend-reference-expected condition))
+           (backend (wrong-backend-reference-backend condition)))
+       (format stream "~A must be ~A, not ~A."
+               (or (wrong-backend-reference-argument condition) "The argument")
+               (if (equal expected "backend")
+                   (format nil "~A's own backend" backend)
+                   (format nil "a ~A built by ~A itself" expected backend))
+               (wrong-backend-reference-given condition)))))
   (:documentation "A caller-supplied dataset or booster argument did not belong to the same
-backend as the operation it was passed to, or was the wrong kind of handle outright.
+backend as the operation it was passed to, or was the wrong kind of handle outright -- or,
+for a Layer 1 operation that takes a BACKEND rather than a handle, that argument was another
+backend's object.
 
 Several entry points funnel through this same condition: `make-dataset''s :REFERENCE,
 `train''s DATASET argument, and each entry of `train''s :VALID-SETS all expect a dataset,
@@ -242,7 +257,11 @@ without a CLOS specializer to rule out the wrong one first -- `make-dataset' and
 both dispatch on the backend, not on the handle, and `booster-eval'/`booster-eval-names'
 are plain functions with no CLOS dispatch at all, so a handle built by a different
 backend, of the wrong kind, or not a handle at all, would otherwise reach the foreign call
-unexamined.
+unexamined. `cl-gbdt/src/lightgbm/api''s and `cl-gbdt/src/xgboost/api''s `create-dataset' and
+`create-booster' are here for the same reason one step earlier: each was a `defmethod'
+specialized on its own backend class, and as a plain `defun' takes whatever backend object it
+is given -- which decides which library's entry point runs and which backend the resulting
+handle records its liveness against.
 
 A handle is an opaque pointer as far as the underlying C API is concerned: handing it the
 wrong one is undefined behaviour once it crosses the FFI boundary, not something the C

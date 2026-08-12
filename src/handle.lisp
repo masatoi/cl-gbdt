@@ -275,16 +275,26 @@ keeps meaning \"every round\" on every booster, this one included."
 `unsupported-argument' naming ARGUMENT-NAME instead.
 
 For an entry point that accepts NUM-ITERATION but does not resolve :BEST against
-BOOSTER's `booster-best-iteration' the way `predict', `save-model' and
-`model-to-string' do -- `feature-importance' is the one case today. Without this,
-:BEST reaches each backend's own NUM-ITERATION path as uninterpreted data: LightGBM's
-`%resolve-num-iteration' is `(or num-iteration 0)', so :BEST alone would pass straight
-through to a foreign call expecting an integer -- a raw CFFI type error, not a
-`cl-gbdt' condition; XGBoost's `%check-unsupported' happens to reject it today only
-because :BEST is non-NIL, the same as any other non-NIL value, not because it
-recognizes the keyword. This makes the refusal explicit and gives it the same
-condition type `%resolve-best-num-iteration' signals for the entry points that do
-resolve :BEST, rather than two different failure modes for the same keyword."
+BOOSTER's `booster-best-iteration' the way the unified `predict', `save-model' and
+`model-to-string' do. Two cases today, for two different reasons: the
+`feature-importance' method of both backends, which simply does not offer :BEST; and
+each backend's LAYER 1 `predict', in `cl-gbdt/src/<backend>/api', where the keyword
+would name an empty slot -- only `train' writes a booster's `best-iteration', and
+`create-booster' builds one that has none. The unified `predict' method resolves :BEST
+itself, before delegating, so the integer is all that ever reaches those two.
+
+Without this, :BEST reaches each backend's own NUM-ITERATION path as uninterpreted
+data: LightGBM's `%resolve-num-iteration' is `(or num-iteration 0)', so :BEST alone
+would pass straight through to a foreign call expecting an integer -- a raw CFFI type
+error, not a `cl-gbdt' condition. XGBoost has two such paths and neither recognizes the
+keyword: `feature-importance''s `%check-unsupported' happens to reject it only because
+:BEST is non-NIL, the same as any other non-NIL value, while `predict''s
+`%predict-config-json' renders it into the config JSON as a bare `BEST' token and gets a
+`foreign-call-error' back from that library's own JSON parser -- measured with the
+refusal removed, and recorded at that function's own call site. This makes the refusal
+explicit and gives all of them the same condition type `%resolve-best-num-iteration'
+signals for the entry points that do resolve :BEST, rather than a different failure mode
+per path for the same keyword."
   (when (eq num-iteration :best)
     (error 'unsupported-argument
            :backend (backend-name (handle-backend booster))

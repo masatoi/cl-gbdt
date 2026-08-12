@@ -7,7 +7,7 @@
 ;;;; Two independent checks live here, CHECK A and CHECK B below, because both start from
 ;;;; the identical piece of work: for each backend, reading `src/*/c-api.lisp' for every
 ;;;; `cffi:defcfun' form to build a Lisp-name -> C-name map, then reading the backend's
-;;;; `backend.lisp' for the `:import-from' clause that names its c-api package and mapping
+;;;; `native.lisp' for the `:import-from' clause that names its c-api package and mapping
 ;;;; every imported symbol back to a C name through that table (see `check-backend').
 ;;;; Splitting them into two scripts would mean deriving that map twice from the same
 ;;;; source, in two places that could drift out of sync with each other -- precisely the
@@ -35,7 +35,8 @@
 ;;;;
 ;;;; Each backend declares a `*required-symbols*' list of C function names, checked with
 ;;;; `probe-foreign-symbols' immediately after the shared library loads (see
-;;;; `initialize-backend' in each `backend.lisp'). A function the backend actually calls
+;;;; `initialize-backend' in each `classes.lisp', over the list each `native.lisp' declares).
+;;;; A function the backend actually calls
 ;;;; but omits from that list is not probed: a library missing it, or exposing it with an
 ;;;; incompatible signature, opens successfully and only fails later, at the call site,
 ;;;; instead of loudly at `open-backend' via `missing-foreign-symbols'. Design doc section
@@ -100,7 +101,7 @@
 ;;;;    in `*provided-capabilities*' -- that the registry does not list.
 ;;;;
 ;;;; Like tools/ci/check-float-traps.lisp, every file here is read as data via `read',
-;;;; never loaded or evaluated -- nothing in src/*/c-api.lisp or src/*/backend.lisp runs,
+;;;; never loaded or evaluated -- nothing in src/*/c-api.lisp or src/*/native.lisp runs,
 ;;;; and no foreign library opens. This keeps the check usable from `tools/ci/lint.lisp'
 ;;;; and keeps layer 1's `foreign libraries open: NIL' invariant untouched by it.
 ;;;;
@@ -139,7 +140,7 @@
 
 (require :asdf)
 
-;;; Every scanned c-api.lisp and backend.lisp file references `cffi:...' symbols. `read'
+;;; Every scanned c-api.lisp and native.lisp file references `cffi:...' symbols. `read'
 ;;; below never evaluates anything, but it still needs the CFFI package to *exist* to
 ;;; intern those qualified symbols as data -- an unqualified bare symbol would intern
 ;;; fine into any package, but `cffi:defcfun' would signal "package CFFI does not exist"

@@ -41,9 +41,11 @@ own bugs instead of restoring someone else's calling convention.
 
 Every entry point in either backend wraps its entire body in this macro, not just the
 specific call this was first found through: every `defmethod' in `src/<backend>/protocol.lisp'
-and `src/<backend>/classes.lisp', and every `defun' in `classes.lisp' or `native.lisp' that
-the backend's public package exports and so is reached with no `defmethod' to inherit a mask
-from. See those files' commentary for the enumeration, and
+and `src/<backend>/classes.lisp', and every `defun' in `api.lisp', `classes.lisp' or
+`native.lisp' that the backend's public package exports and so is reached with no `defmethod'
+to inherit a mask from. `api.lisp' is where most of them now are -- it holds each backend's
+finished Layer 1 operations, every one of which a caller reaches directly. See those files'
+commentary for the enumeration, and
 `tools/ci/check-float-traps.lisp', which fails the build when one of them is missing it.
 
 Expands to a plain PROGN under #-SBCL: this project's foreign-call boundary is

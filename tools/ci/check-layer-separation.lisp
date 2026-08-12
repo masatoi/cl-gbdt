@@ -157,12 +157,15 @@ Aggregates such as `cl-gbdt/src/all' are deliberately absent: they reach these p
 themselves, so the walk finds the violation through them without their being listed.
 
 `cl-gbdt/src/config/categorical-features' and `cl-gbdt/src/config/prediction-shape' are
-absent deliberately too, and for a different reason: today only `protocol.lisp' reaches
-them, but `src/config/' is a mixed directory -- `feature-names', `objective' and
-`missing-value' from the same directory are already in both Layer 1 closures -- and those
-two files hold argument validation, not unified-API code. A Layer 1 file that grew a
-`:categorical-features' argument of its own would import one legitimately. They are Layer 2
-by current usage, not by content, and this list is about content.")
+absent deliberately too, and for a different reason: `src/config/' is a mixed directory --
+`feature-names', `objective' and `missing-value' from the same directory are already in both
+Layer 1 closures -- and those two files hold argument validation, not unified-API code. They
+were Layer 2 by usage when this paragraph was written, and half of that is no longer true:
+`prediction-shape' is now reached by `src/lightgbm/api.lisp', which derives `predict''s
+second value with its `contrib-shape', and by nothing in `protocol.lisp' at all. That is the
+case this paragraph anticipated in the abstract, arriving for real; `categorical-features' is
+still reached only by the two `protocol.lisp' files. Neither belongs on this list, because
+this list is about content and neither file's content is unified-API code.")
 
 (defparameter +dependency-clauses+
   '(:use :mix :reexport :use-reexport :mix-reexport)

@@ -112,8 +112,19 @@
 (ql:quickload "cffi" :silent t)
 
 (defparameter +backend-file-patterns+
-  '("src/*/backend.lisp" "src/*/classes.lisp" "src/*/native.lisp" "src/*/protocol.lisp")
+  '("src/*/api.lisp" "src/*/backend.lisp" "src/*/classes.lisp" "src/*/native.lisp"
+    "src/*/protocol.lisp")
   "Globs, relative to the repository root, for files this check scans.
+
+`api.lisp' holds a backend's finished Layer 1 operations -- the ones that take a backend or a
+handle, do the whole job, and hand back a handle or a result, moved out of the `protocol.lisp'
+method bodies that used to hold them so a caller who loaded only `cl-gbdt/lightgbm' or
+`cl-gbdt/xgboost' can invoke them. BOTH backends have one, and each holds the same six:
+`create-dataset', `create-booster', `update-one-iteration', `predict', `free-dataset' and
+`free-booster' -- plus, on XGBoost, `slice-model', which moved here from `classes.lisp'. The
+`%'-prefixed helpers those call live there too and are NOT counted here: rule (2) below
+reaches only the names the backend's public package exports, which is the whole set of names
+reached with no `defmethod' left to inherit a mask from.
 
 Both backends used to keep every protocol method in one `backend.lisp'. XGBoost's Task 2
 and LightGBM's Task 3 each split that file into `native.lisp' (Layer 1: the %-functions,
@@ -121,9 +132,10 @@ the error wrapper, and -- since the evaluation-api branch's Task 2 -- any public
 entry-point `defun's too) and `protocol.lisp' (Layer 2: the thirteen protocol methods) --
 so most `defmethod' forms live in `protocol.lisp', not `native.lisp', but a public `defun'
 can now legitimately live in either. The layer-separation branch then added
-`classes.lisp' (Layer 1: each backend's CLOS types, the `initialize-backend' and
-`shutdown-backend' pair that opens and closes the shared library, and XGBoost's public
-`slice-model'), moving those forms out of `protocol.lisp' and, until this glob was added,
+`classes.lisp' (Layer 1: each backend's CLOS types and the `initialize-backend' and
+`shutdown-backend' pair that opens and closes the shared library -- and, for one branch,
+XGBoost's public `slice-model', which has since moved on to `api.lisp'), moving those forms
+out of `protocol.lisp' and, until this glob was added,
 out of this scan's sight -- five already-wrapped forms went unchecked for exactly as long
 as this list was one entry short, which is the whole argument for keeping it current and
 the reason a file move should always be read as a question about this parameter.
@@ -143,6 +155,51 @@ carries for the same reason.")
          :test #'equal)
         #'string< :key #'namestring))
 
+(defun %restart-associated-with-p (restart condition)
+  "True when RESTART is associated with CONDITION specifically, rather than merely visible
+from here.
+
+`find-restart' with a CONDITION argument does not answer this on its own: it returns the
+restarts associated with CONDITION *plus* every restart associated with no condition at all,
+so an unrelated outer `continue' -- `load''s, say -- matches a name lookup exactly as the
+reader's own does. Invoking that one would abort the top-level form driving this scan and
+exit 0 with most of the repository unscanned.
+
+The test is that an associated restart is invisible to any OTHER condition, while an
+unassociated one is visible to all of them. So a restart present for CONDITION and absent for
+a throwaway condition is associated with CONDITION, which here means it was established by
+the `read' call that signalled."
+  (and (member restart (compute-restarts condition))
+       (not (member restart (compute-restarts (make-condition 'simple-error))))))
+
+(defun %unknown-package-reader-error-p (condition)
+  "True when CONDITION is a `package-error' naming a package that does not exist -- the one
+case `read-top-level-forms' resolves rather than reports.
+
+The name is a STRING for exactly that case: the reader has a package name off the source
+token and nothing to look it up in. Every other `package-error' carries a package OBJECT,
+which is what keeps this from matching them -- most importantly SBCL's
+`package-locked-error', a `package-error' subtype whose `continue' restart proceeds with the
+locked operation. A handler that invoked that would let `(cl:totally-bogus-name)' in a scanned
+file intern into `COMMON-LISP' and the scan exit 0, turning a loud failure into a silent one."
+  (let ((name (package-error-package condition)))
+    (and (stringp name) (not (find-package name)))))
+
+(defun %intern-unresolvable-qualified-symbol (condition)
+  "Resolve a `package-error' from `read' that names a package this image does not have, by
+invoking the `continue' restart the reader established for it -- which reads the offending
+token as a symbol of the same name in `*package*' instead.
+
+Declines -- returns normally, leaving CONDITION to whatever handler is next, which in a
+non-interactive run means the scan fails -- for every other `package-error', and for one whose
+`continue' restart is not the reader's own. See `%unknown-package-reader-error-p' and
+`%restart-associated-with-p' for what each of those excludes and why, and
+`read-top-level-forms', which establishes this handler and carries the reason it exists."
+  (when (%unknown-package-reader-error-p condition)
+    (let ((restart (find-restart 'continue condition)))
+      (when (and restart (%restart-associated-with-p restart condition))
+        (invoke-restart restart)))))
+
 (defun read-top-level-forms (path)
   "Read PATH's top-level forms as data and return them as a list.
 
@@ -151,15 +208,36 @@ loading it (registering a CLOS class, defining a backend) happens here. Forms ar
 read with `*package*' bound to a throwaway package that uses only CL, so a bare
 symbol -- everything in these files except its `cffi:...'/`uiop:...' references --
 interns harmlessly regardless of whether PATH's own package is defined yet.
-`*read-eval*' is bound to NIL so a stray `#.' in the source cannot run code either."
+`*read-eval*' is bound to NIL so a stray `#.' in the source cannot run code either.
+
+A qualified reference to one of THIS PROJECT's own packages is what the handler is for.
+`src/lightgbm/protocol.lisp' names `cl-gbdt/src/lightgbm/api:free-dataset' in full because
+it also imports a GENERIC FUNCTION of that name from `cl-gbdt/src/protocol': the two are
+different symbols, no package can import both, so one of them has to be written out -- and
+that repeats for every Layer 1 operation whose name a unified generic already uses. Reading
+that token needs the named package to EXIST, exactly as the `cffi:' references above do, and
+nothing here loads project code to make it. Rather than load the project (which would defeat
+reading it as data) or enumerate its packages, the token is read as a bare symbol of the same
+name. That loses nothing this script uses: every form is inspected through
+`symbol-name-string=', by name and never by identity, so
+`cl-gbdt/src/foreign:with-foreign-float-traps-masked' written out in full would be
+recognized as the wrap exactly as the imported spelling is.
+
+Narrowly that case and no other. `package-error' has subtypes -- SBCL's
+`package-locked-error' among them -- whose `continue' restart proceeds with an operation this
+scan has no business proceeding with, and a `continue' restart of the same name can be
+established outside this call entirely. `%intern-unresolvable-qualified-symbol' declines both,
+so a scanned file that violates a package lock, or names a package in some way the reader
+reports differently, still fails this check loudly instead of being read past."
   (let ((*package* (or (find-package '#:cl-gbdt/tools/ci/float-traps-scratch)
                         (make-package '#:cl-gbdt/tools/ci/float-traps-scratch
                                        :use '(#:cl))))
         (*read-eval* nil))
-    (with-open-file (in path)
-      (loop :for form := (read in nil :eof)
-            :until (eq form :eof)
-            :collect form))))
+    (handler-bind ((package-error #'%intern-unresolvable-qualified-symbol))
+      (with-open-file (in path)
+        (loop :for form := (read in nil :eof)
+              :until (eq form :eof)
+              :collect form)))))
 
 (defun symbol-name-string= (symbol name)
   "True when SYMBOL's name is the string NAME, regardless of SYMBOL's package."

@@ -1,4 +1,4 @@
-;;;; classes.lisp --- XGBoost's CLOS types, the shared library's lifetime, and `slice-model'.
+;;;; classes.lisp --- XGBoost's CLOS types and the shared library's lifetime.
 ;;;;
 ;;;; Layer 1, not Layer 2. `initialize-backend' and `shutdown-backend' are generic functions
 ;;;; declared in `src/backend.lisp' -- the shared basis every layer is written against -- not
@@ -6,29 +6,29 @@
 ;;;; unified API. Keeping them here is what lets `cl-gbdt/xgboost' open and close the library
 ;;;; without loading Layer 2 at all.
 ;;;;
-;;;; `slice-model' is here for a reason of its own, and was Layer 1 already while it sat at
-;;;; the end of `protocol.lisp': it is a public XGBoost-specific entry point, never a protocol
-;;;; method, and it builds a booster handle, so it must name the concrete `xgboost-booster'
-;;;; class -- which is defined right here. That is also why it cannot live in `native.lisp'
-;;;; beside its siblings `evaluate-one-iteration' and `booster-boosted-rounds': that file must
-;;;; not depend on this one. See its own Model slicing section below.
+;;;; The types and that lifetime are now the whole of this file. `slice-model' lived here too
+;;;; -- it builds a booster handle, so it must name the concrete `xgboost-booster' class
+;;;; defined below, and `native.lisp' must not depend on this file -- until
+;;;; `cl-gbdt/src/xgboost/api' appeared, which names this file and so satisfies that constraint
+;;;; equally. It is an operation over the booster class rather than any part of the library's
+;;;; lifetime, so that is where it belongs; see that file's own Model slicing section.
 ;;;;
 ;;;; Loads after `native.lisp' and cannot precede it: `initialize-backend' reads that file's
 ;;;; `*required-symbols*', `*optional-symbols*', `*provided-capabilities*', `*library-env-var*',
 ;;;; `*vendor-library-directory*', `*vendor-library-pattern*' and `*default-library-name*' and
-;;;; calls its `%read-version', and `slice-model' calls its `%check-xgboost-booster',
-;;;; `%check-unsupported', `%slice' and `%free-booster-unchecked'.
+;;;; calls its `%read-version'.
 ;;;;
 ;;;; Every form here that reaches the shared library wraps its whole body in
 ;;;; `with-foreign-float-traps-masked', for the reason `cl-gbdt/src/xgboost/protocol''s
 ;;;; "Floating-point trap safety" comment gives. Moving a form between files never removes
 ;;;; that wrap -- but it can move a form out from under the check that verifies it, and it did
-;;;; here for a while: `tools/ci/check-float-traps.lisp''s +BACKEND-FILE-PATTERNS+ named
-;;;; `src/*/native.lisp' and `src/*/protocol.lisp' only, so `slice-model''s wrap, which that
-;;;; scan counted while the function lived in `protocol.lisp', was held by reading alone. That
-;;;; glob now carries `src/*/classes.lisp' too, and the scan reports this file as "2 defmethods,
-;;;; 1 public defun, 0 unmasked" -- `slice-model' is checked again, and a wrap dropped from
-;;;; anything here fails the build rather than waiting for a reviewer.
+;;;; once, for `slice-model': `tools/ci/check-float-traps.lisp''s +BACKEND-FILE-PATTERNS+ named
+;;;; `src/*/native.lisp' and `src/*/protocol.lisp' only, so that function's wrap went unchecked
+;;;; for a while after it moved here from `protocol.lisp'. That glob now carries
+;;;; `src/*/classes.lisp' and `src/*/api.lisp' as well, so the same move again cost nothing:
+;;;; the scan reports this file as "2 defmethods, 0 public defuns, 0 unmasked" and follows
+;;;; `slice-model' to its new home. A wrap dropped from anything here fails the build rather
+;;;; than waiting for a reviewer.
 
 (uiop:define-package #:cl-gbdt/src/xgboost/classes
   (:use #:cl)
@@ -41,18 +41,13 @@
                 #:*required-symbols*
                 #:*optional-symbols*
                 #:*provided-capabilities*
-                #:%read-version
-                #:%check-unsupported
-                #:%check-xgboost-booster
-                #:%free-booster-unchecked
-                #:%slice)
+                #:%read-version)
   (:import-from #:cl-gbdt/src/backend
                 #:backend
                 #:backend-name
                 #:backend-library-path
                 #:backend-version
                 #:backend-capabilities
-                #:backend-supports-p
                 #:probe-foreign-symbols
                 #:probe-capabilities
                 #:register-backend
@@ -60,12 +55,9 @@
                 #:shutdown-backend)
   (:import-from #:cl-gbdt/src/handle
                 #:dataset
-                #:booster
-                #:with-pointer-ownership
-                #:handle-backend)
+                #:booster)
   (:import-from #:cl-gbdt/src/conditions
-                #:missing-foreign-symbols
-                #:capability-unavailable)
+                #:missing-foreign-symbols)
   (:import-from #:cl-gbdt/src/library
                 #:resolve-and-load-library)
   (:import-from #:cl-gbdt/src/foreign
@@ -76,8 +68,7 @@
   (:export #:xgboost-backend
            #:xgboost-dataset
            #:xgboost-booster
-           #:%xgboost-foreign-library
-           #:slice-model))
+           #:%xgboost-foreign-library))
 
 (in-package #:cl-gbdt/src/xgboost/classes)
 
@@ -184,84 +175,3 @@ from the process afterward -- only that cl-gbdt no longer holds it open."
         (cffi:close-foreign-library library)
         (setf (%xgboost-foreign-library backend) nil)))
     backend))
-
-;;; ---------------------------------------------------------------------------
-;;; Model slicing
-;;;
-;;; `slice-model' is the one function in this file that is not part of the backend's own
-;;; library lifetime, and the only Layer 1 entry point that does not live in
-;;; `cl-gbdt/src/xgboost/native' beside its siblings `evaluate-one-iteration' and
-;;; `booster-boosted-rounds'. It is here because it returns a NEW booster: `make-handle'
-;;; needs the concrete class `xgboost-booster', which is defined in this file, and
-;;; `native.lisp' must not depend on this one (policy section 11). Every other `make-handle'
-;;; call in this project is in a `protocol.lisp' for exactly that reason --
-;;; `cl-gbdt/src/xgboost/protocol''s `load-model' is the closest sibling, and this follows its
-;;; shape: the guards and the handle construction here, the foreign call delegated to a
-;;; `%'-function in `native.lisp' (`%slice'). See that file's own Model slicing section for
-;;; the other half.
-;;;
-;;; Deliberately NOT a generic function in `cl-gbdt/src/protocol'. Section 4's criterion for
-;;; the unified API is that both backends can mean the same thing by an operation; LightGBM
-;;; has no counterpart to `XGBoosterSlice', so a portable `slice-model' would either signal
-;;; on one backend for every caller or emulate -- and emulation is the silent fallback
-;;; section 7 forbids. It is published from `cl-gbdt/xgboost' instead, which is what section
-;;; 3's Layer 1 and section 11 are for.
-
-(defun slice-model (booster &key (begin 0) end (step 1))
-  "Return a new booster holding BOOSTER's layers from BEGIN to END, taken STEP at a time.
-
-The interval is HALF-OPEN, `[BEGIN, END)': END names the first layer left out, so slicing a
-ten-round booster with `:begin 0 :end 5' gives five rounds, not six. Measured against the
-vendored libxgboost, whose header documents no interval semantics at all; XGBoost's own
-rejection of `:begin 5 :end 5' as \"Empty slice is not allowed\" is the same reading from
-the other side.
-
-END defaults to NIL, meaning through the last layer, and is passed to `XGBoosterSlice' as
-its own 0. NIL rather than 0 in Lisp because a caller writing `:END 0' means \"nothing\",
-and silently reading that as \"everything\" is the kind of translation policy section 5
-exists to prevent -- so an explicit `:END 0' signals `unsupported-argument' rather than
-being forwarded to a C 0 that would mean the opposite. Every other out-of-range request is
-XGBoost's own to refuse, and it does, with `foreign-call-error': END past the last layer,
-BEGIN below zero, STEP below one, and a STEP that does not divide the interval evenly.
-
-The returned booster belongs to the caller, who frees it with `free-booster'. It is
-INDEPENDENT of BOOSTER: `XGBoosterSlice' copies the layers it selects, so freeing BOOSTER
-first is legitimate, and the slice keeps predicting the same values afterward -- verified
-against the vendored library with BOOSTER and the DMatrix it was trained on both freed. It
-therefore retains no parent, exactly as a `load-model' booster retains no training set;
-retaining one anyway would make freeing BOOSTER signal `released-handle-error' on correct
-code. For the same reason the slice has no training set of its own, so `evaluation' and
-`update-one-iteration' on it behave as they do for a `load-model' booster.
-
-Signals `wrong-backend-reference' when BOOSTER was not built by the XGBoost backend,
-`released-handle-error' when it has been freed, `backend-not-open' when its backend has
-been closed, `capability-unavailable' when the loaded library has no `XGBoosterSlice',
-`unsupported-argument' for an explicit `:END 0', and `foreign-call-error' when the slice
-itself fails.
-
-The capability is re-checked here rather than assumed: policy section 7 requires the
-operation to signal for itself, so a caller who never asked `backend-supports-p' gets a
-typed condition instead of a missing-symbol crash. The handle check runs first, before the
-capability check, so handing this a LightGBM booster reports the wrong handle rather than
-the true-but-irrelevant news that the backend it came from cannot slice."
-  (with-foreign-float-traps-masked
-    (let ((pointer (%check-xgboost-booster booster "slice-model's booster argument"))
-          (backend (handle-backend booster)))
-      (unless (backend-supports-p backend :model-slicing)
-        (error 'capability-unavailable
-               :backend (backend-name backend) :capability :model-slicing))
-      (%check-unsupported
-       backend "slice-model's :END of 0" (eql end 0)
-       (format nil "0 would be an empty slice, which XGBoost rejects outright, but ~
-                    XGBoosterSlice's own end_layer 0 means the last layer -- pass NIL for ~
-                    that rather than letting the two readings collide"))
-      ;; Unlike `cl-gbdt/src/xgboost/protocol''s `load-model' and `train', no further foreign
-      ;; call runs between the handle appearing in C and `make-handle' taking ownership of it
-      ;; -- `%slice' returns a booster that is already complete, and `make-handle' is the very
-      ;; next thing that runs.
-      ;; `with-pointer-ownership' is still needed, though: `make-handle' itself --
-      ;; `make-instance' or finalizer attachment -- can signal, e.g. on `storage-condition',
-      ;; and a signal there must not orphan the foreign booster `%slice' already returned.
-      (let ((slice-pointer (%slice pointer begin (or end 0) step)))
-        (with-pointer-ownership (slice-pointer #'%free-booster-unchecked take-ownership)
-          (take-ownership 'xgboost-booster backend :booster))))))
