@@ -21,6 +21,18 @@ name that does not, which is how a typo or an upstream removal surfaces. And a f
 here must NOT be wrapped -- a row that survives its own function being wrapped is the failure
 this file is most likely to develop, so the checker fails on that too.
 
+Each `## Excluded` heading carries its section's reason, so a row's Note is for what the
+heading does not already say: a function-specific caveat, or which wrapped entry point
+supersedes it. A section with no argument under its heading is a section that has not made one.
+
+One naming decision, settled here rather than left to be re-made per row. This file is English
+throughout, but `docs/cl-gbdt-layered-api-implementation-policy.md` is written in Japanese, and
+this file cites one of its sections often enough to need a convention: **フォローアップ** --
+"follow-up", the section recording work that has been identified and deliberately not
+scheduled. Citations name it unromanised, because that is the string a reader has to search
+that document for, and romanising it would help nobody find it. Everything this file says
+*about* what that section decided is in English.
+
 ## Planned
 
 Functions worth wrapping that nobody has wrapped yet. This is the work list for S5 of the
@@ -37,7 +49,7 @@ written down. The Note is what separates them.
 | `LGBM_DatasetCreateFromFile` | Read a training set straight off disk in LightGBM's own text or binary format, without materialising it as a Lisp array first. This is the `:file-input` capability the implementation policy's フォローアップ section has already designed and left unimplemented; per its external-memory section the result is an ordinary in-memory dataset, so this is a convenience and a memory-peak win, not external memory. |
 | `LGBM_DatasetSaveBinary` | Write an already-binned dataset to LightGBM's own binary format, so a second run over the same data pays for binning once rather than every time. Pairs with `LGBM_DatasetCreateFromFile` above; on its own it is write-only. |
 | `LGBM_DatasetGetField` | Read back the `label`, `weight`, `init_score`, `group` or `position` a dataset actually holds. `make-dataset` sets these through `LGBM_DatasetSetField` and nothing can currently read them, so a caller cannot confirm that the labels the library holds are the labels they meant to pass. |
-| `LGBM_DatasetGetFeatureNames` | Read back the feature names a dataset holds, the counterpart of the `LGBM_DatasetSetFeatureNames` that `make-dataset :feature-names` already calls. |
+| `LGBM_DatasetGetFeatureNames` | Ask a dataset which columns it believes it holds, and in what order. `make-dataset :feature-names` sets them through `LGBM_DatasetSetFeatureNames` and nothing reads them back, so a caller assembling a dataset from several sources -- or handed one built elsewhere in the same image -- cannot check that column 7 is the feature they think before they train on it. It is also the dataset-side half of the pairing that makes `LGBM_BoosterValidateFeatureNames` useful: the names to validate against a model have to come from somewhere. |
 | `LGBM_DatasetGetFeatureNumBin` | Ask how many bins a given feature was discretised into, which is the first thing to look at when a feature that should matter produces no splits -- a constant or near-constant column collapses to one bin. |
 | `LGBM_DatasetGetSubset` | Build a row subset of an already-binned dataset. This is how cross-validation folds are made without re-binning the data once per fold, and how a caller subsamples a large training set cheaply. |
 | `LGBM_DatasetAddFeaturesFrom` | Join another dataset's columns onto an existing one, so a wide training set can be assembled from separately built feature blocks instead of one array that must exist whole in memory. |
@@ -47,12 +59,12 @@ written down. The Note is what separates them.
 | `LGBM_BoosterPredictForFile` | Score a data file straight to a result file. Unlike every prediction path cl-gbdt has, the rows never pass through Lisp or through a foreign buffer this process sized, so a caller can score a dataset larger than the memory they have. |
 | `LGBM_BoosterPredictSparseOutput` | Get SHAP feature contributions back as a sparse matrix. Dense `:contrib` output costs `num_class * num_data * (num_feature + 1)` doubles whether or not the model touches those features; on a wide model that is the difference between a prediction that fits in memory and one that does not. |
 | `LGBM_BoosterFreePredictSparse` | Serves `LGBM_BoosterPredictSparseOutput` -- it is the only way to release the three buffers that call allocates -- and is classified with it. Without it, sparse contribution output leaks on every call. |
-| `LGBM_BoosterPredictForMatSingleRow` | One decision, six rows: LightGBM's single-row prediction API, for a caller scoring one row at a time behind a request rather than a batch offline. `predict` on a 1-row matrix goes through `LGBM_BoosterPredictForMat`, which redoes predictor setup on every call; these reuse it, and the `FastInit`/`Fast` pair hoists the setup (including thread-count configuration) out of the scoring call entirely. |
-| `LGBM_BoosterPredictForMatSingleRowFastInit` | One decision, six rows: LightGBM's single-row prediction API, for a caller scoring one row at a time behind a request rather than a batch offline. `predict` on a 1-row matrix goes through `LGBM_BoosterPredictForMat`, which redoes predictor setup on every call; these reuse it, and the `FastInit`/`Fast` pair hoists the setup (including thread-count configuration) out of the scoring call entirely. |
-| `LGBM_BoosterPredictForMatSingleRowFast` | One decision, six rows: LightGBM's single-row prediction API, for a caller scoring one row at a time behind a request rather than a batch offline. `predict` on a 1-row matrix goes through `LGBM_BoosterPredictForMat`, which redoes predictor setup on every call; these reuse it, and the `FastInit`/`Fast` pair hoists the setup (including thread-count configuration) out of the scoring call entirely. |
-| `LGBM_BoosterPredictForCSRSingleRow` | One decision, six rows: LightGBM's single-row prediction API, for a caller scoring one row at a time behind a request rather than a batch offline. `predict` on a 1-row matrix goes through `LGBM_BoosterPredictForMat`, which redoes predictor setup on every call; these reuse it, and the `FastInit`/`Fast` pair hoists the setup (including thread-count configuration) out of the scoring call entirely. |
-| `LGBM_BoosterPredictForCSRSingleRowFastInit` | One decision, six rows: LightGBM's single-row prediction API, for a caller scoring one row at a time behind a request rather than a batch offline. `predict` on a 1-row matrix goes through `LGBM_BoosterPredictForMat`, which redoes predictor setup on every call; these reuse it, and the `FastInit`/`Fast` pair hoists the setup (including thread-count configuration) out of the scoring call entirely. |
-| `LGBM_BoosterPredictForCSRSingleRowFast` | One decision, six rows: LightGBM's single-row prediction API, for a caller scoring one row at a time behind a request rather than a batch offline. `predict` on a 1-row matrix goes through `LGBM_BoosterPredictForMat`, which redoes predictor setup on every call; these reuse it, and the `FastInit`/`Fast` pair hoists the setup (including thread-count configuration) out of the scoring call entirely. |
+| `LGBM_BoosterPredictForMatSingleRow` | One decision, six rows: LightGBM's single-row prediction API, for a caller scoring one row at a time behind a request rather than a batch offline. `predict` on a one-row input goes through `LGBM_BoosterPredictForMat` when it is dense and `LGBM_BoosterPredictForCSR` when it is sparse -- both wrapped -- and either redoes predictor setup on every call; these reuse it, and the `FastInit`/`Fast` pair hoists that setup out of the scoring call entirely, thread-count configuration included. |
+| `LGBM_BoosterPredictForMatSingleRowFastInit` | One decision, six rows: LightGBM's single-row prediction API, for a caller scoring one row at a time behind a request rather than a batch offline. `predict` on a one-row input goes through `LGBM_BoosterPredictForMat` when it is dense and `LGBM_BoosterPredictForCSR` when it is sparse -- both wrapped -- and either redoes predictor setup on every call; these reuse it, and the `FastInit`/`Fast` pair hoists that setup out of the scoring call entirely, thread-count configuration included. |
+| `LGBM_BoosterPredictForMatSingleRowFast` | One decision, six rows: LightGBM's single-row prediction API, for a caller scoring one row at a time behind a request rather than a batch offline. `predict` on a one-row input goes through `LGBM_BoosterPredictForMat` when it is dense and `LGBM_BoosterPredictForCSR` when it is sparse -- both wrapped -- and either redoes predictor setup on every call; these reuse it, and the `FastInit`/`Fast` pair hoists that setup out of the scoring call entirely, thread-count configuration included. |
+| `LGBM_BoosterPredictForCSRSingleRow` | One decision, six rows: LightGBM's single-row prediction API, for a caller scoring one row at a time behind a request rather than a batch offline. `predict` on a one-row input goes through `LGBM_BoosterPredictForMat` when it is dense and `LGBM_BoosterPredictForCSR` when it is sparse -- both wrapped -- and either redoes predictor setup on every call; these reuse it, and the `FastInit`/`Fast` pair hoists that setup out of the scoring call entirely, thread-count configuration included. |
+| `LGBM_BoosterPredictForCSRSingleRowFastInit` | One decision, six rows: LightGBM's single-row prediction API, for a caller scoring one row at a time behind a request rather than a batch offline. `predict` on a one-row input goes through `LGBM_BoosterPredictForMat` when it is dense and `LGBM_BoosterPredictForCSR` when it is sparse -- both wrapped -- and either redoes predictor setup on every call; these reuse it, and the `FastInit`/`Fast` pair hoists that setup out of the scoring call entirely, thread-count configuration included. |
+| `LGBM_BoosterPredictForCSRSingleRowFast` | One decision, six rows: LightGBM's single-row prediction API, for a caller scoring one row at a time behind a request rather than a batch offline. `predict` on a one-row input goes through `LGBM_BoosterPredictForMat` when it is dense and `LGBM_BoosterPredictForCSR` when it is sparse -- both wrapped -- and either redoes predictor setup on every call; these reuse it, and the `FastInit`/`Fast` pair hoists that setup out of the scoring call entirely, thread-count configuration included. |
 | `LGBM_FastConfigFree` | Serves the two `*SingleRowFastInit` calls above -- it releases the `FastConfigHandle` they return -- and is classified with them. A `FastConfigHandle` is a third foreign resource kind alongside `dataset` and `booster`, so wrapping the fast path means giving `src/handle.lisp` a third handle class; that cost belongs to the family's decision, not to this row. |
 | `LGBM_BoosterRollbackOneIter` | Undo the last boosting iteration, so a caller driving `update-one-iteration` themselves can step back over an iteration that made a watched metric worse. Named as an unimplemented Phase 2 item by the implementation policy's フォローアップ section; this row agrees with it. |
 | `LGBM_BoosterRefit` | Recompute an existing model's leaf values from new data, keeping its tree structure -- the cheap way to keep a deployed model current without retraining it. Named as an unimplemented Phase 2 item by the implementation policy's フォローアップ section; this row agrees with it. |
@@ -116,10 +128,24 @@ and a wrapper that gets this wrong corrupts memory instead of signalling -- ther
 `released-handle-error` shape available for "two threads claimed the same tid". `make-dataset`
 already builds the same finished dataset from one matrix or one `csr-matrix`.
 
-This is the exclusion in this file most likely to be revisited. A caller who genuinely produces
-rows incrementally, and is willing to own the thread contract, would gain something the wrapper
-cannot offer today; the argument above is about cost and testability, not about the flow being
-useless.
+That contract is dispositive for seven of the rows below -- `LGBM_DatasetInitStreaming`, the
+four `PushRows*`, `LGBM_DatasetMarkFinished` and `LGBM_DatasetSetWaitForManualFinish`. **The
+other eight are excluded by membership in the flow rather than by the contract**: they are
+single-threaded and take no `tid`, but each exists only to get this flow to its first pushed
+row or to carry its schema between processes, and none of them builds a dataset a caller could
+train on by itself. Wrapping any of them without the flow would publish a step of a procedure
+whose remaining steps are excluded. Each row's Note names the step it is.
+
+This is the exclusion in this file most likely to be revisited, and a reader revisiting it
+should weigh both halves of the argument above: the seven fall if the thread contract is judged
+ownable, the eight only fall with them.
+
+**This section is LightGBM-only by construction, and Task 2 should not widen it.** XGBoost has
+no counterpart flow: its incremental and external-memory construction
+(`XGDMatrixCreateFromCallback`, `XGQuantileDMatrixCreateFromCallback`,
+`XGExtMemQuantileDMatrixCreateFromCallback`) is driven by a caller-supplied C data iterator, so
+those functions are excluded under "requires a C callback into Lisp" below, on that section's
+own argument and not on this one's.
 
 | Function | Note |
 |---|---|
@@ -141,14 +167,17 @@ useless.
 
 ## Excluded — distributed training across machines
 
-These set up and tear down LightGBM's own collective-communication layer so that several
-processes on several machines train one model together. Wrapping them would mean this project
-taking a position on process topology, port allocation and failure of a peer -- and proving it
-with a functional test that needs more than one machine, which is not a test this repository's
-CI can run. A caller who wants distributed LightGBM has the CLI and the Python package, both of
-which own that orchestration already. `LGBM_NetworkInitWithFunctions` is doubly out: its two
-arguments are C function pointers, which the "requires a C callback into Lisp" section below
-rules out on its own terms.
+Both backends expose their own collective-communication layer, so that several processes on
+several machines train one model together: LightGBM's is `LGBM_Network*` below, XGBoost's is
+its `XGCommunicator*` and `XGTracker*` families. Wrapping either would mean this project taking
+a position on process topology, port allocation and failure of a peer -- and proving it with a
+functional test that needs more than one machine, which is not a test this repository's CI can
+run. A caller who wants distributed training has each project's CLI and Python package, both of
+which own that orchestration already. This is a scope decision about what cl-gbdt is -- an
+in-process wrapper -- and it is expected to hold for both backends.
+
+`LGBM_NetworkInitWithFunctions` is doubly out: its two arguments are C function pointers, which
+the "requires a C callback into Lisp" section below rules out on its own terms.
 
 | Function | Note |
 |---|---|
@@ -179,14 +208,18 @@ rather than leaving it to whoever edits one of them.
 
 | Function | Note |
 |---|---|
-| `LGBM_DatasetCreateFromMats` | See that file's own row for the silent `int` / `int*` `is_row_major` break and the replacements it names. One of them, `LGBM_DatasetCreateFromMat`, is already wrapped. |
+| `LGBM_DatasetCreateFromMats` | See that file's own row for the silent `int` / `int*` `is_row_major` break. It names two replacements, and they do not fare alike here: `LGBM_DatasetCreateFromMat` is already wrapped and is the one to reach for, while the other -- the streaming API -- is itself excluded above, so a reader following that half of the recommendation should stop there rather than take it as licence. |
 
 ## Excluded — superseded by a wrapped entry point
 
-A function cl-gbdt does not call because it calls a better one. Every claim in this section
-names the wrapped function and has been checked against `src/lightgbm/native.lisp`'s
-`:import-from` clause, not assumed from the names: a supersession claim that is wrong is worse
-than no classification, because it reads like a decision someone made with evidence.
+A function cl-gbdt does not call because it calls a better one. Every claim in this section must
+name the superseding function, and that function must actually be wrapped -- checked against
+the backend's own `native.lisp` `:import-from` clause, not assumed from the names. A
+supersession claim that is wrong is worse than no classification, because it reads like a
+decision someone made with evidence; and a claim that stays right only until someone unwraps
+its superseder is why the checker fails on a row whose function has since been wrapped.
+
+The rows below have been checked that way against `src/lightgbm/native.lisp`.
 
 | Function | Note |
 |---|---|
@@ -210,6 +243,15 @@ have carried it forever as coverage still to be won.
 
 ## Excluded — validates an operation cl-gbdt does not offer
 
+A backend's C API contains guards as well as operations: functions whose whole job is to
+decide whether some *other* call is about to be made legally. A guard is only as wrappable as
+the call it guards. Where cl-gbdt offers that call, the guard belongs with it and is not a
+separate decision; where cl-gbdt does not, wrapping the guard alone would publish a validator
+for something a caller has no way to attempt, which reads as a promise that the operation is
+coming. These are excluded for as long as that is true, and each row names the operation it is
+waiting on -- so a section this small stays a decision that can be reversed on a known trigger,
+rather than a leftover.
+
 | Function | Note |
 |---|---|
-| `LGBM_DatasetUpdateParamChecking` | Takes two parameter strings and errors if the change between them is one an already-constructed dataset cannot accept. It exists to guard mutating a live `Dataset`'s parameters, which cl-gbdt has no operation for: `make-dataset` fixes a dataset's parameters at construction and nothing reopens them. Wrapping it would publish a validator for a call that does not exist. Revisit only alongside a dataset-parameter-update operation, never before one. |
+| `LGBM_DatasetUpdateParamChecking` | Waits on a dataset-parameter-update operation. It takes two parameter strings and errors if the change between them is one an already-constructed dataset cannot accept; `make-dataset` fixes a dataset's parameters at construction and nothing reopens them. Note that `LGBM_BoosterResetParameter` is planned above and does not count: that changes a *booster*'s parameters, and this guard does not cover it. |
