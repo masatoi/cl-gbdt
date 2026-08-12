@@ -78,3 +78,86 @@
 (defstruct fixture-struct "A structure fixture." (field nil))
 
 (defparameter *fixture-variable* nil "A variable fixture.")
+
+(define-condition fixture-documented-condition (error)
+  ((code :initarg :code
+         :reader fixture-documented-condition-code
+         :documentation "The status the foreign call returned."))
+  (:documentation "A condition whose slot carries its own text."))
+
+(defclass fixture-documented-class ()
+  ((tag :initarg :tag
+        :reader fixture-documented-class-tag
+        :documentation "What this object is called."))
+  (:documentation "A class whose slot carries its own text."))
+
+(deftest slot-documentation-reaches-condition-slots
+  (testing "documentation cannot read a condition slot's text in SBCL; this can"
+    (let ((slots (cl-gbdt/src/docgen/all:type-slots 'fixture-documented-condition)))
+      (ok (= 1 (length slots)))
+      (ok (string= "The status the foreign call returned."
+                   (cl-gbdt/src/docgen/all:slot-info-documentation (first slots))))
+      (ok (equal '(fixture-documented-condition-code)
+                 (cl-gbdt/src/docgen/all:slot-info-readers (first slots)))))))
+
+(deftest slot-documentation-reaches-standard-class-slots
+  (testing "the same accessor serves defclass slots, so there is one mechanism not two"
+    (let ((slots (cl-gbdt/src/docgen/all:type-slots 'fixture-documented-class)))
+      (ok (string= "What this object is called."
+                   (cl-gbdt/src/docgen/all:slot-info-documentation (first slots)))))))
+
+(deftest symbol-documentation-reads-one-doc-type-per-kind
+  (testing "a type answers under both 'type and 'structure; only one is read"
+    (ok (string= "A structure fixture."
+                 (cl-gbdt/src/docgen/all:symbol-documentation 'fixture-struct :structure)))
+    (ok (string= "Add A and B."
+                 (cl-gbdt/src/docgen/all:symbol-documentation 'fixture-function :function)))
+    (ok (string= "A variable fixture."
+                 (cl-gbdt/src/docgen/all:symbol-documentation '*fixture-variable* :variable)))))
+
+(deftest reader-index-maps-structure-accessors-and-constructors
+  (testing "a defstruct's accessors and constructor are found structurally, not by name"
+    (let* ((published (cl-gbdt/src/docgen/all:published-symbols
+                       '("cl-gbdt/tests/docgen/gamma")))
+           (index (cl-gbdt/src/docgen/all:reader-index published)))
+      ;; FIXTURE-INDEXED-STRUCT and its accessor/constructor are exported by GAMMA, but a bare
+      ;; slot name like FIELD is not published by anything -- it is data hung off a published
+      ;; type, not itself part of a package's public surface -- so it stays unexported there and
+      ;; is reached here with `::' rather than `:'. Unqualified symbols in this LET* would read
+      ;; into CL-GBDT/TESTS/DOCGEN, a different symbol from GAMMA's own, so GETHASH would look up
+      ;; the wrong key entirely.
+      (ok (equal '(:slot cl-gbdt/tests/docgen/gamma:fixture-indexed-struct
+                   cl-gbdt/tests/docgen/gamma::field)
+                 (gethash 'cl-gbdt/tests/docgen/gamma:fixture-indexed-struct-field index)))
+      (ok (equal '(:constructor cl-gbdt/tests/docgen/gamma:fixture-indexed-struct)
+                 (gethash 'cl-gbdt/tests/docgen/gamma:make-fixture-indexed-struct index))))))
+
+(deftest reader-index-maps-condition-readers-to-their-slot
+  (testing "a published reader points at the type and slot it reads"
+    (let* ((published (cl-gbdt/src/docgen/all:published-symbols
+                       '("cl-gbdt/tests/docgen/gamma")))
+           (index (cl-gbdt/src/docgen/all:reader-index published)))
+      ;; See the previous test for why GAMMA's symbols need explicit qualification here.
+      (ok (equal '(:slot cl-gbdt/tests/docgen/gamma:fixture-indexed-condition
+                   cl-gbdt/tests/docgen/gamma::code)
+                 (gethash 'cl-gbdt/tests/docgen/gamma:fixture-indexed-condition-code
+                          index))))))
+
+(defpackage #:cl-gbdt/tests/docgen/gamma
+  (:use #:cl)
+  (:export #:fixture-indexed-struct
+           #:fixture-indexed-struct-field
+           #:make-fixture-indexed-struct
+           #:fixture-indexed-condition
+           #:fixture-indexed-condition-code))
+
+(in-package #:cl-gbdt/tests/docgen/gamma)
+
+(defstruct fixture-indexed-struct "An indexed structure fixture." (field nil))
+
+(define-condition fixture-indexed-condition (error)
+  ((code :initarg :code :reader fixture-indexed-condition-code
+         :documentation "A code."))
+  (:documentation "An indexed condition fixture."))
+
+(in-package #:cl-gbdt/tests/docgen)

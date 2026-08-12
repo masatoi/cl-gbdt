@@ -17,7 +17,15 @@
            #:published-qualifier
            #:published-exported-from
            #:published-symbols
-           #:symbol-kind))
+           #:symbol-kind
+           #:symbol-documentation
+           #:slot-documentation
+           #:type-slots
+           #:slot-info
+           #:slot-info-name
+           #:slot-info-readers
+           #:slot-info-documentation
+           #:reader-index))
 
 (in-package #:cl-gbdt/src/docgen/introspect)
 
@@ -115,3 +123,74 @@ symbol the reference cannot describe is a defect in the surface, not in the refe
           (t (error "Cannot classify the published symbol ~S: it names no function, macro, ~
 generic function, class, condition, structure or bound variable."
                     symbol)))))
+
+(defun symbol-documentation (symbol kind)
+  "Return SYMBOL's docstring for KIND, reading exactly one doc-type.
+
+SBCL answers a type's docstring under both the `type' and the `structure' doc-type, so a sweep
+of all four doc-types double-counts every type. One doc-type per kind is what the reference
+emits and what its floor counts."
+  (ecase kind
+    ((:function :generic-function :macro) (documentation symbol 'function))
+    ((:class :condition :structure) (documentation symbol 'type))
+    (:variable (documentation symbol 'variable))))
+
+(defun slot-documentation (slot)
+  "Return SLOT's :documentation, for a condition slot as well as a standard-class slot.
+
+`(documentation slot t)' warns and returns NIL for a condition slot in SBCL
+(SB-PCL::CONDITION-DIRECT-SLOT-DEFINITION is not a doc-type T object); this internal reader
+answers for both, so there is one mechanism here rather than two."
+  (funcall (primitive "SB-PCL" "%SLOT-DEFINITION-DOCUMENTATION") slot))
+
+(defstruct (slot-info (:constructor %make-slot-info))
+  "One direct slot of a published type: its name, its readers, and its own text."
+  (name nil :read-only t)
+  (readers nil :read-only t)
+  (documentation nil :read-only t))
+
+(defun type-slots (type-symbol)
+  "Return TYPE-SYMBOL's DIRECT slots as `slot-info' structs, in the order they were written.
+
+Direct, not inherited: an inherited slot is documented under the type that declares it, once.
+The order is `class-direct-slots'', which is the order of the defining form."
+  (let ((class (find-class type-symbol)))
+    (if (typep class 'structure-class)
+        (let ((description (sb-kernel:find-defstruct-description type-symbol)))
+          (mapcar (lambda (dsd)
+                    (%make-slot-info :name (sb-kernel:dsd-name dsd)
+                                     :readers (list (sb-kernel:dsd-accessor-name dsd))
+                                     :documentation nil))
+                  (sb-kernel:dd-slots description)))
+        (progn
+          (sb-mop:finalize-inheritance class)
+          (mapcar (lambda (slot)
+                    (%make-slot-info :name (sb-mop:slot-definition-name slot)
+                                     :readers (sb-mop:slot-definition-readers slot)
+                                     :documentation (slot-documentation slot)))
+                  (sb-mop:class-direct-slots class))))))
+
+(defun reader-index (published)
+  "Map each published reader, accessor and structure constructor to what it reads.
+
+A reader's entry in the reference is a pointer at its type, so the slot's text appears exactly
+once, on the type. A structure's accessors and constructor are read out of its defstruct
+description rather than inferred from its name: `make-csr-matrix' is a plain `defun' while
+`make-version-range' is a constructor, and no naming rule separates those two."
+  (let ((index (make-hash-table))
+        (symbols (mapcar #'published-symbol published)))
+    (dolist (symbol symbols index)
+      (when (find-class symbol nil)
+        (let ((class (find-class symbol)))
+          (if (typep class 'structure-class)
+              (let ((description (sb-kernel:find-defstruct-description symbol)))
+                (dolist (dsd (sb-kernel:dd-slots description))
+                  (setf (gethash (sb-kernel:dsd-accessor-name dsd) index)
+                        (list :slot symbol (sb-kernel:dsd-name dsd))))
+                (dolist (constructor (funcall (primitive "SB-KERNEL" "DD-CONSTRUCTORS")
+                                              description))
+                  (setf (gethash (car constructor) index) (list :constructor symbol))))
+              (dolist (slot (type-slots symbol))
+                (dolist (reader (slot-info-readers slot))
+                  (setf (gethash reader index)
+                        (list :slot symbol (slot-info-name slot)))))))))))
