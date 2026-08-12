@@ -53,7 +53,11 @@
                 ;; this file, the only test here that weighs two boosters' answers about one
                 ;; matrix against each other rather than judging one booster's answers on
                 ;; their own.
-                #:predictions-agree-p))
+                #:predictions-agree-p
+                ;; Adopted for the `save-model' and `load-model' refusal blocks this task
+                ;; added to `xgboost-api-layer-1-refuses-the-other-backends-handles' and
+                ;; `-backend' below, neither call ever reading the file it names.
+                #:model-path))
 
 (in-package #:cl-gbdt/tests/functional/xgboost-api)
 
@@ -1517,7 +1521,21 @@ closed [BEGIN, END] reading would make this 6.")
                (ok (subtypep 'cl-gbdt/xgboost:capability-unavailable
                              'cl-gbdt/xgboost:gbdt-error)
                    "the condition hierarchy is reachable from this package too"))
-          (cl-gbdt/xgboost:close-backend backend))))))
+          (cl-gbdt/xgboost:close-backend backend)))))
+  ;; The seven names S2-2 published. `find-symbol' rather than a call: this test
+  ;; is about the package's surface, and each operation's behaviour is asserted
+  ;; where it is exercised. `:external' is the whole point -- an internal symbol
+  ;; of the same name would let every package-qualified call in
+  ;; tests/functional/xgboost-standalone.lisp keep compiling while a standalone
+  ;; caller outside this repository saw nothing.
+  (dolist (name '("SAVE-MODEL" "LOAD-MODEL" "MODEL-TO-STRING"
+                  "FEATURE-IMPORTANCE" "EVALUATION"
+                  "DATASET-NUM-ROWS" "DATASET-NUM-FEATURES"))
+    (multiple-value-bind (symbol status)
+        (find-symbol name (find-package '#:cl-gbdt/xgboost))
+      (declare (ignore symbol))
+      (ok (eq :external status)
+          (format nil "cl-gbdt/xgboost exports ~A" name)))))
 
 ;;; Task 8 (.superpowers/sdd/2026-08-11-layer1-training-slice): `create-booster' is the one
 ;;; Layer 1 operation with no caller inside this library. `train' does NOT delegate to it --
@@ -1681,7 +1699,45 @@ their measurements out of date for no gain.")
                  (ok (handler-case
                          (progn (cl-gbdt/xgboost:update-one-iteration lightgbm-booster) nil)
                        (cl-gbdt:wrong-backend-reference () t))
-                     "XGBoost's update-one-iteration accepted a LightGBM booster")))
+                     "XGBoost's update-one-iteration accepted a LightGBM booster"))
+               ;; S2-2's six additions, the half `tools/ci/check-layer-1-guards.lisp' cannot
+               ;; reach: that check establishes a guard EXISTS, not that it names the RIGHT
+               ;; class, and every one of these was a `defmethod' specialized on
+               ;; `xgboost-booster' or `xgboost-dataset' until that check made it a plain
+               ;; `defun'. XGBoost's `save-model' takes no `:num-iteration', unlike LightGBM's,
+               ;; so its refusal block passes the path alone.
+               (testing "save-model rejects a LightGBM booster"
+                 (ok (handler-case
+                         (progn (cl-gbdt/xgboost:save-model
+                                 lightgbm-booster (model-path "cl-gbdt-refusal.json"))
+                                nil)
+                       (cl-gbdt:wrong-backend-reference () t))
+                     "XGBoost's save-model accepted a LightGBM booster"))
+               (testing "model-to-string rejects a LightGBM booster"
+                 (ok (handler-case
+                         (progn (cl-gbdt/xgboost:model-to-string lightgbm-booster) nil)
+                       (cl-gbdt:wrong-backend-reference () t))
+                     "XGBoost's model-to-string accepted a LightGBM booster"))
+               (testing "feature-importance rejects a LightGBM booster"
+                 (ok (handler-case
+                         (progn (cl-gbdt/xgboost:feature-importance lightgbm-booster) nil)
+                       (cl-gbdt:wrong-backend-reference () t))
+                     "XGBoost's feature-importance accepted a LightGBM booster"))
+               (testing "evaluation rejects a LightGBM booster"
+                 (ok (handler-case
+                         (progn (cl-gbdt/xgboost:evaluation lightgbm-booster) nil)
+                       (cl-gbdt:wrong-backend-reference () t))
+                     "XGBoost's evaluation accepted a LightGBM booster"))
+               (testing "dataset-num-rows rejects a LightGBM dataset"
+                 (ok (handler-case
+                         (progn (cl-gbdt/xgboost:dataset-num-rows lightgbm-set) nil)
+                       (cl-gbdt:wrong-backend-reference () t))
+                     "XGBoost's dataset-num-rows accepted a LightGBM dataset"))
+               (testing "dataset-num-features rejects a LightGBM dataset"
+                 (ok (handler-case
+                         (progn (cl-gbdt/xgboost:dataset-num-features lightgbm-set) nil)
+                       (cl-gbdt:wrong-backend-reference () t))
+                     "XGBoost's dataset-num-features accepted a LightGBM dataset")))
           ;; Freed through the unified API, which dispatches on the concrete class and so
           ;; reaches LightGBM's own frees. That these still work is the other half of the two
           ;; refusals above: XGBoost's frees left both handles exactly as they found them.
@@ -1778,6 +1834,25 @@ their measurements out of date for no gain.")
                            (progn (cl-gbdt/xgboost:create-booster "xgboost" dataset) nil)
                          (cl-gbdt:wrong-backend-reference () t))
                        "XGBoost's create-booster accepted the backend's name as its backend"))
+                 ;; S2-2's addition: `load-model' takes a BACKEND rather than a handle, exactly
+                 ;; as `create-dataset' and `create-booster' do above, and needs the same two
+                 ;; refusals. The path need not exist: the class check runs before the file is
+                 ;; ever opened, which is the property being asserted.
+                 (testing "load-model rejects the LightGBM backend"
+                   (ok (handler-case
+                           (let ((accepted (cl-gbdt/xgboost:load-model
+                                            lightgbm (model-path "cl-gbdt-refusal.json"))))
+                             (cl-gbdt/xgboost:free-booster accepted)
+                             nil)
+                         (cl-gbdt:wrong-backend-reference () t))
+                       "XGBoost's load-model accepted the LightGBM backend"))
+                 (testing "load-model rejects a value that is not a backend at all"
+                   (ok (handler-case
+                           (progn (cl-gbdt/xgboost:load-model
+                                   nil (model-path "cl-gbdt-refusal.json"))
+                                  nil)
+                         (cl-gbdt:wrong-backend-reference () t))
+                       "XGBoost's load-model accepted NIL as its backend"))
                  (testing "and its own backend still builds a booster over that same dataset"
                    ;; The control, and not a formality: both refusals above would also hold for
                    ;; a broken fixture -- a DATASET this backend rejected for some reason of

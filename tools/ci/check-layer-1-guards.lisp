@@ -272,16 +272,17 @@ Four is what the two backends' `api.lisp' and `native.lisp' come to. A third bac
 the real number and still clears the floor; a wrong working directory or a rename drops it to
 zero, which is the case this catches. See THE FLOOR.")
 
-(defparameter +minimum-entry-points+ 17
+(defparameter +minimum-entry-points+ 31
   "Fewer public entry points found in total than this means the scan lost sight of something,
 and fails.
 
-Seventeen is today's set: `create-dataset', `create-booster', `update-one-iteration',
-`predict', `free-dataset' and `free-booster' in each backend's `api.lisp', plus XGBoost's
-`slice-model' there; plus `booster-eval' and `booster-eval-names' in LightGBM's `native.lisp'
-and `evaluate-one-iteration' and `booster-boosted-rounds' in XGBoost's. Raise this when the
-set grows, so that a later disappearance is caught at the new size rather than absorbed by the
-old slack.")
+Thirty-one is today's set: `create-dataset', `create-booster', `update-one-iteration',
+`predict', `free-dataset', `free-booster', `save-model', `load-model', `model-to-string',
+`feature-importance', `evaluation', `dataset-num-rows' and `dataset-num-features' in each
+backend's `api.lisp', plus XGBoost's `slice-model' there; plus `booster-eval' and
+`booster-eval-names' in LightGBM's `native.lisp' and `evaluate-one-iteration' and
+`booster-boosted-rounds' in XGBoost's. Raise this when the set grows, so that a later
+disappearance is caught at the new size rather than absorbed by the old slack.")
 
 (defun %restart-associated-with-p (restart condition)
   "True when RESTART is associated with CONDITION specifically, rather than merely visible
