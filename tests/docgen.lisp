@@ -406,3 +406,87 @@
       ;; appear in TEXT at all is through the Slots section -- isolating what this test pins.
       (ok (search "#### `field`" text))
       (ok (not (search "```text" text))))))
+
+(defpackage #:cl-gbdt/tests/docgen/delta
+  (:use #:cl)
+  (:export #:fixture-published-generic))
+
+(in-package #:cl-gbdt/tests/docgen/delta)
+
+(defgeneric fixture-published-generic (object)
+  (:documentation "A published generic fixture."))
+
+(defmethod fixture-published-generic ((object integer))
+  "The integer method."
+  object)
+
+(in-package #:cl-gbdt/tests/docgen)
+
+(deftest emit-api-reference-is-deterministic
+  (testing "two runs over one image give identical bytes; nothing about the machine leaks in"
+    (let ((first (with-output-to-string (s)
+                   (cl-gbdt/src/docgen/all:emit-api-reference
+                    '("cl-gbdt/tests/docgen/gamma") s)))
+          (second (with-output-to-string (s)
+                    (cl-gbdt/src/docgen/all:emit-api-reference
+                     '("cl-gbdt/tests/docgen/gamma") s))))
+      (ok (string= first second)))))
+
+(deftest emit-api-reference-indexes-every-published-symbol
+  (testing "the index links to an anchor the body actually defines"
+    (let ((text (with-output-to-string (s)
+                  (cl-gbdt/src/docgen/all:emit-api-reference
+                   '("cl-gbdt/tests/docgen/gamma") s))))
+      (dolist (name '("fixture-indexed-struct" "fixture-indexed-struct-field"
+                      "make-fixture-indexed-struct" "fixture-indexed-condition"
+                      "fixture-indexed-condition-code"))
+        (ok (search (format nil "](#cl-gbdt-tests-docgen-gamma-~A)" name) text))
+        (ok (search (format nil "<a id=\"cl-gbdt-tests-docgen-gamma-~A\"></a>" name) text))))))
+
+(deftest emit-api-reference-refuses-duplicate-anchors
+  (testing "two entries with one anchor would make the index ambiguous"
+    (ok (handler-case
+            (progn (cl-gbdt/src/docgen/all:check-anchors-unique
+                    (list (cons "same" 'alpha) (cons "same" 'beta)))
+                   nil)
+          (error () t)))))
+
+(deftest collect-entries-attaches-methods-to-their-generic
+  (testing "a generic's entry carries every method's signature and docstring"
+    (let* ((entries (cl-gbdt/src/docgen/all:collect-entries '("cl-gbdt/tests/docgen/delta")))
+           (entry (find 'cl-gbdt/tests/docgen/delta:fixture-published-generic entries
+                        :key #'cl-gbdt/src/docgen/all:entry-symbol)))
+      (ok (= 1 (length (cl-gbdt/src/docgen/all:entry-methods entry))))
+      (ok (search "fixture-published-generic"
+                  (car (first (cl-gbdt/src/docgen/all:entry-methods entry))))))))
+
+(defpackage #:cl-gbdt/tests/docgen/epsilon
+  (:use #:cl)
+  (:export #:fixture-mismatched-condition))
+
+(in-package #:cl-gbdt/tests/docgen/epsilon)
+
+(define-condition fixture-mismatched-condition (error)
+  ((code :initarg :code :reader fixture-mismatched-condition-code
+         :documentation "A code."))
+  (:documentation "A condition fixture whose reader is republished under a different package."))
+
+(in-package #:cl-gbdt/tests/docgen)
+
+(defpackage #:cl-gbdt/tests/docgen/zeta
+  (:use #:cl)
+  (:import-from #:cl-gbdt/tests/docgen/epsilon #:fixture-mismatched-condition-code)
+  (:export #:fixture-mismatched-condition-code))
+
+(deftest collect-entries-signals-when-a-readers-type-has-a-different-qualifier
+  (testing "ruling 1: render-entry names the type using the reader's own qualifier"
+    (ok (handler-case
+            (progn (cl-gbdt/src/docgen/all:collect-entries
+                    '("cl-gbdt/tests/docgen/zeta" "cl-gbdt/tests/docgen/epsilon"))
+                   nil)
+          (error (e)
+            (let ((message (princ-to-string e)))
+              (and (search "FIXTURE-MISMATCHED-CONDITION-CODE" message)
+                   (search "FIXTURE-MISMATCHED-CONDITION" message)
+                   (search "cl-gbdt/tests/docgen/zeta" message)
+                   (search "cl-gbdt/tests/docgen/epsilon" message))))))))

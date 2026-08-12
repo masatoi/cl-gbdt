@@ -5,4 +5,5 @@
 
 (uiop:define-package #:cl-gbdt/src/docgen/all
   (:use-reexport #:cl-gbdt/src/docgen/introspect
-                 #:cl-gbdt/src/docgen/render))
+                 #:cl-gbdt/src/docgen/render
+                 #:cl-gbdt/src/docgen/emit))
