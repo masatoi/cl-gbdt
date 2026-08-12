@@ -7,7 +7,7 @@
 ;;;; ffi-spec/BINDING-COVERAGE.md is this project's record that every C function emitted
 ;;;; into src/*/c-api.lisp -- 177 across both backends today -- has a recorded position:
 ;;;; `wrapped' (a backend's native.lisp imports it), `planned' (a row under that file's
-;;;; single `## Planned' heading), or `excluded' (a row under one of its `## Excluded --
+;;;; single `## Planned' heading), or `excluded' (a row under one of its `## Excluded —
 ;;;; <reason>' headings, the heading itself carrying the argument). That file's own header
 ;;;; says coverage there is guaranteed by classification, not by a percentage; this script
 ;;;; is the enforcement of that promise -- an unclassified `defcfun' is a build failure.
@@ -44,26 +44,36 @@
 ;;;;    and far above zero -- it catches a glob that matched one file instead of two,
 ;;;;    without failing the day someone regenerates against a smaller upstream header.
 ;;;; 2. Empty-parse guard: `classified-entries' finding zero rows in
-;;;;    ffi-spec/BINDING-COVERAGE.md fails before any of the four checks below run,
-;;;;    worded like check-abi-blacklist.lisp's own -- a check that silently matches
-;;;;    nothing is worse than no check.
-;;;; 3. CHECK A -- every `defcfun' C name across both backends is wrapped, planned, or
+;;;;    ffi-spec/BINDING-COVERAGE.md fails before any of the checks below run, worded like
+;;;;    check-abi-blacklist.lisp's own -- a check that silently matches nothing is worse
+;;;;    than no check. A missing file reaches this guard too, rather than signalling a raw
+;;;;    file-system error: `classified-entries' opens with `:if-does-not-exist nil'.
+;;;; 3. Section-vocabulary check: every section `classified-entries' recorded must be
+;;;;    literally `Planned' or begin `Excluded'; anything else fails, naming the offending
+;;;;    heading. This guards `planned-section-p''s own literal comparison -- without it, a
+;;;;    row filed under a heading this checker does not recognise (`## Planned for 4.0',
+;;;;    say, or one row that precedes the file's first `## ' heading at all, leaving it with
+;;;;    no section) would fall through to CHECK D's `excluded-names' bucket by default,
+;;;;    silently reclassifying rather than failing anything.
+;;;; 4. CHECK A -- every `defcfun' C name across both backends is wrapped, planned, or
 ;;;;    excluded. This is the point of the whole file; an unclassified name fails, named
 ;;;;    individually.
-;;;; 4. CHECK B -- every classified name (planned or excluded) is a real `defcfun' on some
+;;;; 5. CHECK B -- every classified name (planned or excluded) is a real `defcfun' on some
 ;;;;    backend. One that is not fails: a typo in the row, or a function upstream removed
 ;;;;    while the row stayed behind.
-;;;; 5. CHECK C -- no classified name is also wrapped. One that is fails: someone wrapped
+;;;; 6. CHECK C -- no classified name is also wrapped. One that is fails: someone wrapped
 ;;;;    it and left the row behind -- the failure ffi-spec/BINDING-COVERAGE.md's own header
 ;;;;    names as the one this file is most likely to develop.
-;;;; 6. CHECK D -- every function ffi-spec/ABI-BLACKLIST.md's "still present in the
+;;;; 7. CHECK D -- every function ffi-spec/ABI-BLACKLIST.md's "still present in the
 ;;;;    generated bindings" table names, intersected with the `defcfun' names actually
 ;;;;    emitted, is classified `excluded' here. That intersection needs no awareness of
 ;;;;    which of ABI-BLACKLIST.md's two tables a name is in: its two tables are "still
 ;;;;    present" and "moot -- removed upstream, never emitted", so intersecting the full
 ;;;;    name list (`blacklisted-names', reused as-is) against the emitted `defcfun' set
 ;;;;    already is the still-present set -- a function moving between those two tables
-;;;;    needs no edit here.
+;;;;    needs no edit here. `blacklisted-names' itself gets an empty-parse guard at its own
+;;;;    call site, on the same reasoning as item 2 above, since CHECK D depends on it being
+;;;;    non-empty.
 ;;;;
 ;;;; Like check-abi-blacklist.lisp, every file here is read as data via `read', never
 ;;;; loaded or evaluated: nothing in src/*/c-api.lisp or src/*/native.lisp runs, and no
@@ -79,9 +89,13 @@
 ;;;;   - A name removed from ABI-BLACKLIST.md entirely rather than moved between its two
 ;;;;     tables -- CHECK D only ever reads names still present in that file's tables; one
 ;;;;     deleted from both stops being an obligation this check enforces, silently.
-;;;;   - Whether the *right* heading covers a given excluded row, only that some heading
-;;;;     does -- `classified-entries' records whichever `## ' heading precedes a row most
-;;;;     recently, however the surrounding prose grouped it.
+;;;;   - Whether the *right* heading covers a given excluded row, only that it is
+;;;;     *recognisable* as one -- `classified-entries' records whichever `## ' heading
+;;;;     precedes a row most recently, however the surrounding prose grouped it, and the
+;;;;     section-vocabulary check (item 3 above) only requires that heading begin
+;;;;     `Excluded'. A row filed under the wrong *particular* exclusion heading -- CUDA
+;;;;     reasoning attached to an Arrow-only function, say -- passes just as cleanly as the
+;;;;     right one.
 
 (require :asdf)
 
@@ -244,17 +258,23 @@ Where `blacklisted-names' above deliberately discards which section a row came f
 that check treats both of its tables alike -- this one cannot: the section heading is the
 whole of what distinguishes a planned entry from an excluded one, and an excluded entry's
 heading is also where its reason is written. So the row parse is `blacklisted-names''s
-own, and the traversal around it is new."
-  (with-open-file (in path)
-    (loop :with section := nil
-          :for line := (read-line in nil)
-          :while line
-          :for trimmed := (string-trim '(#\Space #\Tab) line)
-          :when (and (> (length trimmed) 3) (string= "## " (subseq trimmed 0 3)))
-            :do (setf section (string-trim '(#\Space #\Tab) (subseq trimmed 3)))
-          :when (let ((cell (table-row-first-cell line)))
-                  (and cell (backticked-name cell)))
-            :collect (cons (backticked-name (table-row-first-cell line)) section))))
+own, and the traversal around it is new.
+
+Opens with `:if-does-not-exist nil', unlike `blacklisted-names': a missing PATH then
+returns NIL rather than signalling, so the empty-parse guard at this file's call site can
+honestly say a missing file is one of the reasons it found nothing, instead of that case
+being unreachable behind a raw file-system error."
+  (with-open-file (in path :if-does-not-exist nil)
+    (when in
+      (loop :with section := nil
+            :for line := (read-line in nil)
+            :while line
+            :for trimmed := (string-trim '(#\Space #\Tab) line)
+            :when (and (> (length trimmed) 3) (string= "## " (subseq trimmed 0 3)))
+              :do (setf section (string-trim '(#\Space #\Tab) (subseq trimmed 3)))
+            :when (let ((cell (table-row-first-cell line)))
+                    (and cell (backticked-name cell)))
+              :collect (cons (backticked-name (table-row-first-cell line)) section)))))
 
 (defun planned-section-p (section)
   "True when SECTION is the planned heading rather than an exclusion heading.
@@ -263,17 +283,61 @@ Compared against the literal heading rather than by prefix, so a future `## Plan
 is a section this check does not silently treat as planned."
   (and section (string= section "Planned")))
 
+(defun excluded-section-p (section)
+  "True when SECTION begins with the literal prefix `Excluded' -- the family of headings
+`## Excluded — <reason>' uses, whatever reason follows. NIL (a row with no `## ' heading
+above it at all) is not: `(and section ...)' short-circuits on that case before `string='
+would need a start/end past SECTION's own length."
+  (and section
+       (<= (length "Excluded") (length section))
+       (string= "Excluded" section :end2 (length "Excluded"))))
+
+(defun known-section-p (section)
+  "True when SECTION is a section this checker's vocabulary recognises: literally
+`Planned' (per `planned-section-p') or beginning `Excluded' (per `excluded-section-p').
+Anything else -- including NIL -- is not."
+  (or (planned-section-p section) (excluded-section-p section)))
+
+(defun check-section-vocabulary (entries)
+  "Fail on every section among ENTRIES (a `classified-entries' result) that
+`known-section-p' does not recognise, naming each offending heading once. Returns the
+offending sections, deduplicated.
+
+Exists because `planned-section-p''s comparison is deliberately literal, not a prefix
+match (see its own docstring) -- but that literalness only does its job if something
+fails loudly when a row's actual heading does not match it. Without this check, a
+renamed or new heading `known-section-p' has never seen -- `## Planned for 4.0', `##
+Deferred', or a row that precedes the file's first `## ' heading and so carries no
+section at all -- does not fail CHECK D's own comparison against `excluded-names' either:
+`excluded-names' is built as \"every classified name whose section is not the planned
+one\", so any unrecognised section falls into it by default. A still-emitted blacklisted
+function filed under such a heading would then read as `excluded' to CHECK D and the
+build would stay green, which is exactly the silent reclassification this check exists to
+turn into a failure instead."
+  (let ((bad (remove-duplicates
+              (loop :for (nil . section) :in entries
+                    :unless (known-section-p section)
+                      :collect section)
+              :test #'equal)))
+    (dolist (section bad)
+      (format *error-output*
+              "~&FAIL ~A is not a section this checker recognises -- must be literally ~
+               \"Planned\" or begin \"Excluded\". Rename the heading, or move the row.~%"
+              (if section (format nil "~S" section)
+                  "a row with no `## ' heading above it")))
+    bad))
+
 ;;; ---- The wrapped set, and the four checks ----
 
-(defun wrapped-c-names (c-api-path c-api-package-name backend-path)
+(defun wrapped-c-names (name-map c-api-package-name backend-path)
   "Return the list of C function names BACKEND-PATH's `native.lisp' actually wraps --
-every name it imports from C-API-PATH's package that resolves, through that file's
-`defcfun' map, to a C name. An import that does not resolve is silently skipped: it names
-a constant, not a function, and distinguishing that from a genuine typo is
+every name it imports from C-API-PACKAGE-NAME that resolves, through NAME-MAP (a
+`c-name-map' result, the caller's to build and reuse rather than this function's to
+re-derive), to a C name. An import that does not resolve is silently skipped: it names a
+constant, not a function, and distinguishing that from a genuine typo is
 tools/ci/check-abi-blacklist.lisp's job, already run as its own gate; this checker only
 needs the C names that DO resolve."
-  (let ((name-map (c-name-map c-api-path))
-        (imports (backend-imports backend-path c-api-package-name)))
+  (let ((imports (backend-imports backend-path c-api-package-name)))
     (loop :for lisp-name :in imports
           :for c-name := (gethash lisp-name name-map)
           :when c-name :collect c-name)))
@@ -375,14 +439,39 @@ came from. Returns the offending names."
                in a markdown table row's first column).~%"
               +coverage-path+)
       (uiop:quit 1))
+    ;; Section-vocabulary check: fails before CHECK A-D run, same reasoning as the
+    ;; empty-parse guard just above -- see this file's header, item 3.
+    (let ((bad-sections (check-section-vocabulary entries)))
+      (when bad-sections
+        (uiop:quit 1)))
     (let* ((classified-names (mapcar #'car entries))
            (excluded-names (mapcar #'car (remove-if (lambda (e) (planned-section-p (cdr e)))
                                                       entries)))
            (blacklist-file (merge-pathnames +blacklist-path+ root))
-           (blacklist (blacklisted-names blacklist-file))
+           ;; A missing ABI-BLACKLIST.md would otherwise crash inside `blacklisted-names'
+           ;; itself (it is ported verbatim from check-abi-blacklist.lisp and does not
+           ;; open with `:if-does-not-exist nil'); catching that here lets the guard just
+           ;; below treat "missing" and "present but empty" alike, honestly.
+           (blacklist (handler-case (blacklisted-names blacklist-file)
+                        (file-error () nil)))
            (all-c-names '())
            (all-wrapped '())
            (unclassified-total 0))
+      (format t "~&parsed ~D blacklisted function name~:P from ~A~%"
+              (length blacklist) +blacklist-path+)
+      ;; CHECK D depends on BLACKLIST being non-empty; an unguarded empty parse would
+      ;; report "check D: 0 ..." having examined nothing, the same failure shape the
+      ;; empty-parse guard above exists to prevent -- see this file's header, item 7.
+      (when (null blacklist)
+        (format *error-output*
+                "~&FAIL: parsed zero blacklisted function names from ~A. CHECK D depends ~
+                 on this list being non-empty, the same way check-abi-blacklist.lisp's ~
+                 own empty-parse guard protects its identical parse. Either the file is ~
+                 missing, empty, or its table format no longer matches what ~
+                 `blacklisted-names' parses (a backtick-quoted name in a markdown table ~
+                 row's first column).~%"
+                +blacklist-path+)
+        (uiop:quit 1))
       (dolist (spec +backends+)
         (destructuring-bind (id c-api-path c-api-package-name backend-path) spec
           (let* ((full-c-api-path (merge-pathnames c-api-path root))
@@ -390,7 +479,7 @@ came from. Returns the offending names."
                  (name-map (c-name-map full-c-api-path))
                  (backend-c-names (loop :for c-name :being :the :hash-values :of name-map
                                          :collect c-name))
-                 (wrapped (wrapped-c-names full-c-api-path c-api-package-name full-backend-path))
+                 (wrapped (wrapped-c-names name-map c-api-package-name full-backend-path))
                  (planned (remove-if-not
                            (lambda (e) (and (planned-section-p (cdr e))
                                              (member (car e) backend-c-names :test #'string=)))
