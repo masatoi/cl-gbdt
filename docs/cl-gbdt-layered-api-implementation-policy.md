@@ -511,7 +511,7 @@ libraryにする、S1からS5までの五段階のプログラムが進行して
   unified methodはすべて、その手続きの少なくとも一部をLayer 1へ委譲する。委譲の程度が `train` の
   みほかの12と異なる理由 (boosting loop自体は `update-one-iteration` を経由しない) は既に上記の
   フォローアップに記録済みであり、ここでは繰り返さない。
-- **S3 — bindingのclassification。完了。** `src/*/c-api.lisp` が生成する177 bindingすべてを
+- **S3 — bindingのclassification。完了 (PR #31)。** `src/*/c-api.lisp` が生成する177 bindingすべてを
   `ffi-spec/BINDING-COVERAGE.md` で `wrapped`/`planned`/`excluded` のいずれかに分類し、
   `tools/ci/check-binding-coverage.lisp` が未分類のbindingでbuildを失敗させる。
 - **S4 — 未着手。** docstringからAPI referenceを生成しbyte-for-byteで検査する仕組み、および公開
