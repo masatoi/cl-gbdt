@@ -86,7 +86,7 @@ over both backends.
 **Status: functional.** Both backends implement
 all 13 generic functions of the unified API -- `make-dataset`, `train`, `predict`, and
 the rest -- against the real shared libraries, exercised by 946 functional assertions across
-15 test files in `cl-gbdt/tests/functional` (layer 2) on top of 643 assertions across 22
+15 test files in `cl-gbdt/tests/functional` (layer 2) on top of 649 assertions across 22
 test files that need no shared library at all (layer 1).
 
 **Each backend is two systems.** `cl-gbdt/<backend>` is that backend's **Layer 1 alone**:
@@ -370,16 +370,17 @@ and 3 min for the corresponding whole suites through the gates below. `load-syst
 tool for reloading after an edit, in preference to `repl-eval` with `asdf:load-system`.
 
 **`run-tests`' `Passed:` count is not what this project's plans call assertions, and its
-unit is not stable across its own two modes.** Measured on the layer 1 suite the same day:
+unit is not stable across its own two modes.** Measured on the layer 1 suite on 2026-08-13,
+after the API-reference emitter's own tests/docgen.lisp joined the layer 1 suite:
 
 | Where the number comes from | Layer 1 reads | Unit |
 |---|---|---|
-| `run-tests` on the whole system | 207 | `deftest` forms |
+| `run-tests` on the whole system | 250 | `deftest` forms |
 | `run-tests` with `test:` / `tests:` | 1, 2, 3 … | `testing` blocks |
-| `tools/ci/run-tests.lisp` | 21 | test *files* |
-| `grep -c "✓ "` minus one | 555 | assertions |
+| `tools/ci/run-tests.lisp` | 22 | test *files* |
+| `grep -c "✓ "` minus one | 649 | assertions |
 
-207 matches `grep -c '^(deftest' tests/*.lisp` exactly. The two MCP modes genuinely differ;
+250 matches `grep -c '^(deftest' tests/*.lisp` exactly. The two MCP modes genuinely differ;
 rove's source was not read to find out why. **Never write a `run-tests` count into a plan
 as a gate** — it will not match what CI reports, and the final `✓ N tests completed` line
 is why the assertion count is one less than a naive `grep -c`.
@@ -445,7 +446,9 @@ src/docgen/   The API-reference emitter (introspect.lisp, render.lisp, emit.lisp
 tests/        Rove test suites, layer 1 (no shared library) plus tests/functional/,
               layer 2 (calls the real shared libraries)
 tools/ci/     The scripts CI actually runs: run-tests.lisp, lint.lisp,
-              check-leaf-systems.lisp
+              check-leaf-systems.lisp, check-layer-separation.lisp, check-float-traps.lisp,
+              check-layer-1-guards.lisp, check-abi-blacklist.lisp,
+              check-binding-coverage.lisp, check-api-reference.lisp
 tools/        regen.lisp (regenerates src/*/c-api.lisp), gen-api-reference.lisp
               (regenerates docs/API-REFERENCE.md), and the shell scripts they and CI call
 ffi-spec/     Vendored C headers and the c2ffi specs generated from them;
