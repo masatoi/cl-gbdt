@@ -82,13 +82,17 @@
   "The command a stage 2 failure message tells the reader to run.")
 
 (defparameter +minimum-published-symbols+
-  '(("cl-gbdt" . 141) ("cl-gbdt/lightgbm" . 88) ("cl-gbdt/xgboost" . 89))
+  '(("cl-gbdt" . 145) ("cl-gbdt/lightgbm" . 93) ("cl-gbdt/xgboost" . 94))
   "Per-package floor on published symbol count, re-measured against a live COLLECT-ENTRIES
 run on 2026-08-13 to match docs/API-REFERENCE.md's own per-package index counts as committed
 that day -- not copied from any earlier plan or brief. See this file's header, item 4, for why
 stage 2's byte-for-byte check cannot catch a floor violation on its own: a dropped export,
 regenerated honestly, leaves the committed and generated files in perfect agreement about a
-smaller surface.")
+smaller surface.
+
+Raised from 141/88/89 by file-input-layer-1's Task 6: `create-dataset-from-file' joins both
+backend packages, and `file-format-mismatch' and its three readers join all three public
+packages through `cl-gbdt/src/conditions'.")
 
 (defun die (format-control &rest arguments)
   "Print FORMAT-CONTROL/ARGUMENTS to *ERROR-OUTPUT* as a FAIL line and exit with status 1.
