@@ -3522,17 +3522,25 @@ contents before it starts parsing, and getting it wrong is not merely wrong.** A
 declared `:libsvm`, or a binary DMatrix declared `:libsvm`, both **segfault** inside a thread
 dmlc creates for the parse -- outside any Lisp stack, so no `handler-case` anywhere can catch it.
 The reverse direction does not crash, but is silently wrong instead: a real libsvm file declared
-`:csv` returns a 4-row, 1-column dataset with no label and a success code. `create-dataset-from-file`
-closes both directions itself, before the foreign call: it classifies `PATH`'s own first non-blank
-line (or its binary magic bytes) and signals `file-format-mismatch` -- naming the path, the
-declared format and the detected one -- whenever the two disagree, an unopenable path being the
-one case passed through to the foreign call to report in its own words. `URI-PARAMETERS` is a
-plist of further dmlc query keys, `(:label_column 0)` among them, appended to the URI after
-`FORMAT`'s own `format=` key; a `format` key inside `URI-PARAMETERS` itself signals
-`unsupported-argument`, since `FORMAT` is this function's own argument to give, not a second,
-unchecked route to the same key. `:binary` carries no `format=` key in the URI at all -- there is
-no such spelling; the way to load an XGBoost binary DMatrix is a URI with no `format=` key
-whatsoever, which `create-dataset-from-file` already knows.
+`:csv` returns a 4-row, 1-column dataset with no label and a success code. Measurement went on to
+find that dmlc's own URI syntax is richer than a short list of reserved characters can enumerate
+ahead of it: a directory is a file list to dmlc, not an error; `;` splits one URI into several
+paths, each read; a glob character expands. `create-dataset-from-file` closes all of it the same
+way rather than adding one more guard per shape found: `PATH` is resolved to a single `truename`
+exactly once, and that one resolution -- never the caller's own designator a second time -- is
+both what gets classified and what the URI is composed from, so the file dmlc opens is provably
+the file this wrapper looked at, not merely probably. Every verdict but an exact match with the
+declared `FORMAT` is refused with `file-format-mismatch` -- naming the path, the declared format
+and the detected one -- including a `PATH` this wrapper could not resolve to one existing regular
+file at all (missing, a directory, a FIFO or device, wild, or a symlink to nowhere): none of that
+is XGBoost's own to report any longer, since dmlc's response to several of those shapes turned
+out not to be an error either. `URI-PARAMETERS` is a plist of further dmlc query keys,
+`(:label_column 0)` among them, appended to the URI after `FORMAT`'s own `format=` key; a
+`format` key inside `URI-PARAMETERS` itself signals `unsupported-argument`, since `FORMAT` is
+this function's own argument to give, not a second, unchecked route to the same key. `:binary`
+carries no `format=` key in the URI at all -- there is no such spelling; the way to load an
+XGBoost binary DMatrix is a URI with no `format=` key whatsoever, which `create-dataset-from-file`
+already knows.
 
 **XGBoost's text-file path is deprecated upstream.** Every text-file attempt, including one this
 wrapper's own gate refuses, prints once per process, to stderr: `WARNING: .../data.cc:963: Text
