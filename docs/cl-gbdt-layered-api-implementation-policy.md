@@ -514,8 +514,17 @@ libraryにする、S1からS5までの五段階のプログラムが進行して
 - **S3 — bindingのclassification。完了 (PR #31)。** `src/*/c-api.lisp` が生成する177 bindingすべてを
   `ffi-spec/BINDING-COVERAGE.md` で `wrapped`/`planned`/`excluded` のいずれかに分類し、
   `tools/ci/check-binding-coverage.lisp` が未分類のbindingでbuildを失敗させる。
-- **S4 — 未着手。** docstringからAPI referenceを生成しbyte-for-byteで検査する仕組み、および公開
-  symbolすべてにfunctional testが存在することを機械的に検査する仕組みを追加する。
+- **S4-1 — docstringからAPI referenceを生成しbyte-for-byteで検査する仕組み。完了。**
+  loadされたimageをintrospectしてMarkdownを書き出すdevelopment-onlyのemitter `src/docgen/`
+  (`introspect.lisp`、`render.lisp`、`emit.lisp`、`all.lisp`) をASDF system `cl-gbdt/docgen`
+  として追加し、その driverである `tools/gen-api-reference.lisp` が、`cl-gbdt`・
+  `cl-gbdt/lightgbm`・`cl-gbdt/xgboost` の三つの公開packageがexportする174 symbol
+  (141/88/89) すべてを覆う `docs/API-REFERENCE.md` を生成した。`tools/ci/check-api-reference.lisp`
+  は四段階で検査する: introspection primitiveの存在、生成結果とcommit済みfileの
+  byte-for-byte一致、公開symbol全てへのdocumentation floor (class/conditionのslotを含む)、
+  package毎のexport数floor。このdocumentation floorを満たすため、`src/conditions.lisp` の
+  condition slot十二個に `:documentation` を追加した。
+- **S4-2 — 公開symbolすべてにfunctional testが存在することを機械的に検査する仕組み。未着手。**
 - **S5 — 未着手。** まだ誰も公開していないC functionを公開する。作業一覧は
   `ffi-spec/BINDING-COVERAGE.md` の `## Planned` 節である。同節にはLightGBMの
   `LGBM_BoosterRollbackOneIter`/`LGBM_BoosterRefit`/`LGBM_BoosterResetParameter`、および両

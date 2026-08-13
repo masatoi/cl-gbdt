@@ -70,6 +70,13 @@ A worked example first, then the details a caller moving between the two backend
 needs. Every code block below was actually run to produce the output pasted beneath it
 (SBCL via `ros run`, with `./tools/fetch-libs.sh`'s vendored libraries already present).
 
+For every published symbol rather than a worked subset, see
+[`docs/API-REFERENCE.md`](docs/API-REFERENCE.md) -- generated from the docstrings
+`cl-gbdt`, `cl-gbdt/lightgbm` and `cl-gbdt/xgboost` export, one entry per symbol, so it
+never drifts from the code the way hand-maintained prose can. This README remains what
+that reference is not: the worked explanations, the differences between the two
+backends, and the reasoning behind them.
+
 ### Quick start
 
 Load the core system and one backend's `/unified` system -- `cl-gbdt/lightgbm` alone
@@ -3733,6 +3740,38 @@ Every one of those 177 emitted functions is classified in
 `ffi-spec/BINDING-COVERAGE.md` as `wrapped`, `planned`, or `excluded`;
 `tools/ci/check-binding-coverage.lisp` fails the build on one that is none of the
 three.
+
+## Regenerating the API reference
+
+`docs/API-REFERENCE.md` is generated, checked in, and covers every symbol `cl-gbdt`,
+`cl-gbdt/lightgbm` and `cl-gbdt/xgboost` export, one section per symbol built from its
+own docstring (and, for a class or condition, its slots' docstrings too). **You do not
+need to regenerate it to use, build, or test this library** -- the same rule
+`src/*/c-api.lisp` carries applies here: it is a developer-only step, for when a
+docstring changes.
+
+Unlike the bindings above, regeneration needs no Docker and no network access -- it
+introspects a loaded image, not a C header. Run it from the repository root:
+
+```bash
+ros run -- --non-interactive --load tools/gen-api-reference.lisp
+```
+
+`tools/gen-api-reference.lisp` loads both backends' `/unified` systems (so all three
+public packages are present to introspect) and the development-only `cl-gbdt/docgen`
+system (`src/docgen/`), then writes `docs/API-REFERENCE.md` from what it finds. Neither
+shared library is opened -- that happens only on an explicit `open-backend` call, and
+nothing here makes one.
+
+`tools/ci/check-api-reference.lisp` regenerates into a temporary file and fails the
+build the same way `tests/bindings.lisp` does for the C bindings: byte-for-byte against
+the committed copy, naming the first differing line and byte offset on a mismatch. It
+also checks two floors a byte-for-byte comparison cannot: that every published symbol
+carries a docstring (or points at a documented type, for a reader with none of its
+own) and every class/condition slot a published reader exposes carries its own
+`:documentation`, and that each of the three packages still publishes at least its
+recorded symbol count -- catching an export dropped and honestly regenerated, which
+byte-for-byte agreement alone would miss.
 
 ## License
 

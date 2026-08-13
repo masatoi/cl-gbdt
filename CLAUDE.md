@@ -232,6 +232,10 @@ worth stating explicitly rather than leaving them to be rediscovered:
   bindings"). This is already enforced by `tests/bindings.lisp`'s
   `committed-bindings-match-their-committed-spec` test, which re-emits from the
   committed c2ffi spec and compares the result to the committed file byte-for-byte.
+  `docs/API-REFERENCE.md` is generated the same way, from the docstrings `cl-gbdt`,
+  `cl-gbdt/lightgbm` and `cl-gbdt/xgboost` export, by `tools/gen-api-reference.lisp` (see
+  README's "Regenerating the API reference"); `tools/ci/check-api-reference.lisp` is its
+  byte-for-byte checker.
 
 ### The handle layer, and `with-pointer-ownership`
 
@@ -397,12 +401,13 @@ ros run -- --non-interactive --load tools/ci/check-float-traps.lisp
 ros run -- --non-interactive --load tools/ci/check-layer-1-guards.lisp
 ros run -- --non-interactive --load tools/ci/check-abi-blacklist.lisp
 ros run -- --non-interactive --load tools/ci/check-binding-coverage.lisp
+ros run -- --non-interactive --load tools/ci/check-api-reference.lisp
 ```
 
-Six of those have no MCP equivalent at all — float traps, layer-1 guards, layer
-separation, ABI blacklist, binding coverage, lint. Run the whole block before committing,
-and at the end of any task whose plan states numbers. **Add a line here whenever
-`tools/ci/` gains a script**: `check-layer-1-guards.lisp` arrived in PR #28 and was
+Seven of those have no MCP equivalent at all — float traps, layer-1 guards, layer
+separation, ABI blacklist, binding coverage, API reference, lint. Run the whole block
+before committing, and at the end of any task whose plan states numbers. **Add a line here
+whenever `tools/ci/` gains a script**: `check-layer-1-guards.lisp` arrived in PR #28 and was
 missing from this list until 2026-08-12.
 
 `sbcl` is not on `PATH` in this environment; every command above goes through
@@ -435,15 +440,19 @@ check on top of it. Running mallet by itself is not equivalent.
 ```
 src/          Core implementation and the binding emitter (src/regen/), one package
               per file; src/*/c-api.lisp are generated -- never hand-edit them
+src/docgen/   The API-reference emitter (introspect.lisp, render.lisp, emit.lisp,
+              all.lisp), development-only, published as cl-gbdt/docgen
 tests/        Rove test suites, layer 1 (no shared library) plus tests/functional/,
               layer 2 (calls the real shared libraries)
 tools/ci/     The scripts CI actually runs: run-tests.lisp, lint.lisp,
               check-leaf-systems.lisp
-tools/        regen.lisp (regenerates src/*/c-api.lisp) and the shell scripts it and
-              CI call
+tools/        regen.lisp (regenerates src/*/c-api.lisp), gen-api-reference.lisp
+              (regenerates docs/API-REFERENCE.md), and the shell scripts they and CI call
 ffi-spec/     Vendored C headers and the c2ffi specs generated from them;
               BINDING-COVERAGE.md classifies every generated binding as wrapped,
               planned, or excluded, and is what answers "what of the C API does this
               wrap"
+docs/         API-REFERENCE.md, generated -- never hand-edit it -- plus
+              cl-gbdt-layered-api-implementation-policy.md, the design/policy record
 prompts/      System prompts for AI agents (imported from cl-mcp)
 ```
