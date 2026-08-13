@@ -1419,6 +1419,15 @@ whose format the library cannot infer, or that does not exist, is reported throu
 `check-lgbm' exactly as any other failed foreign call is -- LightGBM's own message to report,
 not a `probe-file' pre-check made here.
 
+**A libsvm RANKING file -- rows carrying a `qid:<group>' tag between the label and its
+feature pairs -- is refused outright, unlike on XGBoost.** Measured (PR #36 review):
+`LGBM_DatasetCreateFromFile' on such a file signals `foreign-call-error' with LightGBM's
+own `"Input format error when parsing as LibSVM"' -- a real limitation of that library's
+own parser, not a gap in this wrapper's classification (LightGBM does none). Contrast
+`cl-gbdt/xgboost:create-dataset-from-file', which accepts the identical file under
+`:libsvm' and correctly recovers the group boundaries `qid' encodes; see that function's
+own docstring for the measurement establishing the asymmetry.
+
 PATH reaches `LGBM_DatasetCreateFromFile' as `sb-ext:native-namestring' of its OWN
 `%best-effort-resolve-path' -- `truename' when PATH resolves, `merge-pathnames' against
 `*default-pathname-defaults*' when it does not -- not PATH's bare `native-namestring' and
@@ -1546,6 +1555,17 @@ ordinary file.
 `?format=binary' is rejected outright, `Unknown data type binary', and a binary DMatrix
 loads only from a URI with no `format=' key whatsoever -- `file-uri' already knows this and
 omits the key for `:binary'; nothing here has to repeat it.
+
+**A libsvm ranking file -- each row carrying a `qid:<group>' tag between the label and
+its feature pairs -- is accepted under `:libsvm'.** Measured (PR #36 review):
+`XGDMatrixCreateFromURI' reads such a file cleanly, the same row and column shape as the
+identical rows with the `qid' tags removed, and correctly recovers the group boundaries
+they encode. `cl-gbdt/src/xgboost/file-input:detect-file-format' recognizes `qid' only in
+the one position libsvm's own grammar puts it, immediately after the label, not scanned
+for elsewhere on the line -- see that function's own docstring for the rule.
+`cl-gbdt/lightgbm:create-dataset-from-file' does NOT accept the same file; its own parser
+refuses `qid' outright. See that function's docstring for the asymmetry stated on its own
+side too.
 
 **XGBoost's text file input is deprecated.** Every text-path attempt, including a refused
 one, prints `WARNING: .../data.cc:963: Text file input has been deprecated since 3.1' to

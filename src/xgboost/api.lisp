@@ -450,6 +450,17 @@ ordinary file.
 loads only from a URI with no `format=' key whatsoever -- `file-uri' already knows this and
 omits the key for `:binary'; nothing here has to repeat it.
 
+**A libsvm ranking file -- each row carrying a `qid:<group>' tag between the label and
+its feature pairs -- is accepted under `:libsvm'.** Measured (PR #36 review):
+`XGDMatrixCreateFromURI' reads such a file cleanly, the same row and column shape as the
+identical rows with the `qid' tags removed, and correctly recovers the group boundaries
+they encode. `cl-gbdt/src/xgboost/file-input:detect-file-format' recognizes `qid' only in
+the one position libsvm's own grammar puts it, immediately after the label, not scanned
+for elsewhere on the line -- see that function's own docstring for the rule.
+`cl-gbdt/lightgbm:create-dataset-from-file' does NOT accept the same file; its own parser
+refuses `qid' outright. See that function's docstring for the asymmetry stated on its own
+side too.
+
 **XGBoost's text file input is deprecated.** Every text-path attempt, including a refused
 one, prints `WARNING: .../data.cc:963: Text file input has been deprecated since 3.1' to
 **stderr**, **once per process**, measured verbatim (record section 6). The binary path

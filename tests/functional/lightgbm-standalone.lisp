@@ -961,12 +961,19 @@ which the unresolved form would have opened instead"
 0 0:10.0 1:11.0 2:12.0
 " stream))
                ;; The DECOY, same relative name, sitting in the process's actual working
-               ;; directory -- deliberately a different shape (two rows, one feature) so
-               ;; the two are distinguishable by row/feature count alone, with no
-               ;; dependence on which one a broken implementation happened to open.
+               ;; directory -- deliberately a different ROW count (two, not four) but the
+               ;; SAME three-feature shape as the real file. PR #36 review, Minor M2: a
+               ;; 2x1 decoy (an earlier version of this fixture) is not valid libsvm to
+               ;; LightGBM at all -- "Check failed: (max_col_idx) > (0)" -- so under the
+               ;; pre-fix behaviour this test errored out rather than failing the row/
+               ;; feature-count assertions its own `ok' messages describe; still a valid
+               ;; sentinel (it did fail before the fix and pass after) but not the failure
+               ;; mode claimed. A 2x3 decoy is valid libsvm LightGBM reads cleanly, so the
+               ;; pre-fix run reads it successfully and fails literally on
+               ;; dataset-num-rows (2, not 4), the assertion actually written below.
                (with-open-file (stream decoy-path :direction :output :if-exists :supersede)
-                 (write-string "1 0:9.0
-0 0:8.0
+                 (write-string "1 0:99.0 1:98.0 2:97.0
+0 0:96.0 1:95.0 2:94.0
 " stream))
                ;; A single-binding `let' nested inside another, not `let*': the dataset's
                ;; own init-form must run AFTER *default-pathname-defaults* is rebound, a

@@ -338,8 +338,11 @@ function has not itself opened and classified ever reaches dmlc.
 Three blind spots, measured and left as they are rather than smoothed over (record
 section 1):
 - A libsvm file whose rows carry a label and no features (each line just \"1\") reports
-  :CSV: it has one token, and step 3 requires at least two. Not fatal -- sent as CSV it
-  reads as a one-column CSV.
+  :CSV. PR #36 review, Minor M1: this is refused by step 3's \"at least one feature-pair
+  token must remain\" clause, not by a bare token-count check -- \"1 qid:1\" is a real
+  libsvm file XGBoost reads (4 rows, 0 features, identical to this case) with TWO tokens,
+  not one, and is refused the same way once `qid' is set aside and nothing is left to
+  check. Not fatal either way -- sent as CSV it reads as a one- or two-column CSV.
 - Malformed libsvm -- a non-numeric index, a trailing bare token, a comma inside a
   token -- reports :CSV for the same reason. None of the three is fatal sent as CSV.
 - Space-delimited numbers (\"1 1.0 2.0 3.0\") report :CSV, which is the right answer for

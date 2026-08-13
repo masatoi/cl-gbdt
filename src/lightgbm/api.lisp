@@ -446,6 +446,15 @@ whose format the library cannot infer, or that does not exist, is reported throu
 `check-lgbm' exactly as any other failed foreign call is -- LightGBM's own message to report,
 not a `probe-file' pre-check made here.
 
+**A libsvm RANKING file -- rows carrying a `qid:<group>' tag between the label and its
+feature pairs -- is refused outright, unlike on XGBoost.** Measured (PR #36 review):
+`LGBM_DatasetCreateFromFile' on such a file signals `foreign-call-error' with LightGBM's
+own `\"Input format error when parsing as LibSVM\"' -- a real limitation of that library's
+own parser, not a gap in this wrapper's classification (LightGBM does none). Contrast
+`cl-gbdt/xgboost:create-dataset-from-file', which accepts the identical file under
+`:libsvm' and correctly recovers the group boundaries `qid' encodes; see that function's
+own docstring for the measurement establishing the asymmetry.
+
 PATH reaches `LGBM_DatasetCreateFromFile' as `sb-ext:native-namestring' of its OWN
 `%best-effort-resolve-path' -- `truename' when PATH resolves, `merge-pathnames' against
 `*default-pathname-defaults*' when it does not -- not PATH's bare `native-namestring' and

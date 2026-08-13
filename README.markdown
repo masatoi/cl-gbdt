@@ -3562,6 +3562,14 @@ carries no `format=` key in the URI at all -- there is no such spelling; the way
 XGBoost binary DMatrix is a URI with no `format=` key whatsoever, which `create-dataset-from-file`
 already knows.
 
+**A libsvm RANKING file is accepted on XGBoost and refused outright on LightGBM.** Measured
+(PR #36 review): a row carrying a `qid:<group>` tag between the label and its feature pairs
+(`1 qid:1 1:0.5 2:0.3`) reads cleanly through `cl-gbdt/xgboost:create-dataset-from-file`
+declared `:libsvm` -- the same shape as the identical rows with `qid` removed, group
+boundaries correctly recovered -- but `cl-gbdt/lightgbm:create-dataset-from-file` on the
+identical file signals `foreign-call-error` with LightGBM's own `"Input format error when
+parsing as LibSVM"`, a limitation of that library's own parser rather than of either wrapper.
+
 **XGBoost's text-file path is deprecated upstream.** Every text-file attempt, including one this
 wrapper's own gate refuses, prints once per process, to stderr: `WARNING: .../data.cc:963: Text
 file input has been deprecated since 3.1`. It is published anyway, because
