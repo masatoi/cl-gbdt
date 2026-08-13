@@ -124,9 +124,11 @@ file afterward whether BODY exits normally or not."
 ;; fails UTF-8 decoding outright. Written byte-wise so it does not depend on the source
 ;; file's own encoding. Classifying on octets rather than decoded characters is what
 ;; makes this :CSV rather than :UNREADABLE or :UNKNOWN -- both of which would be wrong
-;; here: :UNKNOWN is a mismatch in Task 4's gate, and :UNREADABLE is a pass-through, so
-;; mapping a decoding failure to either would either wrongly refuse an ordinary CSV or,
-;; worse, let it reach the foreign call with no format check at all.
+;; here: :UNKNOWN and :UNREADABLE are each their own mismatch in Task 4's gate (neither is
+;; a pass-through -- create-dataset-from-file refuses every detect-file-format verdict but
+;; an exact match with the caller's declared format), so mapping a decoding failure to
+;; either would wrongly refuse an ordinary CSV for no reason detect-file-format can see in
+;; its own bytes.
 (deftest detect-file-format-classifies-a-latin-1-csv-as-csv
   (with-temporary-byte-file (path #(99 97 102 233 44 49 46 48 44 50 46 48 10))
     (ok (eq :csv (cl-gbdt/src/xgboost/file-input::detect-file-format path)))))
@@ -191,13 +193,15 @@ file afterward whether BODY exits normally or not."
 ;; Review round 1, Finding 1 (Critical): a wild pathname bypasses the gate entirely.
 ;; detect-file-format's open fails with a file-error subtype (a wild namestring cannot be
 ;; opened as a single file), which detect-file-format reports as :UNREADABLE -- and
-;; create-dataset-from-file's gate passes :UNREADABLE through by design, since an
-;; unopenable file is XGBoost's own to report. But dmlc does not open a wild namestring as
-;; a single file at all: it glob-expands the pattern and can reach a real file
-;; detect-file-format never classified, which is exactly the fatal direction this branch
-;; exists to refuse. This is the third instance of the same structural hole review found
-;; (a `?'/`#' in the path, a `&' inside a parameter value): file-uri's guard list and
-;; detect-file-format's :UNREADABLE pass-through are two halves of one contract.
+;; create-dataset-from-file's gate refuses :UNREADABLE, exactly as it refuses any other
+;; verdict that is not an exact match with the caller's declared format. But dmlc does not
+;; open a wild namestring as a single file at all: it glob-expands the pattern and can
+;; reach a real file detect-file-format never classified, which is exactly the fatal
+;; direction this branch exists to refuse. This is the third instance of the same
+;; structural hole review found (a `?'/`#' in the path, a `&' inside a parameter value):
+;; file-uri's own guard list catches this one before detect-file-format is even reached,
+;; giving a caller a more specific reason than the generic mismatch that catching it only
+;; downstream would report.
 (deftest file-uri-refuses-a-wild-pathname
   (ok (handler-case
           (progn (cl-gbdt/src/xgboost/file-input::file-uri #p"/data/a*.csv" :libsvm nil)
@@ -231,9 +235,9 @@ file afterward whether BODY exits normally or not."
 ;; wild-pathname-p (it holds no wildcard character at all), so under the round-1 design it
 ;; reached create-dataset-from-file's :UNREADABLE pass-through and dmlc listed the
 ;; directory, parsing every file inside as though each had been declared the caller's
-;; format -- SIGSEGV. detect-file-format now checks %not-a-regular-file-p first,
-;; deliberately, before opening anything, so this is decided without ever touching the
-;; filesystem's read path at all.
+;; format -- SIGSEGV. detect-file-format now checks %directory-p first, deliberately,
+;; before opening anything, so this is decided without ever touching the filesystem's read
+;; path at all.
 (deftest detect-file-format-reports-unreadable-for-a-directory
   (let ((dir (merge-pathnames "cl-gbdt-file-input-test-dir/" (uiop:temporary-directory))))
     (ensure-directories-exist dir)
@@ -245,8 +249,8 @@ file afterward whether BODY exits normally or not."
 ;; The shape review round 2 specifically probed: PATH given WITHOUT a trailing slash, so
 ;; Lisp's own pathname parser treats it as a file-shaped pathname (a NAME component, no
 ;; DIRECTORY-list entry for it) even though the thing it names on disk is a directory.
-;; %not-a-regular-file-p resolves through `truename', which reflects what is actually on
-;; disk regardless of how PATH itself was spelled, so this must refuse identically to the
+;; %directory-p resolves through `truename', which reflects what is actually on disk
+;; regardless of how PATH itself was spelled, so this must refuse identically to the
 ;; trailing-slash case above.
 (deftest detect-file-format-reports-unreadable-for-a-directory-without-a-trailing-slash
   (let ((with-slash (merge-pathnames "cl-gbdt-file-input-test-dir2/"

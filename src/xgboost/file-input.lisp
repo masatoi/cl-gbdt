@@ -22,21 +22,6 @@
 
 (in-package #:cl-gbdt/src/xgboost/file-input)
 
-;; Review round 4, Finding N7 (Critical): the eval-when below this comment is the fix, and
-;; the ORIGINAL eval-when immediately below THAT ONE -- missing :compile-toplevel -- is
-;; now redundant but could not be removed: an anonymous top-level eval-when has no
-;; defun/defparameter-style name for lisp-edit-form or lisp-patch-form's form_type/
-;; form_name matching to find (confirmed via clgrep-search indexing it as NIL), and
-;; fs-write-file refuses outright to overwrite an existing .lisp file. Left in place
-;; harmlessly -- `require' is idempotent -- rather than hand-edited outside the mandated
-;; tools. If a future reader can remove it, do that and delete this comment; do not
-;; remove the CORRECT one (this one, with :compile-toplevel) by mistake.
-(eval-when (:compile-toplevel :load-toplevel :execute)
-  (require :sb-posix))
-
-(eval-when (:load-toplevel :execute)
-  (require :sb-posix))
-
 ;;; ---------------------------------------------------------------------------
 ;;; detect-file-format
 
@@ -52,47 +37,28 @@ as octets. LightGBM auto-detects this on its own load path with no parameter at 
 `detect-file-format' checks it too so a LightGBM binary file reports :BINARY here rather
 than falling through to the text rule and being misread as garbled CSV.")
 
-(defun %not-a-regular-file-p (path)
-  "True when PATH names something that exists on disk but is not a regular file --
-checked against the kernel's own S_ISREG bit via `sb-posix:stat' and `sb-posix:s-isreg',
-not left to whatever `open' and a following `read-byte' or `read-sequence' happen to do
-with one on the current platform. NIL when PATH does not exist at all -- `sb-posix:stat'
-signals `sb-posix:syscall-error' for that, caught here and treated as \"not decided by
-this check\", leaving `open''s own `file-error' the one to report it, unchanged from
-before. NIL for an ordinary regular file, `sb-posix:s-isreg' true for exactly that case
-and false for everything else the filesystem can name a PATH.
+(defun %directory-p (path)
+  "True when PATH resolves, via `truename', to a directory. Portable ANSI Common Lisp has
+no way to ask more than this -- checked by resolving PATH and testing whether the
+resulting pathname's NAME component is NIL, which is how every directory's own truename
+comes back regardless of whether PATH itself carried a trailing separator. NIL when PATH
+does not exist at all, or resolves to anything else `truename' can name -- an ordinary
+regular file included, whose NAME component is never NIL.
 
 `detect-file-format' calls this first, before either magic-byte check has opened
-anything, so anything that is not a regular file is refused as a deliberate decision
-rather than however `open'/`read-byte' or a blocking `read' happen to behave on the
-current platform. Review round 2, Finding N1, first found this for a directory: `open'
-succeeds against one here and only a later read fails, a contract this project is not
-willing to depend on holding on every platform, and dmlc itself never errors on a
-directory PATH at all -- it lists it and parses every file inside as though each had
-been declared the caller's FORMAT, the same SIGSEGV-reachable mismatch a single wrong
-file is.
+anything, so a directory is refused as a deliberate decision: `open' succeeds against one
+and only a later read fails, and dmlc itself never errors on a directory PATH at all -- it
+lists it and parses every file inside as though each had been declared the caller's
+FORMAT, the same SIGSEGV-reachable mismatch a single wrong file is.
 
-Review round 3, Finding N5, found the FIRST version of this function -- `truename' plus
-a `pathname-name' NIL test -- caught a directory only, by construction: a FIFO or a
-character/block device (`/dev/zero', concretely) has a perfectly ordinary NAME and TYPE
-component, so that version returned NIL -- \"go ahead and open it\" -- for both. Measured:
-a FIFO with no writer makes `create-dataset-from-file' block indefinitely inside `open',
-and `/dev/zero' makes it exhaust the heap inside `%read-byte-line', neither one ever
-reaching dmlc, both nonetheless bad. `sb-posix:s-isreg' answers false for a FIFO and a
-device exactly as it does for a directory, closing both by the same mechanism rather
-than by enumerating device kinds; see `%read-byte-line' for the second, independent
-defense this round also added, a cap on how much of one line this function's caller
-will ever read regardless of what kind of file it turns out to be.
-
-A dangling symlink -- one whose target does not exist -- also signals
-`sb-posix:syscall-error' here (`stat' follows the link and finds nothing at the far end),
-so it is refused by this function exactly as a missing plain file is: `truename' happening
-to succeed against one, under the discarded first version of this check, made a dangling
-symlink refuse via a different, unrelated mechanism than a missing file did, coincidentally
-giving the same right answer -- deliberate now, not an accident of which resolver ran."
-  (handler-case
-      (not (sb-posix:s-isreg (sb-posix:stat-mode (sb-posix:stat path))))
-    (sb-posix:syscall-error () nil)))
+What this does NOT detect, because ANSI Common Lisp has no portable way to ask: whether
+PATH names a FIFO, or a character or block device, rather than an ordinary regular file.
+An earlier version of this function used `sb-posix:stat' to ask that too; it was removed
+so this backend does not require SBCL specifically to load at all. `%read-byte-line''s own
+cap still bounds an unbounded device such as `/dev/zero'; a FIFO with no writer is left as
+a documented limitation -- see `create-dataset-from-file''s docstring."
+  (let ((truename (handler-case (truename path) (file-error () nil))))
+    (and truename (null (pathname-name truename)))))
 
 (defun %starts-with-bytes-p (path expected)
   "True when the file at PATH begins with the octets in EXPECTED, a vector of
@@ -109,17 +75,18 @@ opened at all; `detect-file-format' is what catches that."
   "The most `%read-byte-line' will ever read for one line before giving up and reporting
 it truncated, rather than continuing to look for a terminating LF that may never come.
 
-Review round 3, Finding N5: `/dev/zero' -- an infinite stream of zero bytes, no LF ever --
-made the unbounded version of `%read-byte-line' exhaust the heap; `%not-a-regular-file-p'
-above now refuses `/dev/zero' before any read is attempted at all, but this cap is a
-second, independent defense, not a redundant one -- it also closes a Minor Task 2's own
-review found on an ordinary REGULAR file with a pathologically long first line and no
-newline, which `%not-a-regular-file-p' has no way to refuse (nothing about a regular
-file's `stat' says how long one line inside it is): measured, the unbounded version conses
-one cons cell per byte, 142.7 MB for an 8 MiB single-line file. One mebibyte is generous
-for any first line a real LIBSVM or CSV file would have -- record section 1's fixtures are
-under 40 bytes -- while still bounding the pathological case to a small, fixed multiple of
-itself rather than to the size of the file.")
+`/dev/zero' -- an infinite stream of zero bytes, no LF ever -- made the unbounded version
+of `%read-byte-line' exhaust the heap. `%directory-p' cannot refuse a device file, ANSI
+Common Lisp having no portable way to ask what kind of special file PATH names, so this
+cap is the ONE defense `/dev/zero' has: nothing upstream of `%read-byte-line' stops it from
+being opened and read. It also closes a Minor Task 2's own review found on an ordinary
+REGULAR file with a pathologically long first line and no newline, a case `%directory-p'
+was never going to catch either way (nothing about `truename' says how long one line
+inside a file is): measured, the unbounded version conses one cons cell per byte, 142.7 MB
+for an 8 MiB single-line file. One mebibyte is generous for any first line a real LIBSVM or
+CSV file would have -- record section 1's fixtures are under 40 bytes -- while still
+bounding the pathological case to a small, fixed multiple of itself rather than to the
+size of the file.")
 
 (defun %blank-line-p (line)
   "True when LINE, a vector of (unsigned-byte 8), contains nothing but the octets for
@@ -160,9 +127,7 @@ The cap: see `+max-first-line-bytes+''s own docstring for why it exists at all.
 `detect-file-format' treats a TRUNCATED line as :UNKNOWN rather than classifying the
 partial bytes read -- a token cut off exactly at the cap could otherwise misclassify a
 genuine, if unusually long-lined, LIBSVM file as :CSV, and this function has no way to
-tell a genuine cut token from a malformed one. :UNKNOWN only ever REFUSES a declared
-FORMAT downstream, never silently accepts the wrong one, which is the safer of the two
-mistakes to risk."
+tell a genuine cut token from a malformed one."
   (let ((first (read-byte stream nil nil)))
     (cond ((null first) (values nil nil))
           ((= first 10) (values (make-array 0 :element-type '(unsigned-byte 8)) nil))
@@ -250,10 +215,10 @@ pair."
 
 Checked in this order:
 
--1. `%not-a-regular-file-p', before PATH is opened at all. Something other than a
-   regular file -- a directory, concretely -- reports :UNREADABLE immediately. See that
-   function's own docstring for why this is a deliberate check rather than left to
-   however `open' and a subsequent read happen to fail on one.
+-1. `%directory-p', before PATH is opened at all. A directory reports :UNREADABLE
+   immediately. See that function's own docstring for why this is a deliberate check
+   rather than left to however `open' and a subsequent read happen to fail on one, and
+   for what it cannot detect portably (a FIFO, or a character or block device).
 0. Magic bytes, read before any line of text is read. The first four bytes
    #x01 #xAB #xFF #xFF mark an XGBoost binary DMatrix (`XGDMatrixSaveBinary'); the first
    38 bytes \"______LightGBM_Binary_File_Token______\" mark a LightGBM binary dataset
@@ -282,9 +247,11 @@ as LIBSVM, because \"12:00:00,1.0\" satisfies <digits>:<rest> -- and libsvm-decl
 is the direction that SIGSEGVs XGBoost inside a non-Lisp thread no `handler-case' can
 catch (record section 4). Only the comma-guarded form of this rule survives that line.
 
-:UNREADABLE comes from step -1's deliberate check (a directory, or anything else that is
-not a regular file), or from `open' or a later read signalling `file-error' or
-`stream-error' -- most concretely a missing file (`file-error'). It is NOT what a file
+:UNREADABLE comes from step -1's deliberate check (a directory), or from `open' or a
+later read signalling `file-error' or `stream-error' -- most concretely a missing file
+(`file-error'), and also a FIFO with no writer or certain devices, which step -1 cannot
+name portably and so leaves to whatever `open'/`read' does with them; see `%directory-p'
+and `create-dataset-from-file' for that limitation stated plainly. It is NOT what a file
 whose bytes are not valid text produces: every read in this function, magic checks and
 the line-classification rule alike, is octets throughout -- `%first-non-blank-line' never
 decodes -- so a latin-1 CSV or any other file whose bytes are not valid UTF-8 is
@@ -321,7 +288,7 @@ section 1):
   third verdict to give that case; it can only say which of :LIBSVM or :CSV the first
   line resembles."
   (handler-case
-      (if (%not-a-regular-file-p path)
+      (if (%directory-p path)
           :unreadable
           (if (or (%starts-with-bytes-p path +xgboost-binary-magic+)
                   (%starts-with-bytes-p path +lightgbm-binary-magic+))
@@ -441,12 +408,13 @@ permissive, since `a.libsvm;b.csv' is not itself a wild pathname and would have 
 cleanly. Review round 2 also removed `detect-file-format''s `:unreadable' pass-through
 entirely (see that function's own docstring) rather than adding a fifth entry to this
 list the next time dmlc's URI syntax turns out richer than whatever this file currently
-enumerates; PATH must now name a single existing regular file
-(`%not-a-regular-file-p'), and every `detect-file-format' verdict but an exact match is a
-refusal in `create-dataset-from-file'. This function's checks stay as a first line of
-defense regardless -- refusing a wild or `;'-holding PATH here, before `detect-file-format'
-even runs, gives a caller a more specific reason than the generic mismatch that catching
-it downstream would report."
+enumerates; PATH must now resolve to a single existing, non-directory file (`%directory-p'
+refuses a directory; a FIFO or device is not portably detectable and is left as a
+documented limitation -- see `create-dataset-from-file'), and every `detect-file-format'
+verdict but an exact match is a refusal in `create-dataset-from-file'. This function's
+checks stay as a first line of defense regardless -- refusing a wild or `;'-holding PATH
+here, before `detect-file-format' even runs, gives a caller a more specific reason than
+the generic mismatch that catching it downstream would report."
   (when (wild-pathname-p path)
     (error 'unsupported-argument
            :backend :xgboost

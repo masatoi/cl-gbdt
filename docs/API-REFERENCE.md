@@ -1514,6 +1514,18 @@ Not a guarantee against a file replaced on disk between this function classifyin
 the foreign call actually running -- that TOCTOU window is `%resolve-file-path''s own
 docstring's closing caveat, and this wrapper cannot close it from Lisp.
 
+**PATH is expected to name a data file, and a FIFO with no writer is not detected.** ANSI
+Common Lisp has no portable way to ask whether a path names a named pipe rather than an
+ordinary regular file, so nothing in the chain above -- `%resolve-file-path', or
+`cl-gbdt/src/xgboost/file-input:detect-file-format''s own `%directory-p' check -- can
+refuse one. A FIFO with nothing on the other end of it makes this function block
+indefinitely inside the read that classifies it, with no error and no diagnostic. A
+directory is still refused (portably checkable: its resolved pathname has no NAME
+component), and an unbounded device such as `/dev/zero' cannot make this function read
+forever (bounded by `%read-byte-line''s own cap), but a blocking special file is a real,
+undetected gap rather than a handled case -- pass PATH only a path you expect to name an
+ordinary file.
+
 **`:binary' carries no `format' key in the URI at all.** Measured (record section 2):
 `?format=binary' is rejected outright, `Unknown data type binary', and a binary DMatrix
 loads only from a URI with no `format=' key whatsoever -- `file-uri' already knows this and

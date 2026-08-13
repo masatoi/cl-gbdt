@@ -3531,10 +3531,20 @@ exactly once, and that one resolution -- never the caller's own designator a sec
 both what gets classified and what the URI is composed from, so the file dmlc opens is provably
 the file this wrapper looked at, not merely probably. Every verdict but an exact match with the
 declared `FORMAT` is refused with `file-format-mismatch` -- naming the path, the declared format
-and the detected one -- including a `PATH` this wrapper could not resolve to one existing regular
-file at all (missing, a directory, a FIFO or device, wild, or a symlink to nowhere): none of that
-is XGBoost's own to report any longer, since dmlc's response to several of those shapes turned
-out not to be an error either. `URI-PARAMETERS` is a plist of further dmlc query keys,
+and the detected one -- including a `PATH` this wrapper could not resolve to one existing file at
+all (missing, wild, or a symlink to nowhere), or that resolved to a directory: none of that is
+XGBoost's own to report any longer, since dmlc's response to several of those shapes turned out
+not to be an error either.
+
+**A FIFO or other blocking special file is not detected, and `PATH` is expected to name a data
+file.** ANSI Common Lisp has no portable way to ask whether a resolved path names a named pipe or
+a device rather than an ordinary regular file, so nothing above catches one -- unlike an earlier
+version, which used SBCL's `sb-posix:stat` to check this too and was reverted so this backend does
+not require SBCL specifically to load. A FIFO with nothing on the other end of it blocks
+indefinitely inside the read that classifies it, with no error and no diagnostic; an unbounded
+device such as `/dev/zero` cannot hang this wrapper forever (that same read is capped), but reads
+as whatever bytes it produces rather than being refused outright. `URI-PARAMETERS` is a plist of
+further dmlc query keys,
 `(:label_column 0)` among them, appended to the URI after `FORMAT`'s own `format=` key; a
 `format` key inside `URI-PARAMETERS` itself signals `unsupported-argument`, since `FORMAT` is
 this function's own argument to give, not a second, unchecked route to the same key. `:binary`
