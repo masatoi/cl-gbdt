@@ -200,22 +200,69 @@ at least one octet after it, and no comma (44) anywhere in TOKEN. Part of step 3
          (< (1+ colon) (length token))
          (not (find 44 token)))))
 
+(defun %qid-token-p (token)
+  "True when TOKEN, a vector of (unsigned-byte 8), is libsvm's ranking `qid:<group>' token
+-- the literal ASCII bytes `q' `i' `d' `:' (113 105 100 58) followed by one or more ASCII
+digit octets (48-57) and nothing else.
+
+Measured against the vendored XGBoost 3.3.0 (docs/superpowers/specs, PR review of this
+branch's merged form): a libsvm ranking file's row is `<label> qid:<group> <index>:<value>
+...' -- `qid:1 1:0.5 2:0.3' -- and `XGDMatrixCreateFromURI' declared `:libsvm' reads such a
+file cleanly, reporting the same row and column shape as the identical row with `qid:1'
+removed and correctly recovering the group boundaries `qid' encodes (`XGDMatrixGetUIntInfo'
+under `\"group_ptr\"' read back `(0 2 4)' for a two-row-per-group, two-group fixture).
+LightGBM's `LGBM_DatasetCreateFromFile', separately measured against the same file, refuses
+it outright with its own `\"Input format error when parsing as LibSVM\"' -- a real limitation
+of that library's own parser, not of this function or of anything `create-dataset-from-file'
+gates, and irrelevant to `%classify-line' below, which exists only to keep a real libsvm
+ranking file from being misclassified as :CSV and refused by XGBOOST's format-mismatch gate
+for a file XGBoost itself reads correctly.
+
+`%classify-line' checks this ONLY against the token immediately after the label -- the
+position the format itself puts `qid' in -- not against every token on the line: a `qid'-
+shaped token anywhere else is a malformed row this function has no obligation to rescue,
+and `%libsvm-token-p' failing on it (no digits before `qid''s own letters) is what still
+sends such a line to :CSV, the safe refusal, rather than a loosened rule accepting a shape
+libsvm's own grammar does not put there."
+  (and (>= (length token) 5)
+       (= (aref token 0) 113)   ; q
+       (= (aref token 1) 105)   ; i
+       (= (aref token 2) 100)   ; d
+       (= (aref token 3) 58)    ; :
+       (every (lambda (byte) (<= 48 byte 57)) (subseq token 4))))
+
 (defun %classify-line (line)
   "Classify LINE, a vector of (unsigned-byte 8) already known not to be blank, as :CSV
 or :LIBSVM.
 
 A comma (44) anywhere on LINE decides :CSV outright, before LINE is even split into
-tokens -- this order is load-bearing; see `detect-file-format''s docstring. Otherwise
-LINE is split on runs of space and tab octets, and it reads as :LIBSVM only when there
-are at least two tokens and every token after the first is a `%libsvm-token-p' feature
-pair."
+tokens -- this order is load-bearing; see `detect-file-format''s docstring. Otherwise LINE
+is split on runs of space and tab octets. When there are at least two tokens and the
+SECOND -- the position libsvm's own ranking format puts it in, immediately after the
+label -- is a `%qid-token-p' `qid:<group>' tag, it is set aside rather than checked as a
+candidate feature pair; every token after it (rather than every token after the label) is
+then required to be a `%libsvm-token-p' feature pair, and at least one such token must
+remain. Without a `qid' token in that position, the rule is what it always was: at least
+two tokens, and every token after the first a `%libsvm-token-p' feature pair.
+
+The strict reading, not a loosened one: `qid' is recognized ONLY immediately after the
+label, never scanned for elsewhere on the line. A `qid'-shaped token anywhere else --
+`1 1:0.5 qid:1 2:0.3', malformed -- is checked by `%libsvm-token-p' like any other token,
+fails it (no digits before `qid''s own letters), and the whole line falls through to :CSV,
+the safe refusal, rather than the rule being loosened to find `qid' wherever it appears.
+See `%qid-token-p' for the measurement establishing that XGBoost accepts a genuine `qid'
+row and LightGBM does not, and why this rule exists only for XGBoost's own gate."
   (if (find 44 line)
       :csv
       (let ((tokens (%split-on-whitespace-runs line)))
-        (if (and (>= (length tokens) 2)
-                 (every #'%libsvm-token-p (rest tokens)))
-            :libsvm
-            :csv))))
+        (if (< (length tokens) 2)
+            :csv
+            (let ((feature-tokens (if (%qid-token-p (second tokens))
+                                       (cddr tokens)
+                                       (rest tokens))))
+              (if (and feature-tokens (every #'%libsvm-token-p feature-tokens))
+                  :libsvm
+                  :csv))))))
 
 (defun detect-file-format (path)
   "Classify the file at PATH as one of :LIBSVM, :CSV, :BINARY, :UNKNOWN, or :UNREADABLE.
@@ -243,9 +290,16 @@ Checked in this order:
    case refuses rather than guesses either way) -- see `%read-byte-line''s own docstring
    for the exact boundary and for why guessing from a cut-off token is worse than refusing.
 2. A COMMA anywhere on that line reports :CSV. Stop.
-3. Otherwise split the line into tokens on runs of SPACE and TAB. At least 2 tokens, and
-   every token after the first matching <digits>:<rest> -- at least one digit before the
-   colon, at least one character after it, no comma in the token -- reports :LIBSVM.
+3. Otherwise split the line into tokens on runs of SPACE and TAB. At least 2 tokens
+   required. When the SECOND token -- immediately after the label, the position libsvm's
+   ranking format puts it in -- matches `qid:<digits>' exactly, it is set aside rather
+   than checked as a feature pair; every token after it (the label's token after that, if
+   `qid' was not present) matching <digits>:<rest> -- at least one digit before the colon,
+   at least one character after it, no comma in the token -- and at least one such token
+   remaining, reports :LIBSVM. `qid' is recognized only in that one position, never
+   scanned for elsewhere on the line -- see `%qid-token-p' and `%classify-line' for the
+   measurement behind this (XGBoost reads a genuine `qid' row correctly; LightGBM refuses
+   it, a limitation of that library's own parser this rule has no bearing on).
 4. Otherwise, :CSV.
 
 Step 2 must run before step 3 and must never be reordered: measured (record section 1),

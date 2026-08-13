@@ -377,6 +377,55 @@ edge case for a worse one. Mirrors `cl-gbdt/src/xgboost/file-input''s
                                 own untyped error for a wild pathname rather than ~
                                 composing one" path))))
 
+(defun %best-effort-resolve-path (path)
+  "Resolve PATH the way `open' resolves a pathname designator: `truename' when that
+succeeds -- symlinks followed, a leading `~' expanded, PATH merged against
+`*default-pathname-defaults*' the way an existing file's `truename' always is -- or,
+when `truename' signals `file-error' (most concretely a missing file), `MERGE-PATHNAMES'
+against `*default-pathname-defaults*' instead, which applies the identical merging rule
+without requiring PATH to exist. Never signals and never refuses: every PATH this
+function is given comes back as some pathname.
+
+`create-dataset-from-file' passes this function's result, not PATH itself, to
+`sb-ext:native-namestring'. Measured directly (not assumed): `native-namestring' on a
+bare relative pathname designator prints PATH's own relative spelling verbatim, with NO
+merge against `*default-pathname-defaults*' at all. A caller who rebinds that special --
+an ordinary CL pattern this project does not itself use, but places no restriction
+against -- and passes a relative PATH would therefore have had
+`LGBM_DatasetCreateFromFile' open it relative to the OS PROCESS's own working directory
+instead, which can differ from `*default-pathname-defaults*' arbitrarily: silently
+training on an unrelated file of the same name if one happens to exist there, or failing
+to find a file that does exist at the location `open' itself would have resolved PATH to.
+This is the third occurrence of a hazard whose definitive analysis lives in
+`cl-gbdt/src/xgboost/file-input''s `%resolve-file-path' docstring (review round 3,
+Finding N4) -- reproduced here for LightGBM rather than cross-referenced only, since a
+reader of one function should not have to open the other backend's source to trust either.
+
+Deliberately not that function transplanted: `%resolve-file-path' REFUSES, returning NIL,
+when it cannot resolve to an existing file, because XGBoost's `detect-file-format' gate
+must classify the file's own bytes and has nothing to classify without one. This function
+has no such gate to feed -- `create-dataset-from-file''s own docstring already promises a
+missing PATH is `LGBM_DatasetCreateFromFile''s own message to report, not a `probe-file'
+pre-check made here -- so this function never refuses: `MERGE-PATHNAMES' applies CL's
+merging rule to a pathname that need not exist, and the missing-file case still reaches C
+exactly as it always has, only correctly resolved first, so the C library's own error
+names the location `open' would actually have looked at.
+
+Measured, not assumed, that the two branches do not disagree about a leading `~':
+`(pathname \"~/x.txt\")' already carries an ABSOLUTE `:HOME' directory component from
+parsing alone, before either `truename' or `merge-pathnames' ever sees it, so
+`sb-ext:native-namestring' expands it identically from either branch's result -- `~' never
+reaches C unexpanded either way.
+
+Runs after `%check-file-path' at every call site, never before: a wild PATH also makes
+`truename' signal `file-error' (per the standard), which would route it to the
+`merge-pathnames' branch here -- `merge-pathnames' does not resolve a wildcard, so the
+result would still be wild, and `native-namestring' would then signal its own untyped
+`sb-kernel:no-native-namestring-error' for it. `%check-file-path' refuses a wild PATH
+first, with a typed condition, so this function is never actually reached with one."
+  (handler-case (truename path)
+    (file-error () (merge-pathnames path *default-pathname-defaults*))))
+
 (defun create-dataset-from-file (backend path &key parameters reference)
   "Build and return a `lightgbm-dataset' from PATH on BACKEND, via
 `LGBM_DatasetCreateFromFile'.
@@ -397,11 +446,20 @@ whose format the library cannot infer, or that does not exist, is reported throu
 `check-lgbm' exactly as any other failed foreign call is -- LightGBM's own message to report,
 not a `probe-file' pre-check made here.
 
-PATH reaches `LGBM_DatasetCreateFromFile' as its `sb-ext:native-namestring', not its
-`namestring' -- see `%check-file-path' for why the substitution needed a guard rather than
-being bare: `namestring' backslash-escapes a literal asterisk in a real filename, which
-LightGBM would then fail to open, while `native-namestring' signals its own untyped error
-for a path that is genuinely wild.
+PATH reaches `LGBM_DatasetCreateFromFile' as `sb-ext:native-namestring' of its OWN
+`%best-effort-resolve-path' -- `truename' when PATH resolves, `merge-pathnames' against
+`*default-pathname-defaults*' when it does not -- not PATH's bare `native-namestring' and
+not its `namestring' either. `namestring' backslash-escapes a literal asterisk in a real
+filename, which LightGBM would then fail to open (see `%check-file-path' for why the
+`native-namestring' substitution needed a wild-pathname guard rather than being bare:
+`native-namestring' signals its own untyped error for a path that is genuinely wild).
+`native-namestring' ALONE, without resolving first, would also print a relative PATH's
+own relative spelling verbatim, with no merge against `*default-pathname-defaults*' at
+all, so `LGBM_DatasetCreateFromFile' would open it relative to the OS process's own
+working directory instead -- silently reading an unrelated file of the same name there if
+one exists, or failing to find a file that does, at the location `open' itself would have
+resolved PATH to. See `%best-effort-resolve-path''s own docstring for the measurement
+behind this and for why it never refuses, unlike XGBoost's `%resolve-file-path'.
 
 Signals `wrong-backend-reference' when BACKEND is not a `lightgbm-backend' before anything
 else is read from it, and `backend-not-open' before any foreign call when BACKEND is not
@@ -425,8 +483,9 @@ with nothing in Lisp yet referencing it, not only where the gap is wide."
     (%check-file-path path)
     (let ((reference-pointer (%reference-pointer backend reference 'lightgbm-dataset))
           (parameter-string (%parameter-string parameters)))
-      (let ((dataset-pointer (%create-dataset-from-file (sb-ext:native-namestring path)
-                                                        parameter-string reference-pointer)))
+      (let ((dataset-pointer (%create-dataset-from-file
+                              (sb-ext:native-namestring (%best-effort-resolve-path path))
+                              parameter-string reference-pointer)))
         (when (cffi:null-pointer-p dataset-pointer)
           (error 'foreign-call-error
                  :function-name "LGBM_DatasetCreateFromFile"

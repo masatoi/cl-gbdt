@@ -1419,11 +1419,20 @@ whose format the library cannot infer, or that does not exist, is reported throu
 `check-lgbm' exactly as any other failed foreign call is -- LightGBM's own message to report,
 not a `probe-file' pre-check made here.
 
-PATH reaches `LGBM_DatasetCreateFromFile' as its `sb-ext:native-namestring', not its
-`namestring' -- see `%check-file-path' for why the substitution needed a guard rather than
-being bare: `namestring' backslash-escapes a literal asterisk in a real filename, which
-LightGBM would then fail to open, while `native-namestring' signals its own untyped error
-for a path that is genuinely wild.
+PATH reaches `LGBM_DatasetCreateFromFile' as `sb-ext:native-namestring' of its OWN
+`%best-effort-resolve-path' -- `truename' when PATH resolves, `merge-pathnames' against
+`*default-pathname-defaults*' when it does not -- not PATH's bare `native-namestring' and
+not its `namestring' either. `namestring' backslash-escapes a literal asterisk in a real
+filename, which LightGBM would then fail to open (see `%check-file-path' for why the
+`native-namestring' substitution needed a wild-pathname guard rather than being bare:
+`native-namestring' signals its own untyped error for a path that is genuinely wild).
+`native-namestring' ALONE, without resolving first, would also print a relative PATH's
+own relative spelling verbatim, with no merge against `*default-pathname-defaults*' at
+all, so `LGBM_DatasetCreateFromFile' would open it relative to the OS process's own
+working directory instead -- silently reading an unrelated file of the same name there if
+one exists, or failing to find a file that does, at the location `open' itself would have
+resolved PATH to. See `%best-effort-resolve-path''s own docstring for the measurement
+behind this and for why it never refuses, unlike XGBoost's `%resolve-file-path'.
 
 Signals `wrong-backend-reference' when BACKEND is not a `lightgbm-backend' before anything
 else is read from it, and `backend-not-open' before any foreign call when BACKEND is not

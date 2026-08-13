@@ -119,6 +119,47 @@ file afterward whether BODY exits normally or not."
 ")
     (ok (eq :csv (cl-gbdt/src/xgboost/file-input::detect-file-format path)))))
 
+;; PR #36 review, finding P2: measured against the vendored library (scratchpad
+;; qid-measurement.lisp, an isolated subprocess) that XGDMatrixCreateFromURI declared
+;; :libsvm reads a genuine ranking row -- "1 qid:1 1:0.5 2:0.3" -- cleanly, reporting the
+;; same 4-row-by-3-feature shape as the identical fixture with "qid:1"/"qid:2" removed,
+;; and correctly recovering the group boundaries (group_ptr read back as (0 2 4) for two
+;; rows per group). Before this fix, %libsvm-token-p rejected "qid:1" (no digits before
+;; the colon) and the whole line fell through to :CSV, so a valid ranking file declared
+;; :libsvm was refused by create-dataset-from-file's own gate with file-format-mismatch --
+;; a false positive the gate exists to avoid, not the SIGSEGV-preventing refusal it exists
+;; to provide.
+(deftest detect-file-format-classifies-a-qid-ranking-file-as-libsvm
+  (with-temporary-file (path "1 qid:1 1:0.5 2:0.3
+0 qid:1 1:0.1 2:0.9
+1 qid:2 1:0.6 2:0.2
+0 qid:2 1:0.2 2:0.1
+")
+    (ok (eq :libsvm (cl-gbdt/src/xgboost/file-input::detect-file-format path)))))
+
+;; The strict reading the coordinator asked for: qid is recognized ONLY immediately after
+;; the label, the one position libsvm's own grammar puts it in -- not scanned for anywhere
+;; on the line. A qid-shaped token appearing later is a malformed row this function has no
+;; obligation to rescue; loosening the rule to find "qid:" wherever it appears is the
+;; direction that can wrongly ACCEPT a shape libsvm's grammar does not produce, which this
+;; whole branch has held to be the fatal mistake to risk. %libsvm-token-p rejects
+;; "qid:1" (no digits before the colon) like any other malformed token, so the line falls
+;; through to :CSV -- the safe refusal, not a SIGSEGV risk, since XGBoost's own CSV reader
+;; would then reject or misparse it rather than crash.
+(deftest detect-file-format-refuses-a-qid-token-outside-the-second-position
+  (with-temporary-file (path "1 1:0.5 qid:1 2:0.3
+")
+    (ok (eq :csv (cl-gbdt/src/xgboost/file-input::detect-file-format path)))))
+
+;; qid with no feature pairs left after it -- "1 qid:1" -- falls through to :CSV exactly
+;; as the plain labels-only case above does: %classify-line requires at least one
+;; feature-pair token to remain after setting qid aside, and none does here.
+(deftest detect-file-format-classifies-a-qid-only-line-as-csv
+  (with-temporary-file (path "1 qid:1
+0 qid:1
+")
+    (ok (eq :csv (cl-gbdt/src/xgboost/file-input::detect-file-format path)))))
+
 ;; C1: a latin-1 CSV (an accented name column, e.g. "cafe" with an e-acute) is not valid
 ;; UTF-8 -- byte 233 (0xE9) alone, followed by a comma rather than a continuation byte,
 ;; fails UTF-8 decoding outright. Written byte-wise so it does not depend on the source

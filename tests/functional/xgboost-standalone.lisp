@@ -773,6 +773,38 @@ comment for why this is the direction that is safe to provoke here."
             ,@body)
        (ignore-errors (delete-file ,path)))))
 
+(defmacro with-qid-libsvm-fixture ((path) &body body)
+  "Write a four-row three-feature libsvm RANKING fixture -- each row carrying a `qid:'
+group tag between the label and its feature pairs -- to a fresh file, bind PATH to it,
+and delete it afterwards. Two groups of two rows each (`qid:1', `qid:1', `qid:2',
+`qid:2'), the same feature values as `with-libsvm-fixture' so a dataset built from this
+fixture has the identical row/feature shape and only the group-tag presence differs.
+
+PR #36 review, finding P2: measured directly against the vendored library (scratchpad
+qid-measurement.lisp, run in an isolated subprocess since a format/contents mismatch on
+this branch is SIGSEGV-reachable) that `XGDMatrixCreateFromURI' declared `:libsvm' reads
+this shape cleanly and recovers the group boundaries correctly -- `XGDMatrixGetUIntInfo'
+under `\"group_ptr\"' read back `(0 2 4)' for this exact fixture, the correct cumulative
+offsets for two rows per group. `detect-file-format' misclassified a `qid'-bearing line as
+:CSV before this fix (`%libsvm-token-p' rejected the `qid:1' token outright, no digits
+before its colon), which made `create-dataset-from-file' refuse this fixture with
+`file-format-mismatch' even though XGBoost itself reads it correctly -- the false-positive
+direction the gate must not take, distinct from the SIGSEGV-preventing refusal it exists
+for."
+  `(let ((,path (merge-pathnames (format nil "cl-gbdt-xgb-qid-fixture-~D.libsvm"
+                                         (random 1000000))
+                                 (uiop:temporary-directory))))
+     (unwind-protect
+          (progn
+            (with-open-file (stream ,path :direction :output :if-exists :supersede)
+              (write-string "1 qid:1 0:1.0 1:2.0 2:3.0
+0 qid:1 0:4.0 1:5.0 2:6.0
+1 qid:2 0:7.0 1:8.0 2:9.0
+0 qid:2 0:10.0 1:11.0 2:12.0
+" stream))
+            ,@body)
+       (ignore-errors (delete-file ,path)))))
+
 (defparameter *file-input-parameters*
   (list* :min-child-weight 0 *parameters*)
   "*PARAMETERS* with `:min-child-weight 0' added on top, for `model-string-after-one-
@@ -822,6 +854,23 @@ only this one call, and there is nothing else here for a caller to keep in sync.
                              (cl-gbdt/xgboost:dataset-num-rows dataset)))
                  (ok (= 3 (cl-gbdt/xgboost:dataset-num-features dataset))
                      (format nil "dataset-num-features is ~D"
+                             (cl-gbdt/xgboost:dataset-num-features dataset))))
+            (cl-gbdt/xgboost:free-dataset dataset)))))))
+
+(deftest create-dataset-from-file-reads-a-qid-ranking-file
+  (testing "a valid libsvm ranking file (qid tags) is accepted, not refused as a mismatch"
+    (with-open-backend (backend)
+      (with-qid-libsvm-fixture (path)
+        (let ((dataset (cl-gbdt/xgboost:create-dataset-from-file backend path :libsvm)))
+          (unwind-protect
+               (progn
+                 (ok (= 4 (cl-gbdt/xgboost:dataset-num-rows dataset))
+                     (format nil "dataset-num-rows is ~D, not the fixture's 4 -- a qid \
+ranking file was not read the same as the identical file without qid tags"
+                             (cl-gbdt/xgboost:dataset-num-rows dataset)))
+                 (ok (= 3 (cl-gbdt/xgboost:dataset-num-features dataset))
+                     (format nil "dataset-num-features is ~D, not the fixture's 3 -- qid \
+was read as though it were itself a feature pair"
                              (cl-gbdt/xgboost:dataset-num-features dataset))))
             (cl-gbdt/xgboost:free-dataset dataset)))))))
 

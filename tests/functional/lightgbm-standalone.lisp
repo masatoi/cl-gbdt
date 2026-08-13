@@ -939,3 +939,78 @@ dataset-num-features is ~D, not the reference's own 5"
         (ok (handler-case (progn (cl-gbdt/lightgbm:create-dataset-from-file backend path) nil)
               (cl-gbdt/lightgbm:unsupported-argument () t))
             "create-dataset-from-file accepted a wild pathname")))))
+
+(deftest create-dataset-from-file-resolves-a-relative-path-against-default-pathname-defaults
+  (testing "a relative PATH is resolved the way `open' resolves one, not native-namestring'd \
+bare -- proven by a same-named decoy file sitting in the process's own working directory, \
+which the unresolved form would have opened instead"
+    (with-open-backend (backend)
+      (let* ((relative-name (format nil "cl-gbdt-p1-~D.libsvm" (random 1000000)))
+             (real-dir (ensure-directories-exist
+                        (merge-pathnames (format nil "cl-gbdt-p1-real-~D/" (random 1000000))
+                                         (uiop:temporary-directory))))
+             (real-path (merge-pathnames relative-name real-dir))
+             (decoy-path (merge-pathnames relative-name (uiop:getcwd))))
+        (unwind-protect
+             (progn
+               ;; The REAL file: four rows, three features, this file's usual shape.
+               (with-open-file (stream real-path :direction :output :if-exists :supersede)
+                 (write-string "1 0:1.0 1:2.0 2:3.0
+0 0:4.0 1:5.0 2:6.0
+1 0:7.0 1:8.0 2:9.0
+0 0:10.0 1:11.0 2:12.0
+" stream))
+               ;; The DECOY, same relative name, sitting in the process's actual working
+               ;; directory -- deliberately a different shape (two rows, one feature) so
+               ;; the two are distinguishable by row/feature count alone, with no
+               ;; dependence on which one a broken implementation happened to open.
+               (with-open-file (stream decoy-path :direction :output :if-exists :supersede)
+                 (write-string "1 0:9.0
+0 0:8.0
+" stream))
+               ;; A single-binding `let' nested inside another, not `let*': the dataset's
+               ;; own init-form must run AFTER *default-pathname-defaults* is rebound, a
+               ;; dynamic dependency an ordinary `let*' linter check cannot see across a
+               ;; special-variable rebinding, and an ordinary `let' would evaluate BOTH
+               ;; init-forms before establishing either binding, running
+               ;; create-dataset-from-file against the OLD *default-pathname-defaults*
+               ;; and defeating the whole point of this test.
+               (let ((*default-pathname-defaults* real-dir))
+                 (let ((dataset (cl-gbdt/lightgbm:create-dataset-from-file
+                                 backend relative-name)))
+                   (unwind-protect
+                        (progn
+                          (ok (= 4 (cl-gbdt/lightgbm:dataset-num-rows dataset))
+                              (format nil "dataset-num-rows is ~D, not the real file's 4 \
+-- read the decoy in the process's own working directory instead"
+                                      (cl-gbdt/lightgbm:dataset-num-rows dataset)))
+                          (ok (= 3 (cl-gbdt/lightgbm:dataset-num-features dataset))
+                              (format nil "dataset-num-features is ~D, not the real \
+file's 3 -- read the decoy in the process's own working directory instead"
+                                      (cl-gbdt/lightgbm:dataset-num-features dataset))))
+                     (cl-gbdt/lightgbm:free-dataset dataset)))))
+          (handler-case (delete-file real-path) (file-error () nil))
+          (handler-case (uiop:delete-directory-tree real-dir :validate t)
+            (file-error () nil))
+          (handler-case (delete-file decoy-path) (file-error () nil)))))))
+
+(deftest create-dataset-from-file-still-reports-a-missing-relative-file-as-foreign-call-error
+  (testing "a missing relative PATH still reaches LGBM_DatasetCreateFromFile and comes back \
+as foreign-call-error -- the P1 fix resolves PATH, it does not add a probe-file pre-check"
+    (with-open-backend (backend)
+      (let ((relative-name (format nil "cl-gbdt-p1-missing-~D.libsvm" (random 1000000)))
+            (some-dir (ensure-directories-exist
+                       (merge-pathnames
+                        (format nil "cl-gbdt-p1-missing-dir-~D/" (random 1000000))
+                        (uiop:temporary-directory)))))
+        (unwind-protect
+             (let ((*default-pathname-defaults* some-dir))
+               (ok (handler-case
+                       (progn (cl-gbdt/lightgbm:create-dataset-from-file
+                               backend relative-name)
+                              nil)
+                     (cl-gbdt/lightgbm:foreign-call-error () t))
+                   "create-dataset-from-file did not signal foreign-call-error for a \
+missing relative file"))
+          (handler-case (uiop:delete-directory-tree some-dir :validate t)
+            (file-error () nil)))))))
