@@ -288,54 +288,54 @@ Keep the following.
 
 Even where the placement of the unified API's methods is separated out, do not create an implicit ordering that depends only on the result of having loaded the methods. Make the existing leaf-system check follow the new source structure.
 
-## 12. 実装の段階計画
+## 12. Phased implementation plan
 
-### Phase 0: 既知のavailability不整合を修正
+### Phase 0: Fix the known availability inconsistency
 
-1. XGBoost `*required-symbols*` に `XGDMatrixSetUIntInfo` と `XGBoosterGetNumFeature` を追加する。
-2. required symbol網羅checkを追加する。`tools/ci/check-abi-blacklist.lisp` が既に「backendのimport-from句を読み、c-api.lisp のdefcfunでC名へ写す」処理を持つので、その照合対象を `*required-symbols*` に向けるだけでよい。新規機構は不要である。
-3. checkが落ちるところを確認してから採用する。本repositoryは落ちるところを見ていないcheckを二度出荷している。
+1. Add `XGDMatrixSetUIntInfo` and `XGBoosterGetNumFeature` to XGBoost's `*required-symbols*`.
+2. Add an exhaustiveness check for the required symbols. `tools/ci/check-abi-blacklist.lisp` already "reads a backend's import-from clauses and maps them to C names through c-api.lisp's defcfun", so it is enough to point its cross-check at `*required-symbols*`. No new mechanism is needed.
+3. Adopt the check after confirming where it fails. This repository has twice shipped a check whose failure it had not seen.
 
-README内のassertion件数のdocument driftは **解消済み** (243 / 106 で現状と一致) のため、本phaseの対象外とする。
+The document drift in the README's assertion counts is **already resolved** (243 / 106, matching the current state), so it shall be out of scope for this phase.
 
-このphaseではAPI構造を変更しない。
+This phase does not change the API structure.
 
-### Phase 1: 責務分離を行うが挙動を変えない
+### Phase 1: Separate responsibilities without changing behaviour
 
-1. raw callを安全化するbackend固有functionを抽出する。
-2. 既存の共通generic methodを、そのfunctionへ委譲させる。
-3. 既存public API、戻り値、condition、テスト結果を維持する。
-4. LightGBMとXGBoostの両方で同じ分離原則を適用する。
+1. Extract the backend-specific functions that make raw calls safe.
+2. Make the existing unified generic methods delegate to those functions.
+3. Keep the existing public API, return values, conditions and test results.
+4. Apply the same separation principle on both LightGBM and XGBoost.
 
-このphaseの目的は新機能ではなく、実装経路を一本化した三層構造を確立することである。
+The aim of this phase is not a new feature but the establishment of the three-layer structure with a single implementation path.
 
-### Phase 2: Backend-specific safe APIを公開
+### Phase 2: Publish the backend-specific safe API
 
-1. 公開対象functionのcontractを定義する。
-2. backend固有packageからexportする。
-3. raw pointerを公開せず、既存handleを使用する。
-4. documentationとbackend固有functional testを追加する。
-5. capability modelを実装する。
+1. Define the contract of the functions to be published.
+2. Export from the backend-specific package.
+3. Do not publish raw pointers; use the existing handles.
+4. Add documentation and backend-specific functional tests.
+5. Implement the capability model.
 
-最初の公開対象は、共通化によって現在利用できないことが明確な機能から選ぶ。
+Choose the first things to publish from the features that unification has clearly made unavailable at present.
 
 - XGBoost model slicing
-- shapeを保持するXGBoost feature score
+- shape-preserving XGBoost feature score
 - XGBoost evaluation
 - LightGBM evaluation
 - LightGBM rollback / refit / reset parameter
 
-### Phase 3: 共通training APIを完成
+### Phase 3: Complete the unified training API
 
-1. evaluation historyを取得する。
-2. training reportを設計する。
-3. early stoppingを実装する。
-4. best iterationをprediction / persistenceと接続する。
-5. validation set namingを定義する。
+1. Obtain the evaluation history.
+2. Design the training report.
+3. Implement early stopping.
+4. Connect the best iteration to prediction / persistence.
+5. Define validation set naming.
 
-### Phase 4: Dataとpredictionの拡張 — 完了
+### Phase 4: Data and prediction extensions — complete
 
-優先度と実利用要求に応じて、以下をcapability-gated APIとして追加する。
+Add the following as capability-gated APIs, according to priority and demand from real use.
 
 - sparse input
 - missing value option
@@ -343,47 +343,47 @@ README内のassertion件数のdocument driftは **解消済み** (243 / 106 で�
 - multidimensional prediction result
 - custom objective / evaluation
 
-すべてを同時に実装しようとしてはならない。各機能について、Layer 1 contract、Layer 2に含める可否、capability、functional testを一組として実装する。
+Implementing all of them at once must not be attempted. For each feature, implement the Layer 1 contract, whether it is to be included in Layer 2, the capability and the functional test as one set.
 
-この一組という単位は最後まで守られ、一覧の各項目がそれぞれ独立したPRとして入った。external memoryは下記の理由で一覧から外したため、**この時点でPhase 4に未実装の項目はない**。
+This one-set unit was kept to the end, and each item in the list went in as its own separate PR. External memory was dropped from the list for the reason below, so **at this point Phase 4 has no unimplemented item left**.
 
-| 一覧の項目 | 実装 | capability | PR | functional test |
+| Item in the list | Implementation | capability | PR | functional test |
 |---|---|---|---|---|
-| sparse input | dense matrixを受ける位置で `make-dataset` と `predict` が `csr-matrix` も受ける | `:sparse-input` (両backend) | #18 | `tests/functional/sparse-input.lisp` |
-| missing value option | `make-dataset` と `predict` の `:missing` | `:missing-value` (XGBoostのみ真) | #19 | `tests/functional/missing-value.lisp` |
-| categorical metadata | `make-dataset` の `:categorical-features` | `:categorical-features` (両backend) | #20 | `tests/functional/categorical-features.lisp` |
-| multidimensional prediction result | `predict` が第二値として返すshape | `:prediction-shape` (両backend) | #22 | `tests/functional/prediction-shape.lisp` |
-| custom objective / evaluation | `train` の `:objective` と `:evaluation` | `:custom-objective` / `:custom-evaluation` (両backend) | #23 / #24 | `tests/functional/custom-objective.lisp` / `custom-evaluation.lisp` |
+| sparse input | `make-dataset` and `predict` also accept a `csr-matrix` wherever they accept a dense matrix | `:sparse-input` (both backends) | #18 | `tests/functional/sparse-input.lisp` |
+| missing value option | `:missing` on `make-dataset` and `predict` | `:missing-value` (true on XGBoost only) | #19 | `tests/functional/missing-value.lisp` |
+| categorical metadata | `make-dataset`'s `:categorical-features` | `:categorical-features` (both backends) | #20 | `tests/functional/categorical-features.lisp` |
+| multidimensional prediction result | the shape `predict` returns as its secondary value | `:prediction-shape` (both backends) | #22 | `tests/functional/prediction-shape.lisp` |
+| custom objective / evaluation | `train`'s `:objective` and `:evaluation` | `:custom-objective` / `:custom-evaluation` (both backends) | #23 / #24 | `tests/functional/custom-objective.lisp` / `custom-evaluation.lisp` |
 
-以後この一覧へ項目を足さない。新しいdata / prediction機能は、phaseの続きではなく下記のフォローアップとして扱う。
+Do not add any further item to this list. Treat a new data / prediction feature as part of the Follow-up below rather than as a continuation of the phases.
 
-### external memoryを一覧から外した理由
+### Why external memory was dropped from the list
 
-当初この一覧にはexternal memoryも含めていたが、vendoredヘッダを読んだ結果、**両backendとも、このwrapperがexternal memoryと呼べるものを、対応するdataset構築の入口では提供していない**ことが分かったため外した。同じ調査を繰り返さないよう、根拠を残す。
+The list originally included external memory as well, but reading the vendored headers showed that **neither backend provides, at the corresponding dataset-construction entry point, anything this wrapper could call external memory**, so it was dropped. The grounds are recorded here so that the same investigation is not repeated.
 
-- **XGBoost**のexternal memoryは`Streaming`グループにある。ヘッダ自身が "the experimental external-memory-based DMatrix, which reads data in batches during training" と書き、到達するには`XGDMatrixCreateFromCallback`または`XGExtMemQuantileDMatrixCreateFromCallback`に、呼び出し側が**Cコールバックとして実装したdata iterator**（`XGDMatrixCallbackNext`、`DataIterResetCallback`）を渡す必要がある。`XGDMatrixCreateFromURI`は "load a data matrix" であって、通常のin-memory DMatrixを作る。
-- **LightGBM**には該当する機能がない。`LGBM_DatasetCreateFromFile`は "Load dataset from file (like LightGBM CLI version does)" で、できあがる`Dataset`はbin化された形で全量メモリに載る。`LGBM_DatasetInitStreaming`とその周辺は、複数スレッドから行を流し込む**構築**の機構であって、データをメモリ外に置く機構ではない。
+- **XGBoost**'s external memory is in the `Streaming` group. The header itself says "the experimental external-memory-based DMatrix, which reads data in batches during training", and to reach it the caller has to pass `XGDMatrixCreateFromCallback` or `XGExtMemQuantileDMatrixCreateFromCallback` a **data iterator implemented as a C callback** (`XGDMatrixCallbackNext`, `DataIterResetCallback`). `XGDMatrixCreateFromURI` is "load a data matrix", and makes an ordinary in-memory DMatrix.
+- **LightGBM** has no corresponding feature. `LGBM_DatasetCreateFromFile` is "Load dataset from file (like LightGBM CLI version does)", and the `Dataset` it produces sits entirely in memory in binned form. `LGBM_DatasetInitStreaming` and what surrounds it are a mechanism for **construction**, feeding rows in from multiple threads, not a mechanism for putting the data outside memory.
 
-したがって実装するとすれば、このプロジェクト初のC→Lisp callbackを導入し、上流自身がexperimentalと呼ぶAPIに乗り、片側のbackendでのみ真となるcapabilityを足すことになる。§7が要求するportable contractに載せられる形ではない。将来この判断を覆すなら、上記の三点が変わったことを先に確認すること。
+So implementing it would mean introducing this project's first C→Lisp callback, riding on an API upstream itself calls experimental, and adding a capability that is true on only one of the backends. That is not a form that can be put on the portable contract §7 requires. To overturn this decision in the future, first confirm that the three points above have changed.
 
-### フォローアップ
+### Follow-up
 
-Phase 4完了時点、およびその後のLayer 1 / Layer 2分離作業で判明している残件を記録する。いずれもどのphaseの完了条件でもない。まとめて一つのphaseに束ねない。二件目以降は、実利用要求が出た時点で、§17の分類と§13のテスト方針に従い一件ずつ着手する。
+This records the outstanding items that came to light at the point Phase 4 completed and in the Layer 1 / Layer 2 separation work that followed. None of them is a completion criterion for any phase. Do not bundle them together into a single phase. From the second item on, take them up one at a time, at the point demand from real use appears, following §17's classification and §13's test policy.
 
-- **Layer 1でのdataset / booster構築、model永続化、metadata照会 — 完了** — 他の三件と違い、これは新機能ではなくLayer 1 / Layer 2分離が残した負債であった。したがって実利用要求を待たず、層分離の次段の最初の項目として着手し、閉じた。両backendとも `src/<backend>/api.lisp` に六つの操作 — `create-dataset`、`create-booster`、`update-one-iteration`、`predict`、`free-dataset`、`free-booster` — を置いたので、`cl-gbdt/lightgbm` あるいは `cl-gbdt/xgboost` だけを読み込んだcallerが、datasetを構築し、その上にboosterを作り、一反復ずつ進め、予測し、両方を解放できる。unified APIがimageに一切存在しない状態でそれが成り立つことは、`tests/functional/lightgbm-standalone.lisp` と `tests/functional/xgboost-standalone.lisp` が示す。両fileが名指しするのは、そのbackendのpublic packageのみであって、本projectの他のsystemは一つも挙げない(`rove` を除けば、ほかに宣言は無い)。`tools/ci/check-leaf-systems.lisp` が個別の新規processで各systemを単独loadするため、この主張は文章ではなくbuildが担保する。§3の「Layer 2の各methodは、可能な限りLayer 1のbackend-specific safe APIへ委譲する」という要求は、この段階でLayer 1に対応物がなかった残り七つの操作 — `save-model`、`load-model`、`model-to-string`、`feature-importance`、`evaluation`、`dataset-num-rows`、`dataset-num-features` — を両backendとも `src/<backend>/api.lisp` へ置いたことで、13 methodのうち `train` を除く十二すべてが手続き全体をこれらへ委譲する形で果たされた。`train` は構築だけの委譲で、Layer 1に対応する `create-booster` を呼んでboosterを構築するが、loop自体は `api.lisp` の `update-one-iteration` を経由せず `native.lisp` の関数を直接呼び続ける — 毎反復ごとに全handleを再検査させないためで、その理由は両backendの `train` それぞれの `create-booster` 呼び出し箇所のコメントに記してある。loopが終わった後にbest iterationだけを `src/handle.lisp` のinternalなwriter `%set-booster-best-iteration` で書く。training report、early stopping、`train` の `:objective` と `:evaluation` はLayer 2固有の概念であって対応するLayer 1操作を持たないので、この委譲には入らない。
-- **file input** — `make-dataset` の `MATRIX` がpathnameも受け、libraryが自らファイルを読む形 (`LGBM_DatasetCreateFromFile`、`XGDMatrixCreateFromURI`)。どちらも通常のin-memory datasetを作るので、これはexternal memoryではなく、別capability `:file-input` になる。設計のみ済み、未実装。
-- **shapeを保持するXGBoost feature score** — Phase 2の「最初の公開対象」に挙げたまま未実装。`:multidimensional-feature-score` は `*known-capabilities*` に登録済みだが全backendでfalseであり、「未対応であること自体は答えられる」状態で止まっている。
-- **LightGBM rollback / refit / reset parameter** — 同じくPhase 2の一覧の未実装項目。`LGBM_BoosterRollbackOneIter`、`LGBM_BoosterRefit`、`LGBM_BoosterResetParameter` はbindingには存在し、Layer 1として公開していない。
+- **Dataset / booster construction, model persistence and metadata queries in Layer 1 — complete** — Unlike the other three, this was not a new feature but debt the Layer 1 / Layer 2 split left behind. So it was taken up without waiting for demand from real use, as the first item of the next stage of the layer split, and closed. Both backends have placed six operations — `create-dataset`, `create-booster`, `update-one-iteration`, `predict`, `free-dataset`, `free-booster` — in `src/<backend>/api.lisp`, so a caller that has loaded only `cl-gbdt/lightgbm` or only `cl-gbdt/xgboost` can build a dataset, make a booster on top of it, advance it one iteration at a time, predict, and free both. That this holds with no unified API present in the image at all is shown by `tests/functional/lightgbm-standalone.lisp` and `tests/functional/xgboost-standalone.lisp`. What both files name is that backend's public package alone, and they list not one other system of this project (`rove` aside, there is no other declaration). Because `tools/ci/check-leaf-systems.lisp` loads each system alone in a separate fresh process, this claim is backed by the build rather than by prose. §3's requirement, "Each Layer 2 method delegates to Layer 1's backend-specific safe API as far as possible", was met by putting the remaining seven operations — `save-model`, `load-model`, `model-to-string`, `feature-importance`, `evaluation`, `dataset-num-rows`, `dataset-num-features` — for which Layer 1 had no counterpart at that point into `src/<backend>/api.lisp` on both backends, so that all twelve of the 13 methods other than `train` delegate their whole procedure to them. `train` delegates its construction only: it calls the corresponding Layer 1 `create-booster` to build the booster, but the loop itself keeps calling `native.lisp`'s functions directly rather than going through `api.lisp`'s `update-one-iteration` — so as not to have every handle re-checked on every iteration, and that reason is recorded in the comment at the `create-booster` call site in each backend's `train`. After the loop ends it writes only the best iteration, through `src/handle.lisp`'s internal writer `%set-booster-best-iteration`. The training report, early stopping and `train`'s `:objective` and `:evaluation` are Layer 2-specific concepts and have no corresponding Layer 1 operation, so they do not fall under this delegation.
+- **file input** — `make-dataset`'s `MATRIX` also accepting a pathname, with the library reading the file itself (`LGBM_DatasetCreateFromFile`, `XGDMatrixCreateFromURI`). Both make an ordinary in-memory dataset, so this is not external memory but a separate capability, `:file-input`. Designed only, unimplemented.
+- **shape-preserving XGBoost feature score** — listed under Phase 2's "the first things to publish" and still unimplemented. `:multidimensional-feature-score` is registered in `*known-capabilities*` but is false on every backend, stopped at the state where "the fact that it is unsupported can itself be answered".
+- **LightGBM rollback / refit / reset parameter** — likewise an unimplemented item from Phase 2's list. `LGBM_BoosterRollbackOneIter`, `LGBM_BoosterRefit` and `LGBM_BoosterResetParameter` exist in the binding and are not published as Layer 1.
 
-## 13. テスト方針
+## 13. Test policy
 
-テストを次の二種類に明確に分ける。
+Separate tests clearly into the following two kinds.
 
 ### Portable contract tests
 
-同一のテストを両backendに適用し、共通APIの意味が一致することを検証する。
+The same test is applied to both backends, verifying that the unified API means the same thing on each.
 
-最低限、次を実ライブラリで検証する。
+At a minimum, verify the following against the real library.
 
 - label / weight / group / feature names
 - normal / raw / leaf-index / contribution prediction
@@ -394,22 +394,22 @@ Phase 4完了時点、およびその後のLayer 1 / Layer 2分離作業で判�
 - validation metric
 - early stopping
 - released handle / closed backend / wrong backend handle
-- unsupported capabilityが型付きconditionになること
+- that an unsupported capability becomes a typed condition
 
-数値がbackend間で完全一致することは要求しない。shape、順序、意味、単調性、再読込後の同一backend内再現性など、contractに対応した性質を検証する。
+Exact numerical agreement between backends is not required. Verify the properties that correspond to the contract, such as shape, ordering, meaning, monotonicity and reproducibility within the same backend after reloading.
 
 ### Backend-specific tests
 
-固有APIについて、上流C APIの特徴を失わず返すことを検証する。
+For a backend-specific API, verify that what it returns does not lose the characteristics of the upstream C API.
 
 - XGBoost multidimensional shape
-- XGBoost固有importance種別
+- XGBoost-specific importance kind
 - model slicing
 - LightGBM reference dataset
 - refit / rollback
-- optional symbol欠落時のcapability低下
+- capability degradation when an optional symbol is absent
 
-新しい公開functionには、mockだけでなく実shared libraryを呼ぶfunctional testを必須とする。
+For a new public function, a functional test that calls the real shared library, not merely a mock, is mandatory.
 
 ## 14. 後方互換性
 
