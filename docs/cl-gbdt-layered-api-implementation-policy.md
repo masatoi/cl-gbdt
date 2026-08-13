@@ -422,7 +422,7 @@ A change that breaks existing callers must not be introduced all at once.
 - The unified API must not be deleted on the grounds that a backend-specific API is being added.
 - The raw C API package must not be promised as a stable public API.
 
-Where a breaking change is unavoidable, a design document, a migration example and a deprecation period must be presented first, and it must be handled as a separate PR.
+Where a breaking change is unavoidable, a design document, a migration example and a deprecation period must be presented first, and the change must be handled as a separate PR.
 
 ## 15. Non-goals
 
@@ -444,7 +444,7 @@ The initial completion of the layered API restructuring shall be the point at wh
 3. The unified API and the backend-specific API do not implement the same C operation separately.
 4. At least one backend-specific feature can be used from the backend-specific package without a raw pointer.
 5. `backend-capabilities` returns the actual availability of features.
-6. A classification of required / optional foreign symbols and a mechanical check of it exist.
+6. A classification and a mechanical check of required / optional foreign symbols exist.
 7. All the existing layer 1 / layer 2 tests pass.
 8. A new backend-specific API has a functional test that uses the real shared library.
 9. The core system keeps the property that it can be loaded without a backend library.
@@ -490,8 +490,8 @@ as a library on its own, without the unified API. Do not add items to §12's Pha
 
 The decisions binding the whole programme are the following five.
 
-1. Coverage is guaranteed by classification (exhaustive classification), and is not guaranteed by
-   percentage.
+1. Coverage is guaranteed by classification (the exhaustiveness of the classification), and is
+   not guaranteed by percentage.
 2. `cl-gbdt/<backend>` means Layer 1 alone. The unified API's 13 methods are carried by
    `cl-gbdt/<backend>/unified`.
 3. It shall be one C function, one Lisp function. The C calling conventions are converted (out
