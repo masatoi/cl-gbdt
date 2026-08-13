@@ -200,9 +200,19 @@ were changed to fix exactly that."
             ,@body)
        (ignore-errors (delete-file ,path)))))
 
-(defun model-string-after-one-iteration (backend dataset)
-  "Train one iteration on DATASET and return the resulting model as a string."
-  (let ((booster (cl-gbdt/lightgbm:create-booster backend dataset)))
+(defun model-string-after-one-iteration (backend dataset &key parameters)
+  "Train one iteration on DATASET and return the resulting model as a string.
+
+PARAMETERS is passed to `create-booster' unchanged. Measured (review of this file's first
+version, 2026-08-13): with no `:parameters' at all, LightGBM's default `min_data_in_leaf'
+(20) exceeds every file-input fixture's four rows, so the booster never splits and the whole
+model is a single leaf holding the training set's mean label -- `feature_infos=none none
+none'. A comparison built on that alone cannot tell whether the feature VALUES were even
+read, only the labels, which is why both `create-dataset-from-file-trains-the-same-model-as-
+the-matrix' and its control below pass `*parameters*' -- the same plist already used for
+every other booster in this file -- so the trees actually split and the comparison binds the
+feature ranges and thresholds, not merely the label mean."
+  (let ((booster (cl-gbdt/lightgbm:create-booster backend dataset :parameters parameters)))
     (unwind-protect
          (progn
            (cl-gbdt/lightgbm:update-one-iteration booster)
@@ -700,17 +710,29 @@ were changed to fix exactly that."
   (testing "a dataset read from a file trains identically to the same data given as a matrix"
     (with-open-backend (backend)
       (with-libsvm-fixture (path)
-        (let ((from-file (cl-gbdt/lightgbm:create-dataset-from-file backend path))
+        (let ((from-file (cl-gbdt/lightgbm:create-dataset-from-file
+                          backend path :parameters *parameters*))
               (from-matrix (cl-gbdt/lightgbm:create-dataset
                             backend
                             (make-array '(4 3) :element-type 'double-float
                                                :initial-contents
                                                '((1d0 2d0 3d0) (4d0 5d0 6d0)
                                                  (7d0 8d0 9d0) (10d0 11d0 12d0)))
-                            :label '(1d0 0d0 1d0 0d0))))
+                            :label '(1d0 0d0 1d0 0d0)
+                            :parameters *parameters*)))
           (unwind-protect
-               (ok (string= (model-string-after-one-iteration backend from-file)
-                            (model-string-after-one-iteration backend from-matrix))
+               ;; `*parameters*' on every call above, not just this comparison: with none,
+               ;; LightGBM's default `min_data_in_leaf' (20) exceeds these four rows and
+               ;; neither booster ever splits, so the strings compared below would encode
+               ;; only the label mean and nothing about which feature values were actually
+               ;; read -- see `model-string-after-one-iteration''s docstring, and this
+               ;; project's review of this file's first version, which measured that an
+               ;; implementation reading wholly different feature values still passed this
+               ;; assertion under the weaker (no-`:parameters') form.
+               (ok (string= (model-string-after-one-iteration backend from-file
+                                                               :parameters *parameters*)
+                            (model-string-after-one-iteration backend from-matrix
+                                                               :parameters *parameters*))
                    "a file-built dataset and a matrix-built dataset trained different models")
             (progn
               (cl-gbdt/lightgbm:free-dataset from-file)
@@ -725,11 +747,15 @@ were changed to fix exactly that."
     (with-open-backend (backend)
       (with-libsvm-fixture (path)
         (with-different-libsvm-fixture (other)
-          (let ((a (cl-gbdt/lightgbm:create-dataset-from-file backend path))
-                (b (cl-gbdt/lightgbm:create-dataset-from-file backend other)))
+          (let ((a (cl-gbdt/lightgbm:create-dataset-from-file
+                    backend path :parameters *parameters*))
+                (b (cl-gbdt/lightgbm:create-dataset-from-file
+                    backend other :parameters *parameters*)))
             (unwind-protect
-                 (ng (string= (model-string-after-one-iteration backend a)
-                              (model-string-after-one-iteration backend b))
+                 (ng (string= (model-string-after-one-iteration backend a
+                                                                 :parameters *parameters*)
+                              (model-string-after-one-iteration backend b
+                                                                 :parameters *parameters*))
                      "two different files trained the same model")
               (progn
                 (cl-gbdt/lightgbm:free-dataset a)
@@ -744,6 +770,17 @@ file as LightGBM's own"
         (ok (handler-case (progn (cl-gbdt/lightgbm:create-dataset-from-file nil path) nil)
               (cl-gbdt/lightgbm:wrong-backend-reference () t))
             "create-dataset-from-file accepted NIL as its backend")
+        ;; NIL alone would be caught by almost any accidental check. This file's own
+        ;; convention for the identical guard (`layer-1-alone-saves-loads-and-renders-a-model')
+        ;; also covers a wrong-CLASS object, which is what the two measurements behind
+        ;; `%check-object-class' actually were.
+        (let ((wrong-class (cl-gbdt/lightgbm:create-dataset-from-file backend path)))
+          (unwind-protect
+               (ok (handler-case
+                       (progn (cl-gbdt/lightgbm:create-dataset-from-file wrong-class path) nil)
+                     (cl-gbdt/lightgbm:wrong-backend-reference () t))
+                   "create-dataset-from-file accepted a dataset as its backend")
+            (cl-gbdt/lightgbm:free-dataset wrong-class)))
         ;; Not a `probe-file' pre-check -- a missing file is LightGBM's own to report, through
         ;; `check-lgbm' like any other failed foreign call.
         (ok (handler-case
@@ -762,3 +799,65 @@ file as LightGBM's own"
         (ok (handler-case (progn (cl-gbdt/lightgbm:create-dataset-from-file backend path) nil)
               (cl-gbdt/lightgbm:backend-not-open () t))
             "create-dataset-from-file did not signal backend-not-open")))))
+
+;;; The five tests above never supply `:parameters' or `:reference' -- an implementation that
+;;; dropped `parameter-string' or `reference-pointer' at the call site, passing `""' and a
+;;; null pointer unconditionally, would pass every one of them. This project already pins
+;;; exactly that class of thing elsewhere in this file: `save-model''s `:num-iteration' test
+;;; exists, in its own words, because a value silently dropped between a wrapper and the
+;;; library would otherwise pass. The two tests below close the same gap here, measured
+;;; against the vendored library first (`repl-eval', 2026-08-13): `:parameters '(:header
+;;; "true")' on `with-libsvm-fixture''s file reads 3 rows rather than 4, and a `:reference'
+;;; dataset is accepted and produces the same shape as building without one, per
+;;; `docs/superpowers/specs/2026-08-13-file-input-measurements.md' section 7.
+
+(deftest create-dataset-from-file-honours-parameters
+  (testing "create-dataset-from-file's :parameters reaches LGBM_DatasetCreateFromFile"
+    (with-open-backend (backend)
+      (with-libsvm-fixture (path)
+        ;; `header=true' consumes the fixture's first data row as a header instead -- see
+        ;; `docs/superpowers/specs/2026-08-13-file-input-measurements.md' section 5 -- so an
+        ;; implementation that rendered PARAMETERS into `""' regardless of what it was given
+        ;; would still read 4 rows here and this assertion would catch it.
+        (let ((dataset (cl-gbdt/lightgbm:create-dataset-from-file
+                        backend path :parameters '(:header "true"))))
+          (unwind-protect
+               (ok (= 3 (cl-gbdt/lightgbm:dataset-num-rows dataset))
+                   (format nil ":parameters '(:header \"true\") left dataset-num-rows at ~D, \
+not 3" (cl-gbdt/lightgbm:dataset-num-rows dataset)))
+            (cl-gbdt/lightgbm:free-dataset dataset)))))))
+
+(deftest create-dataset-from-file-honours-reference
+  (testing "create-dataset-from-file's :reference reaches LGBM_DatasetCreateFromFile, and is \
+checked before any foreign call"
+    (with-open-backend (backend)
+      (with-libsvm-fixture (path)
+        (let ((first (cl-gbdt/lightgbm:create-dataset-from-file backend path)))
+          (unwind-protect
+               (let ((second (cl-gbdt/lightgbm:create-dataset-from-file
+                              backend path :reference first)))
+                 (unwind-protect
+                      (progn
+                        (ok (= 4 (cl-gbdt/lightgbm:dataset-num-rows second))
+                            "a dataset built with :reference has the wrong row count")
+                        (ok (= 3 (cl-gbdt/lightgbm:dataset-num-features second))
+                            "a dataset built with :reference has the wrong feature count"))
+                   (cl-gbdt/lightgbm:free-dataset second)))
+            (cl-gbdt/lightgbm:free-dataset first))
+          ;; A wrong-class :reference is refused before any foreign call -- `%reference-
+          ;; pointer' delegates to `%check-lightgbm-dataset', which `create-dataset' already
+          ;; relies on for the identical check.
+          (ok (handler-case
+                  (progn (cl-gbdt/lightgbm:create-dataset-from-file backend path :reference 42)
+                         nil)
+                (cl-gbdt/lightgbm:wrong-backend-reference () t))
+              "create-dataset-from-file accepted a non-dataset :reference")
+          ;; And a freed one -- the case the docstring promises `released-handle-error' for.
+          (let ((freed (cl-gbdt/lightgbm:create-dataset-from-file backend path)))
+            (cl-gbdt/lightgbm:free-dataset freed)
+            (ok (handler-case
+                    (progn (cl-gbdt/lightgbm:create-dataset-from-file
+                            backend path :reference freed)
+                           nil)
+                  (cl-gbdt/lightgbm:released-handle-error () t))
+                "create-dataset-from-file accepted a freed :reference")))))))

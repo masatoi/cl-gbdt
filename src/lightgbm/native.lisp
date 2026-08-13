@@ -492,7 +492,7 @@ detector accepts -- is reported through `check-lgbm' like any other failed forei
                               (parameters-c parameter-string))
     (cffi:with-foreign-object (out :pointer)
       (check-lgbm (lgbm-dataset-create-from-file filename-c parameters-c
-                                                  reference-pointer out)
+                                                 reference-pointer out)
                   "LGBM_DatasetCreateFromFile")
       (cffi:mem-ref out :pointer))))
 

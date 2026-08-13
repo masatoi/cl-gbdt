@@ -388,7 +388,7 @@ with nothing in Lisp yet referencing it, not only where the gap is wide."
     (let ((reference-pointer (%reference-pointer backend reference 'lightgbm-dataset))
           (parameter-string (%parameter-string parameters)))
       (let ((dataset-pointer (%create-dataset-from-file (namestring path) parameter-string
-                                                         reference-pointer)))
+                                                        reference-pointer)))
         (when (cffi:null-pointer-p dataset-pointer)
           (error 'foreign-call-error
                  :function-name "LGBM_DatasetCreateFromFile"
