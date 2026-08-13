@@ -265,7 +265,7 @@ it neither would be recognised as reaching `wrong-backend-reference'.
 A guard whose definition is not found under these patterns is NOT taken on trust -- it fails
 as though it were no class check at all, which is loud and fail-closed. The floor this
 parameter needs is therefore automatic: a list that matched nothing would fail every one of
-the thirty-one entry points at once rather than passing them.")
+the thirty-three entry points at once rather than passing them.")
 
 (defparameter +minimum-entry-point-files+ 4
   "Fewer scanned files than this means nothing was walked, and fails.
@@ -274,14 +274,14 @@ Four is what the two backends' `api.lisp' and `native.lisp' come to. A third bac
 the real number and still clears the floor; a wrong working directory or a rename drops it to
 zero, which is the case this catches. See THE FLOOR.")
 
-(defparameter +minimum-entry-points+ 32
+(defparameter +minimum-entry-points+ 33
   "Fewer public entry points found in total than this means the scan lost sight of something,
 and fails.
 
-Thirty-two is today's set: `create-dataset', `create-booster', `update-one-iteration',
+Thirty-three is today's set: `create-dataset', `create-booster', `update-one-iteration',
 `predict', `free-dataset', `free-booster', `save-model', `load-model', `model-to-string',
 `feature-importance', `evaluation', `dataset-num-rows' and `dataset-num-features' in each
-backend's `api.lisp', plus XGBoost's `slice-model' there and LightGBM's
+backend's `api.lisp', plus XGBoost's `slice-model' there and both backends'
 `create-dataset-from-file'; plus `booster-eval' and `booster-eval-names' in LightGBM's
 `native.lisp' and `evaluate-one-iteration' and `booster-boosted-rounds' in XGBoost's. Raise
 this when the set grows, so that a later disappearance is caught at the new size rather than
@@ -559,8 +559,9 @@ argument tree. A guard on something DERIVED FROM the parameter is not a guard on
 parameter, and the difference is the whole defect: `(%check-object-class (handle-backend
 dataset) 'lightgbm-backend ...)' mentions DATASET, names a real class checker, and leaves
 DATASET's own class never asked about -- measured, it reported `free-dataset' as guarded and
-exited 0 while the first bug in this file's header was live again. Every one of the thirty-one
-guards passes its parameter bare and first, so this costs the passing set nothing.
+exited 0 while the first bug in this file's header was live again. Every one of the
+thirty-three guards passes its parameter bare and first, so this costs the passing set
+nothing.
 
 The other two conditions are no less load-bearing. The prefix alone would accept a check of
 some unrelated object; and prefix plus a first argument accept `(%check-backend-open

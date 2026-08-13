@@ -19,6 +19,7 @@
                 #:xg-boost-version
                 #:xgd-matrix-create-from-dense
                 #:xgd-matrix-create-from-csr
+                #:xgd-matrix-create-from-uri
                 #:xgd-matrix-set-info-from-interface
                 #:xgd-matrix-set-u-int-info
                 #:xgd-matrix-set-str-feature-info
@@ -87,6 +88,7 @@
            #:%check-unsupported
            #:%read-version
            #:%create-dmatrix
+           #:%create-dmatrix-from-uri
            #:%create-dmatrix-from-csr
            #:%set-info-field
            #:%set-group-field
@@ -306,6 +308,7 @@ included -- unlike LightGBM's, whose compiled basename genuinely omits it; see
   '("XGBoostVersion"
     "XGBGetLastError"
     "XGDMatrixCreateFromDense"
+    "XGDMatrixCreateFromURI"
     "XGDMatrixSetInfoFromInterface"
     "XGDMatrixSetUIntInfo"
     "XGDMatrixSetStrFeatureInfo"
@@ -534,6 +537,71 @@ likewise pins nothing of MATRIX around it."
               (check-xgb (xgd-matrix-create-from-dense data config out)
                          "XGDMatrixCreateFromDense")
               (cffi:mem-ref out :pointer))))))))
+
+(defun %json-string (string)
+  "Return STRING as a double-quoted JSON string literal, escaping every character JSON
+requires escaped -- `\"', `\\', and the C0 control characters (U+0000-U+001F), the latter
+written `\\uXXXX' except for the four JSON gives their own short escape (`\\b', `\\t',
+`\\n', `\\f', `\\r'). Every other character, ASCII or not, is copied through unescaped --
+valid per RFC 8259, which requires escaping only the characters above and leaves the rest to
+the string's own encoding.
+
+`%uri-config-json' is the one caller. URI, unlike every other config-json builder's argument
+in this file, is caller-controlled path data rather than a number, so the bare `~A'
+interpolation `%dense-matrix-config-json', `%csr-matrix-config-json' and
+`%predict-config-json' use for their own arguments is not safe here -- a path holding a
+literal `\"' or `\\', neither of which `cl-gbdt/src/xgboost/file-input:file-uri''s own guard
+rejects, would otherwise corrupt the JSON this function returns."
+  (with-output-to-string (out)
+    (write-char #\" out)
+    (loop :for char :across string
+          :do (case char
+                (#\" (write-string "\\\"" out))
+                (#\\ (write-string "\\\\" out))
+                (#\Backspace (write-string "\\b" out))
+                (#\Tab (write-string "\\t" out))
+                (#\Newline (write-string "\\n" out))
+                (#\Page (write-string "\\f" out))
+                (#\Return (write-string "\\r" out))
+                (t (if (< (char-code char) #x20)
+                       (format out "\\u~4,'0X" (char-code char))
+                       (write-char char out)))))
+    (write-char #\" out)))
+
+(defun %uri-config-json (uri)
+  "Return the config JSON `XGDMatrixCreateFromURI' expects for URI,
+`cl-gbdt/src/xgboost/file-input:file-uri''s composed string.
+
+Two keys, both measured (record section 2): `\"uri\"', holding URI itself, and `\"silent\"',
+fixed at 0. Every measured call used exactly `{\"uri\": \"<path>\", \"silent\": 0}' together
+-- whether `\"silent\"' can be dropped and only `\"uri\"' sent was never isolated, so this
+always sends both rather than guess at an untested combination. `data_split_mode', the
+vendored header's third documented key for this call, was never exercised either and stays
+unexposed, mirroring `%dense-matrix-config-json' leaving `nthread'/`data_split_mode' alone
+for the identical reason.
+
+URI's own value is rendered with `%json-string' rather than the `~A' interpolation this
+file's other config-json builders use, because URI -- unlike MISSING or the predict config's
+numeric keys -- is caller-controlled path data that can hold a character JSON itself
+requires escaped."
+  (format nil "{\"uri\":~A,\"silent\":0}" (%json-string uri)))
+
+(defun %create-dmatrix-from-uri (uri)
+  "Build a DMatrix from URI via `XGDMatrixCreateFromURI', returning its raw pointer.
+
+URI is `cl-gbdt/src/xgboost/file-input:file-uri''s composed string -- PATH plus a
+`?format=...' query segment, or no query at all for `:binary' -- and the format/contents
+agreement `cl-gbdt/src/xgboost/api''s `create-dataset-from-file' exists to guarantee has
+already been checked, by that function, before this one is ever reached: a mismatch that
+disagrees the wrong way SIGSEGVs inside a thread dmlc creates for the parse, and there is
+nothing this function, or any Lisp code running after the call, could do about that. This
+function makes the foreign call and nothing else, exactly as `%create-dmatrix' does for the
+dense path."
+  (let ((config-json (%uri-config-json uri)))
+    (cffi:with-foreign-string (config config-json)
+      (cffi:with-foreign-object (out :pointer)
+        (check-xgb (xgd-matrix-create-from-uri config out) "XGDMatrixCreateFromURI")
+        (cffi:mem-ref out :pointer)))))
 
 #+sbcl
 (defun %call-with-pinned-csr (indptr indices values function)

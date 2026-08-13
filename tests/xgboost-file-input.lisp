@@ -173,3 +173,17 @@ file afterward whether BODY exits normally or not."
                   #p"/data/train.csv" :csv '(:format "libsvm"))
                  nil)
         (cl-gbdt/src/conditions:unsupported-argument () t))))
+
+;; Task 4's carried-forward finding: file-uri did not guard its own FORMAT argument, only
+;; PAIRS -- a FORMAT keyword rendering to "csv&format=libsvm" would compose a second
+;; `format' key the same way a bad :uri-parameters entry would. create-dataset-from-file's
+;; own check order makes this unreachable in practice (FORMAT is restricted to :libsvm,
+;; :csv or :binary before file-uri is ever called), but file-uri is the one function in
+;; this branch whose whole job is preventing injection, so it should not depend on one
+;; caller getting the order right.
+(deftest file-uri-refuses-a-format-holding-a-reserved-character
+  (ok (handler-case
+          (progn (cl-gbdt/src/xgboost/file-input::file-uri
+                  #p"/data/train.csv" :|csv&format=libsvm| nil)
+                 nil)
+        (cl-gbdt/src/conditions:unsupported-argument () t))))

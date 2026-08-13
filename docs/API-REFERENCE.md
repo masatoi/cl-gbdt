@@ -261,7 +261,7 @@ hold Lisp conventions Markdown would render as something else.
 - [`wrong-backend-reference-expected`](#cl-gbdt-wrong-backend-reference-expected)
 - [`wrong-backend-reference-given`](#cl-gbdt-wrong-backend-reference-given)
 
-### `cl-gbdt/xgboost` -- 93 symbols
+### `cl-gbdt/xgboost` -- 94 symbols
 
 - [`*known-capabilities*`](#cl-gbdt-known-capabilities)
 - [`backend-capabilities`](#cl-gbdt-backend-capabilities)
@@ -290,6 +290,7 @@ hold Lisp conventions Markdown would render as something else.
 - [`close-backend`](#cl-gbdt-close-backend)
 - [`create-booster`](#cl-gbdt-xgboost-create-booster)
 - [`create-dataset`](#cl-gbdt-xgboost-create-dataset)
+- [`create-dataset-from-file`](#cl-gbdt-xgboost-create-dataset-from-file)
 - [`csr-matrix`](#cl-gbdt-csr-matrix)
 - [`csr-matrix-indices`](#cl-gbdt-csr-matrix-indices)
 - [`csr-matrix-indptr`](#cl-gbdt-csr-matrix-indptr)
@@ -1432,6 +1433,84 @@ the file itself already carrying whatever `create-dataset''s caller would otherw
 separately. `with-pointer-ownership' still spans the gap between that return and
 `make-handle', short as it is: policy section 10 asks for it wherever a fresh pointer exists
 with nothing in Lisp yet referencing it, not only where the gap is wide.
+```
+
+<a id="cl-gbdt-xgboost-create-dataset-from-file"></a>
+
+## `cl-gbdt/xgboost:create-dataset-from-file`
+
+- **Kind** function
+- **Signature** `(create-dataset-from-file backend path format &key uri-parameters)`
+- **Exported from** `cl-gbdt/xgboost`
+
+```text
+Build and return an `xgboost-dataset' from PATH on BACKEND via `XGDMatrixCreateFromURI',
+declaring PATH's contents to be FORMAT.
+
+FORMAT is positional and required -- one of `:libsvm', `:csv' or `:binary', exactly the set
+`cl-gbdt/src/xgboost/file-input:detect-file-format' classifies a file into. A default would
+invite a caller not to think about a mismatch that ends the process; see below. Anything
+outside that set signals `unsupported-argument' before any foreign call.
+
+URI-PARAMETERS is a plist of further dmlc query keys -- `(:label_column 0)', for one --
+passed to `cl-gbdt/src/xgboost/file-input:file-uri' verbatim and appended to the composed
+URI after FORMAT's own `format=' key. Record section 5: on a CSV file, `label_column' picks
+a 0-based label column -- `?format=csv&label_column=0' reads back 4 rows x 3 columns with
+labels, where `?format=csv' alone reads 4 x 4 with none. A `format' key among
+URI-PARAMETERS signals `unsupported-argument' from `file-uri''s own gate, since FORMAT is
+this function's argument to give, not a query key a caller composes by hand.
+
+**Why the gate exists.** XGBoost does not check FORMAT against PATH's own contents before
+`XGDMatrixCreateFromURI' starts parsing, and measured against the vendored 3.3.0 (record
+section 4), the wrong direction is not merely wrong, it is fatal: `train.csv?format=libsvm',
+`train.bin?format=libsvm', and a space-delimited numeric file declared `:libsvm' all SIGSEGV
+inside a thread dmlc creates for the parse -- SBCL reports `Can't handle sig11 in non-lisp
+thread' and the process is gone, with no Lisp stack for any `handler-case' to run on. This
+function classifies PATH itself, with `cl-gbdt/src/xgboost/file-input:detect-file-format',
+and signals `file-format-mismatch' -- naming PATH, the DECLARED format, and the DETECTED one
+-- before the foreign call that would otherwise crash, which is the only point at which this
+failure is reportable at all.
+
+**The gate also stops a silent wrong answer, not only a crash.** The other direction, a real
+libsvm file declared `:csv', does not crash: measured, `train.libsvm?format=csv' returns
+code 0 and a 4-row *1-column* DMatrix with no label, silently wrong rather than refused. A
+blank-only file returns a silent 0x0 DMatrix under either declared format. Both are caught
+here too -- the first because `detect-file-format' answers `:libsvm', not `:csv'; the second
+because it answers `:unknown', which matches no declared FORMAT at all. `:unreadable' -- an
+unopenable PATH -- is the one detected value this gate passes through regardless of FORMAT:
+an unopenable file is XGBoost's own to report, through `foreign-call-error' like any other
+failed foreign call, not a `probe-file' precheck made here.
+
+**`:binary' carries no `format' key in the URI at all.** Measured (record section 2):
+`?format=binary' is rejected outright, `Unknown data type binary', and a binary DMatrix
+loads only from a URI with no `format=' key whatsoever -- `file-uri' already knows this and
+omits the key for `:binary'; nothing here has to repeat it.
+
+**XGBoost's text file input is deprecated.** Every text-path attempt, including a refused
+one, prints `WARNING: .../data.cc:963: Text file input has been deprecated since 3.1' to
+**stderr**, **once per process**, measured verbatim (record section 6). The binary path
+prints nothing at all.
+
+Checked in this order, all before any foreign call: BACKEND's class, then whether it is
+open, then whether FORMAT is in the accepted set, then `file-uri' composing the URI (which
+itself signals `unsupported-argument' for a `?'/`#' in PATH or a smuggled `format' key or
+reserved character), then `detect-file-format' agreeing with FORMAT or answering
+`:unreadable'.
+
+Signals `wrong-backend-reference' when BACKEND is not an `xgboost-backend' -- the other
+backend's object, or not a backend at all -- before anything else is read from it and ahead
+of the openness check below, which for another backend's object would answer about the
+wrong shared library; see `%check-object-class'. Signals `backend-not-open' before any
+foreign call when BACKEND is not open -- see `%check-backend-open'. Signals
+`foreign-call-error' when the creation call reports success but writes a null handle.
+
+The raw DMatrix handle exists in C from the moment the creation call returns, but there is
+nothing left to attach to it afterward -- no LABEL, WEIGHT, GROUP or FEATURE-NAMES argument,
+the file itself already carrying whatever `create-dataset''s caller would otherwise pass
+separately, exactly as `cl-gbdt/lightgbm:create-dataset-from-file' has none either.
+`with-pointer-ownership' still spans the gap between that return and `make-handle', short as
+it is -- policy section 10 asks for it wherever a fresh pointer exists with nothing in Lisp
+yet referencing it, not only where the gap is wide.
 ```
 
 <a id="cl-gbdt-csr-matrix"></a>
