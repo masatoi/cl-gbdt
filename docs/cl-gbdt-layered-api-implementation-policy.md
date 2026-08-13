@@ -514,7 +514,7 @@ libraryにする、S1からS5までの五段階のプログラムが進行して
 - **S3 — bindingのclassification。完了 (PR #31)。** `src/*/c-api.lisp` が生成する177 bindingすべてを
   `ffi-spec/BINDING-COVERAGE.md` で `wrapped`/`planned`/`excluded` のいずれかに分類し、
   `tools/ci/check-binding-coverage.lisp` が未分類のbindingでbuildを失敗させる。
-- **S4-1 — docstringからAPI referenceを生成しbyte-for-byteで検査する仕組み。完了。**
+- **S4-1 — docstringからAPI referenceを生成しbyte-for-byteで検査する仕組み。完了 (PR #33)。**
   loadされたimageをintrospectしてMarkdownを書き出すdevelopment-onlyのemitter `src/docgen/`
   (`introspect.lisp`、`render.lisp`、`emit.lisp`、`all.lisp`) をASDF system `cl-gbdt/docgen`
   として追加し、そのdriverである `tools/gen-api-reference.lisp` が、`cl-gbdt`・
