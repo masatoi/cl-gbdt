@@ -48,30 +48,56 @@ opened at all; `detect-file-format' is what catches that."
       (and (= read length) (every #'= buffer expected)))))
 
 (defun %blank-line-p (line)
-  "True when LINE contains nothing but space, tab, or carriage-return characters --
-`detect-file-format''s definition of a line to skip while looking for the first line
-with content, including a CRLF-terminated blank line whose trailing CR `read-line'
-leaves in place."
-  (every (lambda (char) (member char '(#\Space #\Tab #\Return))) line))
+  "True when LINE, a vector of (unsigned-byte 8), contains nothing but the octets for
+space (32), tab (9), or carriage return (13) -- `detect-file-format''s definition of a
+line to skip while looking for the first line with content, including a
+CRLF-terminated blank line whose trailing CR `%read-byte-line' leaves in place."
+  (every (lambda (byte) (member byte '(32 9 13))) line))
+
+(defun %read-byte-line (stream)
+  "The octet analogue of `(read-line stream nil nil)': read bytes from STREAM up to and
+excluding the next #x0A (LF), or end of file, and return them as a fresh
+\(unsigned-byte 8) vector -- or NIL when STREAM is already at end of file with nothing
+left to return, the one case that also ends the loop in `%first-non-blank-line'.
+
+Classifying on octets rather than decoded characters is the point of this function: the
+rule `detect-file-format' applies only ever inspects ASCII code points (comma, space,
+tab, colon, digits), so nothing about it needs a decoded string, and reading bytes here
+means a file whose contents are not valid text -- a latin-1 CSV with an accented column,
+for one -- is classified correctly instead of failing to decode at all. See
+`detect-file-format''s own docstring for why that matters: the alternative, mapping a
+decoding failure to :UNREADABLE, is unsound, because :UNREADABLE is the one verdict the
+gate built on top of this function passes straight through to the foreign call."
+  (let ((first (read-byte stream nil nil)))
+    (cond ((null first) nil)
+          ((= first 10) (make-array 0 :element-type '(unsigned-byte 8)))
+          (t (let ((bytes (list first)))
+               (loop for next = (read-byte stream nil nil)
+                     until (or (null next) (= next 10))
+                     do (push next bytes))
+               (coerce (nreverse bytes) '(vector (unsigned-byte 8))))))))
 
 (defun %first-non-blank-line (path)
-  "Return the first line of the file at PATH for which `%blank-line-p' is false, or NIL
-when every line is blank or PATH has no lines at all -- a zero-byte file included, where
-the very first `read-line' is already end-of-file."
-  (with-open-file (stream path :direction :input)
-    (loop for line = (read-line stream nil nil)
+  "Return the first line of the file at PATH, as a vector of (unsigned-byte 8), for
+which `%blank-line-p' is false, or NIL when every line is blank or PATH has no lines at
+all -- a zero-byte file included, where the very first `%read-byte-line' is already
+end-of-file. Opens PATH as octets, never as text, so a file that is not valid text under
+any decoding is read exactly like any other file rather than signalling."
+  (with-open-file (stream path :direction :input :element-type '(unsigned-byte 8))
+    (loop for line = (%read-byte-line stream)
           while line
           unless (%blank-line-p line)
             return line)))
 
 (defun %split-on-whitespace-runs (line)
-  "Split LINE into tokens on runs of one or more SPACE and TAB characters, dropping any
-empty token a leading, trailing, or repeated separator would otherwise produce."
+  "Split LINE, a vector of (unsigned-byte 8), into tokens -- also (unsigned-byte 8)
+vectors -- on runs of one or more space (32) or tab (9) octets, dropping any empty
+token a leading, trailing, or repeated separator would otherwise produce."
   (let ((tokens '())
         (start nil))
     (loop for index from 0 below (length line)
-          for char = (char line index)
-          do (if (or (char= char #\Space) (char= char #\Tab))
+          for byte = (aref line index)
+          do (if (or (= byte 32) (= byte 9))
                  (when start
                    (push (subseq line start index) tokens)
                    (setf start nil))
@@ -82,24 +108,27 @@ empty token a leading, trailing, or repeated separator would otherwise produce."
     (nreverse tokens)))
 
 (defun %libsvm-token-p (token)
-  "True when TOKEN matches libsvm's <digits>:<rest> feature-pair shape: at least one
-digit before the first colon, at least one character after it, and no comma anywhere in
-TOKEN. Part of step 3 of `detect-file-format''s rule."
-  (let ((colon (position #\: token)))
+  "True when TOKEN, a vector of (unsigned-byte 8), matches libsvm's <digits>:<rest>
+feature-pair shape: at least one ASCII digit octet (48-57) before the first colon (58),
+at least one octet after it, and no comma (44) anywhere in TOKEN. Part of step 3 of
+`detect-file-format''s rule."
+  (let ((colon (position 58 token)))
     (and colon
          (plusp colon)
-         (every #'digit-char-p (subseq token 0 colon))
+         (every (lambda (byte) (<= 48 byte 57)) (subseq token 0 colon))
          (< (1+ colon) (length token))
-         (not (find #\, token)))))
+         (not (find 44 token)))))
 
 (defun %classify-line (line)
-  "Classify LINE, already known not to be blank, as :CSV or :LIBSVM.
+  "Classify LINE, a vector of (unsigned-byte 8) already known not to be blank, as :CSV
+or :LIBSVM.
 
-A comma anywhere on LINE decides :CSV outright, before LINE is even split into tokens --
-this order is load-bearing; see `detect-file-format''s docstring. Otherwise LINE is split
-on runs of space and tab, and it reads as :LIBSVM only when there are at least two tokens
-and every token after the first is a `%libsvm-token-p' feature pair."
-  (if (find #\, line)
+A comma (44) anywhere on LINE decides :CSV outright, before LINE is even split into
+tokens -- this order is load-bearing; see `detect-file-format''s docstring. Otherwise
+LINE is split on runs of space and tab octets, and it reads as :LIBSVM only when there
+are at least two tokens and every token after the first is a `%libsvm-token-p' feature
+pair."
+  (if (find 44 line)
       :csv
       (let ((tokens (%split-on-whitespace-runs line)))
         (if (and (>= (length tokens) 2)
@@ -135,13 +164,20 @@ is the direction that SIGSEGVs XGBoost inside a non-Lisp thread no `handler-case
 catch (record section 4). Only the comma-guarded form of this rule survives that line.
 
 :UNREADABLE comes from `open' or a later read signalling `file-error' or `stream-error' --
-a missing file (`file-error'), a directory given as a path (SBCL opens a directory
-successfully and fails only once `read-sequence' or `read-line' touches it, as
-`stream-error'), a file whose bytes cannot be decoded as text (`stream-error', from the
-text-rule read; a magic check reads octets and never decodes, so it cannot hit this),
-or anything else PATH cannot be read as. Nothing else returns it: a file too short for
-either magic check simply fails both and falls through to the text rule, unreadability
-included.
+a missing file (`file-error'), or a directory given as a path (SBCL opens a directory
+successfully and fails only once `read-byte' or `read-sequence' touches it, as
+`stream-error'). It is NOT what a file whose bytes are not valid text produces: every
+read in this function, magic checks and the line-classification rule alike, is octets
+throughout -- `%first-non-blank-line' never decodes -- so a latin-1 CSV or any other file
+whose bytes are not valid UTF-8 is classified by its ASCII byte values exactly like any
+other file, typically :CSV or :LIBSVM, rather than being refused. That is deliberate: a
+gate downstream of this function (see Task 4's brief) treats :UNREADABLE as a
+pass-through rather than a refusal, on the reasoning that an unopenable file is XGBoost's
+own to report cleanly -- so mapping a decoding failure to :UNREADABLE would have let a
+perfectly XGBoost-readable file reach the foreign call with no format check at all,
+undoing this function's whole purpose. Nothing else returns :UNREADABLE: a file too
+short for either magic check simply fails both and falls through to the text rule,
+unreadability included.
 
 Three blind spots, measured and left as they are rather than smoothed over (record
 section 1):

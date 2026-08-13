@@ -119,6 +119,18 @@ file afterward whether BODY exits normally or not."
 ")
     (ok (eq :csv (cl-gbdt/src/xgboost/file-input::detect-file-format path)))))
 
+;; C1: a latin-1 CSV (an accented name column, e.g. "cafe" with an e-acute) is not valid
+;; UTF-8 -- byte 233 (0xE9) alone, followed by a comma rather than a continuation byte,
+;; fails UTF-8 decoding outright. Written byte-wise so it does not depend on the source
+;; file's own encoding. Classifying on octets rather than decoded characters is what
+;; makes this :CSV rather than :UNREADABLE or :UNKNOWN -- both of which would be wrong
+;; here: :UNKNOWN is a mismatch in Task 4's gate, and :UNREADABLE is a pass-through, so
+;; mapping a decoding failure to either would either wrongly refuse an ordinary CSV or,
+;; worse, let it reach the foreign call with no format check at all.
+(deftest detect-file-format-classifies-a-latin-1-csv-as-csv
+  (with-temporary-byte-file (path #(99 97 102 233 44 49 46 48 44 50 46 48 10))
+    (ok (eq :csv (cl-gbdt/src/xgboost/file-input::detect-file-format path)))))
+
 (deftest file-uri-appends-the-format-as-a-query-parameter
   (ok (string= "/data/train.libsvm?format=libsvm"
                (cl-gbdt/src/xgboost/file-input::file-uri
