@@ -17,9 +17,13 @@
   (:import-from #:cl-gbdt/src/conditions
                 #:unsupported-argument)
   (:export #:detect-file-format
-           #:file-uri))
+           #:file-uri
+           #:%resolve-file-path))
 
 (in-package #:cl-gbdt/src/xgboost/file-input)
+
+(eval-when (:load-toplevel :execute)
+  (require :sb-posix))
 
 ;;; ---------------------------------------------------------------------------
 ;;; detect-file-format
@@ -37,25 +41,46 @@ as octets. LightGBM auto-detects this on its own load path with no parameter at 
 than falling through to the text rule and being misread as garbled CSV.")
 
 (defun %not-a-regular-file-p (path)
-  "True when PATH names something that exists on disk but is not a regular file -- a
-directory, concretely -- checked directly with `truename', not left to whatever `open'
-and a following `read-byte' or `read-sequence' happen to do with one on the current
-platform. NIL when PATH does not exist at all: that stays `open''s own `file-error' to
-signal, unchanged by this function. NIL for an ordinary file too -- `truename' resolves
-one to a pathname whose NAME component is never NIL, where a directory's NAME (and TYPE)
-component is NIL regardless of whether PATH itself carried a trailing separator.
+  "True when PATH names something that exists on disk but is not a regular file --
+checked against the kernel's own S_ISREG bit via `sb-posix:stat' and `sb-posix:s-isreg',
+not left to whatever `open' and a following `read-byte' or `read-sequence' happen to do
+with one on the current platform. NIL when PATH does not exist at all -- `sb-posix:stat'
+signals `sb-posix:syscall-error' for that, caught here and treated as \"not decided by
+this check\", leaving `open''s own `file-error' the one to report it, unchanged from
+before. NIL for an ordinary regular file, `sb-posix:s-isreg' true for exactly that case
+and false for everything else the filesystem can name a PATH.
 
 `detect-file-format' calls this first, before either magic-byte check has opened
-anything, so a directory is refused as a deliberate decision rather than however
-`stream-error' happens to arise from reading one. Review round 2, Finding N1: on this
-platform `open' succeeds against a directory and only a later read fails -- a contract
-this project is not willing to depend on holding on every platform -- and even where it
-does hold, dmlc itself never errors on a directory PATH at all: it lists the directory
-and parses every file inside as though each had been declared the caller's FORMAT, the
-same SIGSEGV-reachable mismatch a single wrong file is. That is the reason this check
-exists, not a portability nicety."
-  (let ((truename (handler-case (truename path) (file-error () nil))))
-    (and truename (null (pathname-name truename)))))
+anything, so anything that is not a regular file is refused as a deliberate decision
+rather than however `open'/`read-byte' or a blocking `read' happen to behave on the
+current platform. Review round 2, Finding N1, first found this for a directory: `open'
+succeeds against one here and only a later read fails, a contract this project is not
+willing to depend on holding on every platform, and dmlc itself never errors on a
+directory PATH at all -- it lists it and parses every file inside as though each had
+been declared the caller's FORMAT, the same SIGSEGV-reachable mismatch a single wrong
+file is.
+
+Review round 3, Finding N5, found the FIRST version of this function -- `truename' plus
+a `pathname-name' NIL test -- caught a directory only, by construction: a FIFO or a
+character/block device (`/dev/zero', concretely) has a perfectly ordinary NAME and TYPE
+component, so that version returned NIL -- \"go ahead and open it\" -- for both. Measured:
+a FIFO with no writer makes `create-dataset-from-file' block indefinitely inside `open',
+and `/dev/zero' makes it exhaust the heap inside `%read-byte-line', neither one ever
+reaching dmlc, both nonetheless bad. `sb-posix:s-isreg' answers false for a FIFO and a
+device exactly as it does for a directory, closing both by the same mechanism rather
+than by enumerating device kinds; see `%read-byte-line' for the second, independent
+defense this round also added, a cap on how much of one line this function's caller
+will ever read regardless of what kind of file it turns out to be.
+
+A dangling symlink -- one whose target does not exist -- also signals
+`sb-posix:syscall-error' here (`stat' follows the link and finds nothing at the far end),
+so it is refused by this function exactly as a missing plain file is: `truename' happening
+to succeed against one, under the discarded first version of this check, made a dangling
+symlink refuse via a different, unrelated mechanism than a missing file did, coincidentally
+giving the same right answer -- deliberate now, not an accident of which resolver ran."
+  (handler-case
+      (not (sb-posix:s-isreg (sb-posix:stat-mode (sb-posix:stat path))))
+    (sb-posix:syscall-error () nil)))
 
 (defun %starts-with-bytes-p (path expected)
   "True when the file at PATH begins with the octets in EXPECTED, a vector of
@@ -68,6 +93,22 @@ opened at all; `detect-file-format' is what catches that."
            (read (read-sequence buffer stream)))
       (and (= read length) (every #'= buffer expected)))))
 
+(defparameter +max-first-line-bytes+ (* 1024 1024)
+  "The most `%read-byte-line' will ever read for one line before giving up and reporting
+it truncated, rather than continuing to look for a terminating LF that may never come.
+
+Review round 3, Finding N5: `/dev/zero' -- an infinite stream of zero bytes, no LF ever --
+made the unbounded version of `%read-byte-line' exhaust the heap; `%not-a-regular-file-p'
+above now refuses `/dev/zero' before any read is attempted at all, but this cap is a
+second, independent defense, not a redundant one -- it also closes a Minor Task 2's own
+review found on an ordinary REGULAR file with a pathologically long first line and no
+newline, which `%not-a-regular-file-p' has no way to refuse (nothing about a regular
+file's `stat' says how long one line inside it is): measured, the unbounded version conses
+one cons cell per byte, 142.7 MB for an 8 MiB single-line file. One mebibyte is generous
+for any first line a real LIBSVM or CSV file would have -- record section 1's fixtures are
+under 40 bytes -- while still bounding the pathological case to a small, fixed multiple of
+itself rather than to the size of the file.")
+
 (defun %blank-line-p (line)
   "True when LINE, a vector of (unsigned-byte 8), contains nothing but the octets for
 space (32), tab (9), or carriage return (13) -- `detect-file-format''s definition of a
@@ -77,9 +118,12 @@ CRLF-terminated blank line whose trailing CR `%read-byte-line' leaves in place."
 
 (defun %read-byte-line (stream)
   "The octet analogue of `(read-line stream nil nil)': read bytes from STREAM up to and
-excluding the next #x0A (LF), or end of file, and return them as a fresh
-\(unsigned-byte 8) vector -- or NIL when STREAM is already at end of file with nothing
-left to return, the one case that also ends the loop in `%first-non-blank-line'.
+excluding the next #x0A (LF), or end of file, or `+max-first-line-bytes+' bytes, and
+return them as a fresh (unsigned-byte 8) vector -- or NIL when STREAM is already at end
+of file with nothing left to return, the one case that also ends the loop in
+`%first-non-blank-line'. Second value TRUNCATED: true when `+max-first-line-bytes+' was
+reached with no LF seen yet, in which case LINE holds only that many bytes, not the whole
+line; NIL otherwise, including at end of file.
 
 Classifying on octets rather than decoded characters is the point of this function: the
 rule `detect-file-format' applies only ever inspects ASCII code points (comma, space,
@@ -87,28 +131,48 @@ tab, colon, digits), so nothing about it needs a decoded string, and reading byt
 means a file whose contents are not valid text -- a latin-1 CSV with an accented column,
 for one -- is classified correctly instead of failing to decode at all. See
 `detect-file-format''s own docstring for why that matters: the alternative, mapping a
-decoding failure to :UNREADABLE, is unsound, because :UNREADABLE is the one verdict the
-gate built on top of this function passes straight through to the foreign call."
+decoding failure to :UNREADABLE, is unsound, because a caller-readable file being refused
+for no reason visible in its own bytes would be the wrong failure mode entirely.
+
+The cap: see `+max-first-line-bytes+''s own docstring for why it exists at all.
+`detect-file-format' treats a TRUNCATED line as :UNKNOWN rather than classifying the
+partial bytes read -- a token cut off exactly at the cap could otherwise misclassify a
+genuine, if unusually long-lined, LIBSVM file as :CSV, and this function has no way to
+tell a genuine cut token from a malformed one. :UNKNOWN only ever REFUSES a declared
+FORMAT downstream, never silently accepts the wrong one, which is the safer of the two
+mistakes to risk."
   (let ((first (read-byte stream nil nil)))
-    (cond ((null first) nil)
-          ((= first 10) (make-array 0 :element-type '(unsigned-byte 8)))
-          (t (let ((bytes (list first)))
-               (loop for next = (read-byte stream nil nil)
-                     until (or (null next) (= next 10))
-                     do (push next bytes))
-               (coerce (nreverse bytes) '(vector (unsigned-byte 8))))))))
+    (cond ((null first) (values nil nil))
+          ((= first 10) (values (make-array 0 :element-type '(unsigned-byte 8)) nil))
+          (t (let ((bytes (list first))
+                   (count 1)
+                   (truncated nil))
+               (loop
+                 (when (>= count +max-first-line-bytes+)
+                   (setf truncated t)
+                   (return))
+                 (let ((next (read-byte stream nil nil)))
+                   (cond ((null next) (return))
+                         ((= next 10) (return))
+                         (t (push next bytes) (incf count)))))
+               (values (coerce (nreverse bytes) '(vector (unsigned-byte 8))) truncated))))))
 
 (defun %first-non-blank-line (path)
-  "Return the first line of the file at PATH, as a vector of (unsigned-byte 8), for
-which `%blank-line-p' is false, or NIL when every line is blank or PATH has no lines at
-all -- a zero-byte file included, where the very first `%read-byte-line' is already
-end-of-file. Opens PATH as octets, never as text, so a file that is not valid text under
-any decoding is read exactly like any other file rather than signalling."
+  "Return (VALUES LINE TRUNCATED): the first line of the file at PATH, as a vector of
+(unsigned-byte 8), for which `%blank-line-p' is false, or NIL when every line is blank or
+PATH has no lines at all -- a zero-byte file included, where the very first
+`%read-byte-line' is already end-of-file. TRUNCATED is true when that first non-blank
+line hit `+max-first-line-bytes+' before a terminating LF -- `%read-byte-line''s own
+second value, passed straight through the moment it is seen, since a line this function
+would otherwise have picked as \"the one to classify\" hit the cap instead. Opens PATH as
+octets, never as text, so a file that is not valid text under any decoding is read
+exactly like any other file rather than signalling."
   (with-open-file (stream path :direction :input :element-type '(unsigned-byte 8))
-    (loop for line = (%read-byte-line stream)
-          while line
-          unless (%blank-line-p line)
-            return line)))
+    (loop
+      (multiple-value-bind (line truncated) (%read-byte-line stream)
+        (cond ((null line) (return (values nil nil)))
+              (truncated (return (values line t)))
+              ((not (%blank-line-p line)) (return (values line nil))))))))
 
 (defun %split-on-whitespace-runs (line)
   "Split LINE, a vector of (unsigned-byte 8), into tokens -- also (unsigned-byte 8)
@@ -176,6 +240,10 @@ Checked in this order:
    file or a file of only blank lines, reports :UNKNOWN. This matters beyond the empty
    case: XGBoost accepts a blank-only file as a silent 0x0 DMatrix (record section 8), so
    :UNKNOWN turning into a mismatch is what stops that case too, not only a missing file.
+   A first non-blank line longer than `+max-first-line-bytes+' with no LF anywhere in
+   that span also reports :UNKNOWN, rather than classifying the truncated prefix -- see
+   `%read-byte-line''s own docstring for why guessing from a cut-off token is worse than
+   refusing.
 2. A COMMA anywhere on that line reports :CSV. Stop.
 3. Otherwise split the line into tokens on runs of SPACE and TAB. At least 2 tokens, and
    every token after the first matching <digits>:<rest> -- at least one digit before the
@@ -232,9 +300,59 @@ section 1):
           (if (or (%starts-with-bytes-p path +xgboost-binary-magic+)
                   (%starts-with-bytes-p path +lightgbm-binary-magic+))
               :binary
-              (let ((line (%first-non-blank-line path)))
-                (if line (%classify-line line) :unknown))))
+              (multiple-value-bind (line truncated) (%first-non-blank-line path)
+                (cond (truncated :unknown)
+                      (line (%classify-line line))
+                      (t :unknown)))))
     ((or file-error stream-error) () :unreadable)))
+
+;;; ---------------------------------------------------------------------------
+;;; %resolve-file-path -- the single resolution `create-dataset-from-file' feeds to
+;;; both `detect-file-format' and `file-uri'
+
+(defun %resolve-file-path (path)
+  "Resolve PATH, a pathname designator, to the one `truename' `create-dataset-from-file'
+then hands to BOTH `detect-file-format' and `file-uri', or NIL when PATH cannot be
+resolved to a single existing file at all -- missing, wild (`truename' itself signals
+`file-error' for a wild pathname, per the standard), or a symlink whose target does not
+exist.
+
+Review round 3, Finding N4 (Critical): before this function existed,
+`create-dataset-from-file' called `detect-file-format' and `file-uri' on the SAME PATH
+argument, but each resolved it independently and differently -- `detect-file-format'
+through `open', which merges a relative PATH against Lisp's `*default-pathname-defaults*'
+and expands a leading `~' to the caller's home directory; `file-uri' through a bare
+`namestring', which prints PATH's own components verbatim, relative or `~'-prefixed or
+however else it was spelled, with no such resolution at all. Two reproduced SIGSEGVs
+followed directly: a relative PATH classified against one directory (Lisp's
+`*default-pathname-defaults*') while dmlc, reading `file-uri''s literal relative string,
+opened whatever the OS process's own working directory happened to be -- a different
+directory whenever the two disagree, which nothing stops them from doing; and `~/x.libsvm'
+similarly classified via `truename''s `~' expansion while dmlc received the unexpanded
+string verbatim. Two resolutions of one designator make the file classified and the file
+named in the URI the same only by coincidence.
+
+The fix is this function: resolve PATH to a `truename' exactly ONCE, and pass that SAME
+resolved pathname to both consumers, so there is exactly one place a path designator
+becomes a concrete file and both readers agree on it by construction -- an IDENTITY the
+two consumers now share, rather than two independent guesses this project would otherwise
+have to keep proving stay equal for every pathname shape dmlc's own URI syntax might
+one day turn out to care about. That is a deliberate narrowing of what this whole
+mechanism promises: earlier design language said nothing not opened and classified by
+this wrapper would reach dmlc \"including shapes nobody has thought of yet\", which
+describes what must NOT get in and commits to out-guessing dmlc's syntax forever. The
+contract this function actually enforces is checkable by reading its own two call sites
+in `create-dataset-from-file' rather than by adversarial probing: the file dmlc opens is
+the file this function resolved, because there is one resolution and both use it.
+
+Not a guarantee that PATH still names the same file bytes when the foreign call actually
+runs: nothing between this resolution and `XGDMatrixCreateFromURI' holds the file open or
+otherwise prevents it being replaced on disk in between -- a TOCTOU window this wrapper
+cannot close from Lisp. What this function removes is this wrapper disagreeing with
+itself about which file that is; a second process racing to replace it is a different,
+unclosable problem."
+  (handler-case (truename path)
+    (file-error () nil)))
 
 ;;; ---------------------------------------------------------------------------
 ;;; file-uri

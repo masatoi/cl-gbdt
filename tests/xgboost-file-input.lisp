@@ -273,3 +273,55 @@ file afterward whether BODY exits normally or not."
                  nil)
         (cl-gbdt/src/conditions:unsupported-argument () t))
       "file-uri accepted a ';'-separated multi-path"))
+
+;; Review round 3, Finding N4 (Critical): detect-file-format and file-uri used to be
+;; called on the caller's own PATH independently, and each resolved it differently --
+;; detect-file-format through `open', honouring Lisp's *default-pathname-defaults* and
+;; expanding a leading '~'; file-uri through a bare `namestring', printing PATH verbatim
+;; with neither. %resolve-file-path now resolves PATH to a truename exactly once, and
+;; create-dataset-from-file hands that SAME resolved pathname to both. The cheapest test
+;; of that property: a relative pathname and its already-resolved truename must compose
+;; the identical URI once each has gone through %resolve-file-path, since both routes
+;; must land on the one truename that decides what dmlc actually opens.
+(deftest resolve-file-path-and-file-uri-compose-the-same-uri-for-a-relative-path
+  (with-temporary-file (path "1,1.0,2.0,3.0
+")
+    (let* ((dir (make-pathname :directory (pathname-directory path)))
+           (relative (make-pathname :name (pathname-name path) :type (pathname-type path)))
+           (*default-pathname-defaults* dir))
+      (let ((resolved-from-relative
+              (cl-gbdt/src/xgboost/file-input::%resolve-file-path relative))
+            (resolved-from-absolute
+              (cl-gbdt/src/xgboost/file-input::%resolve-file-path path)))
+        (ok (and resolved-from-relative resolved-from-absolute)
+            "%resolve-file-path failed to resolve either the relative or the absolute form")
+        (ok (string= (cl-gbdt/src/xgboost/file-input::file-uri resolved-from-relative
+                                                                :csv nil)
+                     (cl-gbdt/src/xgboost/file-input::file-uri resolved-from-absolute
+                                                                :csv nil))
+            "a relative path and its already-absolute form composed different URIs once \
+resolved")))))
+
+;; Review round 3, Finding N5 (Important), the read-cap half: %read-byte-line used to
+;; read one line without bound, so a file with no LF anywhere -- /dev/zero being the
+;; extreme case that exhausts the heap, verified separately in a subprocess since it
+;; would hang or exhaust this test process's own heap -- made it read forever. A plain,
+;; finite REGULAR file longer than +max-first-line-bytes+ with no LF anywhere exercises
+;; the cap itself, quickly and safely: detect-file-format must report :UNKNOWN rather
+;; than either hanging or guessing at a classification from a line cut off mid-token.
+(deftest detect-file-format-reports-unknown-for-a-line-longer-than-the-read-cap
+  (let ((path (merge-pathnames "cl-gbdt-file-input-cap-test.csv"
+                               (uiop:temporary-directory)))
+        (cap cl-gbdt/src/xgboost/file-input::+max-first-line-bytes+))
+    (with-open-file (stream path :direction :output :if-exists :supersede
+                                  :element-type '(unsigned-byte 8))
+      ;; ASCII '1' repeated past the cap, no LF at all -- would classify :LIBSVM-shaped
+      ;; garbage or hang were it not capped; contains no comma either, so a bug that
+      ;; classified the truncated prefix would misreport this as :CSV or :LIBSVM rather
+      ;; than :UNKNOWN, which is exactly the failure this test exists to catch.
+      (dotimes (i (+ cap 10))
+        (write-byte 49 stream)))
+    (unwind-protect
+         (ok (eq :unknown (cl-gbdt/src/xgboost/file-input::detect-file-format path))
+             "detect-file-format did not report :unknown for a line past the read cap")
+      (handler-case (delete-file path) (file-error () nil)))))
