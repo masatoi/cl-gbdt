@@ -132,7 +132,7 @@ backend-specific safe API
 generated raw CFFI binding
 ```
 
-The dependency direction must not be reversed. In particular, the core `cl-gbdt` system must not depend on a specific backend system or on a shared library, as before.
+The dependency direction must not be reversed. In particular, the core `cl-gbdt` system must not, as it does not today, depend on a specific backend system or on a shared library.
 
 ## 4. Criteria for inclusion in the unified API
 
@@ -167,7 +167,7 @@ The following in particular shall be mandatory rules.
 The existing `predict`'s return-value contract must not be broken immediately. Where shape preservation is needed, choose one of the following in design review.
 
 - Keep the existing `predict`, and add a new API that preserves the shape.
-- The primary value shall be the existing array and the secondary value shape metadata.
+- The primary value shall be the existing array, and the secondary value the shape metadata.
 - Add a prediction result object, and migrate in stages.
 
 In making that choice, give priority to backward compatibility.
@@ -459,7 +459,7 @@ Before you begin implementing, classify the feature you are changing into one of
 - unified portable API
 - optional capability
 
-You must not add a keyword to a unified generic while it cannot be classified.
+You must not add a keyword to a unified generic while the feature remains unclassified.
 
 Also, when you present an implementation proposal, you must always explain the following.
 
@@ -540,8 +540,8 @@ The state of each stage is as follows.
   and derives `covered` afresh each time, from the symbol name appearing in a top-level form other
   than the package form. This, like `wrapped` in `ffi-spec/BINDING-COVERAGE.md`, is a design for
   not holding a record that is maintained in two places. The remaining symbols are classified by
-  hand into either `## Unproven` (29 of them), symbols that should have a functional test and do
-  not, or the group of `## Exempt` headings, one independent heading per reason (58 of them). The
+  hand into either `## Unproven` — symbols that should have a functional test and do not — (29 of
+  them), or the group of `## Exempt` headings — one independent heading per reason — (58 of them). The
   checker checks both the floor on `covered` (`+minimum-covered+` = 87) and the ceiling on
   `unproven` (`+maximum-unproven+` = 29), and the latter works as a ratchet: if public symbols
   without a functional test increase, `unproven` goes above 29, and the build fails unless an edit
