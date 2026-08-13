@@ -17,7 +17,7 @@ hold Lisp conventions Markdown would render as something else.
 
 ## Packages
 
-### `cl-gbdt` -- 141 symbols
+### `cl-gbdt` -- 145 symbols
 
 - [`*known-capabilities*`](#cl-gbdt-known-capabilities)
 - [`*lightgbm-version-range*`](#cl-gbdt-lightgbm-version-range)
@@ -65,6 +65,10 @@ hold Lisp conventions Markdown would render as something else.
 - [`dimension-mismatch-given`](#cl-gbdt-dimension-mismatch-given)
 - [`evaluation`](#cl-gbdt-evaluation)
 - [`feature-importance`](#cl-gbdt-feature-importance)
+- [`file-format-mismatch`](#cl-gbdt-file-format-mismatch)
+- [`file-format-mismatch-declared`](#cl-gbdt-file-format-mismatch-declared)
+- [`file-format-mismatch-detected`](#cl-gbdt-file-format-mismatch-detected)
+- [`file-format-mismatch-path`](#cl-gbdt-file-format-mismatch-path)
 - [`find-backend-class`](#cl-gbdt-find-backend-class)
 - [`foreign-call-error`](#cl-gbdt-foreign-call-error)
 - [`foreign-call-error-code`](#cl-gbdt-foreign-call-error-code)
@@ -161,7 +165,7 @@ hold Lisp conventions Markdown would render as something else.
 - [`wrong-backend-reference-expected`](#cl-gbdt-wrong-backend-reference-expected)
 - [`wrong-backend-reference-given`](#cl-gbdt-wrong-backend-reference-given)
 
-### `cl-gbdt/lightgbm` -- 88 symbols
+### `cl-gbdt/lightgbm` -- 92 symbols
 
 - [`*known-capabilities*`](#cl-gbdt-known-capabilities)
 - [`backend-capabilities`](#cl-gbdt-backend-capabilities)
@@ -206,6 +210,10 @@ hold Lisp conventions Markdown would render as something else.
 - [`dimension-mismatch-given`](#cl-gbdt-dimension-mismatch-given)
 - [`evaluation`](#cl-gbdt-lightgbm-evaluation)
 - [`feature-importance`](#cl-gbdt-lightgbm-feature-importance)
+- [`file-format-mismatch`](#cl-gbdt-file-format-mismatch)
+- [`file-format-mismatch-declared`](#cl-gbdt-file-format-mismatch-declared)
+- [`file-format-mismatch-detected`](#cl-gbdt-file-format-mismatch-detected)
+- [`file-format-mismatch-path`](#cl-gbdt-file-format-mismatch-path)
 - [`foreign-call-error`](#cl-gbdt-foreign-call-error)
 - [`foreign-call-error-code`](#cl-gbdt-foreign-call-error-code)
 - [`foreign-call-error-function-name`](#cl-gbdt-foreign-call-error-function-name)
@@ -252,7 +260,7 @@ hold Lisp conventions Markdown would render as something else.
 - [`wrong-backend-reference-expected`](#cl-gbdt-wrong-backend-reference-expected)
 - [`wrong-backend-reference-given`](#cl-gbdt-wrong-backend-reference-given)
 
-### `cl-gbdt/xgboost` -- 89 symbols
+### `cl-gbdt/xgboost` -- 93 symbols
 
 - [`*known-capabilities*`](#cl-gbdt-known-capabilities)
 - [`backend-capabilities`](#cl-gbdt-backend-capabilities)
@@ -297,6 +305,10 @@ hold Lisp conventions Markdown would render as something else.
 - [`evaluate-one-iteration`](#cl-gbdt-xgboost-evaluate-one-iteration)
 - [`evaluation`](#cl-gbdt-xgboost-evaluation)
 - [`feature-importance`](#cl-gbdt-xgboost-feature-importance)
+- [`file-format-mismatch`](#cl-gbdt-file-format-mismatch)
+- [`file-format-mismatch-declared`](#cl-gbdt-file-format-mismatch-declared)
+- [`file-format-mismatch-detected`](#cl-gbdt-file-format-mismatch-detected)
+- [`file-format-mismatch-path`](#cl-gbdt-file-format-mismatch-path)
 - [`foreign-call-error`](#cl-gbdt-foreign-call-error)
 - [`foreign-call-error-code`](#cl-gbdt-foreign-call-error-code)
 - [`foreign-call-error-function-name`](#cl-gbdt-foreign-call-error-function-name)
@@ -2195,6 +2207,86 @@ Signals `wrong-backend-reference' when BOOSTER is not a booster built by this ba
 `released-handle-error' or `backend-not-open' from the `handle-live-pointer' inside that
 check, which runs before anything else is read.
 ```
+
+<a id="cl-gbdt-file-format-mismatch"></a>
+
+## `cl-gbdt:file-format-mismatch`
+
+- **Kind** condition
+- **Superclasses** `data-error`
+- **Exported from** `cl-gbdt`, `cl-gbdt/lightgbm`, `cl-gbdt/xgboost`
+
+```text
+A file's contents do not match the format the caller declared for it.
+
+Signalled by `cl-gbdt/xgboost''s `create-dataset-from-file' before any foreign call. Unlike
+`unsupported-argument', the argument here is supported and well-formed -- it is the data that
+disagrees with it.
+
+This check exists because XGBoost does not make it. Measured against the vendored 3.3.0:
+`train.csv?format=libsvm', and a binary DMatrix declared as libsvm, both segfault inside dmlc's
+non-Lisp parser thread, where no Lisp handler can run and no condition can be signalled. The
+reverse mismatches return success and garbage. Refusing before the call is therefore the only
+point at which this failure can be reported at all, which is why it is a requirement of that
+function's contract rather than a convenience.
+```
+
+### Slots
+
+#### `path`
+
+- **Readers** `file-format-mismatch-path`
+
+```text
+The file whose contents disagree with the declared format.
+```
+
+#### `declared`
+
+- **Readers** `file-format-mismatch-declared`
+
+```text
+The format keyword the caller declared, e.g. :LIBSVM.
+```
+
+#### `detected`
+
+- **Readers** `file-format-mismatch-detected`
+
+```text
+The format the file's first non-empty line was classified as, or
+:UNKNOWN when it matched no format this wrapper can recognise.
+```
+
+<a id="cl-gbdt-file-format-mismatch-declared"></a>
+
+## `cl-gbdt:file-format-mismatch-declared`
+
+- **Kind** generic function
+- **Signature** `(file-format-mismatch-declared condition)`
+- **Exported from** `cl-gbdt`, `cl-gbdt/lightgbm`, `cl-gbdt/xgboost`
+
+Reader of `cl-gbdt:file-format-mismatch`'s `declared` slot. See `cl-gbdt:file-format-mismatch`.
+
+<a id="cl-gbdt-file-format-mismatch-detected"></a>
+
+## `cl-gbdt:file-format-mismatch-detected`
+
+- **Kind** generic function
+- **Signature** `(file-format-mismatch-detected condition)`
+- **Exported from** `cl-gbdt`, `cl-gbdt/lightgbm`, `cl-gbdt/xgboost`
+
+Reader of `cl-gbdt:file-format-mismatch`'s `detected` slot. See `cl-gbdt:file-format-mismatch`.
+
+<a id="cl-gbdt-file-format-mismatch-path"></a>
+
+## `cl-gbdt:file-format-mismatch-path`
+
+- **Kind** generic function
+- **Signature** `(file-format-mismatch-path condition)`
+- **Exported from** `cl-gbdt`, `cl-gbdt/lightgbm`, `cl-gbdt/xgboost`
+
+Reader of `cl-gbdt:file-format-mismatch`'s `path` slot. See `cl-gbdt:file-format-mismatch`.
 
 <a id="cl-gbdt-find-backend-class"></a>
 

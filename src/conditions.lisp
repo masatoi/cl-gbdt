@@ -33,6 +33,10 @@
            #:unsupported-argument-backend
            #:unsupported-argument-argument
            #:unsupported-argument-reason
+           #:file-format-mismatch
+           #:file-format-mismatch-path
+           #:file-format-mismatch-declared
+           #:file-format-mismatch-detected
            #:missing-training-set
            #:missing-training-set-booster
            #:unfreed-handle-warning
@@ -340,6 +344,39 @@ Signalling here, instead of silently discarding the argument, is deliberate: thi
 repeatedly found a silently-dropped argument to be the failure mode where a caller moves
 working code from one backend to the other and gets different, wrong behaviour with no
 indication anything changed."))
+
+(define-condition file-format-mismatch (data-error)
+  ((path :initarg :path
+         :initform nil
+         :reader file-format-mismatch-path
+         :documentation "The file whose contents disagree with the declared format.")
+   (declared :initarg :declared
+             :initform nil
+             :reader file-format-mismatch-declared
+             :documentation "The format keyword the caller declared, e.g. :LIBSVM.")
+   (detected :initarg :detected
+             :initform nil
+             :reader file-format-mismatch-detected
+             :documentation "The format the file's first non-empty line was classified as, or
+:UNKNOWN when it matched no format this wrapper can recognise."))
+  (:report
+   (lambda (condition stream)
+     (format stream "~A was declared ~A but reads as ~A."
+             (or (file-format-mismatch-path condition) "The file")
+             (file-format-mismatch-declared condition)
+             (file-format-mismatch-detected condition))))
+  (:documentation "A file's contents do not match the format the caller declared for it.
+
+Signalled by `cl-gbdt/xgboost''s `create-dataset-from-file' before any foreign call. Unlike
+`unsupported-argument', the argument here is supported and well-formed -- it is the data that
+disagrees with it.
+
+This check exists because XGBoost does not make it. Measured against the vendored 3.3.0:
+`train.csv?format=libsvm', and a binary DMatrix declared as libsvm, both segfault inside dmlc's
+non-Lisp parser thread, where no Lisp handler can run and no condition can be signalled. The
+reverse mismatches return success and garbage. Refusing before the call is therefore the only
+point at which this failure can be reported at all, which is why it is a requirement of that
+function's contract rather than a convenience."))
 
 (define-condition missing-training-set (data-error)
   ((booster :initarg :booster

@@ -290,13 +290,17 @@ row, or delete a test AND add a row, and the file stays self-consistent while th
 shrank. Raise it when the covered count rises; lowering it is a deliberate act that needs an
 argument in the pull request. Re-measure rather than trusting this comment.")
 
-(defparameter +maximum-unproven+ 29
+(defparameter +maximum-unproven+ 33
   "The most rows `## Unproven' may hold.
 
 This is the ratchet. Publishing a symbol with no functional test forces a new `## Unproven' row,
 which forces raising this constant -- a visible, reviewable act rather than a quiet one. The list
 may shrink freely, and lowering this constant as it shrinks is what keeps the ratchet tight.
-Set from the count Task 7 measured, not from this comment.")
+Set from the count Task 7 measured, not from this comment.
+
+Raised from 29 to 33 by file-input-layer-1's Task 2, which publishes `file-format-mismatch' and
+its three readers with no functional test yet -- Task 3/4's `create-dataset-from-file', the
+operation that signals it, does not exist until then.")
 
 ;;; check-api-reference.lisp and check-binding-coverage.lisp both end in an anonymous top-level
 ;;; form. This driver is named instead: Task 8 has to come back and add two floor checks to it,
