@@ -285,7 +285,7 @@ a `defun` is a library-reaching entry point with no `defmethod` left to inherit 
 from, so it must wrap its own whole body the same way -- LightGBM's
 `booster-eval`/`booster-eval-names` and XGBoost's `evaluate-one-iteration` were the first
 functions this applied to, all three in `native.lisp`; every exported `defun` in either
-backend's `api.lisp` is one too -- thirteen operations on LightGBM, fourteen on XGBoost,
+backend's `api.lisp` is one too -- fourteen operations on LightGBM, fifteen on XGBoost,
 the extra one being `slice-model`, which lives there rather than in `native.lisp` because
 it builds a booster handle and so must name the concrete class `classes.lisp` defines. All
 four file names are globbed by that check's `+BACKEND-FILE-PATTERNS+`; a backend file

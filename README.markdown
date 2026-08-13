@@ -3485,6 +3485,66 @@ shows -- so this is not a row in [the differences table](#where-the-two-backends
 there is nothing here a caller's code, as opposed to a reader of `backend-info`'s probed
 plist, can tell apart.
 
+### File input
+
+`cl-gbdt/lightgbm:create-dataset-from-file` and `cl-gbdt/xgboost:create-dataset-from-file` build
+a dataset by having the library read a file directly, rather than from a matrix the caller
+already holds in memory. **There is no unified form of this** -- `cl-gbdt:make-dataset` takes no
+pathname, on either backend, and no `:file-input` capability exists to ask about. Both operations
+are Layer 1 only. `docs/cl-gbdt-layered-api-implementation-policy.md` section 12's "Why file
+input was not put on the unified API" carries the measurement that decided that -- the short
+version is that XGBoost's file-format argument, declared wrong on a unified API, could end the
+process outright, in a thread no Lisp handler can reach.
+
+The two signatures differ because Layer 1 mirrors each library rather than harmonising them, the
+same rule every other backend-specific difference in this README follows:
+
+```lisp
+(create-dataset-from-file backend path &key parameters reference)   ; cl-gbdt/lightgbm
+(create-dataset-from-file backend path format &key uri-parameters)  ; cl-gbdt/xgboost
+```
+
+**LightGBM** takes no format argument at all: `LGBM_DatasetCreateFromFile` infers CSV, TSV or
+libsvm from the file's own content -- and reads LightGBM's own binary dataset through the same
+call, with no parameter announcing it either. `PARAMETERS` is a plist in LightGBM's own
+vocabulary, rendered exactly as `create-dataset`'s `:parameters` already is and handed to the
+file reader verbatim; `header=true` consumes the file's first line as a header rather than a data
+row, and `label_column=N`/`label=N` (aliases of each other) pick a 0-based column as the label,
+defaulting to 0. `REFERENCE` is another `lightgbm-dataset` whose bin mapper this one should align
+to, or `NIL` to build its own -- the same meaning `create-dataset`'s own `:reference` already
+has.
+
+**XGBoost** takes `FORMAT` as a required, positional third argument -- one of `:libsvm`, `:csv`
+or `:binary` -- because `XGDMatrixCreateFromURI`'s `format` query parameter is mandatory for any
+text file, and a default would invite a caller not to think about the case below that matters.
+Measured against the vendored 3.3.0: **XGBoost does not check `FORMAT` against the file's own
+contents before it starts parsing, and getting it wrong is not merely wrong.** A real CSV file
+declared `:libsvm`, or a binary DMatrix declared `:libsvm`, both **segfault** inside a thread
+dmlc creates for the parse -- outside any Lisp stack, so no `handler-case` anywhere can catch it.
+The reverse direction does not crash, but is silently wrong instead: a real libsvm file declared
+`:csv` returns a 4-row, 1-column dataset with no label and a success code. `create-dataset-from-file`
+closes both directions itself, before the foreign call: it classifies `PATH`'s own first non-blank
+line (or its binary magic bytes) and signals `file-format-mismatch` -- naming the path, the
+declared format and the detected one -- whenever the two disagree, an unopenable path being the
+one case passed through to the foreign call to report in its own words. `URI-PARAMETERS` is a
+plist of further dmlc query keys, `(:label_column 0)` among them, appended to the URI after
+`FORMAT`'s own `format=` key; a `format` key inside `URI-PARAMETERS` itself signals
+`unsupported-argument`, since `FORMAT` is this function's own argument to give, not a second,
+unchecked route to the same key. `:binary` carries no `format=` key in the URI at all -- there is
+no such spelling; the way to load an XGBoost binary DMatrix is a URI with no `format=` key
+whatsoever, which `create-dataset-from-file` already knows.
+
+**XGBoost's text-file path is deprecated upstream.** Every text-file attempt, including one this
+wrapper's own gate refuses, prints once per process, to stderr: `WARNING: .../data.cc:963: Text
+file input has been deprecated since 3.1`. It is published anyway, because
+`ffi-spec/BINDING-COVERAGE.md` already named `XGDMatrixCreateFromURI` as `XGDMatrixCreateFromFile`'s
+own replacement -- wrapping it is what makes that recommendation reachable rather than a dead
+pointer, not a bet against the deprecation.
+
+Neither function takes a `LABEL`, `WEIGHT`, `GROUP` or `FEATURE-NAMES` argument at all: the file
+already carries whatever `create-dataset`'s caller would otherwise pass separately, and by the
+time the foreign call returns a finished handle there is nothing left in Lisp to attach one to.
+
 ## Systems
 
 | System | Purpose |
