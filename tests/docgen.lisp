@@ -569,3 +569,18 @@
       (ok (null (cl-gbdt/src/docgen/all:entry-points-at entry)))
       (ok (string= "The reader's own text, which must win over a pointer to its slot."
                    (cl-gbdt/src/docgen/all:entry-documentation entry))))))
+
+(deftest every-published-reader-slot-is-documented
+  (testing "the floor tools/ci/check-api-reference.lisp enforces, at layer 1 speed"
+    (let ((offenders '()))
+      (dolist (package '("cl-gbdt"))
+        (let ((found (cl-gbdt/src/docgen/all:published-symbols (list package))))
+          (dolist (item found)
+            (let ((symbol (cl-gbdt/src/docgen/all:published-symbol item)))
+              (when (and (find-class symbol nil)
+                         (not (typep (find-class symbol) 'structure-class)))
+                (dolist (slot (cl-gbdt/src/docgen/all:type-slots symbol))
+                  (when (and (cl-gbdt/src/docgen/all:slot-info-readers slot)
+                             (null (cl-gbdt/src/docgen/all:slot-info-documentation slot)))
+                    (push (cl-gbdt/src/docgen/all:slot-info-name slot) offenders))))))))
+      (ok (null offenders) (format nil "undocumented published slots: ~S" offenders)))))
