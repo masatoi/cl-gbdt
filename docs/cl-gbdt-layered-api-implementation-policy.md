@@ -517,7 +517,7 @@ libraryにする、S1からS5までの五段階のプログラムが進行して
 - **S4-1 — docstringからAPI referenceを生成しbyte-for-byteで検査する仕組み。完了。**
   loadされたimageをintrospectしてMarkdownを書き出すdevelopment-onlyのemitter `src/docgen/`
   (`introspect.lisp`、`render.lisp`、`emit.lisp`、`all.lisp`) をASDF system `cl-gbdt/docgen`
-  として追加し、その driverである `tools/gen-api-reference.lisp` が、`cl-gbdt`・
+  として追加し、そのdriverである `tools/gen-api-reference.lisp` が、`cl-gbdt`・
   `cl-gbdt/lightgbm`・`cl-gbdt/xgboost` の三つの公開packageがexportする174 symbol
   (141/88/89) すべてを覆う `docs/API-REFERENCE.md` を生成した。`tools/ci/check-api-reference.lisp`
   は四段階で検査する: introspection primitiveの存在、生成結果とcommit済みfileの
