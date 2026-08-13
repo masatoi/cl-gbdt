@@ -1,84 +1,84 @@
-# cl-gbdt レイヤードAPI再編 方針説明書
+# cl-gbdt Layered API Restructuring: Implementation Policy
 
-## 1. この文書の目的
+## 1. Purpose of this document
 
-本書は、`masatoi/cl-gbdt` を今後実装・改修するエージェントに対し、LightGBM と XGBoost の統合方針、公開APIの境界、バックエンド固有機能の扱い、移行手順および受け入れ条件を指示するものである。
+This document instructs the agent that will implement and revise `masatoi/cl-gbdt` from here on, covering the policy for integrating LightGBM and XGBoost, the boundaries of the public API, the handling of backend-specific features, the migration procedure and the acceptance criteria.
 
-実装エージェントは、個別機能を追加する際に本書の規則を優先し、次の二つを同時に満たさなければならない。
+When adding an individual feature, the implementing agent must give this document's rules priority, and must satisfy the following two at the same time.
 
-1. 両バックエンドで同一の意味を保証できる処理には、安定した共通高水準APIを提供する。
-2. 共通化できない固有機能を削除・平坦化・黙殺せず、安全なバックエンド固有APIから利用可能にする。
+1. For operations whose meaning can be guaranteed to be the same on both backends, provide a stable unified high-level API.
+2. Do not delete, flatten or silently discard a backend-specific feature that cannot be unified; make it available through a safe backend-specific API.
 
-目標は「LightGBM と XGBoost の全機能を一つの均質なAPIに見せること」ではない。目標は、共通処理の可搬性と固有機能の可用性を、同一ライブラリ内の明確なレイヤーによって両立することである。
+The goal is not "presenting every feature of LightGBM and XGBoost as one homogeneous API". The goal is to achieve both the portability of shared operations and the availability of backend-specific features at once, through clear layers within the same library.
 
-## 2. 現状認識
+## 2. Current state
 
-現在の `master` では、LightGBM と XGBoost の両方について、共通protocolの12 generic functionが実装済みである。
+In the current `master`, the unified protocol's 12 generic functions are implemented for both LightGBM and XGBoost.
 
-- dataset作成、行数・特徴量数取得
-- 学習、1 iteration更新
-- prediction
-- model保存・読込・文字列化
-- feature importance
-- dataset / booster解放
+- Creating a dataset, and getting the number of rows and the number of features
+- Training, and updating by one iteration
+- Prediction
+- Saving, loading and stringifying a model
+- Feature importance
+- Freeing a dataset / booster
 
-生成済みCFFI bindingは上流C APIを広く含む一方、現在の高水準backend実装が利用するC関数はその一部である。また、現在の `src/lightgbm/backend.lisp` と `src/xgboost/backend.lisp` は、次の責務を同じ層で担っている。
+The generated CFFI bindings cover the upstream C API broadly, while the C functions the current high-level backend implementation uses are a part of it. Also, the current `src/lightgbm/backend.lisp` and `src/xgboost/backend.lisp` carry the following responsibilities in the same layer.
 
-- shared library探索と初期化
-- raw C API呼出し
-- C API固有表現のLisp向け変換
-- handleの所有権と解放
-- 共通generic functionのmethod実装
-- バックエンド差分の吸収
+- Finding and initializing the shared library
+- Calling the raw C API
+- Converting C-API-specific representations for Lisp
+- Handle ownership and freeing
+- Implementing the methods of the unified generic functions
+- Absorbing the differences between backends
 
-この構造は基本機能を実装する段階では合理的だったが、今後固有機能を増やすと、共通APIとbackend固有APIの境界が不明瞭になりやすい。
+This structure was reasonable at the stage where the basic features were being implemented, but as more backend-specific features are added from here on, the boundary between the unified API and the backend-specific API easily becomes unclear.
 
-なお本書の初版作成後、`master` には次の機構が入っている。三層化の設計はこれらを前提としてよい。
+Note that since the first version of this document was written, the following mechanisms have gone into `master`. The design for making it three layers may take them as given.
 
-- ABI blacklistのbuild時強制 (`tools/ci/check-abi-blacklist.lisp`)。backendが不安定なC関数をimportすると失敗する。解決できないimport名も報告する。
-- 上流drift検出 (`tools/check-upstream.lisp`)。**backendがimportする関数だけ**をvendored headerと比較する。header全体の比較では両上流が不安定に見えるが、使用関数に限ればLightGBM v3.0.0-v4.7.0、XGBoost v2.0.0-v3.3.0で破壊的変更は0件である。
-- 対応version範囲の記録と `untested-backend-version` 警告 (`src/version.lisp`)。verifiedとinferredを区別して保持する。XGBoostのみruntime照合可能。
-- float trap maskingの網羅check (`tools/ci/check-float-traps.lisp`)。
-- `src/all.lisp` のre-exportリスト網羅assertion。
-- CI version matrix。push-to-masterと週次のみ実行する。
+- Build-time enforcement of the ABI blacklist (`tools/ci/check-abi-blacklist.lisp`). It fails when a backend imports an unstable C function. It also reports import names that cannot be resolved.
+- Upstream drift detection (`tools/check-upstream.lisp`). It compares **only the functions a backend imports** against the vendored headers. Comparing the headers as a whole makes both upstreams look unstable, but restricted to the functions used there are 0 breaking changes across LightGBM v3.0.0-v4.7.0 and XGBoost v2.0.0-v3.3.0.
+- A record of the supported version range and the `untested-backend-version` warning (`src/version.lisp`). It keeps verified and inferred distinct. Only XGBoost can be cross-checked at runtime.
+- An exhaustiveness check for float trap masking (`tools/ci/check-float-traps.lisp`).
+- An exhaustiveness assertion for `src/all.lisp`'s re-export list.
+- A CI version matrix. It runs only on push-to-master and weekly.
 
-またこの計測は、**共通APIを広げるほど不安定になり、使用関数を安定した部分集合に保つほど可搬性が上がる**ことを示している。三層化はこの性質を構造として固定するものと位置づける。
+This measurement also shows that **the wider the unified API is made, the more unstable it becomes, and the more the functions used are kept to a stable subset, the more portability rises**. Making it three layers is positioned as fixing that property into the structure.
 
-特に、次の問題を避ける必要がある。
+In particular, the following problems need to be avoided.
 
-- 共通APIの戻り値に合わせるため、本来のshapeやmetadataを失う。
-- 一方のbackendにしかない機能を、他方に存在するように見せる。
-- 対応できない引数を黙って無視する。
-- backend固有機能を使うために、利用者が生のforeign pointerを扱う。
-- 共通APIと固有APIが別々に同じC処理を実装し、修正が二重化する。
+- Losing the original shape or metadata in order to fit the unified API's return value.
+- Making a feature that only one backend has look as though it exists on the other.
+- Silently ignoring an argument that cannot be supported.
+- The caller handling raw foreign pointers in order to use a backend-specific feature.
+- The unified API and the backend-specific API implementing the same C operation separately, so that a fix is duplicated.
 
-## 3. 基本方針
+## 3. Basic policy
 
-cl-gbdtは、次の三層構造を採用する。
+cl-gbdt adopts the following three-layer structure.
 
 ### Layer 0: Raw FFI binding
 
-LightGBM / XGBoostのC APIにほぼ1対1で対応する、生成済みCFFI bindingである。
+This is the generated CFFI binding, corresponding almost one-to-one to LightGBM's and XGBoost's C API.
 
-例:
+Examples:
 
 - `cl-gbdt/src/lightgbm/c-api`
 - `cl-gbdt/src/xgboost/c-api`
 
-この層は内部実装であり、安定した公開APIとはしない。
+This layer is an internal implementation, and shall not be a stable public API.
 
-Layer 0では、C APIの関数名、pointer、out parameter、buffer長、error codeなどを原則として原形に近い形で保持する。生成コードを手編集してはならない。変更はbinding generator、vendored header、ABI blacklist等の生成経路を通して行う。
+In Layer 0, the C API's function names, pointers, out parameters, buffer lengths, error codes and so on are as a rule kept in a form close to the original. The generated code must not be hand-edited. A change is made through the generation path: the binding generator, the vendored headers, the ABI blacklist and the like.
 
 ### Layer 1: Backend-specific safe API
 
-LightGBMまたはXGBoost固有の機能を、Common Lisp利用者が安全に呼び出せる形へ変換する層である。
+This is the layer that converts LightGBM-specific or XGBoost-specific features into a form a Common Lisp caller can call safely.
 
-公開packageの候補は次のとおりとする。
+The candidate public packages shall be the following.
 
 - `cl-gbdt/lightgbm`
 - `cl-gbdt/xgboost`
 
-ただしASDF system名との衝突やpackage-inferred-system上の依存関係を確認し、必要なら内部packageを以下のように分割してよい。
+However, check for collisions with ASDF system names and for dependencies under package-inferred-system; if necessary, the internal packages may be split as follows.
 
 - `cl-gbdt/src/lightgbm/native`
 - `cl-gbdt/src/lightgbm/protocol`
@@ -87,20 +87,20 @@ LightGBMまたはXGBoost固有の機能を、Common Lisp利用者が安全に呼
 - `cl-gbdt/src/xgboost/protocol`
 - `cl-gbdt/src/xgboost/all`
 
-公開packageは内部native packageをre-exportしてよいが、raw C API packageをre-exportしてはならない。
+A public package may re-export the internal native package, but must not re-export the raw C API package.
 
-Layer 1はC APIの機能粒度に近くてよいが、Cの呼出し規約までそのまま公開してはならない。次をLisp向けに処理すること。
+Layer 1 may be close to the C API in feature granularity, but must not publish even C's calling conventions as they are. Process the following for Lisp.
 
-- out parameterを通常の戻り値またはmultiple valuesへ変換する。
-- foreign bufferをLisp objectへコピーし、寿命を明確化する。
-- error codeを既存condition hierarchyへ変換する。
-- raw pointerではなく既存のbackend / dataset / booster handleを受け取る。
-- handleの解放済み状態とbackendのopen状態を検証する。
-- 所有権を取得したforeign resourceは、あらゆる異常経路で解放する。
-- SBCLで必要なfloating-point trap maskingを維持する。
-- 上流が返したshape、feature name、metric name等のmetadataを失わない。
+- Convert out parameters into ordinary return values or multiple values.
+- Copy foreign buffers into Lisp objects, and make their lifetime explicit.
+- Convert error codes into the existing condition hierarchy.
+- Accept the existing backend / dataset / booster handles rather than raw pointers.
+- Verify the handle's released state and the backend's open state.
+- Free a foreign resource whose ownership has been taken, on every abnormal exit path.
+- Preserve the floating-point trap masking SBCL requires.
+- Do not lose the metadata upstream returned — shape, feature names, metric names and the like.
 
-Layer 1のAPI例は次のようなものを想定する。
+Examples of Layer 1's API are envisaged to be something like the following.
 
 ```lisp
 (cl-gbdt/xgboost:booster-slice booster :begin 0 :end 50)
@@ -112,15 +112,15 @@ Layer 1のAPI例は次のようなものを想定する。
 (cl-gbdt/lightgbm:refit booster dataset)
 ```
 
-これらは方向性を示す例であり、上流C API名を機械的にLisp名へ変換するだけでAPIを確定してはならない。戻り値、所有権、condition、shapeを含むcontractを先に定義すること。
+These are examples showing a direction, and the API must not be settled merely by converting an upstream C name to a Lisp name mechanically. Define the contract first, including the return value, ownership, conditions and shape.
 
 ### Layer 2: Unified portable API
 
-`cl-gbdt` packageから公開する、LightGBM / XGBoost間で可搬な高水準APIである。現在の `cl-gbdt/src/protocol` がこの層の中心となる。
+This is the high-level API published from the `cl-gbdt` package, portable between LightGBM and XGBoost. The current `cl-gbdt/src/protocol` is the centre of this layer.
 
-Layer 2の各methodは、可能な限りLayer 1のbackend-specific safe APIへ委譲する。Layer 2とLayer 1が同じC API処理を別々に実装してはならない。
+Each Layer 2 method delegates to Layer 1's backend-specific safe API as far as possible. Layer 2 and Layer 1 must not implement the same C API operation separately.
 
-概念的には次の依存方向とする。
+Conceptually, the dependency direction shall be the following.
 
 ```text
 cl-gbdt portable API
@@ -132,7 +132,7 @@ backend-specific safe API
 generated raw CFFI binding
 ```
 
-依存方向を逆転させてはならない。特にcore `cl-gbdt` systemは、従来どおり特定backend systemやshared libraryへ依存してはならない。
+The dependency direction must not be reversed. In particular, the core `cl-gbdt` system must not depend on a specific backend system or on a shared library, as before.
 
 ## 4. 共通APIへ含める判断基準
 
