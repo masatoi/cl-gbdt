@@ -203,9 +203,12 @@ its row's meaning with it."
                                 (loop for symbol being the hash-keys of classified
                                       collect symbol))))
       (when stale
+        ;; The second row~P below must be a fresh ~P consuming its own argument, not ~:P backing
+        ;; up: after ~:[~;s~] above consumes the boolean, a colon-P here would back up onto THAT
+        ;; boolean rather than the count, printing "rows" even when exactly one row is stale.
         (die "~D row~:P name~:[~;s~] a symbol the functional suite now references; delete the ~
-row~:P: ~{~%  ~A:~D ~A~}"
-             (length stale) (= 1 (length stale))
+row~P: ~{~%  ~A:~D ~A~}"
+             (length stale) (= 1 (length stale)) (length stale)
              (loop for symbol in (sort stale #'string< :key #'symbol-name)
                    for row = (gethash symbol classified)
                    append (list +coverage-file+ (row-line row) (row-name row))))))
@@ -228,6 +231,22 @@ classified in ~A: ~{~%  ~A~}"
                      unclassified))))
     classified))
 
+(defparameter +minimum-covered+ 87
+  "The fewest published symbols the functional suite may reference.
+
+A floor because the two together are invisible to every other check here: delete an export AND its
+row, or delete a test AND add a row, and the file stays self-consistent while the surface's proof
+shrank. Raise it when the covered count rises; lowering it is a deliberate act that needs an
+argument in the pull request. Re-measure rather than trusting this comment.")
+
+(defparameter +maximum-unproven+ 29
+  "The most rows `## Unproven' may hold.
+
+This is the ratchet. Publishing a symbol with no functional test forces a new `## Unproven' row,
+which forces raising this constant -- a visible, reviewable act rather than a quiet one. The list
+may shrink freely, and lowering this constant as it shrinks is what keeps the ratchet tight.
+Set from the count Task 7 measured, not from this comment.")
+
 ;;; check-api-reference.lisp and check-binding-coverage.lisp both end in an anonymous top-level
 ;;; form. This driver is named instead: Task 8 has to come back and add two floor checks to it,
 ;;; and a named `defun' is a form `lisp-edit-form' can target structurally, where an anonymous
@@ -241,6 +260,15 @@ classified in ~A: ~{~%  ~A~}"
          (rows (parse-coverage-file))
          (classified (check-classification published referenced rows))
          (covered (- (length published) (hash-table-count classified))))
+    (when (< covered +minimum-covered+)
+      (die "the functional suite references ~D published symbols, below the floor of ~D. If an ~
+export or a test was removed on purpose, lower +minimum-covered+ in this file and say why in the ~
+pull request." covered +minimum-covered+))
+    (let ((unproven (count :unproven rows :key #'row-kind)))
+      (when (> unproven +maximum-unproven+)
+        (die "~A holds ~D unproven rows, above the ceiling of ~D. A new published symbol without ~
+a functional test has to raise +maximum-unproven+ in this file, which is the point: the work ~
+list does not grow quietly." +coverage-file+ unproven +maximum-unproven+)))
     (format t "~&published symbols: ~D~%covered by the functional suite: ~D~%classified: ~D ~
 (~D unproven, ~D exempt)~%"
             (length published) covered (hash-table-count classified)
