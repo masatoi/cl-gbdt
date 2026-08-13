@@ -134,10 +134,14 @@ as LIBSVM, because \"12:00:00,1.0\" satisfies <digits>:<rest> -- and libsvm-decl
 is the direction that SIGSEGVs XGBoost inside a non-Lisp thread no `handler-case' can
 catch (record section 4). Only the comma-guarded form of this rule survives that line.
 
-:UNREADABLE comes from an `open' that signals `file-error' -- a missing file, a directory
-given as a path, or anything else PATH cannot be opened for. Nothing else returns it: a
-file too short for either magic check simply fails both and falls through to the text
-rule, unreadability included.
+:UNREADABLE comes from `open' or a later read signalling `file-error' or `stream-error' --
+a missing file (`file-error'), a directory given as a path (SBCL opens a directory
+successfully and fails only once `read-sequence' or `read-line' touches it, as
+`stream-error'), a file whose bytes cannot be decoded as text (`stream-error', from the
+text-rule read; a magic check reads octets and never decodes, so it cannot hit this),
+or anything else PATH cannot be read as. Nothing else returns it: a file too short for
+either magic check simply fails both and falls through to the text rule, unreadability
+included.
 
 Three blind spots, measured and left as they are rather than smoothed over (record
 section 1):
@@ -158,7 +162,7 @@ section 1):
           :binary
           (let ((line (%first-non-blank-line path)))
             (if line (%classify-line line) :unknown)))
-    (file-error () :unreadable)))
+    ((or file-error stream-error) () :unreadable)))
 
 ;;; ---------------------------------------------------------------------------
 ;;; file-uri
@@ -173,10 +177,23 @@ section 1):
 the one query key `file-uri' reserves for its own FORMAT argument."
   (string-equal (string (car pair)) "format"))
 
+(defun %uri-reserved-char-p (char)
+  "True when CHAR is one of dmlc's own URI separators -- '?', '#', or '&' -- any of
+which, appearing inside a rendered query key or value, could open a second query segment
+that `file-uri' did not intend, including a second `format' key."
+  (member char '(#\? #\# #\&)))
+
+(defun %pair-unsafe-p (pair)
+  "True when PAIR's key or value, once rendered the way `file-uri' renders it, contains
+a reserved character per `%uri-reserved-char-p'."
+  (or (some #'%uri-reserved-char-p (string (car pair)))
+      (some #'%uri-reserved-char-p (princ-to-string (cdr pair)))))
+
 (defun %check-file-uri-arguments (namestring pairs)
   "Signal `unsupported-argument' when NAMESTRING or PAIRS would let a caller smuggle a
 second `format' key past the one `file-uri' composes -- see `file-uri''s docstring for
-why both characters and the key name are refused."
+why both characters, the key name, and a reserved character inside a rendered key or
+value are all refused."
   (when (or (find #\? namestring) (find #\# namestring))
     (error 'unsupported-argument
            :backend :xgboost
@@ -190,7 +207,16 @@ why both characters and the key name are refused."
            :argument "file-uri's uri-parameters"
            :reason (format nil "a 'format' key is not allowed among the extra ~
                                 parameters -- pass it as file-uri's own FORMAT ~
-                                argument instead"))))
+                                argument instead")))
+  (let ((unsafe (find-if #'%pair-unsafe-p pairs)))
+    (when unsafe
+      (error 'unsupported-argument
+             :backend :xgboost
+             :argument "file-uri's uri-parameters"
+             :reason (format nil "~S's key or value contains a '?', '#', or '&' once ~
+                                  rendered, which could open a second query segment -- ~
+                                  including a second 'format' key -- past this ~
+                                  function's own gate" unsafe)))))
 
 (defun file-uri (path format uri-parameters)
   "Compose the dmlc URI `XGDMatrixCreateFromURI' expects from PATH, FORMAT, and
@@ -210,7 +236,9 @@ Signals `unsupported-argument' before composing anything when PATH's namestring 
 a `?' or a `#' -- dmlc's own query and fragment separators, so a path holding either could
 append a second `format' key of its own and defeat the format-mismatch gate built on top
 of this function -- or when URI-PARAMETERS holds a `format' key under any case, the same
-smuggling risk from the other side.
+smuggling risk from the other side -- or when any URI-PARAMETERS key or value, once
+rendered into the query string, itself contains a `?', `#', or `&': any of the three could
+open a second query segment there too, the same smuggling risk one argument over.
 
 Does not percent-encode PATH. Measured (record section 9): dmlc accepts an unencoded
 space in the path and REJECTS the identical path percent-encoded as %20, with \"Cannot

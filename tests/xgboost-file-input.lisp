@@ -101,6 +101,24 @@ file afterward whether BODY exits normally or not."
   (with-temporary-file (path "______LightGBM_Binary_File_Token______and then some")
     (ok (eq :binary (cl-gbdt/src/xgboost/file-input::detect-file-format path)))))
 
+;; Measured (record section 1 blind spot 3, section 4): declared :libsvm this line
+;; SIGSEGVs XGBoost. Only %libsvm-token-p rejecting "1.0" keeps it out of :libsvm --
+;; deleting that conjunct from detect-file-format would turn this green suite silent
+;; about the exact input that kills the process.
+(deftest detect-file-format-classifies-space-delimited-numbers-as-csv
+  (with-temporary-file (path "1 1.0 2.0 3.0
+")
+    (ok (eq :csv (cl-gbdt/src/xgboost/file-input::detect-file-format path)))))
+
+;; Measured (record section 1 blind spot 1): a labels-only libsvm file has one token
+;; per line, so deleting the ">= 2 tokens" guard from detect-file-format would also
+;; turn this green suite silent -- the other half of step 4's fallthrough.
+(deftest detect-file-format-classifies-a-labels-only-file-as-csv
+  (with-temporary-file (path "1
+0
+")
+    (ok (eq :csv (cl-gbdt/src/xgboost/file-input::detect-file-format path)))))
+
 (deftest file-uri-appends-the-format-as-a-query-parameter
   (ok (string= "/data/train.libsvm?format=libsvm"
                (cl-gbdt/src/xgboost/file-input::file-uri

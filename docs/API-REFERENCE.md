@@ -2254,8 +2254,10 @@ The format keyword the caller declared, e.g. :LIBSVM.
 - **Readers** `file-format-mismatch-detected`
 
 ```text
-The format the file's first non-empty line was classified as, or
-:UNKNOWN when it matched no format this wrapper can recognise.
+The format `detect-file-format' classified the file as: :LIBSVM,
+:CSV, :BINARY, or :UNKNOWN when the file held no non-blank line at all. Note that :UNKNOWN does
+NOT mean "recognised nothing" -- the rule's last step sends unrecognised text to :CSV, so an
+unclassifiable line is reported as :CSV rather than as :UNKNOWN.
 ```
 
 <a id="cl-gbdt-file-format-mismatch-declared"></a>

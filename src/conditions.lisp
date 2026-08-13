@@ -357,8 +357,10 @@ indication anything changed."))
    (detected :initarg :detected
              :initform nil
              :reader file-format-mismatch-detected
-             :documentation "The format the file's first non-empty line was classified as, or
-:UNKNOWN when it matched no format this wrapper can recognise."))
+             :documentation "The format `detect-file-format' classified the file as: :LIBSVM,
+:CSV, :BINARY, or :UNKNOWN when the file held no non-blank line at all. Note that :UNKNOWN does
+NOT mean \"recognised nothing\" -- the rule's last step sends unrecognised text to :CSV, so an
+unclassifiable line is reported as :CSV rather than as :UNKNOWN."))
   (:report
    (lambda (condition stream)
      (format stream "~A was declared ~A but reads as ~A."
