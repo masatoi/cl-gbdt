@@ -411,150 +411,160 @@ For a backend-specific API, verify that what it returns does not lose the charac
 
 A new public function must have a functional test that calls the real shared library, not merely a mock.
 
-## 14. 後方互換性
+## 14. Backward compatibility
 
-既存利用者を壊す変更を、一括して導入してはならない。
+A change that breaks existing callers must not be introduced all at once.
 
-- 既存generic function名とprimary return valueを維持する。
-- conditionを単なる `error` や実装依存CFFI errorへ退化させない。
-- 既存keywordを別の意味へ変更しない。
-- 戻り値shapeを変更する場合は新APIまたは段階的移行を用いる。
-- backend固有APIの追加を理由に、共通APIを削除しない。
-- raw C API packageを公開安定APIとして約束しない。
+- The existing generic function names and primary return values must be kept.
+- A condition must not be degraded into a plain `error` or an implementation-dependent CFFI error.
+- An existing keyword must not be changed to a different meaning.
+- Where the shape of a return value is changed, a new API or a staged migration must be used.
+- The unified API must not be deleted on the grounds that a backend-specific API is being added.
+- The raw C API package must not be promised as a stable public API.
 
-破壊的変更が不可避な場合は、設計文書、移行例、deprecation期間を先に提示し、別PRとして扱う。
+Where a breaking change is unavoidable, a design document, a migration example and a deprecation period must be presented first, and it must be handled as a separate PR.
 
-## 15. 非目標
+## 15. Non-goals
 
-次は本方針の目標ではない。
+The following are not goals of this policy.
 
-- LightGBMとXGBoostの全parameterを共通名へ翻訳すること。
-- 両backendの学習結果を数値的に一致させること。
-- 上流C APIの全関数を直ちに高水準公開すること。
-- 生CFFI APIを一般利用者向けの安定APIにすること。
-- 一方のbackendにしかない概念を他方で擬似的に再現すること。
-- 単一PRで全レイヤーを全面改修すること。
+- Translating every LightGBM and XGBoost parameter to a common name.
+- Making the training results of the two backends agree numerically.
+- Immediately publishing every function of the upstream C API as a high-level API.
+- Making the raw CFFI API a stable API for ordinary callers.
+- Reproducing by simulation, on one backend, a concept that only the other has.
+- Overhauling every layer wholesale in a single PR.
 
-## 16. 完了条件
+## 16. Completion criteria
 
-レイヤードAPI再編の初期完了は、次をすべて満たした時点とする。
+The initial completion of the layered API restructuring shall be the point at which all of the following are satisfied.
 
-1. raw FFI、backend-specific safe API、unified APIの依存方向がsource構造上明確である。
-2. 既存共通generic methodがbackend-specific safe APIへ委譲している。
-3. 共通APIと固有APIが同じC処理を重複実装していない。
-4. backend固有packageから、少なくとも一つの固有機能をraw pointerなしで利用できる。
-5. `backend-capabilities` が実際の機能可用性を返す。
-6. required / optional foreign symbolの分類と機械的検査が存在する。
-7. 既存layer 1 / layer 2 testがすべて成功する。
-8. 新しい固有APIに実shared libraryを使うfunctional testがある。
-9. core systemがbackend libraryなしでloadできる性質を維持する。
-10. 公開APIとpackage境界がREADMEまたは専用documentに記載されている。
+1. The dependency direction among raw FFI, the backend-specific safe API and the unified API is clear in the source structure.
+2. The existing unified generic methods delegate to the backend-specific safe API.
+3. The unified API and the backend-specific API do not implement the same C operation separately.
+4. At least one backend-specific feature can be used from the backend-specific package without a raw pointer.
+5. `backend-capabilities` returns the actual availability of features.
+6. A classification of required / optional foreign symbols and a mechanical check of it exist.
+7. All the existing layer 1 / layer 2 tests pass.
+8. A new backend-specific API has a functional test that uses the real shared library.
+9. The core system keeps the property that it can be loaded without a backend library.
+10. The public API and the package boundary are described in the README or in a dedicated document.
 
-## 17. 実装エージェントへの最終指示
+## 17. Final instructions to the implementing agent
 
-実装を始める前に、変更対象の機能を次のいずれかへ分類すること。
+Before you begin implementing, classify the feature you are changing into one of the following.
 
 - raw FFI concern
 - backend-specific safe API
 - unified portable API
 - optional capability
 
-分類できないまま共通genericへkeywordを追加してはならない。
+You must not add a keyword to a unified generic while it cannot be classified.
 
-また、実装案を提示する際は必ず以下を説明すること。
+Also, when you present an implementation proposal, you must always explain the following.
 
-1. その機能をどのLayerへ置くか。
-2. 両backendで意味が一致するか。
-3. shapeやmetadataを失わないか。
-4. 未対応backend/versionでどのconditionを送出するか。
-5. resource ownershipを誰が持つか。
-6. 既存APIからどのように委譲するか。
-7. どのfunctional testでcontractを証明するか。
+1. Which Layer to put that feature in.
+2. Whether it means the same thing on both backends.
+3. Whether it loses shape or metadata.
+4. Which condition it signals on an unsupported backend / version.
+5. Who holds the resource ownership.
+6. How the existing API delegates to it.
+7. Which functional test proves the contract.
 
-迷った場合は、共通APIへ入れて情報を減らすより、backend-specific safe APIとして完全な情報を保持する方を選ぶこと。その後、実利用例と両backendの意味を確認してから共通APIへ昇格させる。
+When in doubt, choose to keep the complete information as a backend-specific safe API, rather than putting it into the unified API and reducing the information. After that, promote it to the unified API once you have confirmed a real use case and the meaning on both backends.
 
-## 18. Layer 1 standalone-library化プログラム (S1〜S5)
+## 18. Layer 1 standalone-library programme (S1–S5)
 
-2026-08-11以降、`cl-gbdt/lightgbm` と `cl-gbdt/xgboost` を、統合API
-(`cl-gbdt/lightgbm/unified`、`cl-gbdt/xgboost/unified`) を一切loadしなくても実用に足る独立した
-libraryにする、S1からS5までの五段階のプログラムが進行している。この定義はこれまで
-`docs/superpowers/specs/2026-08-11-layer1-standalone-design.md` にのみ存在し、同ディレクトリは
-`.gitignore` の対象であるため、trackedな文書には一度も記録されていなかった。本節がその記録である。
+Since 2026-08-11, a five-stage programme from S1 to S5 has been under way, to make
+`cl-gbdt/lightgbm` and `cl-gbdt/xgboost` into independent libraries good enough for practical use
+without loading the unified API (`cl-gbdt/lightgbm/unified`, `cl-gbdt/xgboost/unified`) at all.
+Until now this definition existed only in
+`docs/superpowers/specs/2026-08-11-layer1-standalone-design.md`, and because that directory is
+covered by `.gitignore`, it had never once been recorded in a tracked document. This section is
+that record.
 
-このプログラムは§12の段階計画 (Phase 0〜4) とは別系統であり、Phase 4完了後に始まった。Phase 2は
-「backend固有packageからexportする」ことを、Phase 4は「data / predictionの拡張」を主題としたのに
-対し、このプログラムはLayer 1が統合APIなしで単体のlibraryとして自足していることを主題とする。§12
-のPhase一覧には項目を足さない。
+This programme is a separate track from §12's phased plan (Phase 0–4), and began after Phase 4
+completed. Where Phase 2 made "export from the backend-specific package" its subject and Phase 4
+"data and prediction extensions", this programme makes its subject Layer 1 being self-sufficient
+as a library on its own, without the unified API. Do not add items to §12's Phase list.
 
-プログラム全体を拘束する決定は次の五つである。
+The decisions binding the whole programme are the following five.
 
-1. coverageはclassification (分類の網羅) で保証し、percentageでは保証しない。
-2. `cl-gbdt/<backend>` はLayer 1のみを意味する。統合APIの13 methodは
-   `cl-gbdt/<backend>/unified` が担う。
-3. one C function, one Lisp functionとする。C呼出し規約は変換し (out parameterを戻り値または
-   multiple valuesへ、foreign bufferをLisp objectへ、error codeを型付きconditionへ)、C APIが
-   initとfreeを対で提供する箇所には `with-*` macroも用意する。
-4. docstringを文書の一次情報源とする。API referenceはdocstringから生成し、`src/*/c-api.lisp` と
-   同様byte-for-byteで検査する。
-5. 公開symbolには機械的に検査されるfunctional testを要求する。
+1. Coverage is guaranteed by classification (exhaustive classification), and is not guaranteed by
+   percentage.
+2. `cl-gbdt/<backend>` means Layer 1 alone. The unified API's 13 methods are carried by
+   `cl-gbdt/<backend>/unified`.
+3. It shall be one C function, one Lisp function. The C calling conventions are converted (out
+   parameters into return values or multiple values, foreign buffers into Lisp objects, error
+   codes into typed conditions), and where the C API provides init and free as a pair, a `with-*`
+   macro is provided as well.
+4. The docstring shall be the primary source of documentation. The API reference is generated from
+   the docstrings and checked byte-for-byte, in the same way as `src/*/c-api.lisp`.
+5. A public symbol is required to have a functional test that is checked mechanically.
 
-各段階の現状は次のとおりである。
+The state of each stage is as follows.
 
-- **S1 — 層の分離。完了 (PR #26)。** concrete classとlibrary lifecycle
-  (`initialize-backend`/`shutdown-backend`) をLayer 1へ移し、`cl-gbdt/<backend>` をLayer 1のみの
-  systemとし、所有権パターンを `with-pointer-ownership` 一つへ集約した。
-- **S2 — 各操作の手続きをLayer 1へ移す。完了 (PR #27、#29、#30)。** PR #27で両backend各6操作
-  (`create-dataset`、`create-booster`、`update-one-iteration`、`predict`、`free-dataset`、
-  `free-booster`)、PR #29で残り7操作 (`save-model`、`load-model`、`model-to-string`、
-  `feature-importance`、`evaluation`、`dataset-num-rows`、`dataset-num-features`)、PR #30で
-  `train` のbooster構築を、それぞれ両backendの `src/<backend>/api.lisp` へ移した。結果、13の
-  unified methodはすべて、その手続きの少なくとも一部をLayer 1へ委譲する。委譲の程度が `train` の
-  みほかの12と異なる理由 (boosting loop自体は `update-one-iteration` を経由しない) は既に上記の
-  フォローアップに記録済みであり、ここでは繰り返さない。
-- **S3 — bindingのclassification。完了 (PR #31)。** `src/*/c-api.lisp` が生成する177 bindingすべてを
-  `ffi-spec/BINDING-COVERAGE.md` で `wrapped`/`planned`/`excluded` のいずれかに分類し、
-  `tools/ci/check-binding-coverage.lisp` が未分類のbindingでbuildを失敗させる。
-- **S4-1 — docstringからAPI referenceを生成しbyte-for-byteで検査する仕組み。完了 (PR #33)。**
-  loadされたimageをintrospectしてMarkdownを書き出すdevelopment-onlyのemitter `src/docgen/`
-  (`introspect.lisp`、`render.lisp`、`emit.lisp`、`all.lisp`) をASDF system `cl-gbdt/docgen`
-  として追加し、そのdriverである `tools/gen-api-reference.lisp` が、`cl-gbdt`・
-  `cl-gbdt/lightgbm`・`cl-gbdt/xgboost` の三つの公開packageがexportする174 symbol
-  (141/88/89) すべてを覆う `docs/API-REFERENCE.md` を生成した。`tools/ci/check-api-reference.lisp`
-  は四段階で検査する: introspection primitiveの存在、生成結果とcommit済みfileの
-  byte-for-byte一致、公開symbol全てへのdocumentation floor (class/conditionのslotを含む)、
-  package毎のexport数floor。このdocumentation floorを満たすため、`src/conditions.lisp` の
-  condition slot十二個に `:documentation` を追加した。
-- **S4-2 — 公開symbolすべてにfunctional testが存在することを機械的に検査する仕組み。完了。**
-  `docs/FUNCTIONAL-COVERAGE.md` が、`cl-gbdt`・`cl-gbdt/lightgbm`・`cl-gbdt/xgboost` の三つの
-  公開packageがexportする174 symbolすべてに位置を与える。`covered`はfileに書き下さない —
-  `tools/ci/check-functional-coverage.lisp` が `tests/functional/*.lisp` の各fileを読み、
-  package-formを除くtop-level formにsymbol名が現れれば`covered`とその都度導出する。これは
-  `ffi-spec/BINDING-COVERAGE.md` の `wrapped` と同じく、二重管理される記録を持たないための設計
-  である。残るsymbolは、functional testを書くべきだが書かれていない `## Unproven`(29件)か、
-  理由ごとに独立した `## Exempt` 見出し群(58件)かのいずれかへ人手で分類する。checkerは
-  `covered`の下限(`+minimum-covered+` = 87)と`unproven`の上限(`+maximum-unproven+` = 29)を
-  両方検査し、後者がratchetとして働く: functional testを持たない公開symbolが増えれば
-  `unproven`が29を超え、この定数を `tools/ci/check-functional-coverage.lisp` 内で引き上げる
-  編集をしない限りbuildが失敗する。ただし
-  この機構が保証するのはsymbolごとの「記録された位置」であり、「証明されたcontract」ではない。
-  `## Exempt`見出しは、literalな `## Unproven` と、`## Exempt` で始まる任意の見出しという前方
-  一致でしか認識されないため、新しい `## Exempt: ...` 見出しを立てるか、既存の五つの `## Exempt`
-  見出しのいずれかへ行を追加するだけでも、`covered` も `unproven`
-  も動かさずに未testのsymbolを収められる — この機構が実際に防いでいるのは「無分類のまま公開
-  されること」であり、各 `## Exempt` の理由が正当かどうかは最終的にreviewerが文章を読んで判断
-  する。分類作業そのものが、174 symbol中29件にfunctional testが存在しないという作業量を明らか
-  にした。
-- **S5 — 未着手。** まだ誰も公開していないC functionを公開する。作業一覧は
-  `ffi-spec/BINDING-COVERAGE.md` の `## Planned` 節である。同節にはLightGBMの
-  `LGBM_BoosterRollbackOneIter`/`LGBM_BoosterRefit`/`LGBM_BoosterResetParameter`、および両
-  backendのfile input (`LGBM_DatasetCreateFromFile`/`XGDMatrixCreateFromURI`) の行があり、これら
-  は上記のフォローアップが既に個別に記録している未実装項目と同じものを指す。フォローアップの
-  「shapeを保持するXGBoost feature score」は別である。`XGBoosterFeatureScore` 自体は既にwrapped
-  済みであり、この項目は既存bindingの戻し方を変える実装課題であって、S5が公開すべきbindingの一覧
-  には現れない。
+- **S1 — separating the layers. Complete (PR #26).** The concrete classes and the library lifecycle
+  (`initialize-backend`/`shutdown-backend`) were moved into Layer 1, `cl-gbdt/<backend>` was made a
+  Layer 1-only system, and the ownership patterns were consolidated into a single
+  `with-pointer-ownership`.
+- **S2 — moving each operation's procedure into Layer 1. Complete (PR #27, #29, #30).** PR #27
+  moved six operations on each backend (`create-dataset`, `create-booster`,
+  `update-one-iteration`, `predict`, `free-dataset`, `free-booster`), PR #29 the remaining seven
+  operations (`save-model`, `load-model`, `model-to-string`, `feature-importance`, `evaluation`,
+  `dataset-num-rows`, `dataset-num-features`), and PR #30 `train`'s booster construction, each
+  into `src/<backend>/api.lisp` on both backends. As a result, all 13 unified methods delegate at
+  least part of their procedure to Layer 1. The reason the degree of delegation differs for
+  `train` alone from the other 12 (the boosting loop itself does not go through
+  `update-one-iteration`) is already recorded in the Follow-up above, and is not repeated here.
+- **S3 — classification of the bindings. Complete (PR #31).** All 177 bindings that
+  `src/*/c-api.lisp` generates are classified in `ffi-spec/BINDING-COVERAGE.md` as one of
+  `wrapped`/`planned`/`excluded`, and `tools/ci/check-binding-coverage.lisp` fails the build on an
+  unclassified binding.
+- **S4-1 — a mechanism that generates the API reference from the docstrings and checks it
+  byte-for-byte. Complete (PR #33).** A development-only emitter `src/docgen/`
+  (`introspect.lisp`, `render.lisp`, `emit.lisp`, `all.lisp`), which introspects the loaded image
+  and writes out Markdown, was added as the ASDF system `cl-gbdt/docgen`, and its driver
+  `tools/gen-api-reference.lisp` generated a `docs/API-REFERENCE.md` covering all 174 symbols
+  (141/88/89) that the three public packages `cl-gbdt`, `cl-gbdt/lightgbm` and `cl-gbdt/xgboost`
+  export. `tools/ci/check-api-reference.lisp` checks in four stages: the existence of the
+  introspection primitives, byte-for-byte agreement between the generated result and the committed
+  file, a documentation floor over every public symbol (including the slots of classes and
+  conditions), and a per-package export count floor. To satisfy this documentation floor,
+  `:documentation` was added to twelve condition slots in `src/conditions.lisp`.
+- **S4-2 — a mechanism that checks mechanically that a functional test exists for every public
+  symbol. Complete.**
+  `docs/FUNCTIONAL-COVERAGE.md` gives a position to all 174 symbols that the three public packages
+  `cl-gbdt`, `cl-gbdt/lightgbm` and `cl-gbdt/xgboost` export. `covered` is not written down in the
+  file — `tools/ci/check-functional-coverage.lisp` reads each file in `tests/functional/*.lisp`
+  and derives `covered` afresh each time, from the symbol name appearing in a top-level form other
+  than the package form. This, like `wrapped` in `ffi-spec/BINDING-COVERAGE.md`, is a design for
+  not holding a record that is maintained in two places. The remaining symbols are classified by
+  hand into either `## Unproven` (29 of them), symbols that should have a functional test and do
+  not, or the group of `## Exempt` headings, one independent heading per reason (58 of them). The
+  checker checks both the floor on `covered` (`+minimum-covered+` = 87) and the ceiling on
+  `unproven` (`+maximum-unproven+` = 29), and the latter works as a ratchet: if public symbols
+  without a functional test increase, `unproven` goes above 29, and the build fails unless an edit
+  raises that constant inside `tools/ci/check-functional-coverage.lisp`. However, what this
+  mechanism guarantees is a "recorded position" per symbol, not a "proven contract". An
+  `## Exempt` heading is recognised only by a prefix match — the literal `## Unproven`, and any
+  heading beginning with `## Exempt` — so merely raising a new `## Exempt: ...` heading, or adding
+  a line to one of the five existing `## Exempt` headings, is enough to house an untested symbol
+  without moving either `covered` or `unproven` — what this mechanism actually prevents is "being
+  published without a classification", and whether each `## Exempt`'s reason is legitimate is in
+  the end for a reviewer to judge by reading the prose. The classification work itself made plain
+  the amount of work involved: that 29 of the 174 symbols have no functional test.
+- **S5 — not started.** Publish the C functions nobody has published yet. The work list is the
+  `## Planned` section of `ffi-spec/BINDING-COVERAGE.md`. That section has rows for LightGBM's
+  `LGBM_BoosterRollbackOneIter`/`LGBM_BoosterRefit`/`LGBM_BoosterResetParameter` and for both
+  backends' file input (`LGBM_DatasetCreateFromFile`/`XGDMatrixCreateFromURI`), and these point at
+  the same unimplemented items the Follow-up above already records individually. The Follow-up's
+  "shape-preserving XGBoost feature score" is a separate thing. `XGBoosterFeatureScore` itself is
+  already wrapped, and this item is an implementation problem of changing how an existing binding
+  returns its result, so it does not appear in the list of bindings S5 should publish.
 
 ---
 
-対象リポジトリ: <https://github.com/masatoi/cl-gbdt>
+Target repository: <https://github.com/masatoi/cl-gbdt>
 
-基準commit (2026-08-06 更新): [`59d1979`](https://github.com/masatoi/cl-gbdt/commit/59d1979) (PR #9 merge)
+Basis commit (updated 2026-08-06): [`59d1979`](https://github.com/masatoi/cl-gbdt/commit/59d1979) (PR #9 merge)
