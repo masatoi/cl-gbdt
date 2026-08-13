@@ -112,6 +112,16 @@ jobs:
         # checks, its two floors, and its empty-parse guard.
         run: ros run -- --non-interactive --load tools/ci/check-binding-coverage.lisp
 
+      - name: API reference matches the docstrings
+        # docs/API-REFERENCE.md is generated from the docstrings cl-gbdt, cl-gbdt/lightgbm
+        # and cl-gbdt/xgboost export; this fails the build the moment it drifts from a
+        # fresh regeneration -- byte-for-byte, a documentation floor, and a per-package
+        # surface floor, in that order. See tools/ci/check-api-reference.lisp's header for
+        # all four stages and for WHAT THIS CANNOT CATCH. Not a rove test: it needs both
+        # backends' unified systems loaded in one image to see the whole published
+        # surface, which cl-gbdt/tests deliberately never has.
+        run: ros run -- --non-interactive --load tools/ci/check-api-reference.lisp
+
       - name: Compile every system without warnings
         # All eight systems, not just the three non-test ones: cl-gbdt/regen and the two
         # test systems went unchecked before, which is how tests/functional/lightgbm.lisp
