@@ -54,9 +54,16 @@ FORMAT, the same SIGSEGV-reachable mismatch a single wrong file is.
 What this does NOT detect, because ANSI Common Lisp has no portable way to ask: whether
 PATH names a FIFO, or a character or block device, rather than an ordinary regular file.
 An earlier version of this function used `sb-posix:stat' to ask that too; it was removed
-so this backend does not require SBCL specifically to load at all. `%read-byte-line''s own
-cap still bounds an unbounded device such as `/dev/zero'; a FIFO with no writer is left as
-a documented limitation -- see `create-dataset-from-file''s docstring."
+because the project owner declined to add `sb-posix' as a further SBCL-specific
+dependency for this one check, not because removing it made this file, or this backend,
+any more portable -- `file-uri' below already calls `sb-ext:native-namestring', which
+does not exist outside SBCL and was added before this removal, and
+`src/xgboost/native.lisp' has pinned arrays with `sb-sys:with-pinned-objects' since
+before this branch began. Both keep this backend SBCL-only regardless of what
+`%directory-p' does; the trade this removal made bought back no portability at all, only
+the loss of a check that would have caught a FIFO or a device file. `%read-byte-line''s
+own cap still bounds an unbounded device such as `/dev/zero'; a FIFO with no writer is
+left as a documented limitation -- see `create-dataset-from-file''s docstring."
   (let ((truename (handler-case (truename path) (file-error () nil))))
     (and truename (null (pathname-name truename)))))
 

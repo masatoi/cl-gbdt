@@ -805,11 +805,23 @@ file as LightGBM's own"
 ;;; null pointer unconditionally, would pass every one of them. This project already pins
 ;;; exactly that class of thing elsewhere in this file: `save-model''s `:num-iteration' test
 ;;; exists, in its own words, because a value silently dropped between a wrapper and the
-;;; library would otherwise pass. The two tests below close the same gap here, measured
-;;; against the vendored library first (`repl-eval', 2026-08-13): `:parameters '(:header
-;;; "true")' on `with-libsvm-fixture''s file reads 3 rows rather than 4, and a `:reference'
-;;; dataset is accepted and produces the same shape as building without one, per
-;;; `docs/superpowers/specs/2026-08-13-file-input-measurements.md' section 7.
+;;; library would otherwise pass.
+;;;
+;;; `create-dataset-from-file-honours-parameters' closes the gap for `:parameters' genuinely:
+;;; `:header "true"' on `with-libsvm-fixture''s file reads 3 rows rather than 4 -- measured
+;;; against the vendored library (`repl-eval', 2026-08-13) -- which a dropped parameter
+;;; string could not produce.
+;;;
+;;; `create-dataset-from-file-honours-reference' needed a second attempt to do the same for
+;;; `:reference'. Its first version built the reference from `with-libsvm-fixture''s own
+;;; three-feature shape and asserted 4 rows x 3 features -- exactly what
+;;; `create-dataset-from-file' already returns with NO reference at all (measured), so a
+;;; null reference pointer passed that assertion too, and the comment then in this spot
+;;; claimed coverage the test did not have. The fix is a reference built from a WIDENED,
+;;; five-column matrix: LightGBM's bin mapper, not the file, decides the resulting feature
+;;; count, so a dataset built against it reads back as 4 rows x 5 features (measured) -- a
+;;; shape a dropped reference pointer cannot produce, since without one the file's own three
+;;; columns decide it instead.
 
 (deftest create-dataset-from-file-honours-parameters
   (testing "create-dataset-from-file's :parameters reaches LGBM_DatasetCreateFromFile"
@@ -832,18 +844,33 @@ not 3" (cl-gbdt/lightgbm:dataset-num-rows dataset)))
 checked before any foreign call"
     (with-open-backend (backend)
       (with-libsvm-fixture (path)
-        (let ((first (cl-gbdt/lightgbm:create-dataset-from-file backend path)))
+        ;; A reference built from the FILE's own three-feature shape would not discriminate:
+        ;; `create-dataset-from-file' with no reference at all already returns 4 rows x 3
+        ;; features (measured), so asserting that shape passes whether or not
+        ;; REFERENCE-POINTER ever reaches `LGBM_DatasetCreateFromFile'. A five-column
+        ;; reference does discriminate -- LightGBM's bin mapper, not the file, then decides
+        ;; the feature count -- which is why this reference is deliberately wider than PATH.
+        (let ((wide-reference (cl-gbdt/lightgbm:create-dataset
+                               backend
+                               (make-array '(4 5) :element-type 'double-float
+                                                  :initial-contents
+                                                  '((1d0 2d0 3d0 4d0 5d0)
+                                                    (6d0 7d0 8d0 9d0 10d0)
+                                                    (11d0 12d0 13d0 14d0 15d0)
+                                                    (16d0 17d0 18d0 19d0 20d0))))))
           (unwind-protect
                (let ((second (cl-gbdt/lightgbm:create-dataset-from-file
-                              backend path :reference first)))
+                              backend path :reference wide-reference)))
                  (unwind-protect
                       (progn
                         (ok (= 4 (cl-gbdt/lightgbm:dataset-num-rows second))
                             "a dataset built with :reference has the wrong row count")
-                        (ok (= 3 (cl-gbdt/lightgbm:dataset-num-features second))
-                            "a dataset built with :reference has the wrong feature count"))
+                        (ok (= 5 (cl-gbdt/lightgbm:dataset-num-features second))
+                            (format nil ":reference did not reach the foreign call -- \
+dataset-num-features is ~D, not the reference's own 5"
+                                    (cl-gbdt/lightgbm:dataset-num-features second))))
                    (cl-gbdt/lightgbm:free-dataset second)))
-            (cl-gbdt/lightgbm:free-dataset first))
+            (cl-gbdt/lightgbm:free-dataset wide-reference))
           ;; A wrong-class :reference is refused before any foreign call -- `%reference-
           ;; pointer' delegates to `%check-lightgbm-dataset', which `create-dataset' already
           ;; relies on for the identical check.
@@ -861,3 +888,54 @@ checked before any foreign call"
                            nil)
                   (cl-gbdt/lightgbm:released-handle-error () t))
                 "create-dataset-from-file accepted a freed :reference")))))))
+
+;;; Review round 4's Finding N9 moved XGBoost's `file-uri' from `namestring' to
+;;; `sb-ext:native-namestring' because `namestring' backslash-escapes a literal asterisk in a
+;;; real filename; the whole-branch review found `create-dataset-from-file' still on
+;;; `namestring', two rounds later and never revisited. The two tests below pin the fix on
+;;; both of its edges: a literal asterisk in a filename now opens, and a genuinely wild
+;;; pathname -- which `native-namestring' itself would refuse with an untyped error -- is
+;;; refused first, with `unsupported-argument', by `%check-file-path'.
+
+(deftest create-dataset-from-file-reads-a-file-with-a-literal-asterisk
+  (testing "a filename whose namestring backslash-escapes a literal asterisk still opens"
+    (with-open-backend (backend)
+      ;; `sb-ext:parse-native-namestring', not the ordinary pathname reader: the asterisk
+      ;; this builds is a literal character of the filename, not a CL wildcard marker --
+      ;; `wild-pathname-p' is NIL for the result -- and `namestring' backslash-escapes it
+      ;; regardless (measured: `.../cl-gbdt-star\*....libsvm'), which is exactly what made
+      ;; LightGBM report "Cannot open data file" for a file that exists before this fix.
+      (let ((path (merge-pathnames
+                   (sb-ext:parse-native-namestring
+                    (format nil "cl-gbdt-star*fixture-~D.libsvm" (random 1000000)))
+                   (uiop:temporary-directory))))
+        (with-open-file (stream path :direction :output :if-exists :supersede)
+          (write-string "1 0:1.0 1:2.0 2:3.0
+0 0:4.0 1:5.0 2:6.0
+1 0:7.0 1:8.0 2:9.0
+0 0:10.0 1:11.0 2:12.0
+" stream))
+        (unwind-protect
+             (let ((dataset (cl-gbdt/lightgbm:create-dataset-from-file backend path)))
+               (unwind-protect
+                    (progn
+                      (ok (= 4 (cl-gbdt/lightgbm:dataset-num-rows dataset))
+                          "a literal-asterisk filename read the wrong row count")
+                      (ok (= 3 (cl-gbdt/lightgbm:dataset-num-features dataset))
+                          "a literal-asterisk filename read the wrong feature count"))
+                 (cl-gbdt/lightgbm:free-dataset dataset)))
+          (handler-case (delete-file path) (file-error () nil)))))))
+
+(deftest create-dataset-from-file-refuses-a-wild-path
+  (testing "create-dataset-from-file refuses a wild pathname before any foreign call"
+    (with-open-backend (backend)
+      ;; The ordinary pathname reader, unlike `sb-ext:parse-native-namestring' above: this
+      ;; asterisk IS a CL wildcard marker, `wild-pathname-p' is true of the result, and
+      ;; `sb-ext:native-namestring' would signal its own untyped
+      ;; `sb-kernel:no-native-namestring-error' for it -- `%check-file-path' exists to
+      ;; refuse this case first, with a typed condition this project's own callers can catch.
+      (let ((path (merge-pathnames (pathname "cl-gbdt-wild*.libsvm")
+                                    (uiop:temporary-directory))))
+        (ok (handler-case (progn (cl-gbdt/lightgbm:create-dataset-from-file backend path) nil)
+              (cl-gbdt/lightgbm:unsupported-argument () t))
+            "create-dataset-from-file accepted a wild pathname")))))

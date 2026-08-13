@@ -1419,9 +1419,16 @@ whose format the library cannot infer, or that does not exist, is reported throu
 `check-lgbm' exactly as any other failed foreign call is -- LightGBM's own message to report,
 not a `probe-file' pre-check made here.
 
+PATH reaches `LGBM_DatasetCreateFromFile' as its `sb-ext:native-namestring', not its
+`namestring' -- see `%check-file-path' for why the substitution needed a guard rather than
+being bare: `namestring' backslash-escapes a literal asterisk in a real filename, which
+LightGBM would then fail to open, while `native-namestring' signals its own untyped error
+for a path that is genuinely wild.
+
 Signals `wrong-backend-reference' when BACKEND is not a `lightgbm-backend' before anything
 else is read from it, and `backend-not-open' before any foreign call when BACKEND is not
-open -- see `%check-object-class' and `%check-backend-open'. Signals `wrong-backend-reference'
+open -- see `%check-object-class' and `%check-backend-open'. Signals `unsupported-argument'
+when PATH is a wild pathname -- see `%check-file-path'. Signals `wrong-backend-reference'
 when REFERENCE is supplied and is not a `lightgbm-dataset', `released-handle-error' when it
 has already been freed, and `backend-not-open' when its own backend has since been closed --
 see `%reference-pointer'. Signals `foreign-call-error' when the creation call reports success

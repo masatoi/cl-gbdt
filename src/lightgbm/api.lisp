@@ -92,6 +92,7 @@
   (:import-from #:cl-gbdt/src/conditions
                 #:capability-unavailable
                 #:foreign-call-error
+                #:unsupported-argument
                 #:wrong-backend-reference)
   (:import-from #:cl-gbdt/src/config/prediction-shape
                 #:contrib-shape)
@@ -347,6 +348,35 @@ orphaning it."
             (%set-feature-names dataset-pointer feature-names))
           (take-ownership 'lightgbm-dataset backend :dataset))))))
 
+(defun %check-file-path (path)
+  "Signal `unsupported-argument' when PATH is a wild pathname.
+
+`create-dataset-from-file' passes PATH's `sb-ext:native-namestring' to
+`LGBM_DatasetCreateFromFile', not its `namestring' -- `namestring' backslash-escapes a
+character that is a CL pathname wildcard marker but literal in a real filename (an
+asterisk, concretely), so a file genuinely named `star*file.libsvm' namestrings as
+`star\\*file.libsvm' and LightGBM refuses to open a file that exists, reporting a path
+the caller never wrote. Review round 4's Finding N9 fixed this on XGBoost's side only;
+LightGBM's `create-dataset-from-file' landed two rounds earlier and was never revisited.
+
+But `native-namestring' signals `sb-kernel:no-native-namestring-error' -- untyped by this
+project, and uncatchable by name -- for a PATH that IS wild (`wildcard*.libsvm', where the
+asterisk really is a CL wildcard marker rather than the literal-character case above), so
+switching to it is not a bare substitution: this check has to run FIRST, refusing a wild
+PATH with a typed condition this project's own callers can catch, or the fix trades one
+edge case for a worse one. Mirrors `cl-gbdt/src/xgboost/file-input''s
+`%check-file-uri-arguments', which pairs the identical two calls for the identical reason
+-- LightGBM has no URI to compose and so needs none of that function's other checks
+(reserved query characters, a smuggled `format' key), only this one."
+  (when (wild-pathname-p path)
+    (error 'unsupported-argument
+           :backend :lightgbm
+           :argument "create-dataset-from-file's path"
+           :reason (format nil "~S is a wild pathname; LGBM_DatasetCreateFromFile takes a ~
+                                plain filename, and sb-ext:native-namestring signals its ~
+                                own untyped error for a wild pathname rather than ~
+                                composing one" path))))
+
 (defun create-dataset-from-file (backend path &key parameters reference)
   "Build and return a `lightgbm-dataset' from PATH on BACKEND, via
 `LGBM_DatasetCreateFromFile'.
@@ -367,9 +397,16 @@ whose format the library cannot infer, or that does not exist, is reported throu
 `check-lgbm' exactly as any other failed foreign call is -- LightGBM's own message to report,
 not a `probe-file' pre-check made here.
 
+PATH reaches `LGBM_DatasetCreateFromFile' as its `sb-ext:native-namestring', not its
+`namestring' -- see `%check-file-path' for why the substitution needed a guard rather than
+being bare: `namestring' backslash-escapes a literal asterisk in a real filename, which
+LightGBM would then fail to open, while `native-namestring' signals its own untyped error
+for a path that is genuinely wild.
+
 Signals `wrong-backend-reference' when BACKEND is not a `lightgbm-backend' before anything
 else is read from it, and `backend-not-open' before any foreign call when BACKEND is not
-open -- see `%check-object-class' and `%check-backend-open'. Signals `wrong-backend-reference'
+open -- see `%check-object-class' and `%check-backend-open'. Signals `unsupported-argument'
+when PATH is a wild pathname -- see `%check-file-path'. Signals `wrong-backend-reference'
 when REFERENCE is supplied and is not a `lightgbm-dataset', `released-handle-error' when it
 has already been freed, and `backend-not-open' when its own backend has since been closed --
 see `%reference-pointer'. Signals `foreign-call-error' when the creation call reports success
@@ -385,10 +422,11 @@ with nothing in Lisp yet referencing it, not only where the gap is wide."
     (%check-object-class backend 'lightgbm-backend "backend"
                          "create-dataset-from-file's backend argument")
     (%check-backend-open backend)
+    (%check-file-path path)
     (let ((reference-pointer (%reference-pointer backend reference 'lightgbm-dataset))
           (parameter-string (%parameter-string parameters)))
-      (let ((dataset-pointer (%create-dataset-from-file (namestring path) parameter-string
-                                                        reference-pointer)))
+      (let ((dataset-pointer (%create-dataset-from-file (sb-ext:native-namestring path)
+                                                        parameter-string reference-pointer)))
         (when (cffi:null-pointer-p dataset-pointer)
           (error 'foreign-call-error
                  :function-name "LGBM_DatasetCreateFromFile"
