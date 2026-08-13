@@ -112,8 +112,18 @@ jobs:
         # checks, its two floors, and its empty-parse guard.
         run: ros run -- --non-interactive --load tools/ci/check-binding-coverage.lisp
 
+      - name: API reference matches the docstrings
+        # docs/API-REFERENCE.md is generated from the docstrings cl-gbdt, cl-gbdt/lightgbm
+        # and cl-gbdt/xgboost export; this fails the build the moment it drifts from a
+        # fresh regeneration -- byte-for-byte, a documentation floor, and a per-package
+        # surface floor, in that order. See tools/ci/check-api-reference.lisp's header for
+        # all four stages and for WHAT THIS CANNOT CATCH. Not a rove test: it needs both
+        # backends' unified systems loaded in one image to see the whole published
+        # surface, which cl-gbdt/tests deliberately never has.
+        run: ros run -- --non-interactive --load tools/ci/check-api-reference.lisp
+
       - name: Compile every system without warnings
-        # All eight systems, not just the three non-test ones: cl-gbdt/regen and the two
+        # All nine systems, not just the three non-test ones: cl-gbdt/regen and the two
         # test systems went unchecked before, which is how tests/functional/lightgbm.lisp
         # carried ignored-variable style warnings nobody noticed -- see this file's
         # commit history and CLAUDE.md's testing notes for the fix.
@@ -123,18 +133,21 @@ jobs:
         # pulls both in transitively. This list is meant to enumerate the project's public
         # systems, and a reader checking whether one is covered should not have to work out
         # that it is covered by accident -- an accident a change to the functional suite's
-        # dependencies could end at any time.
+        # dependencies could end at any time. cl-gbdt/docgen is named explicitly for the same
+        # reason as cl-gbdt/regen, its direct model: both are development-only, and both are
+        # reached today only as a transitive dependency of cl-gbdt/tests, which is exactly
+        # the accident this list exists to not depend on.
         run: |
           ros run -- --non-interactive \
             --eval '(ql:quickload (list "cl-gbdt" "cl-gbdt/lightgbm" "cl-gbdt/xgboost"
                                          "cl-gbdt/lightgbm/unified"
                                          "cl-gbdt/xgboost/unified"
-                                         "cl-gbdt/regen" "cl-gbdt/tests"
+                                         "cl-gbdt/regen" "cl-gbdt/docgen" "cl-gbdt/tests"
                                          "cl-gbdt/tests/functional") :silent t)' \
             --eval '(dolist (s (list "cl-gbdt" "cl-gbdt/lightgbm" "cl-gbdt/xgboost"
                                       "cl-gbdt/lightgbm/unified"
                                       "cl-gbdt/xgboost/unified"
-                                      "cl-gbdt/regen" "cl-gbdt/tests"
+                                      "cl-gbdt/regen" "cl-gbdt/docgen" "cl-gbdt/tests"
                                       "cl-gbdt/tests/functional"))
                       (asdf:compile-system s :force t))' 2>&1 | tee /tmp/compile.log
           if grep -iE 'caught .*(WARNING|ERROR)' /tmp/compile.log; then

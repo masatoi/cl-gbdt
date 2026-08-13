@@ -81,8 +81,17 @@
   (:documentation "The backend's shared library could not be located."))
 
 (define-condition backend-library-load-failed (backend-error)
-  ((path :initarg :path :initform nil :reader backend-library-load-failed-path)
-   (cause :initarg :cause :initform nil :reader backend-library-load-failed-cause))
+  ((path :initarg :path
+         :initform nil
+         :reader backend-library-load-failed-path
+         :documentation "The candidate path `cffi:load-foreign-library' was given and
+rejected -- an explicit `:path', one read from the backend's environment-variable
+override, or one found by searching the vendored library directory.")
+   (cause :initarg :cause
+          :initform nil
+          :reader backend-library-load-failed-cause
+          :documentation "The condition `cffi:load-foreign-library' itself signalled,
+kept here rather than reported directly so its own message and type both survive."))
   (:report
    (lambda (condition stream)
      (format stream "Failed to load the shared library ~A for ~A: ~A"
@@ -135,9 +144,21 @@ that `find-backend-class' does not know at all."))
 (define-condition foreign-call-error (gbdt-error)
   ((function-name :initarg :function-name
                   :initform nil
-                  :reader foreign-call-error-function-name)
-   (code :initarg :code :initform nil :reader foreign-call-error-code)
-   (message :initarg :message :initform nil :reader foreign-call-error-message))
+                  :reader foreign-call-error-function-name
+                  :documentation "The C function whose return value became CODE, e.g.
+\"LGBM_BoosterCreate\" or \"XGBoosterCreate\".")
+   (code :initarg :code
+         :initform nil
+         :reader foreign-call-error-code
+         :documentation "The nonzero status FUNCTION-NAME returned. Both libraries document
+-1 for failure and 0 for success, but this is only ever guaranteed to be nonzero here, not
+exactly -1.")
+   (message :initarg :message
+            :initform nil
+            :reader foreign-call-error-message
+            :documentation "The library's own account of the failure, read from
+`LGBM_GetLastError' or `XGBGetLastError' at the moment CODE came back, or NIL when neither
+library had one to report."))
   (:report
    (lambda (condition stream)
      (format stream "~A returned ~A: ~A"
@@ -149,7 +170,11 @@ that `find-backend-class' does not know at all."))
 MESSAGE holds whatever LGBM_GetLastError or XGBGetLastError reported."))
 
 (define-condition released-handle-error (gbdt-error)
-  ((object :initarg :object :initform nil :reader released-handle-error-object))
+  ((object :initarg :object
+           :initform nil
+           :reader released-handle-error-object
+           :documentation "The handle instance itself -- a `dataset' or `booster' -- that
+was already released when this call tried to use it."))
   (:report
    (lambda (condition stream)
      (format stream "Attempted to use the already-released handle ~A."
@@ -157,7 +182,11 @@ MESSAGE holds whatever LGBM_GetLastError or XGBGetLastError reported."))
   (:documentation "A handle was used after it had been freed."))
 
 (define-condition unfreed-handle-warning (warning)
-  ((kind :initarg :kind :initform nil :reader unfreed-handle-warning-kind))
+  ((kind :initarg :kind
+         :initform nil
+         :reader unfreed-handle-warning-kind
+         :documentation "The keyword naming which sort of handle this was -- `:dataset'
+or `:booster' -- passed straight through from the `make-handle' call that built it."))
   (:report
    (lambda (condition stream)
      (format stream "A ~(~A~) handle was garbage-collected without being freed. ~
@@ -176,8 +205,22 @@ guarantee that order."))
   (:documentation "Base type for errors in the supplied data."))
 
 (define-condition dimension-mismatch (data-error)
-  ((expected :initarg :expected :initform nil :reader dimension-mismatch-expected)
-   (given :initarg :given :initform nil :reader dimension-mismatch-given))
+  ((expected :initarg :expected
+             :initform nil
+             :reader dimension-mismatch-expected
+             :documentation "What the dimension should have been, almost always a short
+phrase in words -- e.g. \"a 2D array\" or \"INDPTR to start at 0\" -- except
+`check-objective-result', where it is `(rows groups)', the one shape both checked arrays
+were required to match exactly.")
+   (given :initarg :given
+          :initform nil
+          :reader dimension-mismatch-given
+          :documentation "What was actually supplied -- an integer, a list of integers, or
+a string, depending on the check -- rarely the same shape as EXPECTED: EXPECTED usually
+names what was required in words, while GIVEN carries the actual value or shape, so the
+two are not parallel. E.g. `(:gradient DIMS :hessian DIMS)' when a custom objective's
+gradient and Hessian are checked together, so the report can say which of the two was
+wrong."))
   (:report
    (lambda (condition stream)
      (format stream "Dimension mismatch. Expected: ~A, got: ~A"
@@ -319,9 +362,26 @@ XGBoost's own implementation. This is signalled before that foreign call runs, f
 same reason `%check-booster-datasets-live' checks the pointers it does."))
 
 (define-condition untested-backend-version (warning)
-  ((backend :initarg :backend :initform nil :reader untested-backend-version-backend)
-   (version :initarg :version :initform nil :reader untested-backend-version-version)
-   (tested :initarg :tested :initform nil :reader untested-backend-version-tested))
+  ((backend :initarg :backend
+            :initform nil
+            :reader untested-backend-version-backend
+            :documentation "The keyword naming the backend whose loaded library this is
+about -- in practice always `:xgboost', since LightGBM's C API has no version entry
+point for `check-backend-version' to call.")
+   (version :initarg :version
+            :initform nil
+            :reader untested-backend-version-version
+            :documentation "VERSION as `check-backend-version' was given it, unchanged --
+`%parse-version' is used only for the internal range comparison and never rewrites this
+slot. Three cases: a parseable \"MAJOR.MINOR.PATCH\" string that fell outside RANGE, an
+unparseable string stored verbatim -- e.g. \"not-a-version\" -- or NIL, a separate case
+from an unparseable string: the backend had no version entry point to read at all.")
+   (tested :initarg :tested
+           :initform nil
+           :reader untested-backend-version-tested
+           :documentation "Two strings describing what is actually known: the narrower
+verified range with its evidence, then the wider inferred range with its own -- see
+`version-range-tested-description'."))
   (:report
    (lambda (condition stream)
      (format stream

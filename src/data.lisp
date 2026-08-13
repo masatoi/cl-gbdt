@@ -90,6 +90,8 @@ POINTER is valid only for the duration of FUNCTION and must not escape it. Add a
 method here to support a new input format."))
 
 (defmethod call-with-foreign-matrix ((matrix foreign-matrix) function)
+  "MATRIX is already foreign memory, so this method is pure forwarding: FUNCTION receives
+MATRIX's own pointer, dimensions and element type unchanged, with no copy and no pin."
   (funcall function
            (foreign-matrix-pointer matrix)
            (foreign-matrix-rows matrix)
@@ -133,6 +135,11 @@ pairing obvious."
                element-type))))
 
 (defmethod call-with-foreign-matrix ((matrix array) function)
+  "MATRIX is a Lisp array, which is not foreign memory yet: this method validates it is
+2D, normalizes its element type to `double-float' or `single-float', and then pins or
+copies its storage -- a simple-array is pinned in place on SBCL, anything else is copied,
+see `%call-with-pinned-matrix' and `%call-with-copied-matrix' -- before calling FUNCTION
+with a pointer into it."
   (unless (= 2 (array-rank matrix))
     (error 'dimension-mismatch :expected "a 2D array" :given (array-dimensions matrix)))
   (let ((element-type (%normalized-element-type matrix)))

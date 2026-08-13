@@ -698,6 +698,10 @@ this is checked before any foreign call rather than left to crash -- and
 (defmethod make-dataset ((backend backend) matrix
                          &key label weight group feature-names parameters reference missing
                            categorical-features)
+  "Fallback for a BACKEND whose unified-API methods are not loaded: signals
+`backend-methods-not-loaded' naming `make-dataset' rather than building anything from MATRIX.
+A Layer 1 caller who does not need the unified API builds a dataset directly with that
+backend's own `create-dataset' instead."
   (declare (ignore matrix label weight group feature-names parameters reference missing
                    categorical-features))
   (error 'backend-methods-not-loaded
@@ -706,66 +710,114 @@ this is checked before any foreign call rather than left to crash -- and
 (defmethod train ((backend backend) dataset
                   &key valid-sets num-rounds parameters record-history early-stopping
                        objective evaluation)
+  "Fallback for a BACKEND whose unified-API methods are not loaded: signals
+`backend-methods-not-loaded' naming `train'. Layer 1 has no equivalent of this generic as a
+whole -- its own training report, early stopping and `:objective'/`:evaluation' callbacks
+are `train''s own concepts -- so recovering from this means loading the unified system, not
+composing a Layer 1 substitute."
   (declare (ignore dataset valid-sets num-rounds parameters record-history early-stopping
                    objective evaluation))
   (error 'backend-methods-not-loaded
          :backend (backend-name backend) :generic-function 'train))
 
 (defmethod load-model ((backend backend) path)
+  "Fallback for a BACKEND whose unified-API methods are not loaded: signals
+`backend-methods-not-loaded' naming `load-model'. A Layer 1 caller loads a model with that
+backend's own `load-model' in `api.lisp' instead, which returns a handle without dispatching
+through this generic at all."
   (declare (ignore path))
   (error 'backend-methods-not-loaded
          :backend (backend-name backend) :generic-function 'load-model))
 
 (defmethod dataset-num-rows ((dataset dataset))
+  "Fallback for a DATASET whose backend's unified-API methods are not loaded: signals
+`backend-methods-not-loaded' naming `dataset-num-rows'. A Layer 1 caller reads the same
+count with that backend's own `dataset-num-rows' in `api.lisp', which needs no unified
+system loaded."
   (error 'backend-methods-not-loaded
          :backend (backend-name (handle-backend dataset))
          :generic-function 'dataset-num-rows))
 
 (defmethod dataset-num-features ((dataset dataset))
+  "Fallback for a DATASET whose backend's unified-API methods are not loaded: signals
+`backend-methods-not-loaded' naming `dataset-num-features'. A Layer 1 caller reads the same
+count with that backend's own `dataset-num-features' in `api.lisp', which needs no unified
+system loaded."
   (error 'backend-methods-not-loaded
          :backend (backend-name (handle-backend dataset))
          :generic-function 'dataset-num-features))
 
 (defmethod free-dataset ((dataset dataset))
+  "Fallback for a DATASET whose backend's unified-API methods are not loaded: signals
+`backend-methods-not-loaded' naming `free-dataset' rather than freeing anything. A Layer 1
+caller frees the same handle with that backend's own `free-dataset' in `api.lisp' instead."
   (error 'backend-methods-not-loaded
          :backend (backend-name (handle-backend dataset))
          :generic-function 'free-dataset))
 
 (defmethod update-one-iteration ((booster booster))
+  "Fallback for a BOOSTER whose backend's unified-API methods are not loaded: signals
+`backend-methods-not-loaded' naming `update-one-iteration' rather than advancing anything. A
+Layer 1 caller drives the same loop with that backend's own `update-one-iteration' in
+`api.lisp'. `train''s own loop does not call that function either: it calls `native.lisp''s
+`%update-one-iteration' directly, because `api.lisp''s `update-one-iteration' would re-check
+every handle on every iteration -- see that backend's `train' method for the same note in
+its own words."
   (error 'backend-methods-not-loaded
          :backend (backend-name (handle-backend booster))
          :generic-function 'update-one-iteration))
 
 (defmethod predict ((booster booster) matrix &key kind num-iteration missing)
+  "Fallback for a BOOSTER whose backend's unified-API methods are not loaded: signals
+`backend-methods-not-loaded' naming `predict' rather than predicting anything on MATRIX. A
+Layer 1 caller predicts with that backend's own `predict' in `api.lisp' instead."
   (declare (ignore matrix kind num-iteration missing))
   (error 'backend-methods-not-loaded
          :backend (backend-name (handle-backend booster))
          :generic-function 'predict))
 
 (defmethod save-model ((booster booster) path &key num-iteration)
+  "Fallback for a BOOSTER whose backend's unified-API methods are not loaded: signals
+`backend-methods-not-loaded' naming `save-model' rather than writing anything to PATH. A
+Layer 1 caller saves the same model with that backend's own `save-model' in `api.lisp'
+instead."
   (declare (ignore path num-iteration))
   (error 'backend-methods-not-loaded
          :backend (backend-name (handle-backend booster))
          :generic-function 'save-model))
 
 (defmethod model-to-string ((booster booster) &key num-iteration)
+  "Fallback for a BOOSTER whose backend's unified-API methods are not loaded: signals
+`backend-methods-not-loaded' naming `model-to-string' rather than returning anything. A
+Layer 1 caller gets the same string with that backend's own `model-to-string' in `api.lisp'
+instead."
   (declare (ignore num-iteration))
   (error 'backend-methods-not-loaded
          :backend (backend-name (handle-backend booster))
          :generic-function 'model-to-string))
 
 (defmethod feature-importance ((booster booster) &key kind num-iteration)
+  "Fallback for a BOOSTER whose backend's unified-API methods are not loaded: signals
+`backend-methods-not-loaded' naming `feature-importance' rather than computing anything. A
+Layer 1 caller gets the same result with that backend's own `feature-importance' in
+`api.lisp' instead."
   (declare (ignore kind num-iteration))
   (error 'backend-methods-not-loaded
          :backend (backend-name (handle-backend booster))
          :generic-function 'feature-importance))
 
 (defmethod evaluation ((booster booster))
+  "Fallback for a BOOSTER whose backend's unified-API methods are not loaded: signals
+`backend-methods-not-loaded' naming `evaluation' rather than reading anything. A Layer 1
+caller gets the same metrics with that backend's own `evaluation' in `api.lisp' instead."
   (error 'backend-methods-not-loaded
          :backend (backend-name (handle-backend booster))
          :generic-function 'evaluation))
 
 (defmethod free-booster ((booster booster))
+  "Fallback for a BOOSTER whose backend's unified-API methods are not loaded: signals
+`backend-methods-not-loaded' naming `free-booster' rather than freeing anything. A Layer 1
+caller frees the same handle with that backend's own `free-booster' in `api.lisp' instead."
   (error 'backend-methods-not-loaded
          :backend (backend-name (handle-backend booster))
          :generic-function 'free-booster))
