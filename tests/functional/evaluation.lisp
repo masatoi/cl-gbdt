@@ -1,6 +1,6 @@
 ;;;; evaluation.lisp --- Portable contract tests for `cl-gbdt:evaluation'.
 ;;;;
-;;;; Policy section 13's first test category -- "同一のテストを両backendに適用し" -- and
+;;;; Policy section 13's first test category -- "The same test is applied to both backends" -- and
 ;;;; design section 7's "the same assertions against both backends". Every test below runs
 ;;;; the identical assertions over *FIXTURES*, once per backend, so the two backends cannot
 ;;;; drift apart in shape, order or meaning without one of them failing here.

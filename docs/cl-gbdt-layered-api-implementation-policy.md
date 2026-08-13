@@ -533,7 +533,7 @@ The state of each stage is as follows.
   conditions), and a per-package export count floor. To satisfy this documentation floor,
   `:documentation` was added to twelve condition slots in `src/conditions.lisp`.
 - **S4-2 — a mechanism that checks mechanically that a functional test exists for every public
-  symbol. Complete.**
+  symbol. Complete (PR #34).**
   `docs/FUNCTIONAL-COVERAGE.md` gives a position to all 174 symbols that the three public packages
   `cl-gbdt`, `cl-gbdt/lightgbm` and `cl-gbdt/xgboost` export. `covered` is not written down in the
   file — `tools/ci/check-functional-coverage.lisp` reads each file in `tests/functional/*.lisp`
