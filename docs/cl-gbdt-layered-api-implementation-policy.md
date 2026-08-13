@@ -2,7 +2,7 @@
 
 ## 1. Purpose of this document
 
-This document instructs the agent that will implement and revise `masatoi/cl-gbdt` from here on, covering the policy for integrating LightGBM and XGBoost, the boundaries of the public API, the handling of backend-specific features, the migration procedure and the acceptance criteria.
+This document instructs the agent that will implement and revise `masatoi/cl-gbdt` from here on, covering the policy for integrating LightGBM and XGBoost, the boundary of the public API, the handling of backend-specific features, the migration procedure and the acceptance criteria.
 
 When adding an individual feature, the implementing agent must give this document's rules priority, and must satisfy the following two at the same time.
 
@@ -22,7 +22,7 @@ In the current `master`, the unified protocol's 12 generic functions are impleme
 - Feature importance
 - Freeing a dataset / booster
 
-The generated CFFI bindings cover the upstream C API broadly, while the C functions the current high-level backend implementation uses are a part of it. Also, the current `src/lightgbm/backend.lisp` and `src/xgboost/backend.lisp` carry the following responsibilities in the same layer.
+The generated CFFI binding covers the upstream C API broadly, while the C functions the current high-level backend implementation uses are a part of it. Also, the current `src/lightgbm/backend.lisp` and `src/xgboost/backend.lisp` carry the following responsibilities in the same layer.
 
 - Finding and initializing the shared library
 - Calling the raw C API
