@@ -187,3 +187,42 @@ file afterward whether BODY exits normally or not."
                   #p"/data/train.csv" :|csv&format=libsvm| nil)
                  nil)
         (cl-gbdt/src/conditions:unsupported-argument () t))))
+
+;; Review round 1, Finding 1 (Critical): a wild pathname bypasses the gate entirely.
+;; detect-file-format's open fails with a file-error subtype (a wild namestring cannot be
+;; opened as a single file), which detect-file-format reports as :UNREADABLE -- and
+;; create-dataset-from-file's gate passes :UNREADABLE through by design, since an
+;; unopenable file is XGBoost's own to report. But dmlc does not open a wild namestring as
+;; a single file at all: it glob-expands the pattern and can reach a real file
+;; detect-file-format never classified, which is exactly the fatal direction this branch
+;; exists to refuse. This is the third instance of the same structural hole review found
+;; (a `?'/`#' in the path, a `&' inside a parameter value): file-uri's guard list and
+;; detect-file-format's :UNREADABLE pass-through are two halves of one contract.
+(deftest file-uri-refuses-a-wild-pathname
+  (ok (handler-case
+          (progn (cl-gbdt/src/xgboost/file-input::file-uri #p"/data/a*.csv" :libsvm nil)
+                 nil)
+        (cl-gbdt/src/conditions:unsupported-argument () t))
+      "file-uri accepted a * wildcard in the path"))
+
+(deftest file-uri-refuses-a-bracket-wildcard-pathname
+  (ok (handler-case
+          (progn (cl-gbdt/src/xgboost/file-input::file-uri #p"/data/[a].csv" :libsvm nil)
+                 nil)
+        (cl-gbdt/src/conditions:unsupported-argument () t))
+      "file-uri accepted a [] wildcard in the path"))
+
+;; The control: an ordinary path, a genuinely missing plain file, and a path containing a
+;; space (record section 9's case, already proven not to be wild) must all keep composing.
+(deftest file-uri-still-composes-ordinary-paths-after-the-wild-pathname-guard
+  (ok (string= "/data/train.csv?format=csv"
+               (cl-gbdt/src/xgboost/file-input::file-uri #p"/data/train.csv" :csv nil))
+      "file-uri refused an ordinary path")
+  (ok (string= "/data/no-such-file.csv?format=csv"
+               (cl-gbdt/src/xgboost/file-input::file-uri
+                #p"/data/no-such-file.csv" :csv nil))
+      "file-uri refused a merely-missing path")
+  (ok (string= "/data/train set.libsvm?format=libsvm"
+               (cl-gbdt/src/xgboost/file-input::file-uri
+                #p"/data/train set.libsvm" :libsvm nil))
+      "file-uri refused a path containing a space"))

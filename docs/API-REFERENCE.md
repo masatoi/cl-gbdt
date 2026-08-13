@@ -1493,9 +1493,13 @@ prints nothing at all.
 
 Checked in this order, all before any foreign call: BACKEND's class, then whether it is
 open, then whether FORMAT is in the accepted set, then `file-uri' composing the URI (which
-itself signals `unsupported-argument' for a `?'/`#' in PATH or a smuggled `format' key or
-reserved character), then `detect-file-format' agreeing with FORMAT or answering
-`:unreadable'.
+itself signals `unsupported-argument' for a wild PATH, a `?'/`#' in PATH, or a smuggled
+`format' key or reserved character), then `detect-file-format' agreeing with FORMAT or
+answering `:unreadable'. The wild-PATH check matters precisely because it runs before
+`detect-file-format' does: a PATH such as `a*.csv' fails `open' with a `file-error'
+`detect-file-format' would otherwise read as `:unreadable' and pass through, but dmlc does
+not open such a namestring as a single file -- it glob-expands it, so PATH being wild is
+refused on its own rather than being left to the `:unreadable' pass-through below.
 
 Signals `wrong-backend-reference' when BACKEND is not an `xgboost-backend' -- the other
 backend's object, or not a backend at all -- before anything else is read from it and ahead

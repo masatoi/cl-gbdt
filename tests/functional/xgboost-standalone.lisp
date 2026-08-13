@@ -720,11 +720,24 @@ when both read libsvm indices zero-based the same way."
 `cl-gbdt/tests/functional/lightgbm-standalone::with-different-libsvm-fixture', whose
 docstring records why its labels are three 1s and one 0 (mean 0.75) rather than a mere
 reordering of `with-libsvm-fixture''s two 1s and two 0s (mean 0.5, which trained an
-identical model on that backend's default parameters). This backend's `*parameters*' needs
-no such care -- measured, this pair of fixtures already trains genuinely different models
-under it, `*parameters*' having no LightGBM-style `min_data_in_leaf' default to collapse
-either into a single leaf -- but the content is kept identical anyway rather than
-independently invented, since there was no reason for the two to differ."
+identical model on that backend's default parameters).
+
+An earlier version of this docstring claimed this backend's `*parameters*' needed no such
+care, as measured fact -- that claim was false and review round 1 (Finding 2) caught it:
+measured, plain `*parameters*' collapses BOTH this fixture and `with-libsvm-fixture' to a
+single-leaf tree on four rows, XGBoost's default `min_child_weight' (1) making
+`binary:logistic''s total Hessian exactly 1.0 there too -- the same shape of weakness the
+text above correctly denies only for LightGBM's DIFFERENT default,
+`min_data_in_leaf'. `create-dataset-from-file-does-not-match-a-different-file' still passed
+under that collapse, but only because differing label MEANS (0.75 against 0.5) move
+`base_score' even when neither tree splits -- it was never evidence that this fixture's
+differing feature VALUES were being read at all, and
+`create-dataset-from-file-trains-the-same-model-as-the-matrix' had no such fallback and was
+genuinely blind. `model-string-after-one-iteration''s `*file-input-parameters*' now adds
+`:min-child-weight 0' for both fixtures, which is what makes this pair -- and the equality
+test -- sensitive to feature values rather than only to labels. The content is kept
+identical to the sibling's fixture regardless, since there was no reason for the two
+libraries' fixture text to differ."
   `(let ((,path (merge-pathnames (format nil "cl-gbdt-xgb-other-fixture-~D.libsvm"
                                          (random 1000000))
                                  (uiop:temporary-directory))))
@@ -760,14 +773,37 @@ comment for why this is the direction that is safe to provoke here."
             ,@body)
        (ignore-errors (delete-file ,path)))))
 
+(defparameter *file-input-parameters*
+  (list* :min-child-weight 0 *parameters*)
+  "*PARAMETERS* with `:min-child-weight 0' added on top, for `model-string-after-one-
+iteration' alone -- not the file-wide *PARAMETERS* the rest of this file depends on.
+
+Measured (review round 1, Finding 2): on `with-libsvm-fixture''s four rows, under plain
+*PARAMETERS*, XGBoost's default `min_child_weight' (1) makes `binary:logistic''s total
+Hessian exactly 1.0, so no split can leave both children at >= 1 and the tree collapses to
+a single leaf -- `\"num_nodes\":\"1\"' in `model-to-string', identical whatever the feature
+values are, so long as the labels are. That left
+`create-dataset-from-file-trains-the-same-model-as-the-matrix' blind to whether the file's
+feature values were read correctly at all -- the same shape of weakness
+`cl-gbdt/lightgbm''s own `min_data_in_leaf' default has, which that backend's
+`model-string-after-one-iteration' avoids by passing `*parameters*' to `create-dataset'
+too; XGBoost's `create-dataset'/`create-dataset-from-file' has no dataset-level parameters
+argument for that fix to reach, so this is a booster-level one instead. `:min-child-weight
+0' measured to give `\"num_nodes\":\"7\"' -- the tree actually splits -- restoring the
+equality test's sensitivity to feature values without changing what the equality itself
+asserts.")
+
 (defun model-string-after-one-iteration (backend dataset)
   "Train one iteration on DATASET and return the resulting model as a string, via
-`create-booster' with `*parameters*' -- the same plist every other booster in this file
-uses. Unlike the sibling's function of this name, this one takes no `:parameters' keyword
-of its own to thread through `create-dataset'/`create-dataset-from-file': neither has such
-an argument on this backend (see this file's header), so `*parameters*' reaches only this
-one call, and there is nothing else here for a caller to keep in sync."
-  (let ((booster (cl-gbdt/xgboost:create-booster backend dataset :parameters *parameters*)))
+`create-booster' with `*file-input-parameters*' -- `*parameters*' plus `:min-child-weight
+0', not the plain `*parameters*' every other booster in this file uses; see
+`*file-input-parameters*''s own docstring for why the addition is load-bearing here.
+Unlike the sibling's function of this name, this one takes no `:parameters' keyword of its
+own to thread through `create-dataset'/`create-dataset-from-file': neither has such an
+argument on this backend (see this file's header), so `*file-input-parameters*' reaches
+only this one call, and there is nothing else here for a caller to keep in sync."
+  (let ((booster (cl-gbdt/xgboost:create-booster backend dataset
+                                                  :parameters *file-input-parameters*)))
     (unwind-protect
          (progn
            (cl-gbdt/xgboost:update-one-iteration booster)
@@ -858,9 +894,24 @@ XGDMatrixCreateFromURI"
             ;; and per Task 2/6, these are the assertions that let the three readers'
             ;; `## Unproven' rows in docs/FUNCTIONAL-COVERAGE.md be deleted rather than left
             ;; permanently loosening that ratchet.
+            ;;
+            ;; Review round 1, Finding 5: `(equal path (file-format-mismatch-path
+            ;; condition))' alone would prove only that the slot echoes back the very Lisp
+            ;; object this test already holds, not that it independently names the fixture
+            ;; -- an implementation that stored the wrong pathname under some other bug would
+            ;; still pass if that pathname happened to be `equal' to PATH by construction.
+            ;; Reading the file the slot names back and checking it against the fixture's own
+            ;; known first line is independent of that object: it fails if PATH is `equal'
+            ;; but wrong in a way `equal' cannot see, and it fails if PATH does not even name
+            ;; a readable file, neither of which the identity check alone would catch.
             (ok (equal path (cl-gbdt/xgboost:file-format-mismatch-path condition))
                 (format nil "file-format-mismatch-path is ~S, not ~S"
                         (cl-gbdt/xgboost:file-format-mismatch-path condition) path))
+            (ok (with-open-file (stream (cl-gbdt/xgboost:file-format-mismatch-path condition))
+                  (string= "1,1.0,2.0,3.0" (read-line stream)))
+                (format nil "file-format-mismatch-path ~S does not read back as the CSV \
+fixture's own first line"
+                        (cl-gbdt/xgboost:file-format-mismatch-path condition)))
             (ok (eq :libsvm (cl-gbdt/xgboost:file-format-mismatch-declared condition))
                 (format nil "file-format-mismatch-declared is ~S"
                         (cl-gbdt/xgboost:file-format-mismatch-declared condition)))

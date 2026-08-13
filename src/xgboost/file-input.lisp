@@ -225,11 +225,12 @@ a reserved character per `%uri-reserved-char-p'."
   (or (some #'%uri-reserved-char-p (string (car pair)))
       (some #'%uri-reserved-char-p (princ-to-string (cdr pair)))))
 
-(defun %check-file-uri-arguments (namestring format pairs)
-  "Signal `unsupported-argument' when NAMESTRING, FORMAT, or PAIRS would let a caller
-smuggle a second `format' key past the one `file-uri' composes -- see `file-uri''s
-docstring for why both characters, the key name, a reserved character inside a rendered
-key or value, and a reserved character inside FORMAT itself are all refused.
+(defun %check-file-uri-arguments (path namestring format pairs)
+  "Signal `unsupported-argument' when PATH, NAMESTRING, FORMAT, or PAIRS would let a
+caller smuggle a second `format' key past the one `file-uri' composes, or let dmlc read
+something other than the single file PATH names -- see `file-uri''s docstring for why
+both characters, the key name, a reserved character inside a rendered key or value, a
+reserved character inside FORMAT itself, and PATH being a wild pathname are all refused.
 
 The FORMAT check closes a gap found by review rather than by measurement: `file-uri'
 already refused a smuggled `format' key arriving through PAIRS, but nothing stopped FORMAT
@@ -238,7 +239,28 @@ gate the same way a bad PAIRS entry would. `create-dataset-from-file' in
 `cl-gbdt/src/xgboost/api' already restricts FORMAT to `:libsvm', `:csv' or `:binary' before
 `file-uri' is ever reached, so this is the second half of a belt-and-braces check -- an
 invariant that depended on one caller getting the check order right was judged too weak for
-the one function in this branch whose whole job is preventing injection."
+the one function in this branch whose whole job is preventing injection.
+
+The wild-pathname check closes a third instance of the same structural hole review found
+twice already (a `?'/`#' in PATH, a `&' inside a PAIRS value): `file-uri''s guard list and
+`detect-file-format''s `:unreadable' pass-through are two halves of one contract, and
+anything the guard does not catch, the pass-through hands to dmlc unexamined. A PATH SBCL
+parses as a wild pathname (`a*.csv', `[a].csv') fails `open' with a `file-error' subtype,
+so `detect-file-format' reports `:unreadable' and `create-dataset-from-file''s gate lets
+it through by design -- but dmlc does not open a wild namestring as a single filename, it
+glob-expands it, so a declared `:libsvm' can reach a real CSV file `detect-file-format'
+never classified at all, which is exactly the fatal direction this whole branch exists to
+refuse. `wild-pathname-p' is `NIL' for every ordinary path, a genuinely missing plain
+file, and a path containing a space (record section 9's case), so this refuses nothing
+that currently works."
+  (when (wild-pathname-p path)
+    (error 'unsupported-argument
+           :backend :xgboost
+           :argument "file-uri's path"
+           :reason (format nil "~S is a wild pathname; dmlc glob-expands a wildcard ~
+                                pattern rather than opening it as the single file it ~
+                                names, which could reach a file detect-file-format ~
+                                never classified" path)))
   (when (or (find #\? namestring) (find #\# namestring))
     (error 'unsupported-argument
            :backend :xgboost
@@ -284,16 +306,19 @@ URI-PARAMETERS is a plist of further query keys, e.g. `(:label_column 0)', each 
 as \"&key=value\" after the format key -- or, when FORMAT is `:binary', as the URI's only
 query parameters, introduced with `?' instead of `&'.
 
-Signals `unsupported-argument' before composing anything when PATH's namestring contains
-a `?' or a `#' -- dmlc's own query and fragment separators, so a path holding either could
-append a second `format' key of its own and defeat the format-mismatch gate built on top
-of this function -- or when FORMAT itself, once rendered, contains a `?', `#', or `&' --
-the identical smuggling risk one argument over, closed even though every caller in this
-codebase already restricts FORMAT to `:libsvm', `:csv' or `:binary' before reaching here --
-or when URI-PARAMETERS holds a `format' key under any case, the same smuggling risk from a
-third side -- or when any URI-PARAMETERS key or value, once rendered into the query string,
-itself contains a `?', `#', or `&': any of the three could open a second query segment
-there too.
+Signals `unsupported-argument' before composing anything when PATH is a wild pathname
+(`wild-pathname-p' true, e.g. `a*.csv' or `[a].csv') -- dmlc glob-expands such a namestring
+rather than opening it as the single file it names, which can reach a file
+`detect-file-format' never classified at all, defeating the format-mismatch gate the same
+way a smuggled `format' key would -- or when PATH's namestring contains a `?' or a `#' --
+dmlc's own query and fragment separators, so a path holding either could append a second
+`format' key of its own -- or when FORMAT itself, once rendered, contains a `?', `#', or
+`&' -- the identical smuggling risk one argument over, closed even though every caller in
+this codebase already restricts FORMAT to `:libsvm', `:csv' or `:binary' before reaching
+here -- or when URI-PARAMETERS holds a `format' key under any case, the same smuggling risk
+from a third side -- or when any URI-PARAMETERS key or value, once rendered into the query
+string, itself contains a `?', `#', or `&': any of the three could open a second query
+segment there too.
 
 Does not percent-encode PATH. Measured (record section 9): dmlc accepts an unencoded
 space in the path and REJECTS the identical path percent-encoded as %20, with \"Cannot
@@ -301,7 +326,7 @@ find any files that matches the URI pattern\". Encoding here would break a path 
 works unencoded."
   (let ((namestring (namestring path))
         (pairs (%uri-parameter-pairs uri-parameters)))
-    (%check-file-uri-arguments namestring format pairs)
+    (%check-file-uri-arguments path namestring format pairs)
     (with-output-to-string (out)
       (write-string namestring out)
       (let ((separator #\?))
