@@ -191,6 +191,7 @@
   (:import-from #:cl-gbdt/src/lightgbm/api
                 #:create-booster
                 #:create-dataset
+                #:create-dataset-from-file
                 #:dataset-num-features
                 #:dataset-num-rows
                 #:evaluation
@@ -207,6 +208,7 @@
            #:booster-eval
            #:create-booster
            #:create-dataset
+           #:create-dataset-from-file
            #:dataset-num-features
            #:dataset-num-rows
            #:evaluation

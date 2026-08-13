@@ -61,6 +61,7 @@
                 #:%create-booster-from-modelfile
                 #:%create-dataset
                 #:%create-dataset-from-csr
+                #:%create-dataset-from-file
                 #:%data-type
                 #:%dataset-num-features
                 #:%dataset-num-rows
@@ -115,6 +116,7 @@
                 #:with-pointer-ownership)
   (:export #:create-booster
            #:create-dataset
+           #:create-dataset-from-file
            #:dataset-num-features
            #:dataset-num-rows
            #:evaluation
@@ -343,6 +345,56 @@ orphaning it."
             (%set-group-field dataset-pointer group))
           (when feature-names
             (%set-feature-names dataset-pointer feature-names))
+          (take-ownership 'lightgbm-dataset backend :dataset))))))
+
+(defun create-dataset-from-file (backend path &key parameters reference)
+  "Build and return a `lightgbm-dataset' from PATH on BACKEND, via
+`LGBM_DatasetCreateFromFile'.
+
+PARAMETERS is a plist in LightGBM'S OWN vocabulary, rendered by `%parameter-string' and
+handed to the creation call verbatim -- exactly as `create-dataset''s own PARAMETERS is,
+nothing here translating a key or a value either. `header', `label_column' and `label' are
+three such keys among the rest, measured in
+`docs/superpowers/specs/2026-08-13-file-input-measurements.md' section 5: `header=true'
+consumes the file's first line as a header rather than a data row, `label_column=N' and its
+alias `label=N' pick a 0-based column as the label (default 0). REFERENCE behaves exactly as
+`create-dataset''s REFERENCE: another `lightgbm-dataset' whose bin mapper this one should
+align to, or NIL to build its own.
+
+There is no format argument: unlike XGBoost's counterpart, LightGBM infers PATH's format
+-- CSV, TSV or libsvm -- from its own content, so nothing here declares or checks one. A file
+whose format the library cannot infer, or that does not exist, is reported through
+`check-lgbm' exactly as any other failed foreign call is -- LightGBM's own message to report,
+not a `probe-file' pre-check made here.
+
+Signals `wrong-backend-reference' when BACKEND is not a `lightgbm-backend' before anything
+else is read from it, and `backend-not-open' before any foreign call when BACKEND is not
+open -- see `%check-object-class' and `%check-backend-open'. Signals `wrong-backend-reference'
+when REFERENCE is supplied and is not a `lightgbm-dataset', `released-handle-error' when it
+has already been freed, and `backend-not-open' when its own backend has since been closed --
+see `%reference-pointer'. Signals `foreign-call-error' when the creation call reports success
+but writes a null handle, exactly as `create-dataset' does.
+
+The raw dataset handle exists in C from the moment the creation call returns, but there is
+nothing left to attach to it afterward -- no LABEL, WEIGHT, GROUP or FEATURE-NAMES argument,
+the file itself already carrying whatever `create-dataset''s caller would otherwise pass
+separately. `with-pointer-ownership' still spans the gap between that return and
+`make-handle', short as it is: policy section 10 asks for it wherever a fresh pointer exists
+with nothing in Lisp yet referencing it, not only where the gap is wide."
+  (with-foreign-float-traps-masked
+    (%check-object-class backend 'lightgbm-backend "backend"
+                         "create-dataset-from-file's backend argument")
+    (%check-backend-open backend)
+    (let ((reference-pointer (%reference-pointer backend reference 'lightgbm-dataset))
+          (parameter-string (%parameter-string parameters)))
+      (let ((dataset-pointer (%create-dataset-from-file (namestring path) parameter-string
+                                                         reference-pointer)))
+        (when (cffi:null-pointer-p dataset-pointer)
+          (error 'foreign-call-error
+                 :function-name "LGBM_DatasetCreateFromFile"
+                 :code 0
+                 :message "reported success but returned a null dataset handle"))
+        (with-pointer-ownership (dataset-pointer #'%free-dataset-unchecked take-ownership)
           (take-ownership 'lightgbm-dataset backend :dataset))))))
 
 (defun free-dataset (dataset)

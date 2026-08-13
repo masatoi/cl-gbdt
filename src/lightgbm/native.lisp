@@ -18,6 +18,7 @@
                 #:lgbm-get-last-error
                 #:lgbm-dataset-create-from-mat
                 #:lgbm-dataset-create-from-csr
+                #:lgbm-dataset-create-from-file
                 #:lgbm-dataset-set-field
                 #:lgbm-dataset-set-feature-names
                 #:lgbm-dataset-free
@@ -92,6 +93,7 @@
            #:%parameter-string
            #:%data-type
            #:%create-dataset
+           #:%create-dataset-from-file
            #:%create-dataset-from-csr
            #:%set-info-field
            #:%set-group-field
@@ -280,6 +282,7 @@ system search never finds it.")
 (defparameter *required-symbols*
   '("LGBM_GetLastError"
     "LGBM_DatasetCreateFromMat"
+    "LGBM_DatasetCreateFromFile"
     "LGBM_DatasetSetField"
     "LGBM_DatasetSetFeatureNames"
     "LGBM_DatasetFree"
@@ -474,6 +477,24 @@ decides XGBoost's array-interface typestr."
                        parameter-cstring reference-pointer out)
                       "LGBM_DatasetCreateFromMat")
           (cffi:mem-ref out :pointer))))))
+
+(defun %create-dataset-from-file (filename parameter-string reference-pointer)
+  "Build a LightGBM dataset from FILENAME via `LGBM_DatasetCreateFromFile', returning
+its raw pointer.
+
+PARAMETER-STRING is `%parameter-string''s space-separated \"key=value\" form,
+REFERENCE-POINTER `%reference-pointer''s result -- another dataset's pointer to align bin
+mappers to, or a null pointer for none, exactly as for `%create-dataset'. The library reads
+FILENAME itself and infers its format from its content; there is no format argument here, and
+a file it cannot read -- missing, empty, or malformed past what its own CSV/TSV/libsvm
+detector accepts -- is reported through `check-lgbm' like any other failed foreign call."
+  (cffi:with-foreign-strings ((filename-c filename)
+                              (parameters-c parameter-string))
+    (cffi:with-foreign-object (out :pointer)
+      (check-lgbm (lgbm-dataset-create-from-file filename-c parameters-c
+                                                  reference-pointer out)
+                  "LGBM_DatasetCreateFromFile")
+      (cffi:mem-ref out :pointer))))
 
 #+sbcl
 (defun %call-with-pinned-csr (indptr indices values function)

@@ -165,7 +165,7 @@ hold Lisp conventions Markdown would render as something else.
 - [`wrong-backend-reference-expected`](#cl-gbdt-wrong-backend-reference-expected)
 - [`wrong-backend-reference-given`](#cl-gbdt-wrong-backend-reference-given)
 
-### `cl-gbdt/lightgbm` -- 92 symbols
+### `cl-gbdt/lightgbm` -- 93 symbols
 
 - [`*known-capabilities*`](#cl-gbdt-known-capabilities)
 - [`backend-capabilities`](#cl-gbdt-backend-capabilities)
@@ -195,6 +195,7 @@ hold Lisp conventions Markdown would render as something else.
 - [`close-backend`](#cl-gbdt-close-backend)
 - [`create-booster`](#cl-gbdt-lightgbm-create-booster)
 - [`create-dataset`](#cl-gbdt-lightgbm-create-dataset)
+- [`create-dataset-from-file`](#cl-gbdt-lightgbm-create-dataset-from-file)
 - [`csr-matrix`](#cl-gbdt-csr-matrix)
 - [`csr-matrix-indices`](#cl-gbdt-csr-matrix-indices)
 - [`csr-matrix-indptr`](#cl-gbdt-csr-matrix-indptr)
@@ -1387,6 +1388,50 @@ FEATURE-NAMES or FEATURE-TYPES can each signal first (a wrong-length LABEL is th
 way). `with-pointer-ownership' spans exactly that gap: the pointer is owned by nobody inside
 its body, and any exit that has not called TAKE-OWNERSHIP frees the raw DMatrix here instead of
 orphaning it.
+```
+
+<a id="cl-gbdt-lightgbm-create-dataset-from-file"></a>
+
+## `cl-gbdt/lightgbm:create-dataset-from-file`
+
+- **Kind** function
+- **Signature** `(create-dataset-from-file backend path &key parameters reference)`
+- **Exported from** `cl-gbdt/lightgbm`
+
+```text
+Build and return a `lightgbm-dataset' from PATH on BACKEND, via
+`LGBM_DatasetCreateFromFile'.
+
+PARAMETERS is a plist in LightGBM'S OWN vocabulary, rendered by `%parameter-string' and
+handed to the creation call verbatim -- exactly as `create-dataset''s own PARAMETERS is,
+nothing here translating a key or a value either. `header', `label_column' and `label' are
+three such keys among the rest, measured in
+`docs/superpowers/specs/2026-08-13-file-input-measurements.md' section 5: `header=true'
+consumes the file's first line as a header rather than a data row, `label_column=N' and its
+alias `label=N' pick a 0-based column as the label (default 0). REFERENCE behaves exactly as
+`create-dataset''s REFERENCE: another `lightgbm-dataset' whose bin mapper this one should
+align to, or NIL to build its own.
+
+There is no format argument: unlike XGBoost's counterpart, LightGBM infers PATH's format
+-- CSV, TSV or libsvm -- from its own content, so nothing here declares or checks one. A file
+whose format the library cannot infer, or that does not exist, is reported through
+`check-lgbm' exactly as any other failed foreign call is -- LightGBM's own message to report,
+not a `probe-file' pre-check made here.
+
+Signals `wrong-backend-reference' when BACKEND is not a `lightgbm-backend' before anything
+else is read from it, and `backend-not-open' before any foreign call when BACKEND is not
+open -- see `%check-object-class' and `%check-backend-open'. Signals `wrong-backend-reference'
+when REFERENCE is supplied and is not a `lightgbm-dataset', `released-handle-error' when it
+has already been freed, and `backend-not-open' when its own backend has since been closed --
+see `%reference-pointer'. Signals `foreign-call-error' when the creation call reports success
+but writes a null handle, exactly as `create-dataset' does.
+
+The raw dataset handle exists in C from the moment the creation call returns, but there is
+nothing left to attach to it afterward -- no LABEL, WEIGHT, GROUP or FEATURE-NAMES argument,
+the file itself already carrying whatever `create-dataset''s caller would otherwise pass
+separately. `with-pointer-ownership' still spans the gap between that return and
+`make-handle', short as it is: policy section 10 asks for it wherever a fresh pointer exists
+with nothing in Lisp yet referencing it, not only where the gap is wide.
 ```
 
 <a id="cl-gbdt-csr-matrix"></a>
