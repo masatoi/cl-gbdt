@@ -165,7 +165,19 @@ item 2."
   "Stage 3: every published entry documents itself or points at a documented type, and every
 slot a published reader exposes on a :CLASS or :CONDITION type carries its own
 :documentation. ENTRIES is a COLLECT-ENTRIES result. Lists every offender, then dies naming
-the count -- see this file's header, item 3, including why :STRUCTURE slots are exempt."
+the count -- see this file's header, item 3, including why :STRUCTURE slots are exempt.
+
+The slot half is keyed on the TYPE entries' own ENTRY-SLOTS, not on reader entries whose
+ENTRY-POINTS-AT happens to be set: COLLECT-ENTRIES only sets POINTS-AT when a reader has no
+docstring of its own (see COLLECT-ENTRIES's OWN-DOCUMENTATION binding), so a reader entry
+that acquires its own docstring would silently walk its slot out of this floor entirely if
+the floor were keyed on POINTS-AT instead -- the type's own Slots section would go on
+rendering that slot with no fence, and nothing here would notice. Walking every :CLASS and
+:CONDITION type's own ENTRY-SLOTS instead holds the floor for the property the spec actually
+states, independent of whether any given reader happens to carry its own text. ENTRY-SLOTS
+already carries only published readers -- COLLECT-ENTRIES filters them via its own internal
+ENTRY-SLOTS-OF -- so a slot with no published reader at all contributes nothing here either
+way."
   (let ((undocumented '())
         (undocumented-slots '()))
     (dolist (entry entries)
@@ -173,19 +185,11 @@ the count -- see this file's header, item 3, including why :STRUCTURE slots are 
                   (cl-gbdt/src/docgen/render:entry-points-at entry))
         (push entry undocumented)))
     (dolist (entry entries)
-      (let ((target (cl-gbdt/src/docgen/render:entry-points-at entry)))
-        (when (and target (eq (first target) :slot))
-          (destructuring-bind (type-symbol slot-name) (rest target)
-            (let ((type-entry (find type-symbol entries
-                                     :key #'cl-gbdt/src/docgen/render:entry-symbol)))
-              (when (and type-entry
-                         (member (cl-gbdt/src/docgen/render:entry-kind type-entry)
-                                 '(:class :condition)))
-                (let ((slot (find slot-name
-                                  (cl-gbdt/src/docgen/render:entry-slots type-entry)
-                                  :key #'cl-gbdt/src/docgen/introspect:slot-info-name)))
-                  (unless (and slot (documented-slot-p slot))
-                    (push entry undocumented-slots)))))))))
+      (when (member (cl-gbdt/src/docgen/render:entry-kind entry) '(:class :condition))
+        (dolist (slot (cl-gbdt/src/docgen/render:entry-slots entry))
+          (when (and (cl-gbdt/src/docgen/introspect:slot-info-readers slot)
+                     (not (documented-slot-p slot)))
+            (push (cons entry slot) undocumented-slots)))))
     (setf undocumented (nreverse undocumented))
     (setf undocumented-slots (nreverse undocumented-slots))
     (dolist (entry undocumented)
@@ -194,18 +198,14 @@ the count -- see this file's header, item 3, including why :STRUCTURE slots are 
                and points at no type.~%"
               (cl-gbdt/src/docgen/render:entry-qualifier entry)
               (symbol-name (cl-gbdt/src/docgen/render:entry-symbol entry))))
-    (dolist (entry undocumented-slots)
-      (destructuring-bind (kind type-symbol slot-name)
-          (cl-gbdt/src/docgen/render:entry-points-at entry)
-        (declare (ignore kind))
+    (dolist (item undocumented-slots)
+      (destructuring-bind (entry . slot) item
         (format *error-output*
-                "~&FAIL stage 3 (documentation floor): ~A:~(~A~) reads ~A:~(~A~)'s ~
-                 `~(~A~)' slot, which has no :documentation.~%"
+                "~&FAIL stage 3 (documentation floor): ~A:~(~A~)'s `~(~A~)' slot has a ~
+                 published reader but no :documentation.~%"
                 (cl-gbdt/src/docgen/render:entry-qualifier entry)
                 (symbol-name (cl-gbdt/src/docgen/render:entry-symbol entry))
-                (cl-gbdt/src/docgen/render:entry-qualifier entry)
-                (symbol-name type-symbol)
-                (symbol-name slot-name))))
+                (symbol-name (cl-gbdt/src/docgen/introspect:slot-info-name slot)))))
     (let ((total (+ (length undocumented) (length undocumented-slots))))
       (when (plusp total)
         (die "stage 3 (documentation floor): ~D offender~:P -- see FAIL lines above." total))

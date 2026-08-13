@@ -78,6 +78,26 @@ by a key that is unique per CLHS 7.6.6 avoids depending on either."
      (funcall (find-symbol "FUNCTION-LAMBDA-LIST" "SB-INTROSPECT") symbol))
     (t nil)))
 
+(defun entry-slots-of (symbol kind qualifiers)
+  "Return SYMBOL's slots for a :CLASS, :CONDITION or :STRUCTURE KIND, published readers only.
+
+TYPE-SLOTS's own READERS include every accessor SBCL's MOP or `defstruct' description
+attaches, published or not -- `backend-openp' is `backend''s internal :ACCESSOR for its
+`openp' slot, one hyphen from the exported `backend-open-p' wrapping it, and TYPE-SLOTS
+cannot tell the two kinds of reader apart on its own; it is a plain introspection primitive
+with no notion of publication at all. This function is where that filtering happens instead,
+because QUALIFIERS -- built by `qualifier-index' from the same PUBLISHED set every other
+entry in this file is drawn from -- is the one thing here that actually knows what got
+exported, and this file, not `src/docgen/introspect.lisp', is the one that is allowed to
+know it. `render-entry' already omits the whole `- **Readers**' line when a slot's READERS
+comes back empty, so a slot with no published reader at all renders with no Readers line
+rather than an empty one."
+  (when (member kind '(:class :condition :structure))
+    (mapcar (lambda (slot)
+              (cl-gbdt/src/docgen/introspect:filter-slot-readers
+               slot (lambda (reader) (gethash reader qualifiers))))
+            (cl-gbdt/src/docgen/introspect:type-slots symbol))))
+
 (defun qualifier-index (published)
   "Return a hash table mapping each PUBLISHED item's symbol to its own qualifier.
 
@@ -130,8 +150,7 @@ render-entry's pointer line would name the wrong package for the type it points 
           :superclasses (when (member kind '(:class :condition))
                           (mapcar #'class-name
                                   (sb-mop:class-direct-superclasses (find-class symbol))))
-          :slots (when (member kind '(:class :condition :structure))
-                   (cl-gbdt/src/docgen/introspect:type-slots symbol))
+          :slots (entry-slots-of symbol kind qualifiers)
           :methods (entry-methods-of symbol kind)
           :points-at points-at)))
      published)))

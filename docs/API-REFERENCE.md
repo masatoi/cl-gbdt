@@ -555,8 +555,6 @@ Library version; an inferred value or nil when unavailable.
 
 #### `openp`
 
-- **Readers** `backend-openp`
-
 ```text
 Whether the shared library is currently open.
 ```
@@ -1025,9 +1023,20 @@ method here to support a new input format.
 
 #### `(call-with-foreign-matrix (matrix foreign-matrix) (function t))`
 
+```text
+MATRIX is already foreign memory, so this method is pure forwarding: FUNCTION receives
+MATRIX's own pointer, dimensions and element type unchanged, with no copy and no pin.
+```
 
 #### `(call-with-foreign-matrix (matrix array) (function t))`
 
+```text
+MATRIX is a Lisp array, which is not foreign memory yet: this method validates it is
+2D, normalizes its element type to `double-float' or `single-float', and then pins or
+copies its storage -- a simple-array is pinned in place on SBCL, anything else is copied,
+see `%call-with-pinned-matrix' and `%call-with-copied-matrix' -- before calling FUNCTION
+with a pointer into it.
+```
 
 <a id="cl-gbdt-capability-unavailable"></a>
 
@@ -1528,6 +1537,12 @@ Return the number of features in DATASET.
 
 #### `(dataset-num-features (dataset dataset))`
 
+```text
+Fallback for a DATASET whose backend's unified-API methods are not loaded: signals
+`backend-methods-not-loaded' naming `dataset-num-features'. A Layer 1 caller reads the same
+count with that backend's own `dataset-num-features' in `api.lisp', which needs no unified
+system loaded.
+```
 
 #### `(dataset-num-features (dataset lightgbm-dataset))`
 
@@ -1589,6 +1604,12 @@ Return the number of rows in DATASET.
 
 #### `(dataset-num-rows (dataset dataset))`
 
+```text
+Fallback for a DATASET whose backend's unified-API methods are not loaded: signals
+`backend-methods-not-loaded' naming `dataset-num-rows'. A Layer 1 caller reads the same
+count with that backend's own `dataset-num-rows' in `api.lisp', which needs no unified
+system loaded.
+```
 
 #### `(dataset-num-rows (dataset lightgbm-dataset))`
 
@@ -1821,6 +1842,11 @@ this is checked before any foreign call rather than left to crash -- and
 
 #### `(evaluation (booster booster))`
 
+```text
+Fallback for a BOOSTER whose backend's unified-API methods are not loaded: signals
+`backend-methods-not-loaded' naming `evaluation' rather than reading anything. A Layer 1
+caller gets the same metrics with that backend's own `evaluation' in `api.lisp' instead.
+```
 
 #### `(evaluation (booster lightgbm-booster))`
 
@@ -2034,6 +2060,12 @@ inside the library.
 
 #### `(feature-importance (booster booster) &key kind num-iteration)`
 
+```text
+Fallback for a BOOSTER whose backend's unified-API methods are not loaded: signals
+`backend-methods-not-loaded' naming `feature-importance' rather than computing anything. A
+Layer 1 caller gets the same result with that backend's own `feature-importance' in
+`api.lisp' instead.
+```
 
 #### `(feature-importance (booster lightgbm-booster) &key (kind :split) num-iteration)`
 
@@ -2370,6 +2402,11 @@ Free BOOSTER. Does nothing if it was already freed.
 
 #### `(free-booster (booster booster))`
 
+```text
+Fallback for a BOOSTER whose backend's unified-API methods are not loaded: signals
+`backend-methods-not-loaded' naming `free-booster' rather than freeing anything. A Layer 1
+caller frees the same handle with that backend's own `free-booster' in `api.lisp' instead.
+```
 
 #### `(free-booster (booster lightgbm-booster))`
 
@@ -2461,6 +2498,11 @@ Free DATASET. Does nothing if it was already freed.
 
 #### `(free-dataset (dataset dataset))`
 
+```text
+Fallback for a DATASET whose backend's unified-API methods are not loaded: signals
+`backend-methods-not-loaded' naming `free-dataset' rather than freeing anything. A Layer 1
+caller frees the same handle with that backend's own `free-dataset' in `api.lisp' instead.
+```
 
 #### `(free-dataset (dataset lightgbm-dataset))`
 
@@ -2603,8 +2645,6 @@ CFFI pointer to the underlying foreign object.
 ```
 
 #### `released`
-
-- **Readers** `%handle-released-cell`
 
 ```text
 A one-element list shared with this handle's finalizer
@@ -2797,8 +2837,6 @@ cl-gbdt's unified backend protocol.
 
 #### `foreign-library`
 
-- **Readers** `%lightgbm-foreign-library`
-
 ```text
 The `cffi:foreign-library' `initialize-backend'
 loaded, kept so `shutdown-backend' can close exactly this one.
@@ -2820,6 +2858,12 @@ Load a model from PATH and return a BACKEND booster.
 
 #### `(load-model (backend backend) (path t))`
 
+```text
+Fallback for a BACKEND whose unified-API methods are not loaded: signals
+`backend-methods-not-loaded' naming `load-model'. A Layer 1 caller loads a model with that
+backend's own `load-model' in `api.lisp' instead, which returns a handle without dispatching
+through this generic at all.
+```
 
 #### `(load-model (backend lightgbm-backend) (path t))`
 
@@ -3085,6 +3129,12 @@ Free the result with `free-dataset' or wrap it in `with-dataset'.
 
 #### `(make-dataset (backend backend) (matrix t) &key label weight group feature-names parameters reference missing categorical-features)`
 
+```text
+Fallback for a BACKEND whose unified-API methods are not loaded: signals
+`backend-methods-not-loaded' naming `make-dataset' rather than building anything from MATRIX.
+A Layer 1 caller who does not need the unified API builds a dataset directly with that
+backend's own `create-dataset' instead.
+```
 
 #### `(make-dataset (backend lightgbm-backend) (matrix t) &key label weight group feature-names parameters reference missing categorical-features)`
 
@@ -3402,6 +3452,12 @@ resolved to one alike.
 
 #### `(model-to-string (booster booster) &key num-iteration)`
 
+```text
+Fallback for a BOOSTER whose backend's unified-API methods are not loaded: signals
+`backend-methods-not-loaded' naming `model-to-string' rather than returning anything. A
+Layer 1 caller gets the same string with that backend's own `model-to-string' in `api.lisp'
+instead.
+```
 
 #### `(model-to-string (booster lightgbm-booster) &key num-iteration)`
 
@@ -3623,6 +3679,11 @@ present rather than that the library said anything.
 
 #### `(predict (booster booster) (matrix t) &key kind num-iteration missing)`
 
+```text
+Fallback for a BOOSTER whose backend's unified-API methods are not loaded: signals
+`backend-methods-not-loaded' naming `predict' rather than predicting anything on MATRIX. A
+Layer 1 caller predicts with that backend's own `predict' in `api.lisp' instead.
+```
 
 #### `(predict (booster lightgbm-booster) (matrix t) &key (kind :normal) num-iteration missing)`
 
@@ -4181,6 +4242,12 @@ slice instead.
 
 #### `(save-model (booster booster) (path t) &key num-iteration)`
 
+```text
+Fallback for a BOOSTER whose backend's unified-API methods are not loaded: signals
+`backend-methods-not-loaded' naming `save-model' rather than writing anything to PATH. A
+Layer 1 caller saves the same model with that backend's own `save-model' in `api.lisp'
+instead.
+```
 
 #### `(save-model (booster lightgbm-booster) (path t) &key num-iteration)`
 
@@ -4668,6 +4735,13 @@ entry passed bare is NIL too -- nothing here invents a name for either, the same
 
 #### `(train (backend backend) (dataset t) &key valid-sets num-rounds parameters record-history early-stopping objective evaluation)`
 
+```text
+Fallback for a BACKEND whose unified-API methods are not loaded: signals
+`backend-methods-not-loaded' naming `train'. Layer 1 has no equivalent of this generic as a
+whole -- its own training report, early stopping and `:objective'/`:evaluation' callbacks
+are `train''s own concepts -- so recovering from this means loading the unified system, not
+composing a Layer 1 substitute.
+```
 
 #### `(train (backend lightgbm-backend) (dataset t) &key valid-sets (num-rounds 100) parameters (record-history t) early-stopping objective evaluation)`
 
@@ -5644,6 +5718,12 @@ happened, unless the backend is known to be LightGBM.
 
 #### `(update-one-iteration (booster booster))`
 
+```text
+Fallback for a BOOSTER whose backend's unified-API methods are not loaded: signals
+`backend-methods-not-loaded' naming `update-one-iteration' rather than advancing anything. A
+Layer 1 caller drives the same loop with that backend's own `update-one-iteration' in
+`api.lisp', which `train''s own loop also calls directly rather than through this generic.
+```
 
 #### `(update-one-iteration (booster lightgbm-booster))`
 
@@ -6267,8 +6347,6 @@ unified backend protocol.
 ### Slots
 
 #### `foreign-library`
-
-- **Readers** `%xgboost-foreign-library`
 
 ```text
 The `cffi:foreign-library' `initialize-backend'

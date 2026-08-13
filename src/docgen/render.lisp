@@ -134,9 +134,15 @@ leading and trailing hyphens go."
   ;; other character. This function does not detect that -- Task 5's check-anchors-unique is
   ;; the guard, and it signals rather than silently emitting an index with an ambiguous link.
   (let* ((raw (format nil "~A-~A" qualifier (symbol-name symbol)))
+         ;; ALPHANUMERICP alone admits non-ASCII letters too, wider than this docstring's own
+         ;; "a-z and 0-9" claim; every published name is ASCII lisp-case today, so nothing
+         ;; here depends on that gap, but the extra CHAR-CODE bound makes the code keep the
+         ;; promise the docstring makes rather than the other way around.
          (mapped (map 'string
                       (lambda (character)
-                        (if (or (alphanumericp character)) (char-downcase character) #\-))
+                        (if (and (alphanumericp character) (< (char-code character) 128))
+                            (char-downcase character)
+                            #\-))
                       raw))
          (collapsed (with-output-to-string (out)
                       (loop with previous = #\-
@@ -176,6 +182,14 @@ out of the reference's own fence: ~S. Rewrite the docstring." line)))
     (when (member (entry-kind entry) '(:function :generic-function :macro))
       (format stream "- **Signature** `~A`~%"
               (render-lambda-list (cons (entry-symbol entry) (entry-lambda-list entry)))))
+    ;; Superclasses print as bare `code' names, never as links, published ones included --
+    ;; unlike the spec's own draft in docs/superpowers/specs/2026-08-12-api-reference-design.md
+    ;; §7.2, which called for linking the published ones. That was a plan-time decision to
+    ;; simplify the first cut, not a loss discovered afterward: ENTRY-ANCHOR needs a QUALIFIER
+    ;; to build a link, and a superclass symbol here carries no qualifier of its own, only the
+    ;; class-name SB-MOP hands back -- linking it correctly would mean re-deriving which public
+    ;; package publishes it, the same lookup QUALIFIER-INDEX already does for reader targets,
+    ;; duplicated here for a cosmetic upgrade to an already-legible line.
     (when (entry-superclasses entry)
       (format stream "- **Superclasses** ~{`~(~A~)`~^, ~}~%"
               (mapcar #'symbol-name (entry-superclasses entry))))

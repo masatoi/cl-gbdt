@@ -21,6 +21,7 @@
            #:symbol-documentation
            #:slot-documentation
            #:type-slots
+           #:filter-slot-readers
            #:slot-info
            #:slot-info-name
            #:slot-info-readers
@@ -109,12 +110,25 @@ qualifier, a total order that does not depend on `do-external-symbols'."
   "Return the keyword naming what SYMBOL is, or signal when it is nothing this emitter renders.
 
 No published symbol is both a type and `fboundp', so the answer is single-valued and needs no
-precedence rule. An unclassifiable symbol is an error rather than a blank entry: a published
-symbol the reference cannot describe is a defect in the surface, not in the reference."
+precedence rule. That is a measured premise, not a guarantee, and the class branch below is
+where it would first stop holding -- CLASS wins unconditionally there, so a future symbol
+that is both a type and `fboundp' would have its function or macro signature and docstring
+silently dropped from the reference with no failure anywhere, the exact defect class this
+docstring's second sentence already rules against for an unclassifiable symbol. Checked here
+rather than left implicit, the same way the final clause below already refuses a symbol this
+function cannot classify at all."
   (let ((class (find-class symbol nil)))
-    (cond (class (cond ((subtypep symbol 'condition) :condition)
-                       ((typep class 'structure-class) :structure)
-                       (t :class)))
+    (cond (class
+           (when (fboundp symbol)
+             (error "The published symbol ~S is both a type (SYMBOL-KIND's class branch) ~
+and FBOUNDP, so its class-wins precedence rule no longer holds: this call would classify ~S ~
+as a class, condition or structure and silently drop its function or macro signature and ~
+docstring from the reference. Give SYMBOL-KIND an explicit rule for this case instead of ~
+letting one branch win by accident."
+                    symbol symbol))
+           (cond ((subtypep symbol 'condition) :condition)
+                 ((typep class 'structure-class) :structure)
+                 (t :class)))
           ((and (fboundp symbol) (macro-function symbol)) :macro)
           ((and (fboundp symbol) (typep (fdefinition symbol) 'generic-function))
            :generic-function)
@@ -177,6 +191,22 @@ holds, including any inherited through `:include'."
                                      :readers (sb-mop:slot-definition-readers slot)
                                      :documentation (slot-documentation slot)))
                   (sb-mop:class-direct-slots class))))))
+
+(defun filter-slot-readers (slot published-p)
+  "Return a copy of SLOT whose READERS are only those satisfying PUBLISHED-P.
+
+TYPE-SLOTS above answers a narrower question than the reference needs: what SBCL's MOP or
+`defstruct' description says reads the slot, full stop, with no notion of which package
+exports what. `backend-openp' reads `backend''s `openp' slot exactly as much as the exported
+`backend-open-p' wrapping it does, and TYPE-SLOTS cannot tell them apart -- doing so needs the
+published-symbol set, which is `src/docgen/emit.lisp''s to know, not this file's: this file
+gathers raw introspection facts, and `collect-entries' already builds that set as
+`qualifier-index' for an unrelated purpose. So the caller passes it in as PUBLISHED-P, and
+filtering happens where the answer to \"is this published\" already lives, rather than
+duplicating that set here or leaving TYPE-SLOTS to guess at it."
+  (%make-slot-info :name (slot-info-name slot)
+                    :readers (remove-if-not published-p (slot-info-readers slot))
+                    :documentation (slot-info-documentation slot)))
 
 (defun reader-index (published)
   "Map each published reader, accessor and structure constructor to what it reads.

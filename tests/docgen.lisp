@@ -6,7 +6,13 @@
 
 (uiop:define-package #:cl-gbdt/tests/docgen
   (:use #:cl #:rove)
-  (:import-from #:cl-gbdt/src/docgen/all))
+  (:import-from #:cl-gbdt/src/docgen/all)
+  ;; PUBLISHED-SYMBOLS is called below with "cl-gbdt" as one of its package names, so the
+  ;; symbol CL-GBDT names a package must actually exist in this system's own dependency
+  ;; closure -- not merely by accident, because a sibling test file in cl-gbdt/tests happens
+  ;; to load core first. This is the documented zero-symbol form: every call below is
+  ;; package-qualified, so nothing is imported from it.
+  (:import-from #:cl-gbdt/src/all))
 
 (in-package #:cl-gbdt/tests/docgen)
 
@@ -397,7 +403,12 @@
                     (cl-gbdt/src/docgen/all:make-entry
                      :symbol 'fixture-documented-class :qualifier "cl-gbdt/tests/docgen"
                      :exported-from '("cl-gbdt/tests/docgen") :kind :class
-                     :documentation "A class whose slot carries its own text."
+                     ;; ENTRY-DOCUMENTATION is left NIL here on purpose, as
+                     ;; RENDER-ENTRY-SLOTS-SECTION-OMITS-FENCE-FOR-AN-UNDOCUMENTED-SLOT
+                     ;; already does below: with it set, the entry's own fence would satisfy
+                     ;; the "```text" and slot-text assertions below regardless of whether
+                     ;; the SLOT's own text is fenced, so this test would pin nothing about
+                     ;; the Slots section at all.
                      :slots slots)
                     stream))))
       (ok (search "### Slots" text))
@@ -415,7 +426,11 @@
                     (cl-gbdt/src/docgen/all:make-entry
                      :symbol 'fixture-dispatch :qualifier "cl-gbdt/tests/docgen"
                      :exported-from '("cl-gbdt/tests/docgen") :kind :generic-function
-                     :documentation "Two-argument fixture generic." :lambda-list '(object other)
+                     ;; ENTRY-DOCUMENTATION is left NIL here on purpose -- see the matching
+                     ;; comment in RENDER-ENTRY-WRITES-A-SLOTS-SECTION above. With it set, the
+                     ;; entry's own fence would satisfy the "```text" assertion below whether
+                     ;; or not the METHOD's own docstring is fenced.
+                     :lambda-list '(object other)
                      :methods (list (cons signature "Method on the class fixture.")))
                     stream))))
       (ok (search "### Methods" text))
@@ -615,3 +630,97 @@
                              (null (cl-gbdt/src/docgen/all:slot-info-documentation slot)))
                     (push (cl-gbdt/src/docgen/all:slot-info-name slot) offenders))))))))
       (ok (null offenders) (format nil "undocumented published slots: ~S" offenders)))))
+
+(defpackage #:cl-gbdt/tests/docgen/mu
+  (:use #:cl)
+  (:export #:fixture-partial-class #:fixture-partial-class-published))
+
+(in-package #:cl-gbdt/tests/docgen/mu)
+
+(defclass fixture-partial-class ()
+  ((published :initarg :published
+              :reader fixture-partial-class-published
+              :documentation "A slot whose reader is published.")
+   ;; Not in this package's :EXPORT clause, on purpose -- the same shape as `backend''s
+   ;; internal `backend-openp' accessor one hyphen from the exported `backend-open-p'
+   ;; wrapping it (finding 1's own example).
+   (unpublished :initarg :unpublished
+                :reader fixture-partial-class-unpublished
+                :documentation "A slot whose reader is not published."))
+  (:documentation "A class fixture with one published and one unpublished reader."))
+
+(in-package #:cl-gbdt/tests/docgen)
+
+(deftest collect-entries-filters-an-unpublished-reader-out-of-its-slot
+  (testing "finding 1: an internal :READER stays off the reference though TYPE-SLOTS sees it"
+    (let* ((entries (cl-gbdt/src/docgen/all:collect-entries '("cl-gbdt/tests/docgen/mu")))
+           (entry (find 'cl-gbdt/tests/docgen/mu:fixture-partial-class entries
+                        :key #'cl-gbdt/src/docgen/all:entry-symbol))
+           (slots (cl-gbdt/src/docgen/all:entry-slots entry))
+           ;; Neither slot name is exported by MU -- see GAMMA's own tests above for why a
+           ;; bare slot name is reached with `::' rather than `:' here.
+           (published-slot (find 'cl-gbdt/tests/docgen/mu::published slots
+                                  :key #'cl-gbdt/src/docgen/all:slot-info-name))
+           (unpublished-slot (find 'cl-gbdt/tests/docgen/mu::unpublished slots
+                                    :key #'cl-gbdt/src/docgen/all:slot-info-name)))
+      (ok (equal '(cl-gbdt/tests/docgen/mu:fixture-partial-class-published)
+                 (cl-gbdt/src/docgen/all:slot-info-readers published-slot)))
+      (ok (null (cl-gbdt/src/docgen/all:slot-info-readers unpublished-slot))))))
+
+(deftest render-entry-omits-the-readers-line-for-a-slot-with-no-published-reader
+  (testing "finding 1: an empty READERS list renders no Readers line at all, not an empty one"
+    (let* ((entries (cl-gbdt/src/docgen/all:collect-entries '("cl-gbdt/tests/docgen/mu")))
+           (entry (find 'cl-gbdt/tests/docgen/mu:fixture-partial-class entries
+                        :key #'cl-gbdt/src/docgen/all:entry-symbol))
+           (text (with-output-to-string (stream)
+                   (cl-gbdt/src/docgen/all:render-entry entry stream)))
+           (unpublished-heading (search "#### `unpublished`" text)))
+      (ok (search "- **Readers** `fixture-partial-class-published`" text))
+      (ok unpublished-heading)
+      ;; The unpublished slot's own section -- from its heading to the next "####" or the end
+      ;; of TEXT -- carries no Readers line, not an empty one: FILTER-SLOT-READERS already
+      ;; dropped the unpublished reader inside COLLECT-ENTRIES, and RENDER-ENTRY only ever
+      ;; omits the whole line, never prints one with nothing after it.
+      (let* ((section-end (or (search "####" text :start2 (+ unpublished-heading 4))
+                               (length text)))
+             (section (subseq text unpublished-heading section-end)))
+        (ok (not (search "**Readers**" section)))))))
+
+(defpackage #:cl-gbdt/tests/docgen/kappa-p
+  (:use #:cl)
+  (:export #:q-r))
+
+(in-package #:cl-gbdt/tests/docgen/kappa-p)
+
+(defun q-r () "Fixture function for an anchor collision." nil)
+
+(in-package #:cl-gbdt/tests/docgen)
+
+(defpackage #:cl-gbdt/tests/docgen/kappa-p-q
+  (:use #:cl)
+  (:export #:r))
+
+(in-package #:cl-gbdt/tests/docgen/kappa-p-q)
+
+(defun r () "Fixture function for an anchor collision." nil)
+
+(in-package #:cl-gbdt/tests/docgen)
+
+(deftest emit-api-reference-is-wired-to-check-anchors-unique
+  (testing "finding 6: EMIT-API-REFERENCE itself signals, not just a direct call to the guard"
+    ;; cl-gbdt/tests/docgen/kappa-p exports Q-R and cl-gbdt/tests/docgen/kappa-p-q exports R;
+    ;; ENTRY-ANCHOR joins qualifier and symbol name with a hyphen, so both collapse to the same
+    ;; anchor ("...kappa-p-q-r") -- exactly the collision ENTRY-ANCHOR's own docstring warns it
+    ;; cannot detect on its own. Running EMIT-API-REFERENCE end to end here, rather than calling
+    ;; CHECK-ANCHORS-UNIQUE directly the way EMIT-API-REFERENCE-REFUSES-DUPLICATE-ANCHORS
+    ;; already does above, is what proves the guard is still wired into the real emission path
+    ;; and not merely correct in isolation -- an edit dropping the call from
+    ;; EMIT-API-REFERENCE would pass every other test in this file and still pass this one,
+    ;; unless this one exists.
+    (ok (handler-case
+            (progn (with-output-to-string (stream)
+                     (cl-gbdt/src/docgen/all:emit-api-reference
+                      '("cl-gbdt/tests/docgen/kappa-p" "cl-gbdt/tests/docgen/kappa-p-q")
+                      stream))
+                   nil)
+          (error () t)))))

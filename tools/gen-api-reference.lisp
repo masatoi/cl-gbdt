@@ -14,7 +14,5 @@
 (asdf:load-system "cl-gbdt/docgen")
 
 (let ((output (merge-pathnames "docs/API-REFERENCE.md" (uiop:getcwd))))
-  (funcall (find-symbol "WRITE-API-REFERENCE" "CL-GBDT/SRC/DOCGEN/ALL")
-           (symbol-value (find-symbol "+PUBLIC-PACKAGES+" "CL-GBDT/SRC/DOCGEN/ALL"))
-           output)
+  (cl-gbdt/src/docgen/emit:write-api-reference cl-gbdt/src/docgen/emit:+public-packages+ output)
   (format t "~&wrote ~A~%" output))
