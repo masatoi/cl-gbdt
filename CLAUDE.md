@@ -406,11 +406,11 @@ ros run -- --non-interactive --load tools/ci/check-api-reference.lisp
 ros run -- --non-interactive --load tools/ci/check-functional-coverage.lisp
 ```
 
-Eight of those have no MCP equivalent at all — float traps, layer-1 guards, layer
-separation, ABI blacklist, binding coverage, API reference, functional coverage, lint. Run
-the whole block before committing, and at the end of any task whose plan states numbers.
-**Add a line here whenever `tools/ci/` gains a script**: `check-layer-1-guards.lisp` arrived
-in PR #28 and was missing from this list until 2026-08-12.
+Nine of those have no MCP equivalent at all — leaf systems, float traps, layer-1 guards,
+layer separation, ABI blacklist, binding coverage, API reference, functional coverage,
+lint. Run the whole block before committing, and at the end of any task whose plan states
+numbers. **Add a line here whenever `tools/ci/` gains a script**: `check-layer-1-guards.lisp`
+arrived in PR #28 and was missing from this list until 2026-08-12.
 
 `sbcl` is not on `PATH` in this environment; every command above goes through
 `ros run -- --non-interactive ...`, not a bare `sbcl` invocation.

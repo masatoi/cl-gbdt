@@ -28,8 +28,11 @@ build rather than landing silently in either bucket.
 
 Each `## Exempt` heading carries its section's argument, so a row's Note is for what the heading
 does not already say. A symbol whose argument fits none of the headings belongs under
-`## Unproven`; adding a heading also means editing the checker's vocabulary, which is a deliberate
-act rather than a matter of writing prose.
+`## Unproven`. The heading vocabulary above is a prefix match, not a fixed list: a new heading
+spelled `## Exempt: ...` is recognised the moment it is written -- prose alone, no change to the
+checker at all. What the checker actually guarantees is that no published symbol goes
+unclassified; whether a given `## Exempt` heading's stated argument is a real one is for a
+reviewer reading the prose to judge, not something this build step can check.
 
 Rows name the symbol the way `docs/API-REFERENCE.md` heads its entries -- qualified by the
 shortest public package that exports it -- so a reader can move between the two files.
