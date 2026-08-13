@@ -122,6 +122,19 @@ jobs:
         # surface, which cl-gbdt/tests deliberately never has.
         run: ros run -- --non-interactive --load tools/ci/check-api-reference.lisp
 
+      - name: Every published symbol has a position against the functional suite
+        # docs/FUNCTIONAL-COVERAGE.md classifies each symbol cl-gbdt, cl-gbdt/lightgbm and
+        # cl-gbdt/xgboost export as covered (named by tests/functional/*.lisp's own sources),
+        # unproven, or exempt; this fails the build the moment a published symbol has neither a
+        # functional test naming it nor a row saying why not. Not a rove test, for the same
+        # reason as the step above: it loads both backends' unified systems AND the functional
+        # test system into one image to see the whole published surface and the whole suite's
+        # references at once, which cl-gbdt/tests deliberately never has. See
+        # tools/ci/check-functional-coverage.lisp's header for what COVERED does and does not
+        # mean: a floor constant for the covered count, and a ceiling constant -- the one
+        # that actually ratchets -- for the unproven count.
+        run: ros run -- --non-interactive --load tools/ci/check-functional-coverage.lisp
+
       - name: Compile every system without warnings
         # All nine systems, not just the three non-test ones: cl-gbdt/regen and the two
         # test systems went unchecked before, which is how tests/functional/lightgbm.lisp

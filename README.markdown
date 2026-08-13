@@ -77,6 +77,14 @@ never drifts from the code the way hand-maintained prose can. This README remain
 that reference is not: the worked explanations, the differences between the two
 backends, and the reasoning behind them.
 
+For where every one of those symbols stands against the functional suite, see
+[`docs/FUNCTIONAL-COVERAGE.md`](docs/FUNCTIONAL-COVERAGE.md) -- alongside
+[`ffi-spec/BINDING-COVERAGE.md`](ffi-spec/BINDING-COVERAGE.md), which does the same for
+the C API one layer below. A green `check-functional-coverage.lisp` means every symbol
+has a recorded position -- named by the suite's own sources, or a row saying why
+not -- not that its behavior has actually been exercised, and a row's honesty is
+something only a reader can check, not the script.
+
 ### Quick start
 
 Load the core system and one backend's `/unified` system -- `cl-gbdt/lightgbm` alone
