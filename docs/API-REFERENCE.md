@@ -5722,7 +5722,10 @@ happened, unless the backend is known to be LightGBM.
 Fallback for a BOOSTER whose backend's unified-API methods are not loaded: signals
 `backend-methods-not-loaded' naming `update-one-iteration' rather than advancing anything. A
 Layer 1 caller drives the same loop with that backend's own `update-one-iteration' in
-`api.lisp', which `train''s own loop also calls directly rather than through this generic.
+`api.lisp'. `train''s own loop does not call that function either: it calls `native.lisp''s
+`%update-one-iteration' directly, because `api.lisp''s `update-one-iteration' would re-check
+every handle on every iteration -- see that backend's `train' method for the same note in
+its own words.
 ```
 
 #### `(update-one-iteration (booster lightgbm-booster))`

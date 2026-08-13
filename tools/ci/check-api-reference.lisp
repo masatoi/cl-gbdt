@@ -36,7 +36,7 @@
 ;;;;    file (UIOP:WITH-TEMPORARY-FILE; never over the committed file itself, so a failing run
 ;;;;    leaves the working tree exactly as `git status' found it), and FIRST-DIFFERENCE walks
 ;;;;    both strings once via UIOP:READ-FILE-STRING. A pass/fail verdict alone is not enough
-;;;;    for a 303 KB, 6277-line file: the failure message below names the first differing line
+;;;;    for a 307 KB, 6358-line file: the failure message below names the first differing line
 ;;;;    and byte offset, and the regeneration command, so a reader can jump straight to the
 ;;;;    disagreement instead of reading a diff of the whole document.
 ;;;; 3. DOCUMENTATION FLOOR -- over COLLECT-ENTRIES: every entry has its own docstring or
