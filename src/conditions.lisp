@@ -208,15 +208,19 @@ guarantee that order."))
   ((expected :initarg :expected
              :initform nil
              :reader dimension-mismatch-expected
-             :documentation "What the dimension should have been -- a plain count, a
-shape as a list of integers, or a short phrase, whichever the signalling check found
-clearest to report.")
+             :documentation "What the dimension should have been, almost always a short
+phrase in words -- e.g. \"a 2D array\" or \"INDPTR to start at 0\" -- except
+`check-objective-result', where it is `(rows groups)', the one shape both checked arrays
+were required to match exactly.")
    (given :initarg :given
           :initform nil
           :reader dimension-mismatch-given
-          :documentation "What was actually supplied, in whatever shape matches
-EXPECTED -- e.g. `(:gradient DIMS :hessian DIMS)' when a custom objective's gradient and
-Hessian are checked together, so the report can say which of the two was wrong."))
+          :documentation "What was actually supplied -- an integer, a list of integers, or
+a string, depending on the check -- rarely the same shape as EXPECTED: EXPECTED usually
+names what was required in words, while GIVEN carries the actual value or shape, so the
+two are not parallel. E.g. `(:gradient DIMS :hessian DIMS)' when a custom objective's
+gradient and Hessian are checked together, so the report can say which of the two was
+wrong."))
   (:report
    (lambda (condition stream)
      (format stream "Dimension mismatch. Expected: ~A, got: ~A"
@@ -367,8 +371,11 @@ point for `check-backend-version' to call.")
    (version :initarg :version
             :initform nil
             :reader untested-backend-version-version
-            :documentation "The loaded library's own \"MAJOR.MINOR.PATCH\" string, or NIL
-when it did not parse as one -- both count as outside the tested range.")
+            :documentation "VERSION as `check-backend-version' was given it, unchanged --
+`%parse-version' is used only for the internal range comparison and never rewrites this
+slot. Three cases: a parseable \"MAJOR.MINOR.PATCH\" string that fell outside RANGE, an
+unparseable string stored verbatim -- e.g. \"not-a-version\" -- or NIL, a separate case
+from an unparseable string: the backend had no version entry point to read at all.")
    (tested :initarg :tested
            :initform nil
            :reader untested-backend-version-tested
