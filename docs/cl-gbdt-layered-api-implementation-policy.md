@@ -134,61 +134,61 @@ generated raw CFFI binding
 
 The dependency direction must not be reversed. In particular, the core `cl-gbdt` system must not depend on a specific backend system or on a shared library, as before.
 
-## 4. 共通APIへ含める判断基準
+## 4. Criteria for inclusion in the unified API
 
-機能をLayer 2へ追加してよいのは、次のいずれかを満たす場合である。
+A feature may be added to Layer 2 only when it satisfies one of the following.
 
-1. 両backendで同等の意味とライフサイクルを保証できる。
-2. 一方では直接実装、他方では意味を変えない安全なemulationによって実装できる。
-3. optional capabilityとして公開する価値があり、未対応時の挙動を型付きconditionで明示できる。
+1. Equivalent meaning and lifecycle can be guaranteed on both backends.
+2. It can be implemented directly on one and, on the other, by a safe emulation that does not change the meaning.
+3. It is worth publishing as an optional capability, and the behaviour when it is unsupported can be made explicit with a typed condition.
 
-次の条件に該当する場合、無理にLayer 2へ入れてはならない。
+Where the following conditions apply, a feature must not be forced into Layer 2.
 
-- 同じkeywordでもbackendごとに値の意味が異なる。
-- 共通形式へ変換するとaxis、shape、metadataまたは精度が失われる。
-- 実装のために根拠のない集約、近似、補間が必要になる。
-- 一方のbackendで無視する以外に実装方法がない。
-- API名だけ共通だが、利用者が期待する効果が異なる。
+- The meaning of a value differs from backend to backend even under the same keyword.
+- Converting to a common format loses axis, shape, metadata or precision.
+- Implementing it requires a groundless aggregation, approximation or interpolation.
+- There is no way to implement it other than ignoring it on one of the backends.
+- Only the API name is common, but the effect the caller expects differs.
 
-その場合はLayer 1へ置くか、より情報量の多い共通result typeを設計すること。
+In that case, put it in Layer 1, or design a common result type that carries more information.
 
-## 5. 情報を失わないこと
+## 5. No loss of information
 
-共通化のために、上流APIが返す情報を黙って捨ててはならない。
+Information the upstream API returns must not be silently discarded for the sake of unification.
 
-特に次を必須規則とする。
+The following in particular shall be mandatory rules.
 
-- 多次元predictionを `(nrow flattened-width)` に変換する場合、元shapeを復元可能なmetadataも返す。
-- multiclass feature importanceを単一値へ集約する場合、上流が定義した集約であることを証明する。独自集約は禁止する。
-- XGBoost固有のimportance種別を、意味の違う共通種別へ読み替えない。
-- single-floatからdouble-floatへの変換は精度を増やさないため、変換理由とコストをcontractに明示する。
-- model文字列表現はopaqueな文字列として扱い、backend間で同一formatであると仮定しない。
+- When converting a multidimensional prediction into `(nrow flattened-width)`, also return metadata from which the original shape can be recovered.
+- When aggregating a multiclass feature importance into a single value, prove that it is the aggregation upstream defined. An aggregation invented here must not be used.
+- Do not reinterpret an XGBoost-specific importance kind as a common kind that means something different.
+- Converting from single-float to double-float does not increase precision, so make the reason for the conversion and its cost explicit in the contract.
+- Treat a model's string representation as an opaque string, and do not assume it is the same format across backends.
 
-既存 `predict` の戻り値contractを直ちに破壊してはならない。shape保持が必要な場合は、以下のいずれかを設計レビューで選択する。
+The existing `predict`'s return-value contract must not be broken immediately. Where shape preservation is needed, choose one of the following in design review.
 
-- 既存 `predict` を維持し、shapeを保持する新APIを追加する。
-- primary valueを既存配列、secondary valueをshape metadataとする。
-- prediction result objectを追加し、段階的に移行する。
+- Keep the existing `predict`, and add a new API that preserves the shape.
+- The primary value shall be the existing array and the secondary value shape metadata.
+- Add a prediction result object, and migrate in stages.
 
-選択に際しては後方互換性を優先する。
+In making that choice, give priority to backward compatibility.
 
-## 6. Parameterの扱い
+## 6. Parameter handling
 
-学習時の `:parameters` は、backend固有設定を失わないescape hatchとして維持する。すべてのparameterを共通語彙へ翻訳しようとしてはならない。
+Keep `:parameters` at training time as an escape hatch that does not lose backend-specific settings. Translating every parameter into a common vocabulary must not be attempted.
 
-ただし、次を明確に区別すること。
+However, distinguish the following clearly.
 
-- portable parameter: 両backendで同じ意味を保証できるもの。
-- backend parameter: backendへ透過的に渡すが、可搬性を保証しないもの。
-- dataset construction option: C API呼出し形式自体を制御するもの。
+- portable parameter: one whose meaning can be guaranteed to be the same on both backends.
+- backend parameter: one passed through to the backend transparently, with no guarantee of portability.
+- dataset construction option: one that controls the form of the C API call itself.
 
-XGBoostの `missing`、`nthread`、`data_split_mode` のように、backend側で有効なdataset optionまで一括して拒否してはならない。認識可能なkeyのみを受理し、未知または意味の異なるkeyを `unsupported-argument` で拒否する方式を検討する。
+Even a dataset option that is valid on the backend side, such as XGBoost's `missing`, `nthread` and `data_split_mode`, must not be rejected wholesale. Consider a scheme that accepts only recognisable keys and rejects an unknown key, or a key whose meaning differs, with `unsupported-argument`.
 
-引数を黙って無視すること、およびC libraryが未知keyを黙殺することに依存する実装は禁止する。
+An implementation must not silently ignore an argument, nor depend on the C library silently discarding an unknown key.
 
 ## 7. Capability model
 
-現在予約されている `backend-capabilities` を実装し、少なくとも次の問い合わせを可能にする。
+Implement the currently reserved `backend-capabilities`, and make at least the following queries possible.
 
 ```lisp
 (backend-supports-p backend :sparse-input)
@@ -198,47 +198,47 @@ XGBoostの `missing`、`nthread`、`data_split_mode` のように、backend側�
 (backend-supports-p backend :multidimensional-feature-score)
 ```
 
-capabilityは単なるbackend名による固定表ではなく、必要に応じて次を反映する。
+A capability is not merely a fixed table based on the backend name; it reflects the following as needed.
 
-- backend種別
-- runtime version
-- 実際に解決できたforeign symbol
-- build optionやplatform依存機能
+- Backend kind
+- Runtime version
+- Foreign symbols that could actually be resolved
+- Build options and platform-dependent features
 
-ただしcapability queryは実際の呼出し時検証の代替ではない。機能呼出し側も、未対応の場合は必ず型付きconditionを送出すること。capabilityが偽の場合に黙って別機能へfallbackしてはならない。
+However, a capability query is not a substitute for verification at the actual call. At the feature's call site as well, always signal a typed condition when it is unsupported. Where a capability is false, there must not be a silent fallback to another feature.
 
-## 8. Library availabilityとsymbol probe
+## 8. Library availability and symbol probing
 
-backendの初期化時には、その実装が必須とする全foreign symbolを検査する。
+At the backend's initialization, check every foreign symbol its implementation requires.
 
-現在、XGBoost backendの `*required-symbols*` には **2件** の漏れがある。本書初版は `XGDMatrixSetUIntInfo` のみを挙げていたが、機械的に照合すると次のとおりである。
+At present, `*required-symbols*` in the XGBoost backend has **2** omissions. The first version of this document listed only `XGDMatrixSetUIntInfo`, but a mechanical cross-check gives the following.
 
 ```
-lightgbm: import 18 / required 18 / 漏れ 0
-xgboost:  import 20 / required 18 / 漏れ 2
-    XGDMatrixSetUIntInfo      (ranking group設定)
-    XGBoosterGetNumFeature    (feature importanceの密ベクトル化で使用)
+lightgbm: import 18 / required 18 / omissions 0
+xgboost:  import 20 / required 18 / omissions 2
+    XGDMatrixSetUIntInfo      (sets the ranking group)
+    XGBoosterGetNumFeature    (used to make feature importance a dense vector)
 ```
 
-本書自身が §8 で要求している機械的checkを、本書を書いた時点では持っていなかったために1件取りこぼしている。この不整合を最初に修正すること。そしてこの取りこぼし自体が、check追加の必要性を示す証拠である。
+This document missed one because, at the time it was written, it did not have the mechanical check it itself requires in §8. Fix this inconsistency first. And the miss itself is evidence of the need to add the check.
 
-さらに再発防止として、backend sourceが参照するforeign callと `*required-symbols*` の対応を検証する機械的checkを追加する。完全なcall graph解析が困難な場合でも、少なくとも以下を検査する。
+Furthermore, to prevent a recurrence, add a mechanical check that verifies the correspondence between the foreign calls the backend source references and `*required-symbols*`. Even where a complete call graph analysis is difficult, check at least the following.
 
-- backend固有sourceから呼ばれるraw C functionがrequiredまたはoptional capability symbolとして分類されている。
-- required symbol欠落時は `open-backend` が `missing-foreign-symbols` を送出する。
-- optional symbol欠落時はbackend全体を開けなくするのではなく、該当capabilityだけを無効にする。
+- A raw C function called from backend-specific source is classified as a required symbol or as an optional capability symbol.
+- Where a required symbol is absent, `open-backend` signals `missing-foreign-symbols`.
+- Where an optional symbol is absent, only the capability concerned is disabled, rather than the whole backend being made impossible to open.
 
-LightGBMはruntime version APIを持たないため、versionを推測して保証してはならない。この非対称性は `src/version.lisp` と READMEに明記済みである。
+LightGBM has no runtime version API, so a version must not be inferred and guaranteed. This asymmetry is already stated explicitly in `src/version.lisp` and the README.
 
-XGBoost versionのテスト済みversion警告への接続は **実装済み** である (`untested-backend-version`)。残る課題はcapability判断への接続であり、§7 と併せて設計すること。
+The connection of the XGBoost version to the tested-version warning is **implemented** (`untested-backend-version`). The remaining task is the connection to capability decisions; design it together with §7.
 
-## 9. Evaluationとearly stopping
+## 9. Evaluation and early stopping
 
-次に優先すべき利用者向け機能は、validation metric、evaluation history、best iteration、early stoppingである。
+The next caller-facing features to prioritise are validation metric, evaluation history, best iteration and early stopping.
 
-現在の `valid-sets` はforeign backendへdatasetを登録またはcacheするが、共通APIから評価値を取得できない。これを完成させる。
+The current `valid-sets` registers or caches a dataset with the foreign backend, but the evaluation values cannot be obtained from the unified API. Complete this.
 
-後方互換性を維持する案として、`train` のprimary valueは従来どおりboosterとし、secondary valueにtraining reportを返す方式を第一候補とする。
+As a plan that preserves backward compatibility, the first candidate shall be a scheme in which `train`'s primary value is the booster as before and a training report is returned as the secondary value.
 
 ```lisp
 (multiple-value-bind (booster report)
@@ -249,44 +249,44 @@ XGBoost versionのテスト済みversion警告への接続は **実装済み** �
   ...)
 ```
 
-training reportは少なくとも次を表現できるものとする。
+A training report shall be able to express at least the following.
 
-- dataset名
-- metric名
-- iterationごとの値
-- best iteration
-- best score
-- early stoppingが発生したか
+- The dataset name
+- The metric name
+- The value at each iteration
+- The best iteration
+- The best score
+- Whether early stopping occurred
 
-metric方向の判定は文字列名から推測せず、backendが提供する情報または明示的な利用者指定に基づくこと。callback APIを追加する場合も、backend固有callbackを無理に同一function signatureへ変換せず、portable event objectと固有extensionを分ける。
+Base the determination of a metric's direction not on inference from the string name, but on information the backend provides or an explicit choice by the caller. When a callback API is added as well, do not force a backend-specific callback into the same function signature; separate the portable event object from the backend-specific extension.
 
 ## 10. Resource safety
 
-Layer 1を公開しても、現在のresource safetyを弱めてはならない。
+Publishing Layer 1 must not weaken the current resource safety.
 
-- dataset / boosterは既存handle hierarchyを使用する。
-- boosterがtraining / validation datasetを必要とする間はstrong referenceを保持する。
-- backendを閉じた後にforeign callを行わない。
-- 二重解放はno-opとする。
-- backend close後の解放不能resourceは警告し、Lisp側handleをrelease済みにする。
-- finalizerは安全網であり、foreign freeの主経路にしない。
-- 新しいforeign resourceには `with-*` macroまたは同等の明示的所有権APIを用意する。
-- cleanup中のerrorが元のconditionを上書きしないようにする。
+- Use the existing handle hierarchy for a dataset / booster.
+- Hold a strong reference while the booster needs a training / validation dataset.
+- Do not make a foreign call after the backend has been closed.
+- A double free is a no-op.
+- Warn about a resource that cannot be freed after backend close, and mark the Lisp-side handle released.
+- A finalizer is a safety net; do not make it the primary path for a foreign free.
+- Provide a `with-*` macro, or an equivalent explicit ownership API, for a new foreign resource.
+- Ensure an error during cleanup does not overwrite the original condition.
 
-raw pointerを返すescape hatchは原則として追加しない。どうしても必要な場合は、非安定・非公開packageに限定し、pointerの寿命をdynamic extentに制限するcallback形式を優先する。
+As a rule, do not add an escape hatch that returns a raw pointer. Where it is genuinely necessary, limit it to an unstable, non-public package, and prefer a callback form that restricts the pointer's lifetime to dynamic extent.
 
-## 11. Packageとsystemの境界
+## 11. Package and system boundaries
 
-次を維持する。
+Keep the following.
 
-- `cl-gbdt` coreはbackend shared libraryなしでloadできる。
-- `cl-gbdt/lightgbm` と `cl-gbdt/xgboost` は独立してloadできる。
-- 一方のbackend systemが他方のbackend systemへ依存しない。
-- raw C API symbolsを `cl-gbdt` packageからre-exportしない。
-- backend固有の公開symbolは `cl-gbdt/lightgbm` または `cl-gbdt/xgboost` からのみ公開する。
-- package-inferred-systemの各leafが単独loadできる依存宣言を維持する。
+- The `cl-gbdt` core can be loaded without a backend shared library.
+- `cl-gbdt/lightgbm` and `cl-gbdt/xgboost` can be loaded independently.
+- One backend system does not depend on the other backend system.
+- Raw C API symbols are not re-exported from the `cl-gbdt` package.
+- A backend-specific public symbol is published only from `cl-gbdt/lightgbm` or `cl-gbdt/xgboost`.
+- The dependency declarations that let each package-inferred-system leaf load alone are kept.
 
-共通API methodの配置を分離する場合でも、methodをloadした結果だけに依存する暗黙の順序を作らないこと。既存のleaf-system checkを新しいsource構造へ追従させる。
+Even where the placement of the unified API's methods is separated out, do not create an implicit ordering that depends only on the result of having loaded the methods. Make the existing leaf-system check follow the new source structure.
 
 ## 12. 実装の段階計画
 
