@@ -534,10 +534,12 @@ libraryにする、S1からS5までの五段階のプログラムが進行して
   理由ごとに独立した `## Exempt` 見出し群(58件)かのいずれかへ人手で分類する。checkerは
   `covered`の下限(`+minimum-covered+` = 87)と`unproven`の上限(`+maximum-unproven+` = 29)を
   両方検査し、後者がratchetとして働く: functional testを持たない公開symbolが増えれば
-  `unproven`が29を超え、この定数をこの文書内で引き上げる編集をしない限りbuildが失敗する。ただし
+  `unproven`が29を超え、この定数を `tools/ci/check-functional-coverage.lisp` 内で引き上げる
+  編集をしない限りbuildが失敗する。ただし
   この機構が保証するのはsymbolごとの「記録された位置」であり、「証明されたcontract」ではない。
   `## Exempt`見出しは、literalな `## Unproven` と、`## Exempt` で始まる任意の見出しという前方
-  一致でしか認識されないため、新しい `## Exempt: ...` 見出しを立てれば `covered` も `unproven`
+  一致でしか認識されないため、新しい `## Exempt: ...` 見出しを立てるか、既存の五つの `## Exempt`
+  見出しのいずれかへ行を追加するだけでも、`covered` も `unproven`
   も動かさずに未testのsymbolを収められる — この機構が実際に防いでいるのは「無分類のまま公開
   されること」であり、各 `## Exempt` の理由が正当かどうかは最終的にreviewerが文章を読んで判断
   する。分類作業そのものが、174 symbol中29件にfunctional testが存在しないという作業量を明らか

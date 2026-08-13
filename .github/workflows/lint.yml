@@ -131,7 +131,8 @@ jobs:
         # test system into one image to see the whole published surface and the whole suite's
         # references at once, which cl-gbdt/tests deliberately never has. See
         # tools/ci/check-functional-coverage.lisp's header for what COVERED does and does not
-        # mean, and its two floor constants for the two counts this ratchets.
+        # mean: a floor constant for the covered count, and a ceiling constant -- the one
+        # that actually ratchets -- for the unproven count.
         run: ros run -- --non-interactive --load tools/ci/check-functional-coverage.lisp
 
       - name: Compile every system without warnings
