@@ -303,6 +303,37 @@
                   text))
       (ok (not (search "```text" text))))))
 
+(deftest render-entry-suppresses-methods-on-a-pointer-entry
+  (testing "a reader entry with methods attached renders the pointer line and no Methods section"
+    (let* ((method-signature
+             "(fixture-documented-condition-code (condition fixture-documented-condition))")
+           (leak-marker "SBCL-ATTACHED-SLOT-TEXT-MUST-NOT-APPEAR-HERE")
+           (text (with-output-to-string (stream)
+                   (cl-gbdt/src/docgen/all:render-entry
+                    (cl-gbdt/src/docgen/all:make-entry
+                     :symbol 'fixture-documented-condition-code
+                     :qualifier "cl-gbdt/tests/docgen"
+                     :exported-from '("cl-gbdt/tests/docgen") :kind :generic-function
+                     :points-at '(:slot fixture-documented-condition code)
+                     :lambda-list '(condition)
+                     ;; A non-empty METHODS list, as COLLECT-ENTRIES would actually attach for a
+                     ;; DEFCLASS slot's reader, whose accessor method carries the slot's own
+                     ;; :DOCUMENTATION under SBCL. If RENDER-ENTRY's pointer-entry guard were
+                     ;; ever removed, this is what would leak into a Methods section.
+                     :methods (list (cons method-signature leak-marker)))
+                    stream))))
+      ;; The pointer line still renders: a non-NIL METHODS must not suppress the whole entry,
+      ;; only the Methods section.
+      (ok (search "Reader of `cl-gbdt/tests/docgen:fixture-documented-condition`'s `code` slot."
+                  text))
+      ;; Hard pins, not a substring search over a larger blob that could pass by accident: the
+      ;; heading must be entirely absent, and so must the attached method's own marked text --
+      ;; proving the content is suppressed, not merely that the heading is missing while the
+      ;; text leaks some other way.
+      (ok (not (search "### Methods" text)))
+      (ok (not (search leak-marker text)))
+      (ok (not (search (format nil "#### `~A`" method-signature) text))))))
+
 (deftest render-entry-signature-line-for-a-zero-argument-function
   (testing "a NIL lambda list still gets a Signature line, as (name) with no stray space"
     (let ((text (with-output-to-string (stream)

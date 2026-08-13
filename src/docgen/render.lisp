@@ -210,7 +210,15 @@ out of the reference's own fence: ~S. Rewrite the docstring." line)))
                        (cl-gbdt/src/docgen/introspect:slot-info-documentation slot))
                       stream)
         (terpri stream)))
-    (when (entry-methods entry)
+    ;; A points-at entry already rendered its one-line pointer above and never a Methods
+    ;; section, even when ENTRY-METHODS is non-NIL: SBCL attaches a DEFCLASS slot's own
+    ;; :DOCUMENTATION to its accessor method, so a reader for that kind of slot would print
+    ;; the slot's text a second time here, duplicating what the type's own Slots section
+    ;; already carries; a reader for a DEFINE-CONDITION slot has no such attachment, so it
+    ;; would instead print a bare "#### `...`" heading over nothing at all. Both are wrong for
+    ;; the same reason: the reader's methods are an implementation detail of the slot the
+    ;; type's entry already documents, not information this entry exists to add.
+    (when (and (entry-methods entry) (not (entry-points-at entry)))
       (format stream "### Methods~%~%")
       (dolist (method (entry-methods entry))
         (format stream "#### `~A`~%~%" (car method))
