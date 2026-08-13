@@ -226,3 +226,50 @@ file afterward whether BODY exits normally or not."
                (cl-gbdt/src/xgboost/file-input::file-uri
                 #p"/data/train set.libsvm" :libsvm nil))
       "file-uri refused a path containing a space"))
+
+;; Review round 2, Finding N1 (Critical): a DIRECTORY as PATH is not caught by
+;; wild-pathname-p (it holds no wildcard character at all), so under the round-1 design it
+;; reached create-dataset-from-file's :UNREADABLE pass-through and dmlc listed the
+;; directory, parsing every file inside as though each had been declared the caller's
+;; format -- SIGSEGV. detect-file-format now checks %not-a-regular-file-p first,
+;; deliberately, before opening anything, so this is decided without ever touching the
+;; filesystem's read path at all.
+(deftest detect-file-format-reports-unreadable-for-a-directory
+  (let ((dir (merge-pathnames "cl-gbdt-file-input-test-dir/" (uiop:temporary-directory))))
+    (ensure-directories-exist dir)
+    (unwind-protect
+         (ok (eq :unreadable (cl-gbdt/src/xgboost/file-input::detect-file-format dir))
+             "detect-file-format did not report :unreadable for a directory")
+      (uiop:delete-directory-tree dir :validate t))))
+
+;; The shape review round 2 specifically probed: PATH given WITHOUT a trailing slash, so
+;; Lisp's own pathname parser treats it as a file-shaped pathname (a NAME component, no
+;; DIRECTORY-list entry for it) even though the thing it names on disk is a directory.
+;; %not-a-regular-file-p resolves through `truename', which reflects what is actually on
+;; disk regardless of how PATH itself was spelled, so this must refuse identically to the
+;; trailing-slash case above.
+(deftest detect-file-format-reports-unreadable-for-a-directory-without-a-trailing-slash
+  (let ((with-slash (merge-pathnames "cl-gbdt-file-input-test-dir2/"
+                                     (uiop:temporary-directory)))
+        (without-slash (merge-pathnames "cl-gbdt-file-input-test-dir2"
+                                        (uiop:temporary-directory))))
+    (ensure-directories-exist with-slash)
+    (unwind-protect
+         (ok (eq :unreadable (cl-gbdt/src/xgboost/file-input::detect-file-format
+                              without-slash))
+             "detect-file-format did not report :unreadable for a slash-less directory path")
+      (uiop:delete-directory-tree with-slash :validate t))))
+
+;; Review round 2, Finding N2 (Critical): dmlc splits a URI on ';' into a list of several
+;; paths and reads each independently, so "a.libsvm;b.csv" declared :libsvm could match on
+;; its first segment while the second reached the library entirely unclassified -- SIGSEGV
+;; the moment that second file's real contents disagreed. Unlike the wild-pathname case,
+;; this shape is not itself a wildcard and would have composed a perfectly normal-looking
+;; URI, so it needed its own guard rather than reusing wild-pathname-p.
+(deftest file-uri-refuses-a-path-holding-a-multi-path-separator
+  (ok (handler-case
+          (progn (cl-gbdt/src/xgboost/file-input::file-uri
+                  #p"/data/a.libsvm;b.csv" :libsvm nil)
+                 nil)
+        (cl-gbdt/src/conditions:unsupported-argument () t))
+      "file-uri accepted a ';'-separated multi-path"))

@@ -349,7 +349,8 @@ indication anything changed."))
   ((path :initarg :path
          :initform nil
          :reader file-format-mismatch-path
-         :documentation "The file whose contents disagree with the declared format.")
+         :documentation "The file whose contents disagree with the declared format, or that
+turned out not to be a single readable regular file at all.")
    (declared :initarg :declared
              :initform nil
              :reader file-format-mismatch-declared
@@ -358,27 +359,37 @@ indication anything changed."))
              :initform nil
              :reader file-format-mismatch-detected
              :documentation "The format `detect-file-format' classified the file as: :LIBSVM,
-:CSV, :BINARY, or :UNKNOWN when the file held no non-blank line at all. Note that :UNKNOWN does
-NOT mean \"recognised nothing\" -- the rule's last step sends unrecognised text to :CSV, so an
-unclassifiable line is reported as :CSV rather than as :UNKNOWN."))
+:CSV, :BINARY, :UNKNOWN when the file held no non-blank line at all, or :UNREADABLE when PATH
+could not be opened as a single regular file -- missing, a directory, or unreadable for some
+other reason. Note that :UNKNOWN does NOT mean \"recognised nothing\" -- the rule's last step
+sends unrecognised text to :CSV, so an unclassifiable line is reported as :CSV rather than as
+:UNKNOWN."))
   (:report
    (lambda (condition stream)
      (format stream "~A was declared ~A but reads as ~A."
              (or (file-format-mismatch-path condition) "The file")
              (file-format-mismatch-declared condition)
              (file-format-mismatch-detected condition))))
-  (:documentation "A file's contents do not match the format the caller declared for it.
+  (:documentation "A file's contents do not match the format the caller declared for it, or
+PATH does not name a single regular file this wrapper could itself open and classify.
 
-Signalled by `cl-gbdt/xgboost''s `create-dataset-from-file' before any foreign call. Unlike
-`unsupported-argument', the argument here is supported and well-formed -- it is the data that
-disagrees with it.
+Signalled by `cl-gbdt/xgboost''s `create-dataset-from-file' before any foreign call, for every
+`detect-file-format' verdict except an exact match with the caller's declared format -- unlike
+`unsupported-argument', which is for an argument malformed on its own terms, PATH here is a
+well-formed pathname designator and the problem is what `detect-file-format' found, or failed
+to find, when it actually looked.
 
-This check exists because XGBoost does not make it. Measured against the vendored 3.3.0:
-`train.csv?format=libsvm', and a binary DMatrix declared as libsvm, both segfault inside dmlc's
-non-Lisp parser thread, where no Lisp handler can run and no condition can be signalled. The
-reverse mismatches return success and garbage. Refusing before the call is therefore the only
-point at which this failure can be reported at all, which is why it is a requirement of that
-function's contract rather than a convenience."))
+This check exists because XGBoost does not make it, and because dmlc's own reading of a PATH
+this wrapper never classified is not always an error either. Measured against the vendored
+3.3.0: `train.csv?format=libsvm', and a binary DMatrix declared as libsvm, both segfault inside
+dmlc's non-Lisp parser thread, where no Lisp handler can run and no condition can be signalled.
+The reverse mismatches return success and garbage. And PATH being :UNREADABLE to this wrapper
+is not necessarily unreadable to dmlc at all: a directory is not an error to dmlc, it is a file
+list it parses every entry of, each SIGSEGV-reachable exactly as a mismatched single file is --
+found by review, the reason :UNREADABLE stopped being a pass-through and joined every other
+non-matching verdict here. Refusing before the call is therefore the only point at which any
+of this can be reported at all, which is why it is a requirement of that function's contract
+rather than a convenience."))
 
 (define-condition missing-training-set (data-error)
   ((booster :initarg :booster

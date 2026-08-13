@@ -1476,10 +1476,22 @@ libsvm file declared `:csv', does not crash: measured, `train.libsvm?format=csv'
 code 0 and a 4-row *1-column* DMatrix with no label, silently wrong rather than refused. A
 blank-only file returns a silent 0x0 DMatrix under either declared format. Both are caught
 here too -- the first because `detect-file-format' answers `:libsvm', not `:csv'; the second
-because it answers `:unknown', which matches no declared FORMAT at all. `:unreadable' -- an
-unopenable PATH -- is the one detected value this gate passes through regardless of FORMAT:
-an unopenable file is XGBoost's own to report, through `foreign-call-error' like any other
-failed foreign call, not a `probe-file' precheck made here.
+because it answers `:unknown', which matches no declared FORMAT at all.
+
+**Nothing this wrapper has not itself opened and classified into an exact match with FORMAT
+ever reaches dmlc.** Every `detect-file-format' verdict but that exact match is now a
+refusal, `:unreadable' included. An earlier version of this gate passed `:unreadable'
+through, on the premise that "an unopenable file is XGBoost's own to report cleanly" --
+review round 2 found that premise held only for a missing plain file and not for two of
+`:unreadable''s other causes: a directory PATH is not an error to dmlc at all, it lists the
+directory and parses every file inside as though each had been declared FORMAT, and a
+`;'-separated multi-path -- `file-uri''s own gate now refuses one in PATH directly, but this
+gate does not depend on that alone -- would have let dmlc read several files under one
+declaration the same way. Both reproduce the exact fatal mismatch this function exists to
+prevent, reached through a file `detect-file-format' never classified rather than one it
+classified wrongly. A missing plain file is refused too, uniformly with every other
+`:unreadable' cause, even though that specific case was never itself dangerous -- the
+contract is simpler for not carving it out as an exception.
 
 **`:binary' carries no `format' key in the URI at all.** Measured (record section 2):
 `?format=binary' is rejected outright, `Unknown data type binary', and a binary DMatrix
@@ -1493,13 +1505,16 @@ prints nothing at all.
 
 Checked in this order, all before any foreign call: BACKEND's class, then whether it is
 open, then whether FORMAT is in the accepted set, then `file-uri' composing the URI (which
-itself signals `unsupported-argument' for a wild PATH, a `?'/`#' in PATH, or a smuggled
-`format' key or reserved character), then `detect-file-format' agreeing with FORMAT or
-answering `:unreadable'. The wild-PATH check matters precisely because it runs before
-`detect-file-format' does: a PATH such as `a*.csv' fails `open' with a `file-error'
-`detect-file-format' would otherwise read as `:unreadable' and pass through, but dmlc does
-not open such a namestring as a single file -- it glob-expands it, so PATH being wild is
-refused on its own rather than being left to the `:unreadable' pass-through below.
+itself signals `unsupported-argument' for a wild PATH, a `?'/`#'/`;' in PATH, or a smuggled
+`format' key or reserved character), then `detect-file-format' classifying PATH and that
+classification matching FORMAT exactly -- `:unreadable' included, no longer an exception.
+The wild-PATH and `;'-in-PATH checks matter precisely because they run before
+`detect-file-format' does: a PATH such as `a*.csv' or `a.libsvm;b.csv' names no real file
+under Lisp's own pathname semantics (dmlc's glob and multi-path syntax are properties of
+the URI string, not of anything `truename' resolves), so `detect-file-format' would answer
+`:unreadable' for either regardless and the uniform rule above would still refuse it -- but
+with the generic mismatch reason rather than the specific one refusing the shape itself
+here gives.
 
 Signals `wrong-backend-reference' when BACKEND is not an `xgboost-backend' -- the other
 backend's object, or not a backend at all -- before anything else is read from it and ahead
@@ -2345,18 +2360,26 @@ check, which runs before anything else is read.
 - **Exported from** `cl-gbdt`, `cl-gbdt/lightgbm`, `cl-gbdt/xgboost`
 
 ```text
-A file's contents do not match the format the caller declared for it.
+A file's contents do not match the format the caller declared for it, or
+PATH does not name a single regular file this wrapper could itself open and classify.
 
-Signalled by `cl-gbdt/xgboost''s `create-dataset-from-file' before any foreign call. Unlike
-`unsupported-argument', the argument here is supported and well-formed -- it is the data that
-disagrees with it.
+Signalled by `cl-gbdt/xgboost''s `create-dataset-from-file' before any foreign call, for every
+`detect-file-format' verdict except an exact match with the caller's declared format -- unlike
+`unsupported-argument', which is for an argument malformed on its own terms, PATH here is a
+well-formed pathname designator and the problem is what `detect-file-format' found, or failed
+to find, when it actually looked.
 
-This check exists because XGBoost does not make it. Measured against the vendored 3.3.0:
-`train.csv?format=libsvm', and a binary DMatrix declared as libsvm, both segfault inside dmlc's
-non-Lisp parser thread, where no Lisp handler can run and no condition can be signalled. The
-reverse mismatches return success and garbage. Refusing before the call is therefore the only
-point at which this failure can be reported at all, which is why it is a requirement of that
-function's contract rather than a convenience.
+This check exists because XGBoost does not make it, and because dmlc's own reading of a PATH
+this wrapper never classified is not always an error either. Measured against the vendored
+3.3.0: `train.csv?format=libsvm', and a binary DMatrix declared as libsvm, both segfault inside
+dmlc's non-Lisp parser thread, where no Lisp handler can run and no condition can be signalled.
+The reverse mismatches return success and garbage. And PATH being :UNREADABLE to this wrapper
+is not necessarily unreadable to dmlc at all: a directory is not an error to dmlc, it is a file
+list it parses every entry of, each SIGSEGV-reachable exactly as a mismatched single file is --
+found by review, the reason :UNREADABLE stopped being a pass-through and joined every other
+non-matching verdict here. Refusing before the call is therefore the only point at which any
+of this can be reported at all, which is why it is a requirement of that function's contract
+rather than a convenience.
 ```
 
 ### Slots
@@ -2366,7 +2389,8 @@ function's contract rather than a convenience.
 - **Readers** `file-format-mismatch-path`
 
 ```text
-The file whose contents disagree with the declared format.
+The file whose contents disagree with the declared format, or that
+turned out not to be a single readable regular file at all.
 ```
 
 #### `declared`
@@ -2383,9 +2407,11 @@ The format keyword the caller declared, e.g. :LIBSVM.
 
 ```text
 The format `detect-file-format' classified the file as: :LIBSVM,
-:CSV, :BINARY, or :UNKNOWN when the file held no non-blank line at all. Note that :UNKNOWN does
-NOT mean "recognised nothing" -- the rule's last step sends unrecognised text to :CSV, so an
-unclassifiable line is reported as :CSV rather than as :UNKNOWN.
+:CSV, :BINARY, :UNKNOWN when the file held no non-blank line at all, or :UNREADABLE when PATH
+could not be opened as a single regular file -- missing, a directory, or unreadable for some
+other reason. Note that :UNKNOWN does NOT mean "recognised nothing" -- the rule's last step
+sends unrecognised text to :CSV, so an unclassifiable line is reported as :CSV rather than as
+:UNKNOWN.
 ```
 
 <a id="cl-gbdt-file-format-mismatch-declared"></a>

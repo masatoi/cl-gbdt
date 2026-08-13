@@ -921,7 +921,7 @@ fixture's own first line"
 
 (deftest create-dataset-from-file-refuses-bad-arguments
   (testing "create-dataset-from-file checks its backend's class and FORMAT before any foreign \
-call, and reports a missing file as XGBoost's own"
+call, and refuses a missing file itself rather than handing it to XGBoost"
     (with-open-backend (backend)
       (with-libsvm-fixture (path)
         ;; `handler-case', not rove's `signals' -- see this file's other guard tests for why.
@@ -954,17 +954,28 @@ call, and reports a missing file as XGBoost's own"
                        nil)
               (cl-gbdt/xgboost:unsupported-argument () t))
             "create-dataset-from-file accepted a format key among :uri-parameters")
-        ;; Not a `probe-file' pre-check -- a missing file is XGBoost's own to report.
-        ;; `detect-file-format' answers :UNREADABLE for it, which this gate passes through.
-        (ok (handler-case
-                (progn (cl-gbdt/xgboost:create-dataset-from-file
-                        backend
-                        (merge-pathnames "cl-gbdt-xgb-no-such-file.libsvm"
-                                         (uiop:temporary-directory))
-                        :libsvm)
-                       nil)
-              (cl-gbdt/xgboost:foreign-call-error () t))
-            "create-dataset-from-file did not signal foreign-call-error for a missing file")))))
+        ;; Review round 2: :UNREADABLE is no longer a pass-through, so a missing file is now
+        ;; refused by this wrapper's own gate rather than reaching XGDMatrixCreateFromURI at
+        ;; all -- BEHAVIOUR CHANGE from this test's earlier form, which asserted
+        ;; `foreign-call-error' here. `detect-file-format' still answers :UNREADABLE for a
+        ;; missing file (no probe-file pre-check is added; `open''s own `file-error' inside
+        ;; `detect-file-format' is what produces it), but every non-matching verdict is now a
+        ;; `file-format-mismatch' from `create-dataset-from-file' itself, DETECTED :unreadable
+        ;; included.
+        (let ((missing (merge-pathnames "cl-gbdt-xgb-no-such-file.libsvm"
+                                        (uiop:temporary-directory))))
+          (let ((condition (handler-case
+                                (progn (cl-gbdt/xgboost:create-dataset-from-file
+                                        backend missing :libsvm)
+                                       nil)
+                              (cl-gbdt/xgboost:file-format-mismatch (c) c))))
+            (ok condition
+                "create-dataset-from-file did not signal file-format-mismatch for a missing \
+file")
+            (when condition
+              (ok (eq :unreadable (cl-gbdt/xgboost:file-format-mismatch-detected condition))
+                  (format nil "file-format-mismatch-detected is ~S, not :unreadable"
+                          (cl-gbdt/xgboost:file-format-mismatch-detected condition))))))))))
 
 (deftest create-dataset-from-file-signals-backend-not-open-after-close
   (testing "create-dataset-from-file signals backend-not-open for a closed backend"

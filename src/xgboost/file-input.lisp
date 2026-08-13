@@ -36,6 +36,27 @@ as octets. LightGBM auto-detects this on its own load path with no parameter at 
 `detect-file-format' checks it too so a LightGBM binary file reports :BINARY here rather
 than falling through to the text rule and being misread as garbled CSV.")
 
+(defun %not-a-regular-file-p (path)
+  "True when PATH names something that exists on disk but is not a regular file -- a
+directory, concretely -- checked directly with `truename', not left to whatever `open'
+and a following `read-byte' or `read-sequence' happen to do with one on the current
+platform. NIL when PATH does not exist at all: that stays `open''s own `file-error' to
+signal, unchanged by this function. NIL for an ordinary file too -- `truename' resolves
+one to a pathname whose NAME component is never NIL, where a directory's NAME (and TYPE)
+component is NIL regardless of whether PATH itself carried a trailing separator.
+
+`detect-file-format' calls this first, before either magic-byte check has opened
+anything, so a directory is refused as a deliberate decision rather than however
+`stream-error' happens to arise from reading one. Review round 2, Finding N1: on this
+platform `open' succeeds against a directory and only a later read fails -- a contract
+this project is not willing to depend on holding on every platform -- and even where it
+does hold, dmlc itself never errors on a directory PATH at all: it lists the directory
+and parses every file inside as though each had been declared the caller's FORMAT, the
+same SIGSEGV-reachable mismatch a single wrong file is. That is the reason this check
+exists, not a portability nicety."
+  (let ((truename (handler-case (truename path) (file-error () nil))))
+    (and truename (null (pathname-name truename)))))
+
 (defun %starts-with-bytes-p (path expected)
   "True when the file at PATH begins with the octets in EXPECTED, a vector of
 \(unsigned-byte 8). False, not an error, when PATH is shorter than EXPECTED -- a short
@@ -141,6 +162,10 @@ pair."
 
 Checked in this order:
 
+-1. `%not-a-regular-file-p', before PATH is opened at all. Something other than a
+   regular file -- a directory, concretely -- reports :UNREADABLE immediately. See that
+   function's own docstring for why this is a deliberate check rather than left to
+   however `open' and a subsequent read happen to fail on one.
 0. Magic bytes, read before any line of text is read. The first four bytes
    #x01 #xAB #xFF #xFF mark an XGBoost binary DMatrix (`XGDMatrixSaveBinary'); the first
    38 bytes \"______LightGBM_Binary_File_Token______\" mark a LightGBM binary dataset
@@ -163,21 +188,30 @@ as LIBSVM, because \"12:00:00,1.0\" satisfies <digits>:<rest> -- and libsvm-decl
 is the direction that SIGSEGVs XGBoost inside a non-Lisp thread no `handler-case' can
 catch (record section 4). Only the comma-guarded form of this rule survives that line.
 
-:UNREADABLE comes from `open' or a later read signalling `file-error' or `stream-error' --
-a missing file (`file-error'), or a directory given as a path (SBCL opens a directory
-successfully and fails only once `read-byte' or `read-sequence' touches it, as
-`stream-error'). It is NOT what a file whose bytes are not valid text produces: every
-read in this function, magic checks and the line-classification rule alike, is octets
-throughout -- `%first-non-blank-line' never decodes -- so a latin-1 CSV or any other file
-whose bytes are not valid UTF-8 is classified by its ASCII byte values exactly like any
-other file, typically :CSV or :LIBSVM, rather than being refused. That is deliberate: a
-gate downstream of this function (see Task 4's brief) treats :UNREADABLE as a
-pass-through rather than a refusal, on the reasoning that an unopenable file is XGBoost's
-own to report cleanly -- so mapping a decoding failure to :UNREADABLE would have let a
-perfectly XGBoost-readable file reach the foreign call with no format check at all,
-undoing this function's whole purpose. Nothing else returns :UNREADABLE: a file too
+:UNREADABLE comes from step -1's deliberate check (a directory, or anything else that is
+not a regular file), or from `open' or a later read signalling `file-error' or
+`stream-error' -- most concretely a missing file (`file-error'). It is NOT what a file
+whose bytes are not valid text produces: every read in this function, magic checks and
+the line-classification rule alike, is octets throughout -- `%first-non-blank-line' never
+decodes -- so a latin-1 CSV or any other file whose bytes are not valid UTF-8 is
+classified by its ASCII byte values exactly like any other file, typically :CSV or
+:LIBSVM, rather than being refused. That is deliberate: mapping a decoding failure to
+:UNREADABLE would have let a perfectly XGBoost-readable file be refused for no reason
+this function can see in its own bytes. Nothing else returns :UNREADABLE: a file too
 short for either magic check simply fails both and falls through to the text rule,
 unreadability included.
+
+Unlike an earlier version of this function, :UNREADABLE is no longer a signal that the
+gate built on top of this function (`cl-gbdt/xgboost:create-dataset-from-file') passes
+through to the foreign call. Review round 2 found that XGBoost does not treat every
+:UNREADABLE case as an error either: a directory is not an error to dmlc, it is a file
+list, and it parses every entry -- so \"an unopenable file is XGBoost's own to report
+cleanly\", the premise the old pass-through rested on, held for a missing plain file and
+did not hold for a directory or a multi-path string dmlc's own URI syntax accepts. PATH
+being :UNREADABLE to this function now means `create-dataset-from-file' refuses it with
+`file-format-mismatch' -- naming :UNREADABLE as DETECTED -- exactly as it refuses any
+other verdict that is not an exact match with the caller's declared format; nothing this
+function has not itself opened and classified ever reaches dmlc.
 
 Three blind spots, measured and left as they are rather than smoothed over (record
 section 1):
@@ -193,11 +227,13 @@ section 1):
   third verdict to give that case; it can only say which of :LIBSVM or :CSV the first
   line resembles."
   (handler-case
-      (if (or (%starts-with-bytes-p path +xgboost-binary-magic+)
-              (%starts-with-bytes-p path +lightgbm-binary-magic+))
-          :binary
-          (let ((line (%first-non-blank-line path)))
-            (if line (%classify-line line) :unknown)))
+      (if (%not-a-regular-file-p path)
+          :unreadable
+          (if (or (%starts-with-bytes-p path +xgboost-binary-magic+)
+                  (%starts-with-bytes-p path +lightgbm-binary-magic+))
+              :binary
+              (let ((line (%first-non-blank-line path)))
+                (if line (%classify-line line) :unknown))))
     ((or file-error stream-error) () :unreadable)))
 
 ;;; ---------------------------------------------------------------------------
@@ -214,10 +250,11 @@ the one query key `file-uri' reserves for its own FORMAT argument."
   (string-equal (string (car pair)) "format"))
 
 (defun %uri-reserved-char-p (char)
-  "True when CHAR is one of dmlc's own URI separators -- '?', '#', or '&' -- any of
+  "True when CHAR is one of dmlc's own URI separators -- '?', '#', '&', or ';' -- any of
 which, appearing inside a rendered query key or value, could open a second query segment
-that `file-uri' did not intend, including a second `format' key."
-  (member char '(#\? #\# #\&)))
+that `file-uri' did not intend, including a second `format' key, or -- ';' specifically,
+review round 2's Finding N2 -- turn one path into dmlc's own multi-path list."
+  (member char '(#\? #\# #\& #\;)))
 
 (defun %pair-unsafe-p (pair)
   "True when PAIR's key or value, once rendered the way `file-uri' renders it, contains
@@ -241,18 +278,31 @@ gate the same way a bad PAIRS entry would. `create-dataset-from-file' in
 invariant that depended on one caller getting the check order right was judged too weak for
 the one function in this branch whose whole job is preventing injection.
 
-The wild-pathname check closes a third instance of the same structural hole review found
+The wild-pathname check closed a third instance of the same structural hole review found
 twice already (a `?'/`#' in PATH, a `&' inside a PAIRS value): `file-uri''s guard list and
-`detect-file-format''s `:unreadable' pass-through are two halves of one contract, and
-anything the guard does not catch, the pass-through hands to dmlc unexamined. A PATH SBCL
-parses as a wild pathname (`a*.csv', `[a].csv') fails `open' with a `file-error' subtype,
-so `detect-file-format' reports `:unreadable' and `create-dataset-from-file''s gate lets
-it through by design -- but dmlc does not open a wild namestring as a single filename, it
-glob-expands it, so a declared `:libsvm' can reach a real CSV file `detect-file-format'
-never classified at all, which is exactly the fatal direction this whole branch exists to
-refuse. `wild-pathname-p' is `NIL' for every ordinary path, a genuinely missing plain
-file, and a path containing a space (record section 9's case), so this refuses nothing
-that currently works."
+`detect-file-format''s classification were, at the time, two halves of one contract, and
+anything the guard did not catch, a permissive `:unreadable' handling once handed to dmlc
+unexamined. A PATH SBCL parses as a wild pathname (`a*.csv', `[a].csv') fails `open' with
+a `file-error' subtype -- dmlc does not open a wild namestring as a single filename, it
+glob-expands it, so a declared `:libsvm' could reach a real CSV file `detect-file-format'
+never classified at all. `wild-pathname-p' is `NIL' for every ordinary path, a genuinely
+missing plain file, and a path containing a space (record section 9's case), so this
+refuses nothing that currently works.
+
+The `;' check closes a fourth instance, review round 2's Finding N2: dmlc splits a URI on
+`;' into a list of several paths and reads each, so `a.libsvm;b.csv' declared `:libsvm'
+could match on the first segment and reach a second file `detect-file-format' never saw
+at all -- unlike the wild-pathname case, this one did not even need `:unreadable' to be
+permissive, since `a.libsvm;b.csv' is not itself a wild pathname and would have composed
+cleanly. Review round 2 also removed `detect-file-format''s `:unreadable' pass-through
+entirely (see that function's own docstring) rather than adding a fifth entry to this
+list the next time dmlc's URI syntax turns out richer than whatever this file currently
+enumerates; PATH must now name a single existing regular file
+(`%not-a-regular-file-p'), and every `detect-file-format' verdict but an exact match is a
+refusal in `create-dataset-from-file'. This function's checks stay as a first line of
+defense regardless -- refusing a wild or `;'-holding PATH here, before `detect-file-format'
+even runs, gives a caller a more specific reason than the generic mismatch that catching
+it downstream would report."
   (when (wild-pathname-p path)
     (error 'unsupported-argument
            :backend :xgboost
@@ -261,13 +311,15 @@ that currently works."
                                 pattern rather than opening it as the single file it ~
                                 names, which could reach a file detect-file-format ~
                                 never classified" path)))
-  (when (or (find #\? namestring) (find #\# namestring))
+  (when (or (find #\? namestring) (find #\# namestring) (find #\; namestring))
     (error 'unsupported-argument
            :backend :xgboost
            :argument "file-uri's path"
-           :reason (format nil "~S contains a '?' or a '#', dmlc's own query and ~
-                                fragment separators; a path holding either could smuggle ~
-                                in a second 'format' key" namestring)))
+           :reason (format nil "~S contains a '?', a '#', or a ';', dmlc's own query, ~
+                                fragment, and multi-path separators; a path holding any ~
+                                of them could smuggle in a second 'format' key or turn ~
+                                one path into dmlc's own ';'-separated list of several"
+                           namestring)))
   (when (and (not (eq format :binary)) (some #'%uri-reserved-char-p (string format)))
     (error 'unsupported-argument
            :backend :xgboost
@@ -310,15 +362,17 @@ Signals `unsupported-argument' before composing anything when PATH is a wild pat
 (`wild-pathname-p' true, e.g. `a*.csv' or `[a].csv') -- dmlc glob-expands such a namestring
 rather than opening it as the single file it names, which can reach a file
 `detect-file-format' never classified at all, defeating the format-mismatch gate the same
-way a smuggled `format' key would -- or when PATH's namestring contains a `?' or a `#' --
-dmlc's own query and fragment separators, so a path holding either could append a second
-`format' key of its own -- or when FORMAT itself, once rendered, contains a `?', `#', or
-`&' -- the identical smuggling risk one argument over, closed even though every caller in
-this codebase already restricts FORMAT to `:libsvm', `:csv' or `:binary' before reaching
-here -- or when URI-PARAMETERS holds a `format' key under any case, the same smuggling risk
-from a third side -- or when any URI-PARAMETERS key or value, once rendered into the query
-string, itself contains a `?', `#', or `&': any of the three could open a second query
-segment there too.
+way a smuggled `format' key would -- or when PATH's namestring contains a `?', a `#', or a
+`;' -- dmlc's own query, fragment, and multi-path separators, so a path holding any of
+them could append a second `format' key of its own or turn one path into dmlc's own
+`;'-separated list of several, each read and matched against the single declared FORMAT
+independently -- or when FORMAT itself, once rendered, contains a `?', `#', `&', or `;' --
+the identical smuggling risk one argument over, closed even though every caller in this
+codebase already restricts FORMAT to `:libsvm', `:csv' or `:binary' before reaching here --
+or when URI-PARAMETERS holds a `format' key under any case, the same smuggling risk from a
+third side -- or when any URI-PARAMETERS key or value, once rendered into the query
+string, itself contains a `?', `#', `&', or `;': any of the four could open a second query
+segment there too, or reintroduce the multi-path case from inside a parameter value.
 
 Does not percent-encode PATH. Measured (record section 9): dmlc accepts an unencoded
 space in the path and REJECTS the identical path percent-encoded as %20, with \"Cannot
