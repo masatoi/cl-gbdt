@@ -1238,11 +1238,12 @@ a standalone caller of `cl-gbdt/lightgbm' would ever need to load."
       (error "ln -sf ~A ~A failed (~D): ~A" target link code err))))
 
 (deftest save-and-load-model-through-a-symlink-round-trip-regardless-of-extension
-  (testing "PR #37: LightGBM has no format-by-extension dispatch in either direction \
-(measured -- see %best-effort-resolve-path), so a save/load round trip through a symlink \
-works regardless of what extension the link or its target carry -- pinned here as a \
-measured fact about this backend on its own, independent of whatever XGBoost's own \
-save/load path resolution does"
+  (testing "PR #37: this backend now shares XGBoost's rule -- the path the caller named, \
+never resolving a symlink, on both save and load -- and LightGBM has no format-by-\
+extension dispatch to make that rule matter (measured -- see \
+%resolve-path-against-defaults), so a save/load round trip through a symlink works \
+regardless of what extension the link or its target carry, pinned here on this backend \
+too rather than only on XGBoost's"
     (with-open-backend (backend)
       (multiple-value-bind (matrix label-vector) (fixture)
         (let ((data (cl-gbdt/lightgbm:create-dataset backend matrix :label label-vector
