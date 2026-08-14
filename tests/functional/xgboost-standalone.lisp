@@ -1376,18 +1376,52 @@ still be written as UBJ, matching the .ubj name the caller gave"
               (handler-case (delete-file target) (file-error () nil))
               (handler-case (delete-file link) (file-error () nil)))))))))
 
-(deftest load-model-through-a-symlink-still-works
-  (testing "load-model must keep dereferencing a symlink: XGBoosterLoadModel picks its \
-parser from the string it is actually given, so a symlink named with a DIFFERENT \
-extension than its real target must still resolve to the target's own name for the read \
-to pick the matching parser and succeed"
+(deftest save-model-then-load-model-round-trips-through-a-json-symlink-to-a-ubj-target
+  (testing "PR #37's second review (Codex): a save then a load through the SAME symlinked \
+path must round-trip. This wrapper uses the path the caller named and does not resolve \
+symlinks on either operation, so writing through model.json -> target.ubj and reading it \
+straight back through model.json succeeds -- broken when load alone kept dereferencing"
     (with-open-backend (backend)
       (multiple-value-bind (matrix label-vector) (fixture)
         (let ((data (cl-gbdt/xgboost:create-dataset backend matrix :label label-vector))
               (target (model-path
-                       (format nil "cl-gbdt-p37-load-target-~D.json" (random 1000000))))
+                       (format nil "cl-gbdt-p37-rt-target-a-~D.ubj" (random 1000000))))
               (link (model-path
-                     (format nil "cl-gbdt-p37-load-link-~D.ubj" (random 1000000)))))
+                     (format nil "cl-gbdt-p37-rt-link-a-~D.json" (random 1000000)))))
+          (unwind-protect
+               (let ((booster (cl-gbdt/xgboost:create-booster backend data
+                                                               :parameters *parameters*)))
+                 (unwind-protect
+                      (progn
+                        (dotimes (round 5) (cl-gbdt/xgboost:update-one-iteration booster))
+                        ;; Pre-create the target so the symlink dereferences to something
+                        ;; that exists, matching the earlier format-only tests' setup.
+                        (cl-gbdt/xgboost:save-model booster target)
+                        (make-symlink target link)
+                        (cl-gbdt/xgboost:save-model booster link)
+                        (let ((reloaded (cl-gbdt/xgboost:load-model backend link)))
+                          (unwind-protect
+                               (ok (equalp (cl-gbdt/xgboost:predict booster matrix)
+                                           (cl-gbdt/xgboost:predict reloaded matrix))
+                                   "save-model then load-model through the same \
+symlinked path did not round-trip")
+                            (cl-gbdt/xgboost:free-booster reloaded))))
+                   (cl-gbdt/xgboost:free-booster booster)))
+            (progn
+              (cl-gbdt/xgboost:free-dataset data)
+              (handler-case (delete-file target) (file-error () nil))
+              (handler-case (delete-file link) (file-error () nil)))))))))
+
+(deftest save-model-then-load-model-round-trips-through-a-ubj-symlink-to-a-json-target
+  (testing "the reverse of the case above: model.ubj -> target.json must also round-trip \
+through a save then a load of the same symlinked path"
+    (with-open-backend (backend)
+      (multiple-value-bind (matrix label-vector) (fixture)
+        (let ((data (cl-gbdt/xgboost:create-dataset backend matrix :label label-vector))
+              (target (model-path
+                       (format nil "cl-gbdt-p37-rt-target-b-~D.json" (random 1000000))))
+              (link (model-path
+                     (format nil "cl-gbdt-p37-rt-link-b-~D.ubj" (random 1000000)))))
           (unwind-protect
                (let ((booster (cl-gbdt/xgboost:create-booster backend data
                                                                :parameters *parameters*)))
@@ -1396,12 +1430,13 @@ to pick the matching parser and succeed"
                         (dotimes (round 5) (cl-gbdt/xgboost:update-one-iteration booster))
                         (cl-gbdt/xgboost:save-model booster target)
                         (make-symlink target link)
+                        (cl-gbdt/xgboost:save-model booster link)
                         (let ((reloaded (cl-gbdt/xgboost:load-model backend link)))
                           (unwind-protect
                                (ok (equalp (cl-gbdt/xgboost:predict booster matrix)
                                            (cl-gbdt/xgboost:predict reloaded matrix))
-                                   "load-model through a symlink to a differently-\
-extensioned real file did not round-trip")
+                                   "save-model then load-model through the same \
+symlinked path did not round-trip")
                             (cl-gbdt/xgboost:free-booster reloaded))))
                    (cl-gbdt/xgboost:free-booster booster)))
             (progn

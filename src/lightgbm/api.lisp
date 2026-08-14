@@ -426,21 +426,6 @@ correctly resolved first, so the C library's own error names the location `open'
 actually have looked at. `save-model' is the clearest case for never refusing: its PATH is
 EXPECTED not to exist yet, being created by that very call.
 
-This one function, with no keyword to switch its behavior, serves both `save-model' and
-`load-model' -- unlike `cl-gbdt/src/xgboost/api''s identically-named function, which takes
-a FOLLOW-SYMLINKS parameter so its `save-model' can refuse to dereference a symlink while
-its `load-model' still does. That split exists on XGBoost because `XGBoosterSaveModel' and
-`XGBoosterLoadModel' both pick JSON or UBJ serialization from PATH's own extension, so
-resolving a save destination's symlink to its target's extension silently changes what
-gets written. Measured here, not assumed: `LGBM_BoosterSaveModel' writes byte-identical
-output regardless of PATH's extension (`.txt', `.json' and an invented `.weird' extension
-all produced the identical text tree dump for the same booster), and
-`LGBM_BoosterCreateFromModelfile' loads real content back correctly regardless of the
-extension it is named with. LightGBM has exactly one on-disk format and detects nothing
-from the filename in either direction, so the hazard `save-model' /`load-model' resolving
-PATH by different rules exists to prevent on XGBoost simply does not arise here -- always
-dereferencing, as this function already does, is correct for both callers.
-
 Measured, not assumed, that the two branches do not disagree about a leading `~':
 `(pathname \"~/x.txt\")' already carries an ABSOLUTE `:HOME' directory component from
 parsing alone, before either `truename' or `merge-pathnames' ever sees it, so
@@ -958,13 +943,8 @@ PATH reaches `LGBM_BoosterSaveModel' as `sb-ext:native-namestring' of its own
 PATH is normally being created here), `merge-pathnames' against
 `*default-pathname-defaults*' otherwise -- never PATH's bare `namestring', which would
 neither merge a relative PATH against that special nor spell a literal asterisk in a real
-filename the way the caller wrote it. Always follows a symlink in PATH, unlike
-`cl-gbdt/src/xgboost/api''s `save-model': `LGBM_BoosterSaveModel' writes byte-identical
-output regardless of PATH's extension (measured -- see `%best-effort-resolve-path'), so
-LightGBM has none of the extension-by-symlink hazard XGBoost's own `save-model' docstring
-measures, and this function needs no FOLLOW-SYMLINKS choice to make. See
-`%best-effort-resolve-path' and `%check-file-path' for both path-resolution hazards and
-the order they are fixed in. Checked after the :BEST refusal above, not
+filename the way the caller wrote it. See `%best-effort-resolve-path' and `%check-file-path'
+for both hazards and the order they are fixed in. Checked after the :BEST refusal above, not
 before it -- measured: `:num-iteration :best' against a wild PATH signals `unsupported-argument'
 via `%reject-best-num-iteration', not via this check -- but still before any foreign call:
 signals `unsupported-argument' via `%check-file-path' when PATH is a wild pathname.
@@ -997,12 +977,8 @@ PATH reaches `LGBM_BoosterCreateFromModelfile' as `sb-ext:native-namestring' of 
 `%best-effort-resolve-path', exactly as `save-model''s PATH does -- see that function's
 docstring, and `%best-effort-resolve-path'/`%check-file-path' above, for why a bare
 `namestring' resolves a relative PATH against the wrong directory and mis-escapes a
-literal asterisk. Always follows a symlink in PATH, exactly as `save-model' does and for
-the same never-arises reason: `LGBM_BoosterCreateFromModelfile' loads real content back
-correctly regardless of the extension it is named with (measured -- see
-`%best-effort-resolve-path'), so there is no reader-must-match-the-real-extension case
-here the way there is on `cl-gbdt/src/xgboost/api''s `load-model'. Signals
-`unsupported-argument' first, via `%check-file-path', when PATH is a wild pathname.
+literal asterisk. Signals `unsupported-argument' first, via `%check-file-path', when PATH
+is a wild pathname.
 
 The raw booster handle exists in C from the moment `LGBM_BoosterCreateFromModelfile' returns,
 but `make-handle' does not take ownership of it until it also succeeds; `with-pointer-ownership'

@@ -1048,7 +1048,7 @@ still applies regardless -- `native-namestring' signals its own untyped
 and none of `%check-file-uri-arguments''s five URI-specific ones.
 
 `save-model' and `load-model' each pass PATH's `sb-ext:native-namestring' (by way of
-`%best-effort-resolve-path') to their own C entry point, not PATH's `namestring' --
+`%resolve-path-against-defaults') to their own C entry point, not PATH's `namestring' --
 `namestring' backslash-escapes a character that is a CL pathname wildcard marker but literal
 in a real filename (an asterisk, concretely), so a model genuinely named `run*1.json'
 namestrings as `run\\*1.json' and XGBoost writes or looks for a path the caller never wrote.
@@ -1067,51 +1067,46 @@ for the identical reason on the other backend."
                                 for a wild pathname rather than composing one"
                             path function-name))))
 
-(defun %best-effort-resolve-path (path &key (follow-symlinks t))
-  "Resolve PATH the way `open' resolves a pathname designator, when FOLLOW-SYMLINKS is
-true (the default): `truename' when that succeeds -- symlinks followed, a leading `~'
-expanded, PATH merged against `*default-pathname-defaults*' the way an existing file's
-`truename' always is -- or, when `truename' signals `file-error' (most concretely a
-missing file), `MERGE-PATHNAMES' against `*default-pathname-defaults*' instead, which
-applies the identical merging rule without requiring PATH to exist. When FOLLOW-SYMLINKS
-is NIL, `truename' is never attempted at all: PATH goes straight to `MERGE-PATHNAMES'
-against `*default-pathname-defaults*', so a symlink anywhere in PATH is left exactly as
-the caller spelled it, never replaced by whatever it currently resolves to. Never signals
-and never refuses in either mode: every PATH this function is given comes back as some
-pathname.
+(defun %resolve-path-against-defaults (path)
+  "Merge PATH against `*default-pathname-defaults*' via `MERGE-PATHNAMES', unconditionally
+and only that -- never `truename', so a symlink anywhere in PATH is left exactly as the
+caller spelled it, never replaced by whatever it currently resolves to. Never signals and
+never refuses: every PATH this function is given comes back as some pathname, `MERGE-
+PATHNAMES' applying CL's merging rule to a pathname that need not exist.
 
-`load-model' calls this function with FOLLOW-SYMLINKS true, named explicitly at its own
-call site even though that is also this parameter's default; `save-model' calls it with
-FOLLOW-SYMLINKS NIL. Not a stylistic difference: PR #37's review (Codex, P2) found, and
-this project reproduced, that `XGBoosterSaveModel' and `XGBoosterLoadModel' both pick
-their serialization -- `.json' text or `.ubj' binary -- from the FILENAME actually opened,
-not from its contents, so which pathname reaches the foreign call is load-bearing.
-Measured directly, not assumed: saving one booster to a `.json' name and to a `.ubj' name
-produces byte-different output (JSON begins `{\"learner...'; UBJ begins `{L' followed by
-binary fields), and loading `.json'-saved bytes back through a `.ubj' name, or the
-reverse, fails with `foreign-call-error' -- the parser XGBoost picked from the extension
-chokes on bytes in the other format. That second half is the other side of the same
-measurement: on LOAD, the extension has to match the real file's actual content, or the
-read fails outright.
+Named for what it does now, not what an earlier version of it did: PR #37's second review
+(Codex) found that `truename'-then-`merge-pathnames' -- what this function used to be, and
+what `cl-gbdt/src/lightgbm/api''s identically-purposed function still is -- broke a save
+followed by a load through the SAME symlinked path. `save-model' had already stopped
+dereferencing, to honour a symlinked destination's own extension (PR #37's first review);
+with `load-model' still dereferencing, `model.json -> target.ubj' wrote JSON at `model.json'
+(correct) but then loaded it back through `target.ubj', where `XGBoosterLoadModel' picked
+the UBJ parser from that name and choked on the JSON bytes with `foreign-call-error'. Two
+resolution rules for the two callers is what produced that; the fix is one rule for both,
+not two rules chosen more carefully. `save-model' and `load-model' both call this function
+now, and pass it nothing to switch: this wrapper uses the path the caller named and does
+not resolve symlinks, on either operation. `XGBoosterSaveModel' and `XGBoosterLoadModel'
+both pick their serialization -- `.json' text or `.ubj' binary -- from PATH's own
+extension, not from any symlink target's, so a save and a load through the SAME path
+round-trip by construction: whatever `save-model' wrote is exactly what `load-model' reads
+back, because both look at the identical name. This function was called
+`%best-effort-resolve-path' while it still attempted `truename' with a `merge-pathnames'
+fallback; `truename' is gone, there is no fallback left to describe, and the old name
+would now claim an attempt this function never makes -- renamed for the same reason
+`%not-a-regular-file-p' became `%directory-p' when what it tested changed.
 
-That is why the two callers resolve PATH by opposite rules rather than both switching to
-FOLLOW-SYMLINKS NIL. `save-model''s PATH is a name being CREATED, and its extension is a
-caller instruction: `model.json' symlinked to an existing `target.ubj' means \"save JSON,
-reachable at model.json\" -- dereferencing first hands `XGBoosterSaveModel' `target.ubj'
-instead, silently writing UBJ bytes under a name that says JSON. Reproduced exactly, in
-both directions, under the FOLLOW-SYMLINKS-always-true behavior this parameter replaces:
-`model.json -> target.ubj' wrote UBJ readable back through `model.json', and
-`model.ubj -> target.json' wrote JSON back through `model.ubj' -- the caller's own format
-choice silently overridden by whatever the symlink happened to point at, in either
-direction, and even an unrecognized target extension did not refuse the save, it silently
-defaulted to UBJSON (see `save-model''s own docstring for that correction to an earlier,
-unmeasured claim here). `load-model''s PATH is an existing file being IDENTIFIED, and the
-READER needs the real file's own extension to pick the matching parser -- a symlink named
-`model.ubj' pointing at real JSON bytes has to resolve to the name the JSON was actually
-saved under, or `XGBoosterLoadModel' hands the JSON parser a `.ubj'-declared byte stream
-(or the reverse) and fails on a file that is, in fact, perfectly loadable through its own
-real name. Not dereferencing on load would trade `save-model''s hazard for a strictly
-worse one: a currently-working symlinked load would start failing instead.
+The cost of never dereferencing falls on a symlink whose own extension does not describe
+its target's real format -- `model.ubj' pointing at bytes that are actually JSON, put
+there by something other than a `save-model' call through that same link. Measured, not
+assumed, that this cost is cheap: `XGBoosterLoadModel' on an extension it does not
+recognize at all does not refuse either -- it prints \"Unknown file format: '<ext>'. Using
+JSON ('json') as a guess.\" and proceeds, succeeding when the guess happens to be right and
+failing exactly like any other format mismatch when it is not. A `model.ubj' whose real
+bytes are JSON is no different, in what reaches the foreign call, from a plain file
+renamed from `.json' to `.ubj' with no symlink at all -- XGBoost's own extension dispatch
+already fails on that case, symlink or not, and no version of this wrapper has ever
+protected against it. Dereferencing bought that one case back at the price of breaking
+every same-path round trip, which is the worse trade.
 
 Deliberately not `cl-gbdt/src/xgboost/file-input''s `%resolve-file-path' called from here
 instead, even though both live in this same backend: that function REFUSES, returning NIL,
@@ -1121,40 +1116,22 @@ classify without one. This function feeds `save-model' and `load-model' instead,
 which has such a gate -- `save-model''s PATH is normally EXPECTED not to exist yet, being
 created by that call, and `load-model''s own missing-PATH case is `XGBoosterLoadModel''s own
 message to report, not a `probe-file' pre-check made here -- so this function never
-refuses in either FOLLOW-SYMLINKS mode: `MERGE-PATHNAMES' applies CL's merging rule to a
-pathname that need not exist, and the missing-file case still reaches C exactly as it
-always has, only correctly resolved first, so the C library's own error names the location
-`open' would actually have looked at. `cl-gbdt/src/lightgbm/api''s identically-named
-`%best-effort-resolve-path' makes the same never-refuses choice, unconditionally and with
-no FOLLOW-SYMLINKS parameter at all -- LightGBM has no format-by-extension dispatch on
-either side (measured: `LGBM_BoosterSaveModel' writes byte-identical output regardless of
-PATH's extension, and `LGBM_BoosterCreateFromModelfile' loads real content back correctly
-under any extension), so the save/load asymmetry this parameter exists to resolve simply
-does not arise on that backend -- see its own docstring. See `%resolve-file-path''s own
-docstring for the reverse cross-reference to this function.
+refuses. See `%resolve-file-path''s own docstring for the reverse cross-reference.
 
-Measured, not assumed, that FOLLOW-SYMLINKS does not change how a leading `~' expands:
-`(pathname \"~/x.txt\")' already carries an ABSOLUTE `:HOME' directory component from
-parsing alone, before either `truename' or `merge-pathnames' ever sees it, so
-`sb-ext:native-namestring' expands it identically regardless of which branch resolves it
--- `~' never reaches C unexpanded in either mode. Likewise for a relative PATH under a
-rebound `*default-pathname-defaults*': `MERGE-PATHNAMES' alone -- the whole of the
-FOLLOW-SYMLINKS NIL path, and the fallback of the FOLLOW-SYMLINKS T path -- resolves it
-against that special, never against the OS process's own working directory, exactly as
-the T path's `truename' branch does for a PATH that already exists.
+Measured, not assumed, that dropping `truename' does not lose relative-path or `~'
+handling, the whole reason this function exists: a relative PATH still resolves against
+`*default-pathname-defaults*', not the OS process's own working directory, because
+`MERGE-PATHNAMES' is what did that even in the old `truename'-first version's fallback
+branch; and `(pathname \"~/x.txt\")' already carries an ABSOLUTE `:HOME' directory
+component from parsing alone, before `MERGE-PATHNAMES' ever sees it, so `~' still never
+reaches C unexpanded.
 
-Runs after `%check-file-path' at every call site, never before, in both modes: a wild
-PATH also makes `truename' signal `file-error' (per the standard), which would route it
-to the `merge-pathnames' branch here in FOLLOW-SYMLINKS T mode, and reaches
-`merge-pathnames' directly in FOLLOW-SYMLINKS NIL mode regardless -- `merge-pathnames'
-does not resolve a wildcard, so the result would still be wild, and `native-namestring'
-would then signal its own untyped `sb-kernel:no-native-namestring-error' for it.
-`%check-file-path' refuses a wild PATH first, with a typed condition, so this function is
-never actually reached with one."
-  (if follow-symlinks
-      (handler-case (truename path)
-        (file-error () (merge-pathnames path *default-pathname-defaults*)))
-      (merge-pathnames path *default-pathname-defaults*)))
+Runs after `%check-file-path' at every call site, never before: a wild PATH would make
+`MERGE-PATHNAMES' return a still-wild pathname (it does not resolve wildcards), and
+`native-namestring' would then signal its own untyped
+`sb-kernel:no-native-namestring-error' for it. `%check-file-path' refuses a wild PATH
+first, with a typed condition, so this function is never actually reached with one."
+  (merge-pathnames path *default-pathname-defaults*))
 
 (defun save-model (booster path)
   "Save BOOSTER's model to PATH via `XGBoosterSaveModel', and return PATH.
@@ -1174,28 +1151,20 @@ defaults to UBJSON, with a warning `XGBoosterSaveModel' prints on the library's 
 rather than signalling anything Lisp-side to catch -- this wrapper has no way to turn that
 warning into a condition and does not attempt to.
 
-PATH reaches `XGBoosterSaveModel' as `sb-ext:native-namestring' of
-`(%best-effort-resolve-path path :follow-symlinks nil)' -- `MERGE-PATHNAMES' against
-`*default-pathname-defaults*' ALWAYS, `truename' never attempted -- never PATH's bare
-`namestring' either, which would neither merge a relative PATH against that special nor
-spell a literal asterisk in a real filename the way the caller wrote it.
-FOLLOW-SYMLINKS NIL specifically, the opposite of `load-model' below (which passes T):
-PATH here is a name being CREATED, and its extension is a caller instruction XGBoost
-reads directly off it, so a PATH that is itself a symlink -- `model.json' pointing at an
-existing `target.ubj' -- must still be seen as `model.json', not dereferenced to
-`target.ubj' and its `.ubj' extension. PR #37's review (Codex, P2) found, and this
-project reproduced, exactly that: under FOLLOW-SYMLINKS defaulting to true (the behavior
-before this parameter existed), saving through `model.json -> target.ubj' wrote UBJ bytes
-readable back through the `model.json' name, and the reverse
-(`model.ubj -> target.json') wrote JSON bytes back through `model.ubj' -- the caller's
-own extension choice silently overridden by whatever the symlink happened to point at.
-See `%best-effort-resolve-path' for the full measurement, including why `load-model'
-needs the opposite choice, and see that function and `%check-file-path' above for the
-order the wild-pathname and merge hazards are fixed in. `XGBoosterSaveModel' takes a
-plain file name, not a URI -- confirmed against the vendored header, not assumed -- so
-`cl-gbdt/src/xgboost/file-input''s URI-specific checks do not apply and are not reused
-here. Signals `unsupported-argument' first, via `%check-file-path', when PATH is a wild
-pathname.
+This wrapper uses the path the caller named and does not resolve symlinks; PATH reaches
+`XGBoosterSaveModel' as `sb-ext:native-namestring' of `(%resolve-path-against-defaults
+path)' -- `MERGE-PATHNAMES' against `*default-pathname-defaults*', never `truename' --
+never PATH's bare `namestring' either, which would neither merge a relative PATH against
+that special nor spell a literal asterisk in a real filename the way the caller wrote it.
+Because the file's own extension selects the format on both this function and
+`load-model', and both resolve PATH by the identical rule, a save and a load through the
+same path round-trip: see `%resolve-path-against-defaults' for the measurement that made
+this the rule, including the round trip PR #37's second review found broken when this
+function and `load-model' resolved PATH by two different rules instead. `XGBoosterSaveModel'
+takes a plain file name, not a URI -- confirmed against the vendored header, not assumed
+-- so `cl-gbdt/src/xgboost/file-input''s URI-specific checks do not apply and are not
+reused here. Signals `unsupported-argument' first, via `%check-file-path', when PATH is a
+wild pathname.
 
 Signals `wrong-backend-reference' when BOOSTER is not a booster built by this backend -- a
 dataset, a LightGBM booster, or not a handle at all. This function dispatches on nothing, so
@@ -1207,8 +1176,7 @@ from the `handle-live-pointer' inside that same check."
     (let ((pointer (%check-xgboost-booster booster "save-model's booster argument")))
       (%check-file-path path "save-model's path" "XGBoosterSaveModel")
       (cffi:with-foreign-string (filename (sb-ext:native-namestring
-                                            (%best-effort-resolve-path
-                                             path :follow-symlinks nil)))
+                                            (%resolve-path-against-defaults path)))
         (%save-model pointer filename)))
     path))
 
@@ -1223,19 +1191,19 @@ The returned booster has no training set -- see the `booster' class' documentati
 PATH names a model, not a dataset. `evaluation' on it therefore reports nothing, and
 `update-one-iteration' signals `missing-training-set'.
 
-PATH reaches `XGBoosterLoadModel' as `sb-ext:native-namestring' of
-`(%best-effort-resolve-path path :follow-symlinks t)' -- `truename' attempted first,
-dereferencing any symlink, `merge-pathnames' as the fallback -- named explicitly T here
-even though that is also this parameter's default, because the choice is deliberate and
-the opposite of `save-model''s. See that function's docstring, and
-`%best-effort-resolve-path' above, for the measurement establishing why: `XGBoosterLoadModel'
-picks its parser (JSON or UBJ) from PATH's own extension, and that parser has to match the
-bytes it is actually about to read, not merely the name a symlink happens to be spelled
-with -- a `model.ubj' that is a symlink to real JSON bytes has to resolve to the JSON
-file's own name, or the UBJ parser is handed JSON text and fails with `foreign-call-error'
-on a file that loads perfectly well through its real name. Not dereferencing here would
-trade `save-model''s hazard for a strictly worse one on load: a currently-working
-symlinked model would start failing. `%best-effort-resolve-path'/`%check-file-path' above
+This wrapper uses the path the caller named and does not resolve symlinks; PATH reaches
+`XGBoosterLoadModel' as `sb-ext:native-namestring' of `(%resolve-path-against-defaults
+path)' -- `MERGE-PATHNAMES' against `*default-pathname-defaults*', never `truename' --
+the identical rule `save-model' uses. Because the file's own extension selects the parser
+on both this function and `save-model', and both resolve PATH the same way, a load through
+a path just saved through -- symlinked or not -- reads back exactly what was written: see
+`%resolve-path-against-defaults' for the measurement behind this rule, including the round
+trip PR #37's second review found broken when this function dereferenced a symlink and
+`save-model' did not. Measured, not assumed, and specific to this function: an extension
+`XGBoosterLoadModel' does not recognize does not refuse the load either -- it prints
+\"Unknown file format: '<ext>'. Using JSON ('json') as a guess.\" and proceeds, succeeding
+when the guess is right and failing with `foreign-call-error', the same as any other
+format mismatch, when it is not. `%resolve-path-against-defaults'/`%check-file-path' above
 also cover why a bare `namestring' resolves a relative PATH against the wrong directory
 and mis-escapes a literal asterisk, and why XGBoost's plain-filename `fname' argument does
 not route through `cl-gbdt/src/xgboost/file-input''s URI-specific checks. Signals
@@ -1255,8 +1223,7 @@ truthfully for the wrong library. Signals `backend-not-open' when BACKEND is clo
     (let ((booster-pointer (%create-booster nil)))
       (with-pointer-ownership (booster-pointer #'%free-booster-unchecked take-ownership)
         (cffi:with-foreign-string (filename (sb-ext:native-namestring
-                                              (%best-effort-resolve-path
-                                               path :follow-symlinks t)))
+                                              (%resolve-path-against-defaults path)))
           (%load-model booster-pointer filename))
         (take-ownership 'xgboost-booster backend :booster)))))
 
