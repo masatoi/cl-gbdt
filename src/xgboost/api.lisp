@@ -1025,13 +1025,27 @@ generic one.
 Both take a plain FILE NAME, not a URI: read directly from the vendored header rather than
 assumed, `ffi-spec/xgboost/include/xgboost/c_api.h' documents `fname' for each as \"File
 name. The string must be UTF-8 encoded.\", with none of `XGDMatrixCreateFromURI''s own
-`uri:'/`format=' query language, whose own `config' parameter is explicitly documented as
-\"The URI of the input file\". `cl-gbdt/src/xgboost/file-input''s `%check-file-uri-arguments'
-therefore does not apply here: its wild-pathname, reserved-character and smuggled-`format'-
-key checks all exist to keep a caller from injecting a second query segment into a URI
-these two functions never compose. This check keeps only the one rule that still applies to
-a plain filename -- `native-namestring' signals its own untyped
-`sb-kernel:no-native-namestring-error' for a wild PATH -- and none of the URI-specific ones.
+`uri:'/`format=' query language -- that function's `config' parameter is JSON-encoded
+parameters for DMatrix construction, one FIELD of which, `uri', not `config' itself, is
+documented as \"The URI of the input file\".
+
+`cl-gbdt/src/xgboost/file-input''s `%check-file-uri-arguments' therefore does not apply
+here, and not for one reason common to all its checks: its reserved-character checks (a
+`?'/`#'/`;' in PATH, a reserved character inside FORMAT or a PAIRS entry, a smuggled
+`format' key among PAIRS) exist to keep a caller from injecting a second query segment or a
+`;'-separated multi-path list into a URI these two functions never compose, but its
+wild-pathname check exists for an unrelated reason stated in that function's own docstring
+-- dmlc glob-expands a wild namestring rather than opening it as the single file it names.
+A fifth check there refuses a literal `*' or `[' that `wild-pathname-p' does not see as
+wild, precautionarily, against that same glob layer. Neither the glob-driven wild-pathname
+reason nor the literal-`*'/`[' precaution applies to a plain `fname': `XGBoosterSaveModel'
+and `XGBoosterLoadModel' pass it to a plain `fopen', with no glob layer between them and
+it -- measured, not assumed: with `model-real.json' already present, loading a literal
+`model-*.json' fails with `foreign-call-error' on both backends rather than matching the
+real file, so neither library globs a plain filename. This check keeps only the rule that
+still applies regardless -- `native-namestring' signals its own untyped
+`sb-kernel:no-native-namestring-error' for a wild PATH, whatever the reason PATH is wild --
+and none of `%check-file-uri-arguments''s five URI-specific ones.
 
 `save-model' and `load-model' each pass PATH's `sb-ext:native-namestring' (by way of
 `%best-effort-resolve-path') to their own C entry point, not PATH's `namestring' --

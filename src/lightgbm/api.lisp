@@ -944,8 +944,10 @@ PATH is normally being created here), `merge-pathnames' against
 `*default-pathname-defaults*' otherwise -- never PATH's bare `namestring', which would
 neither merge a relative PATH against that special nor spell a literal asterisk in a real
 filename the way the caller wrote it. See `%best-effort-resolve-path' and `%check-file-path'
-for both hazards and the order they are fixed in. Signals `unsupported-argument' first, via
-`%check-file-path', when PATH is a wild pathname.
+for both hazards and the order they are fixed in. Checked after the :BEST refusal above, not
+before it -- measured: `:num-iteration :best' against a wild PATH signals `unsupported-argument'
+via `%reject-best-num-iteration', not via this check -- but still before any foreign call:
+signals `unsupported-argument' via `%check-file-path' when PATH is a wild pathname.
 
 Signals `wrong-backend-reference' when BOOSTER is not a booster built by this backend -- a
 dataset, an XGBoost booster, or not a handle at all. This function dispatches on nothing, so
