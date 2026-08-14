@@ -412,13 +412,16 @@ ros run -- --non-interactive --load tools/ci/check-abi-blacklist.lisp
 ros run -- --non-interactive --load tools/ci/check-binding-coverage.lisp
 ros run -- --non-interactive --load tools/ci/check-api-reference.lisp
 ros run -- --non-interactive --load tools/ci/check-functional-coverage.lisp
+ros run -- --non-interactive --load tools/ci/check-doc-links.lisp
+ros run -- --non-interactive --load tools/ci/check-support-matrix.lisp
 ```
 
-Nine of those have no MCP equivalent at all — leaf systems, float traps, layer-1 guards,
+Eleven of those have no MCP equivalent at all — leaf systems, float traps, layer-1 guards,
 layer separation, ABI blacklist, binding coverage, API reference, functional coverage,
-lint. Run the whole block before committing, and at the end of any task whose plan states
-numbers. **Add a line here whenever `tools/ci/` gains a script**: `check-layer-1-guards.lisp`
-arrived in PR #28 and was missing from this list until 2026-08-12.
+doc links, support matrix, lint. Run the whole block before committing, and at the end of
+any task whose plan states numbers. **Add a line here whenever `tools/ci/` gains a script**:
+`check-layer-1-guards.lisp` arrived in PR #28 and was missing from this list until
+2026-08-12.
 
 `sbcl` is not on `PATH` in this environment; every command above goes through
 `ros run -- --non-interactive ...`, not a bare `sbcl` invocation.
@@ -458,7 +461,8 @@ tools/ci/     The scripts CI actually runs: run-tests.lisp, lint.lisp,
               check-leaf-systems.lisp, check-layer-separation.lisp, check-float-traps.lisp,
               check-layer-1-guards.lisp, check-abi-blacklist.lisp,
               check-binding-coverage.lisp, check-api-reference.lisp,
-              check-functional-coverage.lisp
+              check-functional-coverage.lisp, check-doc-links.lisp,
+              check-support-matrix.lisp
 tools/        regen.lisp (regenerates src/*/c-api.lisp), gen-api-reference.lisp
               (regenerates docs/API-REFERENCE.md), and the shell scripts they and CI call
 ffi-spec/     Vendored C headers and the c2ffi specs generated from them;

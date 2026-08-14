@@ -135,6 +135,26 @@ jobs:
         # that actually ratchets -- for the unproven count.
         run: ros run -- --non-interactive --load tools/ci/check-functional-coverage.lisp
 
+      - name: Check documentation links
+        # README.markdown, CONTRIBUTING.md, CLAUDE.md, THIRD-PARTY-LICENSES.md, both
+        # ffi-spec/*.md, the layered-API policy document and all six docs/user-guide/*.md
+        # guides had no link checker until now, which is how README.markdown drifted to
+        # 239 KB carrying a link into a file the repository does not track. This fails the
+        # build on a relative link whose target file does not exist, or whose #fragment
+        # derives from no heading in it -- see tools/ci/check-doc-links.lisp's header for
+        # the exact GitHub anchor rule (verified against a real rendered page, not merely
+        # trusted as written), why docs/API-REFERENCE.md is excluded, and why every link
+        # occurrence is checked on its own rather than deduplicated.
+        run: ros run -- --non-interactive --load tools/ci/check-doc-links.lisp
+
+      - name: Check the README's support matrix against CI
+        # README.markdown's "Supported environments" table names, per backend, the
+        # library versions CI actually verifies; this fails the build the moment that
+        # column and the union of ffi-spec/VERSIONS plus test.yml's version-matrix job
+        # disagree, in either direction. See tools/ci/check-support-matrix.lisp's header
+        # for why the table's "Also measured" column is deliberately never checked.
+        run: ros run -- --non-interactive --load tools/ci/check-support-matrix.lisp
+
       - name: Compile every system without warnings
         # All nine systems, not just the three non-test ones: cl-gbdt/regen and the two
         # test systems went unchecked before, which is how tests/functional/lightgbm.lisp
