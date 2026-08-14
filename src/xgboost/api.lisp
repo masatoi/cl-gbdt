@@ -74,6 +74,7 @@
                 #:%create-booster
                 #:%create-dmatrix
                 #:%create-dmatrix-from-csr
+                #:%create-dmatrix-from-uri
                 #:%dataset-num-features
                 #:%dataset-num-rows
                 #:%feature-importance-type
@@ -108,9 +109,12 @@
                 #:backend-supports-p)
   (:import-from #:cl-gbdt/src/conditions
                 #:capability-unavailable
+                #:file-format-mismatch
                 #:foreign-call-error
                 #:missing-training-set
+                #:unsupported-argument
                 #:wrong-backend-reference)
+  (:import-from #:cl-gbdt/src/xgboost/file-input)
   (:import-from #:cl-gbdt/src/data
                 #:csr-matrix
                 #:csr-matrix-indices
@@ -132,6 +136,7 @@
   (:export #:%creation-function-name
            #:create-booster
            #:create-dataset
+           #:create-dataset-from-file
            #:dataset-num-features
            #:dataset-num-rows
            #:evaluation
@@ -356,6 +361,189 @@ orphaning it."
         (when feature-types
           (%set-feature-types dataset-pointer feature-types))
         (take-ownership 'xgboost-dataset backend :dataset)))))
+
+(defun create-dataset-from-file (backend path format &key uri-parameters)
+  "Build and return an `xgboost-dataset' from PATH on BACKEND via `XGDMatrixCreateFromURI',
+declaring PATH's contents to be FORMAT.
+
+FORMAT is positional and required -- one of `:libsvm', `:csv' or `:binary', exactly the set
+`cl-gbdt/src/xgboost/file-input:detect-file-format' classifies a file into. A default would
+invite a caller not to think about a mismatch that ends the process; see below. Anything
+outside that set signals `unsupported-argument' before any foreign call.
+
+URI-PARAMETERS is a plist of further dmlc query keys -- `(:label_column 0)', for one --
+passed to `cl-gbdt/src/xgboost/file-input:file-uri' verbatim and appended to the composed
+URI after FORMAT's own `format=' key. Record section 5: on a CSV file, `label_column' picks
+a 0-based label column -- `?format=csv&label_column=0' reads back 4 rows x 3 columns with
+labels, where `?format=csv' alone reads 4 x 4 with none. A `format' key among
+URI-PARAMETERS signals `unsupported-argument' from `file-uri''s own gate, since FORMAT is
+this function's argument to give, not a query key a caller composes by hand.
+
+**Why the gate exists.** XGBoost does not check FORMAT against PATH's own contents before
+`XGDMatrixCreateFromURI' starts parsing, and measured against the vendored 3.3.0 (record
+section 4), the wrong direction is not merely wrong, it is fatal: `train.csv?format=libsvm',
+`train.bin?format=libsvm', and a space-delimited numeric file declared `:libsvm' all SIGSEGV
+inside a thread dmlc creates for the parse -- SBCL reports `Can't handle sig11 in non-lisp
+thread' and the process is gone, with no Lisp stack for any `handler-case' to run on. This
+function classifies PATH itself, with `cl-gbdt/src/xgboost/file-input:detect-file-format',
+and signals `file-format-mismatch' -- naming PATH, the DECLARED format, and the DETECTED one
+-- before the foreign call, for the shape that classification saw.
+
+**That classification is of PATH's first non-blank line, not of PATH.**
+`detect-file-format' reads no further once it has a verdict (see its own docstring); this
+gate therefore validates the shape that first line establishes, and a file whose first line
+is genuinely libsvm-shaped but whose later rows are not still passes it, exact-match and
+all, with the mismatched later content still reaching `XGDMatrixCreateFromURI'. PR #36's
+re-review raised this as a Critical finding and asked for it to be measured before any
+fix. Measured afterward -- ten runs, five mixed-content shapes (a CSV row second, a CSV row
+last of fifty, a row truncated mid-token, a space-delimited row embedded rather than filling
+the whole file, and a binary tail appended) against both this library and
+`LGBM_DatasetCreateFromFile' -- none of the ten crashed: three of the five shapes returned a
+clean `-1' from XGBoost, and two returned a silent, partial success (a truncated row read as
+though complete; a binary tail silently dropped, though not identically -- XGBoost and
+LightGBM disagreed on the resulting row count for the same file). **That is what ten runs
+showed, not a proof that no such input can crash.** The earlier whole-file SIGSEGVs (record
+section 4) all had every row wrong from the first; that dmlc's own row-level check is what
+stops a single bad row once an earlier one has already established the shape is a plausible
+explanation for the difference, not one independently confirmed here -- see
+`docs/superpowers/specs/2026-08-13-file-input-measurements.md' section 12 for the full
+record, including the truncation and cross-backend row-count hazards, neither of which is a
+crash but both of which a caller can meet silently. Reading the rest of PATH to validate
+every row was considered and rejected: it would mean this wrapper reads what it exists to
+let the library read once, doubling I/O on exactly the large-file case the feature is for,
+and would still not close the TOCTOU window `%resolve-file-path' already documents -- a
+scan finished before `XGDMatrixCreateFromURI' runs proves nothing about what that call
+itself will see.
+
+**The gate also stops a silent wrong answer, not only a crash.** The other direction, a real
+libsvm file declared `:csv', does not crash: measured, `train.libsvm?format=csv' returns
+code 0 and a 4-row *1-column* DMatrix with no label, silently wrong rather than refused. A
+blank-only file returns a silent 0x0 DMatrix under either declared format. Both are caught
+here too -- the first because `detect-file-format' answers `:libsvm', not `:csv'; the second
+because it answers `:unknown', which matches no declared FORMAT at all.
+
+**The file dmlc opens is the file this function classified, because there is one
+resolution of PATH and both readers use it.** PATH is resolved to a `truename' exactly
+once, by `cl-gbdt/src/xgboost/file-input:%resolve-file-path', and that SAME resolved
+pathname -- never the caller's original PATH again -- is what `detect-file-format'
+classifies and what `file-uri' composes the URI from. Review round 3, Finding N4
+(Critical): before this, the two were called on the caller's PATH independently, and each
+resolved it differently -- `detect-file-format' through `open', honouring Lisp's
+`*default-pathname-defaults*' and expanding a leading `~'; `file-uri' through a bare
+`namestring', printing PATH's own components verbatim with neither. A relative PATH under
+a `*default-pathname-defaults*' that disagreed with the OS process's own working directory
+classified one file while dmlc opened another; `~/x.libsvm' classified via `truename''s
+tilde expansion while dmlc received the literal string. Both reproduced the exact fatal
+mismatch this function exists to prevent, through a file `detect-file-format' never even
+saw rather than one it classified wrongly -- which is why the fix is a single resolution
+shared by both readers rather than one more guard against one more shape: see
+`%resolve-file-path''s own docstring for why that is a narrower, checkable promise than
+enumerating every pathname shape dmlc's URI syntax might disagree about.
+
+Every `detect-file-format' verdict but an exact match with FORMAT is a refusal,
+`:unreadable' included -- `%resolve-file-path' returning NIL (PATH missing, wild, or a
+symlink to nowhere) counts as `:unreadable' here too, before `detect-file-format' is even
+called. An earlier version of this gate passed `:unreadable' through, on the premise that
+\"an unopenable file is XGBoost's own to report cleanly\" -- review round 2 found that
+premise held only for a missing plain file and not for two of `:unreadable''s other
+causes: a directory PATH is not an error to dmlc at all, it lists the directory and parses
+every file inside as though each had been declared FORMAT, and a `;'-separated multi-path
+-- `file-uri''s own gate now refuses one in PATH directly, but this gate does not depend
+on that alone -- would have let dmlc read several files under one declaration the same
+way. A missing plain file is refused too, uniformly with every other `:unreadable' cause,
+even though that specific case was never itself dangerous -- the contract is simpler for
+not carving it out as an exception.
+
+Not a guarantee against a file replaced on disk between this function classifying it and
+the foreign call actually running -- that TOCTOU window is `%resolve-file-path''s own
+docstring's closing caveat, and this wrapper cannot close it from Lisp.
+
+**PATH is expected to name a data file, and a FIFO with no writer is not detected.** ANSI
+Common Lisp has no portable way to ask whether a path names a named pipe rather than an
+ordinary regular file, so nothing in the chain above -- `%resolve-file-path', or
+`cl-gbdt/src/xgboost/file-input:detect-file-format''s own `%directory-p' check -- can
+refuse one. A FIFO with nothing on the other end of it makes this function block
+indefinitely inside the read that classifies it, with no error and no diagnostic. A
+directory is still refused (portably checkable: its resolved pathname has no NAME
+component), and an unbounded device such as `/dev/zero' cannot make this function read
+forever (bounded by `%read-byte-line''s own cap), but a blocking special file is a real,
+undetected gap rather than a handled case -- pass PATH only a path you expect to name an
+ordinary file.
+
+**`:binary' carries no `format' key in the URI at all.** Measured (record section 2):
+`?format=binary' is rejected outright, `Unknown data type binary', and a binary DMatrix
+loads only from a URI with no `format=' key whatsoever -- `file-uri' already knows this and
+omits the key for `:binary'; nothing here has to repeat it.
+
+**A libsvm ranking file -- each row carrying a `qid:<group>' tag between the label and
+its feature pairs -- is accepted under `:libsvm'.** Measured (PR #36 review):
+`XGDMatrixCreateFromURI' reads such a file cleanly, the same row and column shape as the
+identical rows with the `qid' tags removed, and correctly recovers the group boundaries
+they encode. `cl-gbdt/src/xgboost/file-input:detect-file-format' recognizes `qid' only in
+the one position libsvm's own grammar puts it, immediately after the label, not scanned
+for elsewhere on the line -- see that function's own docstring for the rule.
+`cl-gbdt/lightgbm:create-dataset-from-file' does NOT accept the same file; its own parser
+refuses `qid' outright. See that function's docstring for the asymmetry stated on its own
+side too.
+
+**XGBoost's text file input is deprecated.** Every text-path attempt, including a refused
+one, prints `WARNING: .../data.cc:963: Text file input has been deprecated since 3.1' to
+**stderr**, **once per process**, measured verbatim (record section 6). The binary path
+prints nothing at all.
+
+Checked in this order, all before any foreign call: BACKEND's class, then whether it is
+open, then whether FORMAT is in the accepted set, then PATH resolved once by
+`%resolve-file-path' (NIL there is an immediate `:unreadable'), then `file-uri' composing
+the URI from that SAME resolved pathname (which still signals `unsupported-argument' for a
+`?'/`#'/`;' its namestring contains, or a smuggled `format' key or reserved character --
+belt-and-braces over a real file whose own name happens to hold one, since resolution
+alone cannot rule that out), then `detect-file-format' classifying that resolved pathname
+and the classification matching FORMAT exactly -- `:unreadable' included, no exception.
+A wild PATH (`a*.csv') or a `;'-holding one (`a.libsvm;b.csv') is refused at the
+resolution step now, `truename' itself signalling `file-error' for the first and no
+literal file existing under either raw string for the second in the ordinary case --
+`file-uri''s own wild-pathname and `;' guards stay in place regardless, both for a real
+file whose resolved name happens to hold one of those characters and because `file-uri'
+is a public Layer 1 function in its own right, tested and callable on its own terms.
+
+Signals `wrong-backend-reference' when BACKEND is not an `xgboost-backend' -- the other
+backend's object, or not a backend at all -- before anything else is read from it and ahead
+of the openness check below, which for another backend's object would answer about the
+wrong shared library; see `%check-object-class'. Signals `backend-not-open' before any
+foreign call when BACKEND is not open -- see `%check-backend-open'. Signals
+`foreign-call-error' when the creation call reports success but writes a null handle.
+
+The raw DMatrix handle exists in C from the moment the creation call returns, but there is
+nothing left to attach to it afterward -- no LABEL, WEIGHT, GROUP or FEATURE-NAMES argument,
+the file itself already carrying whatever `create-dataset''s caller would otherwise pass
+separately, exactly as `cl-gbdt/lightgbm:create-dataset-from-file' has none either.
+`with-pointer-ownership' still spans the gap between that return and `make-handle', short as
+it is -- policy section 10 asks for it wherever a fresh pointer exists with nothing in Lisp
+yet referencing it, not only where the gap is wide."
+  (with-foreign-float-traps-masked
+    (%check-object-class backend 'xgboost-backend "backend"
+                         "create-dataset-from-file's backend argument")
+    (%check-backend-open backend)
+    (unless (member format '(:libsvm :csv :binary))
+      (error 'unsupported-argument
+             :backend (backend-name backend)
+             :argument "create-dataset-from-file's format argument"
+             :reason (format nil "~S is not one of :LIBSVM, :CSV, or :BINARY" format)))
+    (let* ((resolved (cl-gbdt/src/xgboost/file-input:%resolve-file-path path))
+           (detected (if resolved
+                         (cl-gbdt/src/xgboost/file-input:detect-file-format resolved)
+                         :unreadable)))
+      (unless (eq detected format)
+        (error 'file-format-mismatch :path path :declared format :detected detected))
+      (let* ((uri (cl-gbdt/src/xgboost/file-input:file-uri resolved format uri-parameters))
+             (dataset-pointer (%create-dmatrix-from-uri uri)))
+        (when (cffi:null-pointer-p dataset-pointer)
+          (error 'foreign-call-error
+                 :function-name "XGDMatrixCreateFromURI"
+                 :code 0
+                 :message "reported success but returned a null dataset handle"))
+        (with-pointer-ownership (dataset-pointer #'%free-dmatrix-unchecked take-ownership)
+          (take-ownership 'xgboost-dataset backend :dataset))))))
 
 (defun free-dataset (dataset)
   "Free DATASET via `XGDMatrixFree'. Does nothing if it was already freed, and returns no

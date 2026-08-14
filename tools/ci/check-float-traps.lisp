@@ -119,12 +119,13 @@
 `api.lisp' holds a backend's finished Layer 1 operations -- the ones that take a backend or a
 handle, do the whole job, and hand back a handle or a result, moved out of the `protocol.lisp'
 method bodies that used to hold them so a caller who loaded only `cl-gbdt/lightgbm' or
-`cl-gbdt/xgboost' can invoke them. BOTH backends have one, and each holds the same thirteen:
+`cl-gbdt/xgboost' can invoke them. BOTH backends have one, and each holds the same fourteen:
 `create-dataset', `create-booster', `update-one-iteration', `predict', `free-dataset',
 `free-booster', `save-model', `load-model', `model-to-string', `feature-importance',
-`evaluation', `dataset-num-rows' and `dataset-num-features' -- plus, on XGBoost, `slice-model',
-which moved here from `classes.lisp'. LightGBM's `api.lisp' exports those thirteen operations;
-XGBoost's exports fourteen, `slice-model' being the extra. The `%'-prefixed helpers those call
+`evaluation', `dataset-num-rows', `dataset-num-features' and `create-dataset-from-file' --
+plus, on XGBoost, `slice-model', which moved here from `classes.lisp'. LightGBM's `api.lisp'
+exports those fourteen operations; XGBoost's exports fifteen, `slice-model' being the extra.
+The `%'-prefixed helpers those call
 live there too and are NOT counted here: rule (2) below
 reaches only the names the backend's public package exports, which is the whole set of names
 reached with no `defmethod' left to inherit a mask from.

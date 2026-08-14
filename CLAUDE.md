@@ -103,10 +103,11 @@ loads `/unified`; loading only Layer 1 and calling a portable generic signals
 `backend-methods-not-loaded`, which names the system to load.
 `tools/ci/check-layer-separation.lisp` fails the build if a Layer 1 file's dependency closure
 ever reaches `cl-gbdt/src/protocol`, the training files, or the bare `cl-gbdt`.
-**A Layer 1 caller trains, predicts, persists and reports**, both backends: `create-dataset`,
-`create-booster`, `update-one-iteration`, `predict`, `free-dataset`, `free-booster`,
-`save-model`, `load-model`, `model-to-string`, `feature-importance`, `evaluation`,
-`dataset-num-rows` and `dataset-num-features` -- thirteen operations -- are published from
+**A Layer 1 caller trains, predicts, persists, reports and reads a dataset straight from a
+file**, both backends: `create-dataset`, `create-booster`, `update-one-iteration`, `predict`,
+`free-dataset`, `free-booster`, `save-model`, `load-model`, `model-to-string`,
+`feature-importance`, `evaluation`, `dataset-num-rows`, `dataset-num-features` and
+`create-dataset-from-file` -- fourteen operations -- are published from
 `api.lisp` and proven with no unified API in the image by
 `tests/functional/{lightgbm,xgboost}-standalone.lisp`, each of which names its backend's
 public package and no other system **of this project** -- `rove` aside, they declare
@@ -285,7 +286,7 @@ a `defun` is a library-reaching entry point with no `defmethod` left to inherit 
 from, so it must wrap its own whole body the same way -- LightGBM's
 `booster-eval`/`booster-eval-names` and XGBoost's `evaluate-one-iteration` were the first
 functions this applied to, all three in `native.lisp`; every exported `defun` in either
-backend's `api.lisp` is one too -- thirteen operations on LightGBM, fourteen on XGBoost,
+backend's `api.lisp` is one too -- fourteen operations on LightGBM, fifteen on XGBoost,
 the extra one being `slice-model`, which lives there rather than in `native.lisp` because
 it builds a booster handle and so must name the concrete class `classes.lisp` defines. All
 four file names are globbed by that check's `+BACKEND-FILE-PATTERNS+`; a backend file

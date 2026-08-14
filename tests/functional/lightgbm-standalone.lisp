@@ -143,6 +143,82 @@ loads. Writing into the current directory instead would leave a model file in wh
 directory the suite happened to run from."
   (merge-pathnames name (uiop:temporary-directory)))
 
+(defmacro with-libsvm-fixture ((path) &body body)
+  "Write a four-row three-feature libsvm fixture to a fresh file, bind PATH to it, and
+delete it afterwards.
+
+Column indices are zero-based (`0:', `1:', `2:') -- LightGBM's own convention for the format,
+its \"Unknown format of training data\" error naming it \"LibSVM (zero-based)\" verbatim.
+Measured directly against the vendored library (`repl-eval', 2026-08-13): the same four rows
+written with one-based indices (`1:'/`2:'/`3:', the spelling
+`docs/superpowers/specs/2026-08-13-file-input-measurements.md''s own `train.libsvm' fixture
+uses) read back as FOUR features, not three -- index N names feature N of a zero-based space,
+so a one-based file leaves feature 0 unused and invented ahead of the three real ones.
+Zero-based indices read as exactly three, which is what lines this fixture up column-for-column
+against `create-dataset-from-file-trains-the-same-model-as-the-matrix''s dense matrix below.
+
+No leading blank line: `docs/superpowers/specs/2026-08-13-file-input-measurements.md' section
+8 measured that two or more leading blank lines make LightGBM invent an extra row, so a
+fixture that opened with one would fail the row-count assertion for a reason that has nothing
+to do with this branch."
+  `(let ((,path (merge-pathnames (format nil "cl-gbdt-fixture-~D.libsvm" (random 1000000))
+                                 (uiop:temporary-directory))))
+     (unwind-protect
+          (progn
+            (with-open-file (stream ,path :direction :output :if-exists :supersede)
+              (write-string "1 0:1.0 1:2.0 2:3.0
+0 0:4.0 1:5.0 2:6.0
+1 0:7.0 1:8.0 2:9.0
+0 0:10.0 1:11.0 2:12.0
+" stream))
+            ,@body)
+       (ignore-errors (delete-file ,path)))))
+
+(defmacro with-different-libsvm-fixture ((path) &body body)
+  "Write a four-row three-feature libsvm fixture whose labels and values both differ from
+`with-libsvm-fixture''s, bind PATH to it, and delete it afterwards.
+
+Three of its four labels are 1, where `with-libsvm-fixture' splits its four evenly -- the
+label MEANS differ (0.75 against 0.5), not merely their order. `model-string-after-one-
+iteration' trains with no `:parameters' at all, so `min_data_in_leaf''s default of 20
+exceeds either fixture's four rows and neither booster ever splits: each model is a single
+leaf holding its training set's mean label. A fixture that only reordered the same two 1s
+and two 0s would leave that mean at 0.5 in both cases and
+`create-dataset-from-file-does-not-match-a-different-file' would then compare two identical
+strings by accident -- measured against the vendored library before this fixture's labels
+were changed to fix exactly that."
+  `(let ((,path (merge-pathnames (format nil "cl-gbdt-other-fixture-~D.libsvm" (random 1000000))
+                                 (uiop:temporary-directory))))
+     (unwind-protect
+          (progn
+            (with-open-file (stream ,path :direction :output :if-exists :supersede)
+              (write-string "1 0:100.0 1:200.0 2:300.0
+1 0:50.0 1:60.0 2:70.0
+0 0:25.0 1:15.0 2:5.0
+1 0:1.0 1:1.0 2:1.0
+" stream))
+            ,@body)
+       (ignore-errors (delete-file ,path)))))
+
+(defun model-string-after-one-iteration (backend dataset &key parameters)
+  "Train one iteration on DATASET and return the resulting model as a string.
+
+PARAMETERS is passed to `create-booster' unchanged. Measured (review of this file's first
+version, 2026-08-13): with no `:parameters' at all, LightGBM's default `min_data_in_leaf'
+(20) exceeds every file-input fixture's four rows, so the booster never splits and the whole
+model is a single leaf holding the training set's mean label -- `feature_infos=none none
+none'. A comparison built on that alone cannot tell whether the feature VALUES were even
+read, only the labels, which is why both `create-dataset-from-file-trains-the-same-model-as-
+the-matrix' and its control below pass `*parameters*' -- the same plist already used for
+every other booster in this file -- so the trees actually split and the comparison binds the
+feature ranges and thresholds, not merely the label mean."
+  (let ((booster (cl-gbdt/lightgbm:create-booster backend dataset :parameters parameters)))
+    (unwind-protect
+         (progn
+           (cl-gbdt/lightgbm:update-one-iteration booster)
+           (cl-gbdt/lightgbm:model-to-string booster))
+      (cl-gbdt/lightgbm:free-booster booster))))
+
 (deftest layer-1-alone-trains-and-predicts
   (testing "a caller with only cl-gbdt/lightgbm loaded can go from a matrix to predictions"
     (with-open-backend (backend)
@@ -614,3 +690,334 @@ directory the suite happened to run from."
             (progn
               (cl-gbdt/lightgbm:free-dataset data)
               (when (probe-file path) (delete-file path)))))))))
+
+(deftest create-dataset-from-file-reads-a-libsvm-file
+  (testing "create-dataset-from-file builds a dataset LightGBM reports the right shape for"
+    (with-open-backend (backend)
+      (with-libsvm-fixture (path)
+        (let ((dataset (cl-gbdt/lightgbm:create-dataset-from-file backend path)))
+          (unwind-protect
+               (progn
+                 (ok (= 4 (cl-gbdt/lightgbm:dataset-num-rows dataset))
+                     (format nil "dataset-num-rows is ~D"
+                             (cl-gbdt/lightgbm:dataset-num-rows dataset)))
+                 (ok (= 3 (cl-gbdt/lightgbm:dataset-num-features dataset))
+                     (format nil "dataset-num-features is ~D"
+                             (cl-gbdt/lightgbm:dataset-num-features dataset))))
+            (cl-gbdt/lightgbm:free-dataset dataset)))))))
+
+(deftest create-dataset-from-file-trains-the-same-model-as-the-matrix
+  (testing "a dataset read from a file trains identically to the same data given as a matrix"
+    (with-open-backend (backend)
+      (with-libsvm-fixture (path)
+        (let ((from-file (cl-gbdt/lightgbm:create-dataset-from-file
+                          backend path :parameters *parameters*))
+              (from-matrix (cl-gbdt/lightgbm:create-dataset
+                            backend
+                            (make-array '(4 3) :element-type 'double-float
+                                               :initial-contents
+                                               '((1d0 2d0 3d0) (4d0 5d0 6d0)
+                                                 (7d0 8d0 9d0) (10d0 11d0 12d0)))
+                            :label '(1d0 0d0 1d0 0d0)
+                            :parameters *parameters*)))
+          (unwind-protect
+               ;; `*parameters*' on every call above, not just this comparison: with none,
+               ;; LightGBM's default `min_data_in_leaf' (20) exceeds these four rows and
+               ;; neither booster ever splits, so the strings compared below would encode
+               ;; only the label mean and nothing about which feature values were actually
+               ;; read -- see `model-string-after-one-iteration''s docstring, and this
+               ;; project's review of this file's first version, which measured that an
+               ;; implementation reading wholly different feature values still passed this
+               ;; assertion under the weaker (no-`:parameters') form.
+               (ok (string= (model-string-after-one-iteration backend from-file
+                                                               :parameters *parameters*)
+                            (model-string-after-one-iteration backend from-matrix
+                                                               :parameters *parameters*))
+                   "a file-built dataset and a matrix-built dataset trained different models")
+            (progn
+              (cl-gbdt/lightgbm:free-dataset from-file)
+              (cl-gbdt/lightgbm:free-dataset from-matrix))))))))
+
+;;; The control. Without this, a `path' that silently produced an empty or degenerate dataset
+;;; would match nothing and pass the comparison above for a reason that has nothing to do with
+;;; whether `create-dataset-from-file' actually read the file's rows.
+
+(deftest create-dataset-from-file-does-not-match-a-different-file
+  (testing "a genuinely different file does not train the same model"
+    (with-open-backend (backend)
+      (with-libsvm-fixture (path)
+        (with-different-libsvm-fixture (other)
+          (let ((a (cl-gbdt/lightgbm:create-dataset-from-file
+                    backend path :parameters *parameters*))
+                (b (cl-gbdt/lightgbm:create-dataset-from-file
+                    backend other :parameters *parameters*)))
+            (unwind-protect
+                 (ng (string= (model-string-after-one-iteration backend a
+                                                                 :parameters *parameters*)
+                              (model-string-after-one-iteration backend b
+                                                                 :parameters *parameters*))
+                     "two different files trained the same model")
+              (progn
+                (cl-gbdt/lightgbm:free-dataset a)
+                (cl-gbdt/lightgbm:free-dataset b)))))))))
+
+(deftest create-dataset-from-file-refuses-bad-arguments
+  (testing "create-dataset-from-file checks its backend's class first, and reports a missing \
+file as LightGBM's own"
+    (with-open-backend (backend)
+      (with-libsvm-fixture (path)
+        ;; `handler-case', not rove's `signals' -- see this file's other guard tests for why.
+        (ok (handler-case (progn (cl-gbdt/lightgbm:create-dataset-from-file nil path) nil)
+              (cl-gbdt/lightgbm:wrong-backend-reference () t))
+            "create-dataset-from-file accepted NIL as its backend")
+        ;; NIL alone would be caught by almost any accidental check. This file's own
+        ;; convention for the identical guard (`layer-1-alone-saves-loads-and-renders-a-model')
+        ;; also covers a wrong-CLASS object, which is what the two measurements behind
+        ;; `%check-object-class' actually were.
+        (let ((wrong-class (cl-gbdt/lightgbm:create-dataset-from-file backend path)))
+          (unwind-protect
+               (ok (handler-case
+                       (progn (cl-gbdt/lightgbm:create-dataset-from-file wrong-class path) nil)
+                     (cl-gbdt/lightgbm:wrong-backend-reference () t))
+                   "create-dataset-from-file accepted a dataset as its backend")
+            (cl-gbdt/lightgbm:free-dataset wrong-class)))
+        ;; Not a `probe-file' pre-check -- a missing file is LightGBM's own to report, through
+        ;; `check-lgbm' like any other failed foreign call.
+        (ok (handler-case
+                (progn (cl-gbdt/lightgbm:create-dataset-from-file
+                        backend (merge-pathnames "cl-gbdt-no-such-file.libsvm"
+                                                  (uiop:temporary-directory)))
+                       nil)
+              (cl-gbdt/lightgbm:foreign-call-error () t))
+            "create-dataset-from-file did not signal foreign-call-error for a missing file")))))
+
+(deftest create-dataset-from-file-signals-backend-not-open-after-close
+  (testing "create-dataset-from-file signals backend-not-open for a closed backend"
+    (with-open-backend (backend)
+      (with-libsvm-fixture (path)
+        (cl-gbdt/lightgbm:close-backend backend)
+        (ok (handler-case (progn (cl-gbdt/lightgbm:create-dataset-from-file backend path) nil)
+              (cl-gbdt/lightgbm:backend-not-open () t))
+            "create-dataset-from-file did not signal backend-not-open")))))
+
+;;; The five tests above never supply `:parameters' or `:reference' -- an implementation that
+;;; dropped `parameter-string' or `reference-pointer' at the call site, passing `""' and a
+;;; null pointer unconditionally, would pass every one of them. This project already pins
+;;; exactly that class of thing elsewhere in this file: `save-model''s `:num-iteration' test
+;;; exists, in its own words, because a value silently dropped between a wrapper and the
+;;; library would otherwise pass.
+;;;
+;;; `create-dataset-from-file-honours-parameters' closes the gap for `:parameters' genuinely:
+;;; `:header "true"' on `with-libsvm-fixture''s file reads 3 rows rather than 4 -- measured
+;;; against the vendored library (`repl-eval', 2026-08-13) -- which a dropped parameter
+;;; string could not produce.
+;;;
+;;; `create-dataset-from-file-honours-reference' needed a second attempt to do the same for
+;;; `:reference'. Its first version built the reference from `with-libsvm-fixture''s own
+;;; three-feature shape and asserted 4 rows x 3 features -- exactly what
+;;; `create-dataset-from-file' already returns with NO reference at all (measured), so a
+;;; null reference pointer passed that assertion too, and the comment then in this spot
+;;; claimed coverage the test did not have. The fix is a reference built from a WIDENED,
+;;; five-column matrix: LightGBM's bin mapper, not the file, decides the resulting feature
+;;; count, so a dataset built against it reads back as 4 rows x 5 features (measured) -- a
+;;; shape a dropped reference pointer cannot produce, since without one the file's own three
+;;; columns decide it instead.
+
+(deftest create-dataset-from-file-honours-parameters
+  (testing "create-dataset-from-file's :parameters reaches LGBM_DatasetCreateFromFile"
+    (with-open-backend (backend)
+      (with-libsvm-fixture (path)
+        ;; `header=true' consumes the fixture's first data row as a header instead -- see
+        ;; `docs/superpowers/specs/2026-08-13-file-input-measurements.md' section 5 -- so an
+        ;; implementation that rendered PARAMETERS into `""' regardless of what it was given
+        ;; would still read 4 rows here and this assertion would catch it.
+        (let ((dataset (cl-gbdt/lightgbm:create-dataset-from-file
+                        backend path :parameters '(:header "true"))))
+          (unwind-protect
+               (ok (= 3 (cl-gbdt/lightgbm:dataset-num-rows dataset))
+                   (format nil ":parameters '(:header \"true\") left dataset-num-rows at ~D, \
+not 3" (cl-gbdt/lightgbm:dataset-num-rows dataset)))
+            (cl-gbdt/lightgbm:free-dataset dataset)))))))
+
+(deftest create-dataset-from-file-honours-reference
+  (testing "create-dataset-from-file's :reference reaches LGBM_DatasetCreateFromFile, and is \
+checked before any foreign call"
+    (with-open-backend (backend)
+      (with-libsvm-fixture (path)
+        ;; A reference built from the FILE's own three-feature shape would not discriminate:
+        ;; `create-dataset-from-file' with no reference at all already returns 4 rows x 3
+        ;; features (measured), so asserting that shape passes whether or not
+        ;; REFERENCE-POINTER ever reaches `LGBM_DatasetCreateFromFile'. A five-column
+        ;; reference does discriminate -- LightGBM's bin mapper, not the file, then decides
+        ;; the feature count -- which is why this reference is deliberately wider than PATH.
+        (let ((wide-reference (cl-gbdt/lightgbm:create-dataset
+                               backend
+                               (make-array '(4 5) :element-type 'double-float
+                                                  :initial-contents
+                                                  '((1d0 2d0 3d0 4d0 5d0)
+                                                    (6d0 7d0 8d0 9d0 10d0)
+                                                    (11d0 12d0 13d0 14d0 15d0)
+                                                    (16d0 17d0 18d0 19d0 20d0))))))
+          (unwind-protect
+               (let ((second (cl-gbdt/lightgbm:create-dataset-from-file
+                              backend path :reference wide-reference)))
+                 (unwind-protect
+                      (progn
+                        (ok (= 4 (cl-gbdt/lightgbm:dataset-num-rows second))
+                            "a dataset built with :reference has the wrong row count")
+                        (ok (= 5 (cl-gbdt/lightgbm:dataset-num-features second))
+                            (format nil ":reference did not reach the foreign call -- \
+dataset-num-features is ~D, not the reference's own 5"
+                                    (cl-gbdt/lightgbm:dataset-num-features second))))
+                   (cl-gbdt/lightgbm:free-dataset second)))
+            (cl-gbdt/lightgbm:free-dataset wide-reference))
+          ;; A wrong-class :reference is refused before any foreign call -- `%reference-
+          ;; pointer' delegates to `%check-lightgbm-dataset', which `create-dataset' already
+          ;; relies on for the identical check.
+          (ok (handler-case
+                  (progn (cl-gbdt/lightgbm:create-dataset-from-file backend path :reference 42)
+                         nil)
+                (cl-gbdt/lightgbm:wrong-backend-reference () t))
+              "create-dataset-from-file accepted a non-dataset :reference")
+          ;; And a freed one -- the case the docstring promises `released-handle-error' for.
+          (let ((freed (cl-gbdt/lightgbm:create-dataset-from-file backend path)))
+            (cl-gbdt/lightgbm:free-dataset freed)
+            (ok (handler-case
+                    (progn (cl-gbdt/lightgbm:create-dataset-from-file
+                            backend path :reference freed)
+                           nil)
+                  (cl-gbdt/lightgbm:released-handle-error () t))
+                "create-dataset-from-file accepted a freed :reference")))))))
+
+;;; Review round 4's Finding N9 moved XGBoost's `file-uri' from `namestring' to
+;;; `sb-ext:native-namestring' because `namestring' backslash-escapes a literal asterisk in a
+;;; real filename; the whole-branch review found `create-dataset-from-file' still on
+;;; `namestring', two rounds later and never revisited. The two tests below pin the fix on
+;;; both of its edges: a literal asterisk in a filename now opens, and a genuinely wild
+;;; pathname -- which `native-namestring' itself would refuse with an untyped error -- is
+;;; refused first, with `unsupported-argument', by `%check-file-path'.
+
+(deftest create-dataset-from-file-reads-a-file-with-a-literal-asterisk
+  (testing "a filename whose namestring backslash-escapes a literal asterisk still opens"
+    (with-open-backend (backend)
+      ;; `sb-ext:parse-native-namestring', not the ordinary pathname reader: the asterisk
+      ;; this builds is a literal character of the filename, not a CL wildcard marker --
+      ;; `wild-pathname-p' is NIL for the result -- and `namestring' backslash-escapes it
+      ;; regardless (measured: `.../cl-gbdt-star\*....libsvm'), which is exactly what made
+      ;; LightGBM report "Cannot open data file" for a file that exists before this fix.
+      (let ((path (merge-pathnames
+                   (sb-ext:parse-native-namestring
+                    (format nil "cl-gbdt-star*fixture-~D.libsvm" (random 1000000)))
+                   (uiop:temporary-directory))))
+        (with-open-file (stream path :direction :output :if-exists :supersede)
+          (write-string "1 0:1.0 1:2.0 2:3.0
+0 0:4.0 1:5.0 2:6.0
+1 0:7.0 1:8.0 2:9.0
+0 0:10.0 1:11.0 2:12.0
+" stream))
+        (unwind-protect
+             (let ((dataset (cl-gbdt/lightgbm:create-dataset-from-file backend path)))
+               (unwind-protect
+                    (progn
+                      (ok (= 4 (cl-gbdt/lightgbm:dataset-num-rows dataset))
+                          "a literal-asterisk filename read the wrong row count")
+                      (ok (= 3 (cl-gbdt/lightgbm:dataset-num-features dataset))
+                          "a literal-asterisk filename read the wrong feature count"))
+                 (cl-gbdt/lightgbm:free-dataset dataset)))
+          (handler-case (delete-file path) (file-error () nil)))))))
+
+(deftest create-dataset-from-file-refuses-a-wild-path
+  (testing "create-dataset-from-file refuses a wild pathname before any foreign call"
+    (with-open-backend (backend)
+      ;; The ordinary pathname reader, unlike `sb-ext:parse-native-namestring' above: this
+      ;; asterisk IS a CL wildcard marker, `wild-pathname-p' is true of the result, and
+      ;; `sb-ext:native-namestring' would signal its own untyped
+      ;; `sb-kernel:no-native-namestring-error' for it -- `%check-file-path' exists to
+      ;; refuse this case first, with a typed condition this project's own callers can catch.
+      (let ((path (merge-pathnames (pathname "cl-gbdt-wild*.libsvm")
+                                    (uiop:temporary-directory))))
+        (ok (handler-case (progn (cl-gbdt/lightgbm:create-dataset-from-file backend path) nil)
+              (cl-gbdt/lightgbm:unsupported-argument () t))
+            "create-dataset-from-file accepted a wild pathname")))))
+
+(deftest create-dataset-from-file-resolves-a-relative-path-against-default-pathname-defaults
+  (testing "a relative PATH is resolved the way `open' resolves one, not native-namestring'd \
+bare -- proven by a same-named decoy file sitting in the process's own working directory, \
+which the unresolved form would have opened instead"
+    (with-open-backend (backend)
+      (let* ((relative-name (format nil "cl-gbdt-p1-~D.libsvm" (random 1000000)))
+             (real-dir (ensure-directories-exist
+                        (merge-pathnames (format nil "cl-gbdt-p1-real-~D/" (random 1000000))
+                                         (uiop:temporary-directory))))
+             (real-path (merge-pathnames relative-name real-dir))
+             (decoy-path (merge-pathnames relative-name (uiop:getcwd))))
+        (unwind-protect
+             (progn
+               ;; The REAL file: four rows, three features, this file's usual shape.
+               (with-open-file (stream real-path :direction :output :if-exists :supersede)
+                 (write-string "1 0:1.0 1:2.0 2:3.0
+0 0:4.0 1:5.0 2:6.0
+1 0:7.0 1:8.0 2:9.0
+0 0:10.0 1:11.0 2:12.0
+" stream))
+               ;; The DECOY, same relative name, sitting in the process's actual working
+               ;; directory -- deliberately a different ROW count (two, not four) but the
+               ;; SAME three-feature shape as the real file. PR #36 review, Minor M2: a
+               ;; 2x1 decoy (an earlier version of this fixture) is not valid libsvm to
+               ;; LightGBM at all -- "Check failed: (max_col_idx) > (0)" -- so under the
+               ;; pre-fix behaviour this test errored out rather than failing the row/
+               ;; feature-count assertions its own `ok' messages describe; still a valid
+               ;; sentinel (it did fail before the fix and pass after) but not the failure
+               ;; mode claimed. A 2x3 decoy is valid libsvm LightGBM reads cleanly, so the
+               ;; pre-fix run reads it successfully and fails literally on
+               ;; dataset-num-rows (2, not 4), the assertion actually written below.
+               (with-open-file (stream decoy-path :direction :output :if-exists :supersede)
+                 (write-string "1 0:99.0 1:98.0 2:97.0
+0 0:96.0 1:95.0 2:94.0
+" stream))
+               ;; A single-binding `let' nested inside another, not `let*': the dataset's
+               ;; own init-form must run AFTER *default-pathname-defaults* is rebound, a
+               ;; dynamic dependency an ordinary `let*' linter check cannot see across a
+               ;; special-variable rebinding, and an ordinary `let' would evaluate BOTH
+               ;; init-forms before establishing either binding, running
+               ;; create-dataset-from-file against the OLD *default-pathname-defaults*
+               ;; and defeating the whole point of this test.
+               (let ((*default-pathname-defaults* real-dir))
+                 (let ((dataset (cl-gbdt/lightgbm:create-dataset-from-file
+                                 backend relative-name)))
+                   (unwind-protect
+                        (progn
+                          (ok (= 4 (cl-gbdt/lightgbm:dataset-num-rows dataset))
+                              (format nil "dataset-num-rows is ~D, not the real file's 4 \
+-- read the decoy in the process's own working directory instead"
+                                      (cl-gbdt/lightgbm:dataset-num-rows dataset)))
+                          (ok (= 3 (cl-gbdt/lightgbm:dataset-num-features dataset))
+                              (format nil "dataset-num-features is ~D, not the real \
+file's 3 -- read the decoy in the process's own working directory instead"
+                                      (cl-gbdt/lightgbm:dataset-num-features dataset))))
+                     (cl-gbdt/lightgbm:free-dataset dataset)))))
+          (handler-case (delete-file real-path) (file-error () nil))
+          (handler-case (uiop:delete-directory-tree real-dir :validate t)
+            (file-error () nil))
+          (handler-case (delete-file decoy-path) (file-error () nil)))))))
+
+(deftest create-dataset-from-file-still-reports-a-missing-relative-file-as-foreign-call-error
+  (testing "a missing relative PATH still reaches LGBM_DatasetCreateFromFile and comes back \
+as foreign-call-error -- the P1 fix resolves PATH, it does not add a probe-file pre-check"
+    (with-open-backend (backend)
+      (let ((relative-name (format nil "cl-gbdt-p1-missing-~D.libsvm" (random 1000000)))
+            (some-dir (ensure-directories-exist
+                       (merge-pathnames
+                        (format nil "cl-gbdt-p1-missing-dir-~D/" (random 1000000))
+                        (uiop:temporary-directory)))))
+        (unwind-protect
+             (let ((*default-pathname-defaults* some-dir))
+               (ok (handler-case
+                       (progn (cl-gbdt/lightgbm:create-dataset-from-file
+                               backend relative-name)
+                              nil)
+                     (cl-gbdt/lightgbm:foreign-call-error () t))
+                   "create-dataset-from-file did not signal foreign-call-error for a \
+missing relative file"))
+          (handler-case (uiop:delete-directory-tree some-dir :validate t)
+            (file-error () nil)))))))

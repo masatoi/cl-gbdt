@@ -687,3 +687,408 @@ loads."
             (progn
               (cl-gbdt/xgboost:free-dataset data)
               (when (probe-file path) (delete-file path)))))))))
+
+;;; `create-dataset-from-file' and the mismatch gate it exists for. Zero-based libsvm column
+;;; indices throughout, matching `cl-gbdt/lightgbm:create-dataset-from-file''s own fixtures
+;;; (`tests/functional/lightgbm-standalone.lisp'): both libraries read libsvm indices as
+;;; zero-based, so a one-based fixture would leave column 0 invented and unused ahead of the
+;;; three real columns -- measured directly against the vendored library before either
+;;; sibling's fixtures were written this way.
+
+(defmacro with-libsvm-fixture ((path) &body body)
+  "Write a four-row three-feature libsvm fixture to a fresh file, bind PATH to it, and
+delete it afterwards. Identical content to
+`cl-gbdt/tests/functional/lightgbm-standalone::with-libsvm-fixture' -- not shared with it,
+per this file's own header, but there is no reason for the two libraries' fixture to differ
+when both read libsvm indices zero-based the same way."
+  `(let ((,path (merge-pathnames (format nil "cl-gbdt-xgb-fixture-~D.libsvm" (random 1000000))
+                                 (uiop:temporary-directory))))
+     (unwind-protect
+          (progn
+            (with-open-file (stream ,path :direction :output :if-exists :supersede)
+              (write-string "1 0:1.0 1:2.0 2:3.0
+0 0:4.0 1:5.0 2:6.0
+1 0:7.0 1:8.0 2:9.0
+0 0:10.0 1:11.0 2:12.0
+" stream))
+            ,@body)
+       (ignore-errors (delete-file ,path)))))
+
+(defmacro with-different-libsvm-fixture ((path) &body body)
+  "Write a four-row three-feature libsvm fixture whose labels and values both differ from
+`with-libsvm-fixture''s, bind PATH to it, and delete it afterwards. Identical content to
+`cl-gbdt/tests/functional/lightgbm-standalone::with-different-libsvm-fixture', whose
+docstring records why its labels are three 1s and one 0 (mean 0.75) rather than a mere
+reordering of `with-libsvm-fixture''s two 1s and two 0s (mean 0.5, which trained an
+identical model on that backend's default parameters).
+
+An earlier version of this docstring claimed this backend's `*parameters*' needed no such
+care, as measured fact -- that claim was false and review round 1 (Finding 2) caught it:
+measured, plain `*parameters*' collapses BOTH this fixture and `with-libsvm-fixture' to a
+single-leaf tree on four rows, XGBoost's default `min_child_weight' (1) making
+`binary:logistic''s total Hessian exactly 1.0 there too -- the same shape of weakness the
+text above correctly denies only for LightGBM's DIFFERENT default,
+`min_data_in_leaf'. `create-dataset-from-file-does-not-match-a-different-file' still passed
+under that collapse, but only because differing label MEANS (0.75 against 0.5) move
+`base_score' even when neither tree splits -- it was never evidence that this fixture's
+differing feature VALUES were being read at all, and
+`create-dataset-from-file-trains-the-same-model-as-the-matrix' had no such fallback and was
+genuinely blind. `model-string-after-one-iteration''s `*file-input-parameters*' now adds
+`:min-child-weight 0' for both fixtures, which is what makes this pair -- and the equality
+test -- sensitive to feature values rather than only to labels. The content is kept
+identical to the sibling's fixture regardless, since there was no reason for the two
+libraries' fixture text to differ."
+  `(let ((,path (merge-pathnames (format nil "cl-gbdt-xgb-other-fixture-~D.libsvm"
+                                         (random 1000000))
+                                 (uiop:temporary-directory))))
+     (unwind-protect
+          (progn
+            (with-open-file (stream ,path :direction :output :if-exists :supersede)
+              (write-string "1 0:100.0 1:200.0 2:300.0
+1 0:50.0 1:60.0 2:70.0
+0 0:25.0 1:15.0 2:5.0
+1 0:1.0 1:1.0 2:1.0
+" stream))
+            ,@body)
+       (ignore-errors (delete-file ,path)))))
+
+(defmacro with-csv-fixture ((path) &body body)
+  "Write a four-row three-feature CSV fixture -- real CSV, comma-delimited, no colons -- to
+a fresh file, bind PATH to it, and delete it afterwards. The fixture
+`create-dataset-from-file-refuses-a-format-mismatch-before-calling' below declares `:libsvm'
+on: `detect-file-format' classifies it `:csv' (a comma on its first line decides that before
+any libsvm token shape is even considered), so declaring it `:libsvm' is a real mismatch and
+provokes the gate rather than the crash the gate exists to prevent -- see that test's own
+comment for why this is the direction that is safe to provoke here."
+  `(let ((,path (merge-pathnames (format nil "cl-gbdt-xgb-csv-fixture-~D.csv" (random 1000000))
+                                 (uiop:temporary-directory))))
+     (unwind-protect
+          (progn
+            (with-open-file (stream ,path :direction :output :if-exists :supersede)
+              (write-string "1,1.0,2.0,3.0
+0,4.0,5.0,6.0
+1,7.0,8.0,9.0
+0,10.0,11.0,12.0
+" stream))
+            ,@body)
+       (ignore-errors (delete-file ,path)))))
+
+(defmacro with-qid-libsvm-fixture ((path) &body body)
+  "Write a four-row three-feature libsvm RANKING fixture -- each row carrying a `qid:'
+group tag between the label and its feature pairs -- to a fresh file, bind PATH to it,
+and delete it afterwards. Two groups of two rows each (`qid:1', `qid:1', `qid:2',
+`qid:2'), the same feature values as `with-libsvm-fixture' so a dataset built from this
+fixture has the identical row/feature shape and only the group-tag presence differs.
+
+PR #36 review, finding P2: measured directly against the vendored library (scratchpad
+qid-measurement.lisp, run in an isolated subprocess since a format/contents mismatch on
+this branch is SIGSEGV-reachable) that `XGDMatrixCreateFromURI' declared `:libsvm' reads
+this shape cleanly and recovers the group boundaries correctly -- `XGDMatrixGetUIntInfo'
+under `\"group_ptr\"' read back `(0 2 4)' for this exact fixture, the correct cumulative
+offsets for two rows per group. `detect-file-format' misclassified a `qid'-bearing line as
+:CSV before this fix (`%libsvm-token-p' rejected the `qid:1' token outright, no digits
+before its colon), which made `create-dataset-from-file' refuse this fixture with
+`file-format-mismatch' even though XGBoost itself reads it correctly -- the false-positive
+direction the gate must not take, distinct from the SIGSEGV-preventing refusal it exists
+for."
+  `(let ((,path (merge-pathnames (format nil "cl-gbdt-xgb-qid-fixture-~D.libsvm"
+                                         (random 1000000))
+                                 (uiop:temporary-directory))))
+     (unwind-protect
+          (progn
+            (with-open-file (stream ,path :direction :output :if-exists :supersede)
+              (write-string "1 qid:1 0:1.0 1:2.0 2:3.0
+0 qid:1 0:4.0 1:5.0 2:6.0
+1 qid:2 0:7.0 1:8.0 2:9.0
+0 qid:2 0:10.0 1:11.0 2:12.0
+" stream))
+            ,@body)
+       (ignore-errors (delete-file ,path)))))
+
+(defparameter *file-input-parameters*
+  (list* :min-child-weight 0 *parameters*)
+  "*PARAMETERS* with `:min-child-weight 0' added on top, for `model-string-after-one-
+iteration' alone -- not the file-wide *PARAMETERS* the rest of this file depends on.
+
+Measured (review round 1, Finding 2): on `with-libsvm-fixture''s four rows, under plain
+*PARAMETERS*, XGBoost's default `min_child_weight' (1) makes `binary:logistic''s total
+Hessian exactly 1.0, so no split can leave both children at >= 1 and the tree collapses to
+a single leaf -- `\"num_nodes\":\"1\"' in `model-to-string', identical whatever the feature
+values are, so long as the labels are. That left
+`create-dataset-from-file-trains-the-same-model-as-the-matrix' blind to whether the file's
+feature values were read correctly at all -- the same shape of weakness
+`cl-gbdt/lightgbm''s own `min_data_in_leaf' default has, which that backend's
+`model-string-after-one-iteration' avoids by passing `*parameters*' to `create-dataset'
+too; XGBoost's `create-dataset'/`create-dataset-from-file' has no dataset-level parameters
+argument for that fix to reach, so this is a booster-level one instead. `:min-child-weight
+0' measured to give `\"num_nodes\":\"7\"' -- the tree actually splits -- restoring the
+equality test's sensitivity to feature values without changing what the equality itself
+asserts.")
+
+(defun model-string-after-one-iteration (backend dataset)
+  "Train one iteration on DATASET and return the resulting model as a string, via
+`create-booster' with `*file-input-parameters*' -- `*parameters*' plus `:min-child-weight
+0', not the plain `*parameters*' every other booster in this file uses; see
+`*file-input-parameters*''s own docstring for why the addition is load-bearing here.
+Unlike the sibling's function of this name, this one takes no `:parameters' keyword of its
+own to thread through `create-dataset'/`create-dataset-from-file': neither has such an
+argument on this backend (see this file's header), so `*file-input-parameters*' reaches
+only this one call, and there is nothing else here for a caller to keep in sync."
+  (let ((booster (cl-gbdt/xgboost:create-booster backend dataset
+                                                  :parameters *file-input-parameters*)))
+    (unwind-protect
+         (progn
+           (cl-gbdt/xgboost:update-one-iteration booster)
+           (cl-gbdt/xgboost:model-to-string booster))
+      (cl-gbdt/xgboost:free-booster booster))))
+
+(deftest create-dataset-from-file-reads-a-libsvm-file
+  (testing "create-dataset-from-file builds a dataset XGBoost reports the right shape for"
+    (with-open-backend (backend)
+      (with-libsvm-fixture (path)
+        (let ((dataset (cl-gbdt/xgboost:create-dataset-from-file backend path :libsvm)))
+          (unwind-protect
+               (progn
+                 (ok (= 4 (cl-gbdt/xgboost:dataset-num-rows dataset))
+                     (format nil "dataset-num-rows is ~D"
+                             (cl-gbdt/xgboost:dataset-num-rows dataset)))
+                 (ok (= 3 (cl-gbdt/xgboost:dataset-num-features dataset))
+                     (format nil "dataset-num-features is ~D"
+                             (cl-gbdt/xgboost:dataset-num-features dataset))))
+            (cl-gbdt/xgboost:free-dataset dataset)))))))
+
+(deftest create-dataset-from-file-reads-a-qid-ranking-file
+  (testing "a valid libsvm ranking file (qid tags) is accepted, not refused as a mismatch"
+    (with-open-backend (backend)
+      (with-qid-libsvm-fixture (path)
+        (let ((dataset (cl-gbdt/xgboost:create-dataset-from-file backend path :libsvm)))
+          (unwind-protect
+               (progn
+                 (ok (= 4 (cl-gbdt/xgboost:dataset-num-rows dataset))
+                     (format nil "dataset-num-rows is ~D, not the fixture's 4 -- a qid \
+ranking file was not read the same as the identical file without qid tags"
+                             (cl-gbdt/xgboost:dataset-num-rows dataset)))
+                 (ok (= 3 (cl-gbdt/xgboost:dataset-num-features dataset))
+                     (format nil "dataset-num-features is ~D, not the fixture's 3 -- qid \
+was read as though it were itself a feature pair"
+                             (cl-gbdt/xgboost:dataset-num-features dataset))))
+            (cl-gbdt/xgboost:free-dataset dataset)))))))
+
+(deftest create-dataset-from-file-trains-the-same-model-as-the-matrix
+  (testing "a dataset read from a file trains identically to the same data given as a matrix"
+    (with-open-backend (backend)
+      (with-libsvm-fixture (path)
+        (let ((from-file (cl-gbdt/xgboost:create-dataset-from-file backend path :libsvm))
+              (from-matrix (cl-gbdt/xgboost:create-dataset
+                            backend
+                            (make-array '(4 3) :element-type 'double-float
+                                               :initial-contents
+                                               '((1d0 2d0 3d0) (4d0 5d0 6d0)
+                                                 (7d0 8d0 9d0) (10d0 11d0 12d0)))
+                            :label '(1d0 0d0 1d0 0d0))))
+          (unwind-protect
+               (ok (string= (model-string-after-one-iteration backend from-file)
+                            (model-string-after-one-iteration backend from-matrix))
+                   "a file-built dataset and a matrix-built dataset trained different models")
+            (progn
+              (cl-gbdt/xgboost:free-dataset from-file)
+              (cl-gbdt/xgboost:free-dataset from-matrix))))))))
+
+(deftest create-dataset-from-file-does-not-match-a-different-file
+  (testing "a genuinely different file does not train the same model"
+    (with-open-backend (backend)
+      (with-libsvm-fixture (path)
+        (with-different-libsvm-fixture (other)
+          (let ((a (cl-gbdt/xgboost:create-dataset-from-file backend path :libsvm))
+                (b (cl-gbdt/xgboost:create-dataset-from-file backend other :libsvm)))
+            (unwind-protect
+                 (ng (string= (model-string-after-one-iteration backend a)
+                              (model-string-after-one-iteration backend b))
+                     "two different files trained the same model")
+              (progn
+                (cl-gbdt/xgboost:free-dataset a)
+                (cl-gbdt/xgboost:free-dataset b)))))))))
+
+;;; The test this whole branch exists for. XGBoost does not check a declared FORMAT against a
+;;; file's real contents, and measured against the vendored 3.3.0
+;;; (docs/superpowers/specs/2026-08-13-file-input-measurements.md section 4), the direction
+;;; this test provokes -- text declared a format its first line does not match -- is not
+;;; always safe: `train.csv?format=libsvm' SIGSEGVs inside a thread dmlc creates for the
+;;; parse, where SBCL reports `Can't handle sig11 in non-lisp thread' and no `handler-case'
+;;; anywhere can see it, the process simply being gone. IF THIS TEST EVER FAILS BY CRASHING
+;;; THE IMAGE RATHER THAN BY RETURNING NIL, THAT IS THE SEGFAULT, AND THE GATE IS NOT
+;;; HOLDING -- a future reader deleting this test because it looks redundant with the layer-1
+;;; `file-format-mismatch' plumbing needs to know that a green run of this file is the one
+;;; thing standing between a caller's mismatched FORMAT and a dead process. The CSV fixture
+;;; declared `:libsvm' is deliberately the SAFE direction to provoke in a live test process:
+;;; measured (record section 4), `train.libsvm?format=csv' -- the reverse mismatch -- returns
+;;; code 0 and a silently wrong DMatrix rather than crashing, so it could have been used here
+;;; too, but the CSV-declared-`:libsvm' direction is the one the gate's own docstring calls
+;;; out as fatal, and so the one whose refusal is worth demonstrating.
+(deftest create-dataset-from-file-refuses-a-format-mismatch-before-calling
+  (testing "a declared format that disagrees with the file's contents is refused, not sent to \
+XGDMatrixCreateFromURI"
+    (with-open-backend (backend)
+      (with-csv-fixture (path)
+        (let ((condition (handler-case
+                              (progn (cl-gbdt/xgboost:create-dataset-from-file
+                                      backend path :libsvm)
+                                     nil)
+                            (cl-gbdt/xgboost:file-format-mismatch (c) c))))
+          (ok condition "create-dataset-from-file did not signal file-format-mismatch")
+          (when condition
+            ;; All three slots, not just the condition's type: a caller who catches this has
+            ;; to be able to read back which of PATH's declared format or its real contents
+            ;; to change, which is the whole point of the condition carrying them at all --
+            ;; and per Task 2/6, these are the assertions that let the three readers'
+            ;; `## Unproven' rows in docs/FUNCTIONAL-COVERAGE.md be deleted rather than left
+            ;; permanently loosening that ratchet.
+            ;;
+            ;; Review round 1, Finding 5: `(equal path (file-format-mismatch-path
+            ;; condition))' alone would prove only that the slot echoes back the very Lisp
+            ;; object this test already holds, not that it independently names the fixture
+            ;; -- an implementation that stored the wrong pathname under some other bug would
+            ;; still pass if that pathname happened to be `equal' to PATH by construction.
+            ;; Reading the file the slot names back and checking it against the fixture's own
+            ;; known first line is independent of that object: it fails if PATH is `equal'
+            ;; but wrong in a way `equal' cannot see, and it fails if PATH does not even name
+            ;; a readable file, neither of which the identity check alone would catch.
+            (ok (equal path (cl-gbdt/xgboost:file-format-mismatch-path condition))
+                (format nil "file-format-mismatch-path is ~S, not ~S"
+                        (cl-gbdt/xgboost:file-format-mismatch-path condition) path))
+            (ok (with-open-file (stream (cl-gbdt/xgboost:file-format-mismatch-path condition))
+                  (string= "1,1.0,2.0,3.0" (read-line stream)))
+                (format nil "file-format-mismatch-path ~S does not read back as the CSV \
+fixture's own first line"
+                        (cl-gbdt/xgboost:file-format-mismatch-path condition)))
+            (ok (eq :libsvm (cl-gbdt/xgboost:file-format-mismatch-declared condition))
+                (format nil "file-format-mismatch-declared is ~S"
+                        (cl-gbdt/xgboost:file-format-mismatch-declared condition)))
+            (ok (eq :csv (cl-gbdt/xgboost:file-format-mismatch-detected condition))
+                (format nil "file-format-mismatch-detected is ~S"
+                        (cl-gbdt/xgboost:file-format-mismatch-detected condition)))))))))
+
+(deftest create-dataset-from-file-refuses-bad-arguments
+  (testing "create-dataset-from-file checks its backend's class and FORMAT before any foreign \
+call, and refuses a missing file itself rather than handing it to XGBoost"
+    (with-open-backend (backend)
+      (with-libsvm-fixture (path)
+        ;; `handler-case', not rove's `signals' -- see this file's other guard tests for why.
+        (ok (handler-case
+                (progn (cl-gbdt/xgboost:create-dataset-from-file nil path :libsvm) nil)
+              (cl-gbdt/xgboost:wrong-backend-reference () t))
+            "create-dataset-from-file accepted NIL as its backend")
+        ;; NIL alone would be caught by almost any accidental check; a wrong-CLASS object is
+        ;; what the measurements behind `%check-object-class' actually were.
+        (let ((wrong-class (cl-gbdt/xgboost:create-dataset-from-file backend path :libsvm)))
+          (unwind-protect
+               (ok (handler-case
+                       (progn (cl-gbdt/xgboost:create-dataset-from-file
+                               wrong-class path :libsvm)
+                              nil)
+                     (cl-gbdt/xgboost:wrong-backend-reference () t))
+                   "create-dataset-from-file accepted a dataset as its backend")
+            (cl-gbdt/xgboost:free-dataset wrong-class)))
+        ;; A FORMAT outside the accepted set -- refused before any foreign call, since
+        ;; `detect-file-format' only ever classifies into :LIBSVM, :CSV, :BINARY or :UNKNOWN.
+        (ok (handler-case
+                (progn (cl-gbdt/xgboost:create-dataset-from-file backend path :tsv) nil)
+              (cl-gbdt/xgboost:unsupported-argument () t))
+            "create-dataset-from-file accepted :tsv as its format")
+        ;; A smuggled `format' key among :uri-parameters -- refused by file-uri's own gate,
+        ;; reached before detect-file-format or the foreign call.
+        (ok (handler-case
+                (progn (cl-gbdt/xgboost:create-dataset-from-file
+                        backend path :libsvm :uri-parameters '(:format "csv"))
+                       nil)
+              (cl-gbdt/xgboost:unsupported-argument () t))
+            "create-dataset-from-file accepted a format key among :uri-parameters")
+        ;; Review round 2: :UNREADABLE is no longer a pass-through, so a missing file is now
+        ;; refused by this wrapper's own gate rather than reaching XGDMatrixCreateFromURI at
+        ;; all -- BEHAVIOUR CHANGE from this test's earlier form, which asserted
+        ;; `foreign-call-error' here. `detect-file-format' still answers :UNREADABLE for a
+        ;; missing file (no probe-file pre-check is added; `open''s own `file-error' inside
+        ;; `detect-file-format' is what produces it), but every non-matching verdict is now a
+        ;; `file-format-mismatch' from `create-dataset-from-file' itself, DETECTED :unreadable
+        ;; included.
+        (let ((missing (merge-pathnames "cl-gbdt-xgb-no-such-file.libsvm"
+                                        (uiop:temporary-directory))))
+          (let ((condition (handler-case
+                                (progn (cl-gbdt/xgboost:create-dataset-from-file
+                                        backend missing :libsvm)
+                                       nil)
+                              (cl-gbdt/xgboost:file-format-mismatch (c) c))))
+            (ok condition
+                "create-dataset-from-file did not signal file-format-mismatch for a missing \
+file")
+            (when condition
+              (ok (eq :unreadable (cl-gbdt/xgboost:file-format-mismatch-detected condition))
+                  (format nil "file-format-mismatch-detected is ~S, not :unreadable"
+                          (cl-gbdt/xgboost:file-format-mismatch-detected condition))))))))))
+
+(deftest create-dataset-from-file-signals-backend-not-open-after-close
+  (testing "create-dataset-from-file signals backend-not-open for a closed backend"
+    (with-open-backend (backend)
+      (with-libsvm-fixture (path)
+        (cl-gbdt/xgboost:close-backend backend)
+        (ok (handler-case
+                (progn (cl-gbdt/xgboost:create-dataset-from-file backend path :libsvm) nil)
+              (cl-gbdt/xgboost:backend-not-open () t))
+            "create-dataset-from-file did not signal backend-not-open")))))
+
+;;; PR #36's second re-review, Critical: a PATH built with sb-ext:parse-native-namestring
+;;; carrying a literal '*' or '[' is not a CL wildcard (wild-pathname-p NIL), so the
+;;; existing wild-pathname guard never runs, and file-uri would have written that
+;;; character unescaped into the URI via native-namestring -- which dmlc's URI layer is
+;;; documented to glob-expand. Measured afterward, in an isolated subprocess (a real
+;;; glob-expansion reaching a mismatched file is exactly the SIGSEGV shape this whole
+;;; branch exists to prevent): the hazard did not reproduce on the vendored XGBoost
+;;; 3.3.0 -- see docs/superpowers/specs/2026-08-13-file-input-measurements.md section 13
+;;; for the full record, including why this refusal is precautionary rather than a fix
+;;; for a demonstrated crash. This is the mandatory test the coordinator named: two real
+;;; files that both match the literal name as a glob pattern, one libsvm and one CSV, so
+;;; an implementation that failed to refuse would have a real cross-contamination shape
+;;; to reach, not a merely theoretical one.
+(deftest create-dataset-from-file-refuses-a-literal-glob-metacharacter-with-two-matching-files
+  (testing "a literal * that wild-pathname-p does not see, with a second file the glob \
+pattern would match, is refused before any foreign call"
+    (with-open-backend (backend)
+      (let* ((dir (merge-pathnames (format nil "cl-gbdt-xgb-glob-~D/" (random 1000000))
+                                   (uiop:temporary-directory)))
+             (named-path (progn
+                           (ensure-directories-exist dir)
+                           (merge-pathnames
+                            (sb-ext:parse-native-namestring "star*file.libsvm") dir)))
+             (other-path (merge-pathnames
+                          (sb-ext:parse-native-namestring "star-csv-file.libsvm") dir)))
+        (ok (null (wild-pathname-p named-path))
+            "test setup: named-path must not be a CL wildcard, or the existing guard \
+would catch it instead of the one under test")
+        (unwind-protect
+             (progn
+               ;; The named file: real libsvm.
+               (with-open-file (stream named-path :direction :output :if-exists :supersede)
+                 (write-string "1 0:1.0 1:2.0 2:3.0
+0 0:4.0 1:5.0 2:6.0
+" stream))
+               ;; A second file the literal name also matches as a glob pattern
+               ;; ("star*file.libsvm" -> "star" + any chars + "file.libsvm") -- real CSV,
+               ;; the format/contents mismatch that SIGSEGVs XGBoost if a glob ever
+               ;; reaches it declared :libsvm.
+               (with-open-file (stream other-path :direction :output :if-exists :supersede)
+                 (write-string "1,1.0,2.0,3.0
+0,4.0,5.0,6.0
+0,7.0,8.0,9.0
+" stream))
+               (ok (handler-case
+                       (progn (cl-gbdt/xgboost:create-dataset-from-file
+                               backend named-path :libsvm)
+                              nil)
+                     (cl-gbdt/xgboost:unsupported-argument () t))
+                   "create-dataset-from-file accepted a literal * with a second file the \
+glob pattern would match"))
+          (progn
+            (handler-case (delete-file named-path) (file-error () nil))
+            (handler-case (delete-file other-path) (file-error () nil))
+            (handler-case (uiop:delete-directory-tree dir :validate t)
+              (file-error () nil))))))))

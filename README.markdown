@@ -154,10 +154,10 @@ the first thing to get right:
 
 | System | What it carries |
 |---|---|
-| `cl-gbdt/lightgbm` | **Layer 1 alone.** Opens and closes the LightGBM shared library, and publishes LightGBM's own API: the thirteen finished operations `create-dataset`, `create-booster`, `update-one-iteration`, `predict`, `free-dataset`, `free-booster`, `save-model`, `load-model`, `model-to-string`, `feature-importance`, `evaluation`, `dataset-num-rows` and `dataset-num-features` -- a whole training run, the inference after it, persisting and reloading the model, and reporting on it -- plus `booster-eval`, `booster-eval-names` and the `lightgbm-backend` class, plus the shared basis a standalone caller needs: `open-backend`, `close-backend`, `backend-supports-p` and its siblings, `make-csr-matrix` and the `csr-matrix` readers, `handle-released-p`, `booster-training-set`, `booster-validation-sets`, and the whole condition hierarchy. **`cl-gbdt:train` and the other twelve portable generic functions are not part of it**, and loading it does not define the `cl-gbdt` package at all |
+| `cl-gbdt/lightgbm` | **Layer 1 alone.** Opens and closes the LightGBM shared library, and publishes LightGBM's own API: the fourteen finished operations `create-dataset`, `create-booster`, `update-one-iteration`, `predict`, `free-dataset`, `free-booster`, `save-model`, `load-model`, `model-to-string`, `feature-importance`, `evaluation`, `dataset-num-rows`, `dataset-num-features` and `create-dataset-from-file` -- a whole training run, the inference after it, persisting and reloading the model, reporting on it, and reading a dataset straight from a file -- plus `booster-eval`, `booster-eval-names` and the `lightgbm-backend` class, plus the shared basis a standalone caller needs: `open-backend`, `close-backend`, `backend-supports-p` and its siblings, `make-csr-matrix` and the `csr-matrix` readers, `handle-released-p`, `booster-training-set`, `booster-validation-sets`, and the whole condition hierarchy. **`cl-gbdt:train` and the other twelve portable generic functions are not part of it**, and loading it does not define the `cl-gbdt` package at all |
 | `cl-gbdt/lightgbm/unified` | That, plus `src/lightgbm/protocol.lisp` -- LightGBM's methods on all thirteen portable generics -- plus core `cl-gbdt` itself, which it depends on. This is what the quick start above loads, and what every example here that calls `cl-gbdt:train` loads |
 
-`cl-gbdt/xgboost` and `cl-gbdt/xgboost/unified` divide identically -- the same thirteen
+`cl-gbdt/xgboost` and `cl-gbdt/xgboost/unified` divide identically -- the same fourteen
 operations under the same names, different symbols in a different package -- and XGBoost's
 Layer 1 API additionally publishes `slice-model`, `evaluate-one-iteration` and
 `booster-boosted-rounds`. Loading one backend never loads the other, and no backend system
@@ -192,14 +192,16 @@ sparse input:    T
 open:            NIL
 ```
 
-**A Layer 1 system alone trains, predicts, persists and reports.** Thirteen operations per
+**A Layer 1 system alone trains, predicts, persists and reports.** Fourteen operations per
 backend are Layer 1's whole surface, with no unified API in the image at all: six of them
 carry a whole run -- `create-dataset`, `create-booster`, `update-one-iteration`, `predict`,
-`free-dataset` and `free-booster`, the ones exercised by both blocks below -- and seven more
+`free-dataset` and `free-booster`, the ones exercised by both blocks below -- seven more
 persist the trained model and answer questions about it -- `save-model`, `load-model`,
 `model-to-string`, `feature-importance`, `evaluation`, `dataset-num-rows` and
 `dataset-num-features`, exercised by `tests/functional/{lightgbm,xgboost}-standalone.lisp`
-rather than by a worked example here. Both blocks below run in one fresh image that never
+rather than by a worked example here -- and one more, `create-dataset-from-file`, builds a
+dataset straight from a file instead of the matrix the six above use (see [File
+input](#file-input) below). Both blocks below run in one fresh image that never
 defines the `cl-gbdt` package:
 
 ```lisp
@@ -328,7 +330,7 @@ neither package re-exports (policy sections 3 and 11):
 Output:
 
 ```
-88 external symbols, 49 of them the condition hierarchy
+93 external symbols, 53 of them the condition hierarchy
 (CL-GBDT/SRC/BACKEND:*KNOWN-CAPABILITIES*
  CL-GBDT/SRC/BACKEND:BACKEND-CAPABILITIES CL-GBDT/SRC/BACKEND:BACKEND-INFO
  CL-GBDT/SRC/BACKEND:BACKEND-LIBRARY-PATH CL-GBDT/SRC/BACKEND:BACKEND-NAME
@@ -339,12 +341,14 @@ Output:
  CL-GBDT/SRC/HANDLE:BOOSTER-TRAINING-SET
  CL-GBDT/SRC/HANDLE:BOOSTER-VALIDATION-SETS CL-GBDT/SRC/BACKEND:CLOSE-BACKEND
  CL-GBDT/SRC/LIGHTGBM/API:CREATE-BOOSTER
- CL-GBDT/SRC/LIGHTGBM/API:CREATE-DATASET CL-GBDT/SRC/DATA:CSR-MATRIX
- CL-GBDT/SRC/DATA:CSR-MATRIX-INDICES CL-GBDT/SRC/DATA:CSR-MATRIX-INDPTR
- CL-GBDT/SRC/DATA:CSR-MATRIX-NUM-COLUMNS CL-GBDT/SRC/DATA:CSR-MATRIX-NUM-ROWS
- CL-GBDT/SRC/DATA:CSR-MATRIX-VALUES CL-GBDT/SRC/HANDLE:DATASET
- CL-GBDT/SRC/LIGHTGBM/API:DATASET-NUM-FEATURES
- CL-GBDT/SRC/LIGHTGBM/API:DATASET-NUM-ROWS CL-GBDT/SRC/LIGHTGBM/API:EVALUATION
+ CL-GBDT/SRC/LIGHTGBM/API:CREATE-DATASET
+ CL-GBDT/SRC/LIGHTGBM/API:CREATE-DATASET-FROM-FILE
+ CL-GBDT/SRC/DATA:CSR-MATRIX CL-GBDT/SRC/DATA:CSR-MATRIX-INDICES
+ CL-GBDT/SRC/DATA:CSR-MATRIX-INDPTR CL-GBDT/SRC/DATA:CSR-MATRIX-NUM-COLUMNS
+ CL-GBDT/SRC/DATA:CSR-MATRIX-NUM-ROWS CL-GBDT/SRC/DATA:CSR-MATRIX-VALUES
+ CL-GBDT/SRC/HANDLE:DATASET CL-GBDT/SRC/LIGHTGBM/API:DATASET-NUM-FEATURES
+ CL-GBDT/SRC/LIGHTGBM/API:DATASET-NUM-ROWS
+ CL-GBDT/SRC/LIGHTGBM/API:EVALUATION
  CL-GBDT/SRC/LIGHTGBM/API:FEATURE-IMPORTANCE
  CL-GBDT/SRC/LIGHTGBM/API:FREE-BOOSTER CL-GBDT/SRC/LIGHTGBM/API:FREE-DATASET
  CL-GBDT/SRC/HANDLE:HANDLE-BACKEND CL-GBDT/SRC/HANDLE:HANDLE-RELEASED-P
@@ -355,16 +359,17 @@ Output:
  CL-GBDT/SRC/LIGHTGBM/API:UPDATE-ONE-ITERATION)
 ```
 
-Those 88 fall into three groups. **LightGBM's own API** is sixteen of them: the thirteen
+Those 93 fall into three groups. **LightGBM's own API** is seventeen of them: the fourteen
 finished operations enumerated above -- `create-dataset`, `create-booster`,
 `update-one-iteration`, `predict`, `free-dataset`, `free-booster`, `save-model`,
-`load-model`, `model-to-string`, `feature-importance`, `evaluation`, `dataset-num-rows` and
-`dataset-num-features`, all homed in `cl-gbdt/src/lightgbm/api` -- plus that backend's own
+`load-model`, `model-to-string`, `feature-importance`, `evaluation`, `dataset-num-rows`,
+`dataset-num-features` and `create-dataset-from-file`, all homed in
+`cl-gbdt/src/lightgbm/api` -- plus that backend's own
 evaluation entry points, `booster-eval` and `booster-eval-names`, and the `lightgbm-backend`
 class, useful for `typep` or for specializing your own methods on one specific backend
 rather than the shared `backend` (`open-backend` itself never needs it, since it looks
 classes up by the `:lightgbm`/`:xgboost` keyword internally, not by this symbol). Eleven of
-those sixteen names -- `predict`, `update-one-iteration`, `free-dataset`, `free-booster`,
+those seventeen names -- `predict`, `update-one-iteration`, `free-dataset`, `free-booster`,
 `save-model`, `load-model`, `model-to-string`, `feature-importance`, `evaluation`,
 `dataset-num-rows` and `dataset-num-features` -- are *also* names `cl-gbdt` exports, and
 these are **different symbols**: plain functions here, generic functions there, so an image
@@ -378,14 +383,14 @@ package that publishes them. These are republished here, rather than left to cor
 so that a program loading this Layer 1 system alone can open, question and close a backend
 without naming an internal package -- and unlike the eleven doubled operation names, they are
 the very symbols `cl-gbdt` exports, one symbol reached two ways with nothing to
-disambiguate. And **the condition hierarchy** is the remaining 49, re-exported whole from
+disambiguate. And **the condition hierarchy** is the remaining 53, re-exported whole from
 `cl-gbdt/src/conditions`: every type and accessor there is already reviewed public API, so a
 Layer 1 caller catches `foreign-call-error` or `backend-library-not-found` by the same name
 a unified-API caller does.
 
-`cl-gbdt/xgboost` is the same shape -- 89 external symbols, the same 49 conditions and the
-same 23 shared-basis symbols -- with seventeen of its own rather than sixteen: the same
-thirteen operations under its own package's symbols, plus `xgboost-backend`,
+`cl-gbdt/xgboost` is the same shape -- 94 external symbols, the same 53 conditions and the
+same 23 shared-basis symbols -- with eighteen of its own rather than seventeen: the same
+fourteen operations under its own package's symbols, plus `xgboost-backend`,
 `slice-model`, `booster-boosted-rounds` (see [the capability
 section](#asking-a-backend-what-it-can-do)), and an
 `evaluate-one-iteration` of its own, which takes different arguments and returns something
@@ -405,7 +410,7 @@ backend-specific operation, only infrastructure the two backend systems already 
 internally. Backend-specific safe API -- LightGBM's `rollback-one-iteration`, `refit`, and
 the rest of policy section 3's Layer 1 examples -- is added here one contract at a time as
 it is designed and reviewed, not by widening today's re-export to cover `native` wholesale.
-The thirteen operations above are what that incremental process has produced so far, and they
+The fourteen operations above are what that incremental process has produced so far, and they
 come from a third file, `src/<backend>/api.lisp`, rather than from `native.lisp` at all:
 `native.lisp` holds the `%`-functions that take and return raw pointers, `api.lisp` the
 finished operations built on top of them that take a backend or a handle and hand back a
@@ -3485,14 +3490,119 @@ shows -- so this is not a row in [the differences table](#where-the-two-backends
 there is nothing here a caller's code, as opposed to a reader of `backend-info`'s probed
 plist, can tell apart.
 
+### File input
+
+`cl-gbdt/lightgbm:create-dataset-from-file` and `cl-gbdt/xgboost:create-dataset-from-file` build
+a dataset by having the library read a file directly, rather than from a matrix the caller
+already holds in memory. **There is no unified form of this** -- `cl-gbdt:make-dataset` takes no
+pathname, on either backend, and no `:file-input` capability exists to ask about. Both operations
+are Layer 1 only. `docs/cl-gbdt-layered-api-implementation-policy.md` section 12's "Why file
+input was not put on the unified API" carries the measurement that decided that -- the short
+version is that XGBoost's file-format argument, declared wrong on a unified API, could end the
+process outright, in a thread no Lisp handler can reach.
+
+The two signatures differ because Layer 1 mirrors each library rather than harmonising them, the
+same rule every other backend-specific difference in this README follows:
+
+```lisp
+(create-dataset-from-file backend path &key parameters reference)   ; cl-gbdt/lightgbm
+(create-dataset-from-file backend path format &key uri-parameters)  ; cl-gbdt/xgboost
+```
+
+**LightGBM** takes no format argument at all: `LGBM_DatasetCreateFromFile` infers CSV, TSV or
+libsvm from the file's own content -- and reads LightGBM's own binary dataset through the same
+call, with no parameter announcing it either. `PARAMETERS` is a plist in LightGBM's own
+vocabulary, rendered exactly as `create-dataset`'s `:parameters` already is and handed to the
+file reader verbatim; `header=true` consumes the file's first line as a header rather than a data
+row, and `label_column=N`/`label=N` (aliases of each other) pick a 0-based column as the label,
+defaulting to 0. `REFERENCE` is another `lightgbm-dataset` whose bin mapper this one should align
+to, or `NIL` to build its own -- the same meaning `create-dataset`'s own `:reference` already
+has.
+
+**XGBoost** takes `FORMAT` as a required, positional third argument -- one of `:libsvm`, `:csv`
+or `:binary` -- because `XGDMatrixCreateFromURI`'s `format` query parameter is mandatory for any
+text file, and a default would invite a caller not to think about the case below that matters.
+Measured against the vendored 3.3.0: **XGBoost does not check `FORMAT` against the file's own
+contents before it starts parsing, and getting it wrong is not merely wrong.** A real CSV file
+declared `:libsvm`, or a binary DMatrix declared `:libsvm`, both **segfault** inside a thread
+dmlc creates for the parse -- outside any Lisp stack, so no `handler-case` anywhere can catch it.
+The reverse direction does not crash, but is silently wrong instead: a real libsvm file declared
+`:csv` returns a 4-row, 1-column dataset with no label and a success code. Measurement went on to
+find that dmlc's own URI syntax is richer than a short list of reserved characters can enumerate
+ahead of it: a directory is a file list to dmlc, not an error; `;` splits one URI into several
+paths, each read; a glob character expands. `create-dataset-from-file` closes all of it the same
+way rather than adding one more guard per shape found: `PATH` is resolved to a single `truename`
+exactly once, and that one resolution -- never the caller's own designator a second time -- is
+both what gets classified and what the URI is composed from, so the file dmlc opens is provably
+the file this wrapper looked at, not merely probably. Every verdict but an exact match with the
+declared `FORMAT` is refused with `file-format-mismatch` -- naming the path, the declared format
+and the detected one -- including a `PATH` this wrapper could not resolve to one existing file at
+all (missing, wild, or a symlink to nowhere), or that resolved to a directory: none of that is
+XGBoost's own to report any longer, since dmlc's response to several of those shapes turned out
+not to be an error either.
+
+**The classification is of `PATH`'s first non-blank line, not of `PATH`.** A file whose first
+line is genuinely libsvm-shaped but whose later rows are not is still classified `:LIBSVM` and
+still passes this gate; the mismatched later content reaches `XGDMatrixCreateFromURI` regardless.
+Measured (PR #36 re-review, ten runs against five mixed-content shapes and both libraries; see
+`docs/superpowers/specs/2026-08-13-file-input-measurements.md` section 12 for the full record):
+none of the ten crashed, but that is what ten runs showed and not a guarantee about every input.
+**A file truncated mid-row is silently accepted by both libraries as though it were complete --
+no error, a dataset built from whatever whole rows came before the cut.** A caller who hands
+either `create-dataset-from-file` a file another process is still writing can get a dataset back
+with no indication anything was missing. A corrupted tail is also read silently by both, but not
+identically: the same file gave XGBoost 3 rows and LightGBM 4 for the fixture measured. Reading
+the rest of the file to catch either case would mean this wrapper reads what it exists to let the
+library read once, so neither library's wrapper does it.
+
+**A FIFO or other blocking special file is not detected, and `PATH` is expected to name a data
+file.** ANSI Common Lisp has no portable way to ask whether a resolved path names a named pipe or
+a device rather than an ordinary regular file, so nothing above catches one -- unlike an earlier
+version, which used SBCL's `sb-posix:stat` to check this too and was reverted because the project
+owner declined to add a further SBCL-specific dependency for this one check, not because reverting
+it made this backend any more portable: `file-uri`'s own `sb-ext:native-namestring` call and
+`src/xgboost/native.lisp`'s array pinning with `sb-sys` primitives (below) already made it
+SBCL-only before this decision, and still do after it. The trade bought back no portability at
+all, only the loss of a check that would have caught a FIFO or a device file. A FIFO with nothing
+on the other end of it blocks indefinitely inside the read that classifies it, with no error and
+no diagnostic; an unbounded device such as `/dev/zero` cannot hang this wrapper forever (that same
+read is capped), but reads as whatever bytes it produces rather than being refused outright.
+`URI-PARAMETERS` is a plist of
+further dmlc query keys,
+`(:label_column 0)` among them, appended to the URI after `FORMAT`'s own `format=` key; a
+`format` key inside `URI-PARAMETERS` itself signals `unsupported-argument`, since `FORMAT` is
+this function's own argument to give, not a second, unchecked route to the same key. `:binary`
+carries no `format=` key in the URI at all -- there is no such spelling; the way to load an
+XGBoost binary DMatrix is a URI with no `format=` key whatsoever, which `create-dataset-from-file`
+already knows.
+
+**A libsvm RANKING file is accepted on XGBoost and refused outright on LightGBM.** Measured
+(PR #36 review): a row carrying a `qid:<group>` tag between the label and its feature pairs
+(`1 qid:1 1:0.5 2:0.3`) reads cleanly through `cl-gbdt/xgboost:create-dataset-from-file`
+declared `:libsvm` -- the same shape as the identical rows with `qid` removed, group
+boundaries correctly recovered -- but `cl-gbdt/lightgbm:create-dataset-from-file` on the
+identical file signals `foreign-call-error` with LightGBM's own `"Input format error when
+parsing as LibSVM"`, a limitation of that library's own parser rather than of either wrapper.
+
+**XGBoost's text-file path is deprecated upstream.** Every text-file attempt, including one this
+wrapper's own gate refuses, prints once per process, to stderr: `WARNING: .../data.cc:963: Text
+file input has been deprecated since 3.1`. It is published anyway, because
+`ffi-spec/BINDING-COVERAGE.md` already named `XGDMatrixCreateFromURI` as `XGDMatrixCreateFromFile`'s
+own replacement -- wrapping it is what makes that recommendation reachable rather than a dead
+pointer, not a bet against the deprecation.
+
+Neither function takes a `LABEL`, `WEIGHT`, `GROUP` or `FEATURE-NAMES` argument at all: the file
+already carries whatever `create-dataset`'s caller would otherwise pass separately, and by the
+time the foreign call returns a finished handle there is nothing left in Lisp to attach one to.
+
 ## Systems
 
 | System | Purpose |
 |---|---|
 | `cl-gbdt` | Core: package, condition hierarchy, matrix marshalling, backend registry and `open-backend` protocol, the unified API's generic functions -- no methods, and no shared library required to load it |
-| `cl-gbdt/lightgbm` | **Layer 1 for LightGBM, and nothing above it.** Library discovery and the `%`-wrappers (`src/lightgbm/native.lisp`) over the generated CFFI bindings (`src/lightgbm/c-api.lisp`), plus the backend's CLOS types and the `initialize-backend`/`shutdown-backend` pair that opens and closes the shared library (`src/lightgbm/classes.lisp`), plus the thirteen finished operations a caller invokes -- `create-dataset`, `create-booster`, `update-one-iteration`, `predict`, `free-dataset`, `free-booster`, `save-model`, `load-model`, `model-to-string`, `feature-importance`, `evaluation`, `dataset-num-rows`, `dataset-num-features` (`src/lightgbm/api.lisp`) -- published together by `src/lightgbm/all.lisp`. Carries none of the 13 unified-API methods, and does not define the `cl-gbdt` package |
+| `cl-gbdt/lightgbm` | **Layer 1 for LightGBM, and nothing above it.** Library discovery and the `%`-wrappers (`src/lightgbm/native.lisp`) over the generated CFFI bindings (`src/lightgbm/c-api.lisp`), plus the backend's CLOS types and the `initialize-backend`/`shutdown-backend` pair that opens and closes the shared library (`src/lightgbm/classes.lisp`), plus the fourteen finished operations a caller invokes -- `create-dataset`, `create-booster`, `update-one-iteration`, `predict`, `free-dataset`, `free-booster`, `save-model`, `load-model`, `model-to-string`, `feature-importance`, `evaluation`, `dataset-num-rows`, `dataset-num-features`, `create-dataset-from-file` (`src/lightgbm/api.lisp`) -- published together by `src/lightgbm/all.lisp`. Carries none of the 13 unified-API methods, and does not define the `cl-gbdt` package |
 | `cl-gbdt/lightgbm/unified` | That plus all 13 unified-API methods (`src/lightgbm/protocol.lisp`), aggregated by `src/lightgbm/unified.lisp`, which also depends on core `cl-gbdt` so the `cl-gbdt:` spelling exists. **This is the system a caller of `cl-gbdt:train` loads** |
-| `cl-gbdt/xgboost` | Layer 1 for XGBoost, exactly as above: `src/xgboost/native.lisp` and `src/xgboost/c-api.lisp`, plus `src/xgboost/classes.lisp` and `src/xgboost/api.lisp` -- the latter holding the same thirteen operations and, additionally, `slice-model`, an XGBoost-only operation that builds a booster handle -- published by `src/xgboost/all.lisp` |
+| `cl-gbdt/xgboost` | Layer 1 for XGBoost, exactly as above: `src/xgboost/native.lisp` and `src/xgboost/c-api.lisp`, plus `src/xgboost/classes.lisp` and `src/xgboost/api.lisp` -- the latter holding the same fourteen operations and, additionally, `slice-model`, an XGBoost-only operation that builds a booster handle -- published by `src/xgboost/all.lisp` |
 | `cl-gbdt/xgboost/unified` | That plus all 13 unified-API methods (`src/xgboost/protocol.lisp`), aggregated by `src/xgboost/unified.lisp`, core `cl-gbdt` included |
 | `cl-gbdt/regen` | The binding emitter (`src/regen/`). Development-only -- never appears in `cl-gbdt`'s, `cl-gbdt/lightgbm`'s, or `cl-gbdt/xgboost`'s dependency graph, so an ordinary user never needs it or its dependencies (`alexandria`, `com.inuoe.jzon`). `cffi/c2ffi` is *not* one of them -- it is a dependency of `tools/regen.lisp`, which quickloads it directly, not of the `cl-gbdt/regen` system itself |
 | `cl-gbdt/tests` | The Rove test suite |
@@ -3514,8 +3624,10 @@ dataset its own shape, and frees both -- `create-dataset`, `create-booster`,
 `load-model`, `model-to-string`, `feature-importance`, `evaluation`, `dataset-num-rows`,
 `dataset-num-features`, with a worked example of the first six under [Two systems per
 backend](#two-systems-per-backend) above and the rest exercised by
-`tests/functional/{lightgbm,xgboost}-standalone.lisp`. What such a program still cannot do
-is `cl-gbdt:train`'s own concepts: no training report, no early stopping and no
+`tests/functional/{lightgbm,xgboost}-standalone.lisp` -- plus a fourteenth,
+`create-dataset-from-file`, which builds the dataset straight from a file instead (see [File
+input](#file-input) below), exercised by the same two files. What such a program still cannot
+do is `cl-gbdt:train`'s own concepts: no training report, no early stopping and no
 `:objective` or `:evaluation` callback, none of which have a Layer 1 counterpart to be.
 
 Each Layer 1 backend system (`cl-gbdt/lightgbm` depends on `cl-gbdt/src/lightgbm/all`,

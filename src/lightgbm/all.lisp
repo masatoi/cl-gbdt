@@ -49,32 +49,40 @@
 ;;; public surface by accident -- exactly what this task's brief warns an accidental export
 ;;; becomes: a compatibility obligation.
 ;;;
-;;; Sixteen symbols from those three packages, each pulled explicitly by name. `lightgbm-backend'
+;;; Seventeen symbols from those three packages, each pulled explicitly by name.
+;;; `lightgbm-backend'
 ;;; from `classes' is the CLOS class a caller can specialize methods on or check with `typep';
 ;;; `booster-eval-names' and `booster-eval' from `native' are Phase 2's first
 ;;; LightGBM-specific safe API
 ;;; (docs/superpowers/specs/2026-08-06-evaluation-api-design.md, policy section 3's Layer 1);
 ;;; `create-dataset', `free-dataset', `create-booster', `update-one-iteration', `predict',
 ;;; `free-booster', `save-model', `load-model', `model-to-string', `feature-importance',
-;;; `evaluation', `dataset-num-rows' and `dataset-num-features' from `api' are the finished
-;;; operations. Twelve of the thirteen are procedure lifted out of
+;;; `evaluation', `dataset-num-rows', `dataset-num-features' and `create-dataset-from-file'
+;;; from `api' are the finished
+;;; operations. Twelve of the fourteen are procedure lifted out of
 ;;; `cl-gbdt/src/lightgbm/protocol' -- `free-dataset', `update-one-iteration', `predict',
 ;;; `free-booster', `save-model', `load-model', `model-to-string', `feature-importance',
 ;;; `evaluation', `dataset-num-rows' and `dataset-num-features' out of the methods of those very
 ;;; names, and `create-dataset' out of `make-dataset', whose portable name it does not share --
 ;;; each of those methods now checking whatever portable arguments it still has and calling the
-;;; function here. `create-booster' is the thirteenth and is not lifted from anything: no
+;;; function here. `create-booster' and `create-dataset-from-file' are the other two, and
+;;; neither is lifted from anything: no
 ;;; protocol method ever built a booster OVER A DATASET on its own, `train' having built one
-;;; inline at the time. (`load-model' builds one too, but from a file and with no
-;;; dataset in sight, so it is not this function under another name.) Together they are a whole
-;;; training run at this layer, the inference that follows it, and now persistence and
-;;; introspection besides: build a dataset, build a booster on it, advance it, score with it,
+;;; inline at the time (`load-model' builds one too, but from a file and with no
+;;; dataset in sight, so it is not this function under another name), and no protocol method
+;;; reads a file either -- file input has no unified counterpart at all, `make-dataset' taking
+;;; no pathname on either backend. Together the fourteen are a whole
+;;; training run at this layer, the inference that follows it, persistence and
+;;; introspection, and now file input besides: build a dataset from a matrix or read one
+;;; straight from a file, build a booster on it, advance it, score with it,
 ;;; save the model or reload one, render it as text, ask what it split on and how it scored,
 ;;; free both.
 ;;; `create-booster' had no caller inside this library until `train' gained one, calling it
 ;;; for its whole booster construction the same way the other twelve already called their
-;;; own Layer 1 counterparts. It is published on its own contract regardless, exactly as they are;
-;;; having a caller here does not change what makes any of these thirteen public.
+;;; own Layer 1 counterparts; `create-dataset-from-file' has no caller inside this library at
+;;; all, since nothing in the unified API reads a file. Both are published on their own
+;;; contract regardless, exactly as the rest are; having a caller here does not change what
+;;; makes any of these fourteen public.
 ;;; `free-dataset', `free-booster', `update-one-iteration', `predict', `save-model',
 ;;; `load-model', `model-to-string', `feature-importance', `evaluation', `dataset-num-rows' and
 ;;; `dataset-num-features' here are NOT `cl-gbdt''s generics of those names: they are plain
@@ -83,7 +91,7 @@
 ;;; under one name.
 ;;;
 ;;; `api' is `:import-from'ed rather than `:use-reexport'ed for the reason `classes' is, and
-;;; the reason survives that package's `:export' clause holding nothing but those thirteen
+;;; the reason survives that package's `:export' clause holding nothing but those fourteen
 ;;; operations today: `:use-reexport' would publish whatever that clause grows next
 ;;; automatically, and the `:export' clause below is what `tools/ci/check-float-traps.lisp'
 ;;; reads to decide which `defun's are entry points -- see the paragraph on that check below,
@@ -191,6 +199,7 @@
   (:import-from #:cl-gbdt/src/lightgbm/api
                 #:create-booster
                 #:create-dataset
+                #:create-dataset-from-file
                 #:dataset-num-features
                 #:dataset-num-rows
                 #:evaluation
@@ -207,6 +216,7 @@
            #:booster-eval
            #:create-booster
            #:create-dataset
+           #:create-dataset-from-file
            #:dataset-num-features
            #:dataset-num-rows
            #:evaluation
