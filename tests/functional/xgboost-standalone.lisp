@@ -1035,3 +1035,60 @@ file")
                 (progn (cl-gbdt/xgboost:create-dataset-from-file backend path :libsvm) nil)
               (cl-gbdt/xgboost:backend-not-open () t))
             "create-dataset-from-file did not signal backend-not-open")))))
+
+;;; PR #36's second re-review, Critical: a PATH built with sb-ext:parse-native-namestring
+;;; carrying a literal '*' or '[' is not a CL wildcard (wild-pathname-p NIL), so the
+;;; existing wild-pathname guard never runs, and file-uri would have written that
+;;; character unescaped into the URI via native-namestring -- which dmlc's URI layer is
+;;; documented to glob-expand. Measured afterward, in an isolated subprocess (a real
+;;; glob-expansion reaching a mismatched file is exactly the SIGSEGV shape this whole
+;;; branch exists to prevent): the hazard did not reproduce on the vendored XGBoost
+;;; 3.3.0 -- see docs/superpowers/specs/2026-08-13-file-input-measurements.md section 13
+;;; for the full record, including why this refusal is precautionary rather than a fix
+;;; for a demonstrated crash. This is the mandatory test the coordinator named: two real
+;;; files that both match the literal name as a glob pattern, one libsvm and one CSV, so
+;;; an implementation that failed to refuse would have a real cross-contamination shape
+;;; to reach, not a merely theoretical one.
+(deftest create-dataset-from-file-refuses-a-literal-glob-metacharacter-with-two-matching-files
+  (testing "a literal * that wild-pathname-p does not see, with a second file the glob \
+pattern would match, is refused before any foreign call"
+    (with-open-backend (backend)
+      (let* ((dir (merge-pathnames (format nil "cl-gbdt-xgb-glob-~D/" (random 1000000))
+                                   (uiop:temporary-directory)))
+             (named-path (progn
+                           (ensure-directories-exist dir)
+                           (merge-pathnames
+                            (sb-ext:parse-native-namestring "star*file.libsvm") dir)))
+             (other-path (merge-pathnames
+                          (sb-ext:parse-native-namestring "star-csv-file.libsvm") dir)))
+        (ok (null (wild-pathname-p named-path))
+            "test setup: named-path must not be a CL wildcard, or the existing guard \
+would catch it instead of the one under test")
+        (unwind-protect
+             (progn
+               ;; The named file: real libsvm.
+               (with-open-file (stream named-path :direction :output :if-exists :supersede)
+                 (write-string "1 0:1.0 1:2.0 2:3.0
+0 0:4.0 1:5.0 2:6.0
+" stream))
+               ;; A second file the literal name also matches as a glob pattern
+               ;; ("star*file.libsvm" -> "star" + any chars + "file.libsvm") -- real CSV,
+               ;; the format/contents mismatch that SIGSEGVs XGBoost if a glob ever
+               ;; reaches it declared :libsvm.
+               (with-open-file (stream other-path :direction :output :if-exists :supersede)
+                 (write-string "1,1.0,2.0,3.0
+0,4.0,5.0,6.0
+0,7.0,8.0,9.0
+" stream))
+               (ok (handler-case
+                       (progn (cl-gbdt/xgboost:create-dataset-from-file
+                               backend named-path :libsvm)
+                              nil)
+                     (cl-gbdt/xgboost:unsupported-argument () t))
+                   "create-dataset-from-file accepted a literal * with a second file the \
+glob pattern would match"))
+          (progn
+            (handler-case (delete-file named-path) (file-error () nil))
+            (handler-case (delete-file other-path) (file-error () nil))
+            (handler-case (uiop:delete-directory-tree dir :validate t)
+              (file-error () nil))))))))

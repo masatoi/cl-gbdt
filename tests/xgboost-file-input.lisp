@@ -257,6 +257,35 @@ file afterward whether BODY exits normally or not."
         (cl-gbdt/src/conditions:unsupported-argument () t))
       "file-uri accepted a [] wildcard in the path"))
 
+;; PR #36 second re-review, Critical: a LITERAL '*' -- built via
+;; sb-ext:parse-native-namestring, not the ordinary pathname reader above -- names a real
+;; file (star*file.libsvm) rather than a CL wildcard pattern, so wild-pathname-p is NIL and
+;; the guard above never runs; file-uri would have written the literal asterisk into the
+;; URI unescaped via native-namestring, which dmlc's own glob layer is documented to
+;; expand. Measured afterward (docs/superpowers/specs, section 13) that this specific
+;; hazard did not reproduce on the vendored library -- this refusal is precautionary, not
+;; a fix for a demonstrated crash; see %check-file-uri-arguments's own docstring.
+(deftest file-uri-refuses-a-literal-asterisk
+  (let ((path (sb-ext:parse-native-namestring "star*file.libsvm")))
+    (ok (null (wild-pathname-p path))
+        "test setup: this path must not be a CL wildcard, or it would be caught by the \
+existing guard instead of the one under test")
+    (ok (handler-case (progn (cl-gbdt/src/xgboost/file-input::file-uri path :libsvm nil)
+                              nil)
+          (cl-gbdt/src/conditions:unsupported-argument () t))
+        "file-uri accepted a literal * that wild-pathname-p does not see as wild")))
+
+;; The same shape for '[', which globs as a bracket-alternation, not scanned for by
+;; wild-pathname-p either once the pathname is built through parse-native-namestring.
+(deftest file-uri-refuses-a-literal-bracket
+  (let ((path (sb-ext:parse-native-namestring "brack[ab]file.libsvm")))
+    (ok (null (wild-pathname-p path))
+        "test setup: this path must not be a CL wildcard")
+    (ok (handler-case (progn (cl-gbdt/src/xgboost/file-input::file-uri path :libsvm nil)
+                              nil)
+          (cl-gbdt/src/conditions:unsupported-argument () t))
+        "file-uri accepted a literal [ that wild-pathname-p does not see as wild")))
+
 ;; The control: an ordinary path, a genuinely missing plain file, and a path containing a
 ;; space (record section 9's case, already proven not to be wild) must all keep composing.
 (deftest file-uri-still-composes-ordinary-paths-after-the-wild-pathname-guard

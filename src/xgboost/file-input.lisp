@@ -489,7 +489,39 @@ documented limitation -- see `create-dataset-from-file'), and every `detect-file
 verdict but an exact match is a refusal in `create-dataset-from-file'. This function's
 checks stay as a first line of defense regardless -- refusing a wild or `;'-holding PATH
 here, before `detect-file-format' even runs, gives a caller a more specific reason than
-the generic mismatch that catching it downstream would report."
+the generic mismatch that catching it downstream would report.
+
+**A fifth check, and the only one of the five that is precautionary rather than a fix for
+a demonstrated hole: a literal `*' or `[' anywhere in PATH's namestring is refused.**
+`wild-pathname-p' is `NIL' for a PATH built through `sb-ext:parse-native-namestring'
+carrying one of those characters LITERALLY -- `star*file.libsvm', a real filename, not a
+CL wildcard pattern -- so the wild-pathname check above does not catch it, and `file-uri'
+writes that character verbatim into the URI via `native-namestring', with no CL escaping
+at all. dmlc's URI layer is documented to glob-expand a path; this function therefore does
+not hand it a string containing either glob metacharacter, whether or not doing so would
+actually expand on any particular build.
+
+PR #36's second re-review raised exactly this case, and it was measured, not assumed,
+before this check was added -- ten runs against the vendored XGBoost 3.3.0
+(`docs/superpowers/specs/2026-08-13-file-input-measurements.md' section 13). **The hazard
+did NOT reproduce.** A literal filename that exists on disk is opened directly, not
+glob-matched; `namestring''s backslash-escaping and `native-namestring''s bare form gave
+IDENTICAL results everywhere both were tried; and a genuine pattern with no literally-
+matching file reported zero matches rather than expanding to the files a shell's own glob
+would find. This check is therefore precautionary, not a fix for a crash this branch
+reproduced: the measurement covers one build, one platform, and local paths only, and says
+nothing about a `file://' URI, another platform's dmlc, or the next XGBoost version. The
+asymmetry that justifies refusing anyway, absent a reproduction: the cost of being wrong
+about dmlc's glob behaviour on some OTHER build is a dead process, and the cost of this
+guard is a filename built through `parse-native-namestring' that carries a literal `*' or
+`[' -- exotic, and this function is not the only way to reach `XGDMatrixCreateFromURI' for
+one.
+
+This is also what makes review round 4's Finding N9 -- `file-uri' composing from
+`native-namestring' rather than `namestring' -- safe regardless of whether dmlc escapes,
+globs, or does neither on whatever version is actually loaded: N9 removed an unstated
+premise (that dmlc's own glob parser happens to treat a backslash the way SBCL's pathname
+printer does), and this check is what keeps that removal from depending on a new one."
   (when (wild-pathname-p path)
     (error 'unsupported-argument
            :backend :xgboost
@@ -507,6 +539,14 @@ the generic mismatch that catching it downstream would report."
                                 of them could smuggle in a second 'format' key or turn ~
                                 one path into dmlc's own ';'-separated list of several"
                            namestring)))
+  (when (or (find #\* namestring) (find #\[ namestring))
+    (error 'unsupported-argument
+           :backend :xgboost
+           :argument "file-uri's path"
+           :reason (format nil "~S contains a literal '*' or '[' -- see this function's ~
+                                own docstring for why a literal glob metacharacter is ~
+                                refused as a precaution regardless of what wild-pathname-p ~
+                                reports for it" namestring)))
   (when (and (not (eq format :binary)) (some #'%uri-reserved-char-p (string format)))
     (error 'unsupported-argument
            :backend :xgboost
@@ -559,7 +599,10 @@ codebase already restricts FORMAT to `:libsvm', `:csv' or `:binary' before reach
 or when URI-PARAMETERS holds a `format' key under any case, the same smuggling risk from a
 third side -- or when any URI-PARAMETERS key or value, once rendered into the query
 string, itself contains a `?', `#', `&', or `;': any of the four could open a second query
-segment there too, or reintroduce the multi-path case from inside a parameter value.
+segment there too, or reintroduce the multi-path case from inside a parameter value -- or
+when PATH's namestring contains a literal `*' or `[', a precaution against dmlc's
+documented glob-expansion rather than a fix for a reproduced crash; see
+`%check-file-uri-arguments' for the measurement this last one rests on.
 
 Does not percent-encode PATH. Measured (record section 9): dmlc accepts an unencoded
 space in the path and REJECTS the identical path percent-encoded as %20, with \"Cannot
