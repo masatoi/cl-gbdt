@@ -418,7 +418,17 @@ runs: nothing between this resolution and `XGDMatrixCreateFromURI' holds the fil
 otherwise prevents it being replaced on disk in between -- a TOCTOU window this wrapper
 cannot close from Lisp. What this function removes is this wrapper disagreeing with
 itself about which file that is; a second process racing to replace it is a different,
-unclosable problem."
+unclosable problem.
+
+`cl-gbdt/src/xgboost/api''s `%best-effort-resolve-path' is a second, deliberately
+different resolver, added later for `save-model' and `load-model': unlike this function,
+it never refuses, `MERGE-PATHNAMES'-ing against `*default-pathname-defaults*' instead of
+returning NIL when `truename' fails, because neither of its two callers has a format-
+classification gate to feed the way this function feeds `detect-file-format' --
+`save-model''s PATH is normally expected not to exist yet, and a missing PATH on
+`load-model' is `XGBoosterLoadModel''s own message to report. This function's own
+refusal stays exactly as documented above, unaffected by that sibling's existence; see
+its docstring for the full analysis of why it chooses the opposite default."
   (handler-case (truename path)
     (file-error () nil)))
 

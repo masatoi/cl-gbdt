@@ -1092,3 +1092,196 @@ glob pattern would match"))
             (handler-case (delete-file other-path) (file-error () nil))
             (handler-case (uiop:delete-directory-tree dir :validate t)
               (file-error () nil))))))))
+
+(deftest save-model-resolves-a-relative-path-against-default-pathname-defaults
+  (testing "a relative PATH is written the way `open' would resolve it, not native-namestring'd \
+bare -- proven by a same-named decoy file sitting in the process's own working directory, \
+which the unresolved form would have overwritten instead"
+    (with-open-backend (backend)
+      (multiple-value-bind (matrix label-vector) (fixture)
+        (let* ((data (cl-gbdt/xgboost:create-dataset backend matrix :label label-vector))
+               (relative-name (format nil "cl-gbdt-p6-save-~D.json" (random 1000000)))
+               (real-dir (ensure-directories-exist
+                          (merge-pathnames (format nil "cl-gbdt-p6-save-real-~D/"
+                                                    (random 1000000))
+                                           (uiop:temporary-directory))))
+               (real-path (merge-pathnames relative-name real-dir))
+               (decoy-path (merge-pathnames relative-name (uiop:getcwd)))
+               (decoy-content "not an xgboost model, just a decoy sentinel"))
+          (unwind-protect
+               (let ((booster (cl-gbdt/xgboost:create-booster backend data
+                                                               :parameters *parameters*)))
+                 (unwind-protect
+                      (progn
+                        (dotimes (round 5) (cl-gbdt/xgboost:update-one-iteration booster))
+                        ;; Plant the decoy BEFORE saving, so an unresolved bare `namestring'
+                        ;; would have overwritten it -- the fix must leave it alone.
+                        (with-open-file (stream decoy-path :direction :output
+                                                            :if-exists :supersede)
+                          (write-string decoy-content stream))
+                        (let ((*default-pathname-defaults* real-dir))
+                          (cl-gbdt/xgboost:save-model booster relative-name))
+                        (ok (probe-file real-path)
+                            "save-model did not write to *default-pathname-defaults*'s \
+directory")
+                        (ok (string= decoy-content
+                                     (with-open-file (stream decoy-path)
+                                       (let ((buffer (make-string (length decoy-content))))
+                                         (read-sequence buffer stream)
+                                         buffer)))
+                            "save-model overwrote the decoy in the process's own working \
+directory instead of writing to *default-pathname-defaults*'s")
+                        (let ((reloaded (cl-gbdt/xgboost:load-model backend real-path)))
+                          (unwind-protect
+                               (ok (equalp (cl-gbdt/xgboost:predict booster matrix)
+                                           (cl-gbdt/xgboost:predict reloaded matrix))
+                                   "the model written to *default-pathname-defaults*'s \
+directory does not round-trip")
+                            (cl-gbdt/xgboost:free-booster reloaded))))
+                   (cl-gbdt/xgboost:free-booster booster)))
+            (progn
+              (cl-gbdt/xgboost:free-dataset data)
+              (handler-case (delete-file real-path) (file-error () nil))
+              (handler-case (uiop:delete-directory-tree real-dir :validate t)
+                (file-error () nil))
+              (handler-case (delete-file decoy-path) (file-error () nil)))))))))
+
+(deftest save-model-refuses-a-wild-path
+  (testing "save-model refuses a wild pathname before any foreign call"
+    (with-open-backend (backend)
+      (multiple-value-bind (matrix label-vector) (fixture)
+        (let ((data (cl-gbdt/xgboost:create-dataset backend matrix :label label-vector)))
+          (unwind-protect
+               (let ((booster (cl-gbdt/xgboost:create-booster backend data
+                                                               :parameters *parameters*)))
+                 (unwind-protect
+                      (let ((path (merge-pathnames (pathname "cl-gbdt-wild-save*.json")
+                                                    (uiop:temporary-directory))))
+                        (ok (handler-case
+                                (progn (cl-gbdt/xgboost:save-model booster path) nil)
+                              (cl-gbdt/xgboost:unsupported-argument () t))
+                            "save-model accepted a wild pathname"))
+                   (cl-gbdt/xgboost:free-booster booster)))
+            (cl-gbdt/xgboost:free-dataset data)))))))
+
+(deftest save-model-writes-a-file-with-a-literal-asterisk
+  (testing "a filename whose namestring backslash-escapes a literal asterisk still saves"
+    (with-open-backend (backend)
+      (multiple-value-bind (matrix label-vector) (fixture)
+        (let ((data (cl-gbdt/xgboost:create-dataset backend matrix :label label-vector))
+              (path (merge-pathnames
+                     (sb-ext:parse-native-namestring
+                      (format nil "cl-gbdt-star*save-~D.json" (random 1000000)))
+                     (uiop:temporary-directory))))
+          (unwind-protect
+               (let ((booster (cl-gbdt/xgboost:create-booster backend data
+                                                               :parameters *parameters*)))
+                 (unwind-protect
+                      (progn
+                        (dotimes (round 5) (cl-gbdt/xgboost:update-one-iteration booster))
+                        (ok (equal path (cl-gbdt/xgboost:save-model booster path))
+                            "save-model did not return the literal-asterisk path it was \
+given")
+                        (ok (probe-file path)
+                            "save-model did not write the literal-asterisk path it was \
+given -- a bare namestring would have escaped it to a different, nonexistent name"))
+                   (cl-gbdt/xgboost:free-booster booster)))
+            (progn
+              (cl-gbdt/xgboost:free-dataset data)
+              (handler-case (delete-file path) (file-error () nil)))))))))
+
+(deftest load-model-resolves-a-relative-path-against-default-pathname-defaults
+  (testing "a relative PATH is read the way `open' would resolve it, not native-namestring'd \
+bare -- proven by a same-named decoy file sitting in the process's own working directory, \
+which the unresolved form would have loaded instead"
+    (with-open-backend (backend)
+      (multiple-value-bind (matrix label-vector) (fixture)
+        (let* ((data (cl-gbdt/xgboost:create-dataset backend matrix :label label-vector))
+               (relative-name (format nil "cl-gbdt-p6-load-~D.json" (random 1000000)))
+               (real-dir (ensure-directories-exist
+                          (merge-pathnames (format nil "cl-gbdt-p6-load-real-~D/"
+                                                    (random 1000000))
+                                           (uiop:temporary-directory))))
+               (real-path (merge-pathnames relative-name real-dir))
+               (decoy-path (merge-pathnames relative-name (uiop:getcwd))))
+          (unwind-protect
+               (let ((booster (cl-gbdt/xgboost:create-booster backend data
+                                                               :parameters *parameters*)))
+                 (unwind-protect
+                      (progn
+                        (dotimes (round 5) (cl-gbdt/xgboost:update-one-iteration booster))
+                        ;; The REAL model, written with an already-absolute path, so this
+                        ;; fixture does not itself depend on `save-model''s own fix.
+                        (cl-gbdt/xgboost:save-model booster real-path)
+                        ;; The DECOY: not a valid model at all, so an unresolved bare
+                        ;; `namestring' loading it instead of the real file fails this test
+                        ;; either by signalling or by a wrong prediction -- both a clear
+                        ;; failure of the assertion below.
+                        (with-open-file (stream decoy-path :direction :output
+                                                            :if-exists :supersede)
+                          (write-string "not an xgboost model" stream))
+                        ;; A single-binding `let' nested inside another, not `let*': see
+                        ;; the sibling's `create-dataset-from-file-resolves-a-relative-path-
+                        ;; against-default-pathname-defaults' for why -- `reloaded''s
+                        ;; init-form must run AFTER *default-pathname-defaults* is rebound, a
+                        ;; dynamic dependency mallet's own let*-vs-let linter cannot see
+                        ;; across a special-variable rebinding, since RELOADED's init-form
+                        ;; never mentions that symbol by name.
+                        (let ((*default-pathname-defaults* real-dir))
+                          (let ((reloaded (cl-gbdt/xgboost:load-model
+                                           backend relative-name)))
+                            (unwind-protect
+                                 (ok (equalp (cl-gbdt/xgboost:predict booster matrix)
+                                             (cl-gbdt/xgboost:predict reloaded matrix))
+                                     "load-model read the decoy in the process's own \
+working directory instead of *default-pathname-defaults*'s")
+                              (cl-gbdt/xgboost:free-booster reloaded)))))
+                   (cl-gbdt/xgboost:free-booster booster)))
+            (progn
+              (cl-gbdt/xgboost:free-dataset data)
+              (handler-case (delete-file real-path) (file-error () nil))
+              (handler-case (uiop:delete-directory-tree real-dir :validate t)
+                (file-error () nil))
+              (handler-case (delete-file decoy-path) (file-error () nil)))))))))
+
+(deftest load-model-refuses-a-wild-path
+  (testing "load-model refuses a wild pathname before any foreign call"
+    (with-open-backend (backend)
+      (let ((path (merge-pathnames (pathname "cl-gbdt-wild-load*.json")
+                                    (uiop:temporary-directory))))
+        (ok (handler-case (progn (cl-gbdt/xgboost:load-model backend path) nil)
+              (cl-gbdt/xgboost:unsupported-argument () t))
+            "load-model accepted a wild pathname")))))
+
+(deftest load-model-reads-a-file-with-a-literal-asterisk
+  (testing "a filename whose namestring backslash-escapes a literal asterisk still loads"
+    (with-open-backend (backend)
+      (multiple-value-bind (matrix label-vector) (fixture)
+        (let ((data (cl-gbdt/xgboost:create-dataset backend matrix :label label-vector))
+              (path (merge-pathnames
+                     (sb-ext:parse-native-namestring
+                      (format nil "cl-gbdt-star*load-~D.json" (random 1000000)))
+                     (uiop:temporary-directory))))
+          (unwind-protect
+               (let ((booster (cl-gbdt/xgboost:create-booster backend data
+                                                               :parameters *parameters*)))
+                 (unwind-protect
+                      (progn
+                        (dotimes (round 5) (cl-gbdt/xgboost:update-one-iteration booster))
+                        ;; Written directly via `model-to-string', bypassing `save-model'
+                        ;; entirely, so this test isolates `load-model''s own path handling
+                        ;; from `save-model''s.
+                        (with-open-file (stream path :direction :output
+                                                      :if-exists :supersede)
+                          (write-string (cl-gbdt/xgboost:model-to-string booster) stream))
+                        (let ((reloaded (cl-gbdt/xgboost:load-model backend path)))
+                          (unwind-protect
+                               (ok (equalp (cl-gbdt/xgboost:predict booster matrix)
+                                           (cl-gbdt/xgboost:predict reloaded matrix))
+                                   "load-model did not read the literal-asterisk path it \
+was given -- a bare namestring would have escaped it to a different, nonexistent name")
+                            (cl-gbdt/xgboost:free-booster reloaded))))
+                   (cl-gbdt/xgboost:free-booster booster)))
+            (progn
+              (cl-gbdt/xgboost:free-dataset data)
+              (handler-case (delete-file path) (file-error () nil)))))))))

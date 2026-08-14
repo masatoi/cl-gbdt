@@ -348,16 +348,27 @@ orphaning it."
             (%set-feature-names dataset-pointer feature-names))
           (take-ownership 'lightgbm-dataset backend :dataset))))))
 
-(defun %check-file-path (path)
+(defun %check-file-path (path argument-description function-name)
   "Signal `unsupported-argument' when PATH is a wild pathname.
 
-`create-dataset-from-file' passes PATH's `sb-ext:native-namestring' to
-`LGBM_DatasetCreateFromFile', not its `namestring' -- `namestring' backslash-escapes a
-character that is a CL pathname wildcard marker but literal in a real filename (an
-asterisk, concretely), so a file genuinely named `star*file.libsvm' namestrings as
-`star\\*file.libsvm' and LightGBM refuses to open a file that exists, reporting a path
-the caller never wrote. Review round 4's Finding N9 fixed this on XGBoost's side only;
-LightGBM's `create-dataset-from-file' landed two rounds earlier and was never revisited.
+ARGUMENT-DESCRIPTION identifies the caller's PATH argument in the signalled condition, the
+way `%check-object-class''s own ARGUMENT-DESCRIPTION does for NOUN -- \"save-model's path\"
+and \"load-model's path\" alongside \"create-dataset-from-file's path\", all three now
+routing through this one check. FUNCTION-NAME is the vendored C entry point PATH's
+`sb-ext:native-namestring' ultimately reaches -- `LGBM_DatasetCreateFromFile',
+`LGBM_BoosterSaveModel', or `LGBM_BoosterCreateFromModelfile' -- named in the error message
+so it reports the actual foreign call rather than a generic one.
+
+`create-dataset-from-file', `save-model' and `load-model' each pass PATH's
+`sb-ext:native-namestring' (by way of `%best-effort-resolve-path') to their own C entry
+point, not PATH's `namestring' -- `namestring' backslash-escapes a character that is a CL
+pathname wildcard marker but literal in a real filename (an asterisk, concretely), so a file
+genuinely named `star*file.libsvm' or `star*model.txt' namestrings as `star\\*file.libsvm'
+and LightGBM refuses to open a file that exists, reporting a path the caller never wrote.
+Review round 4's Finding N9 fixed this on XGBoost's side only; LightGBM's
+`create-dataset-from-file' fixed its own occurrence two rounds later, and `save-model' and
+`load-model' carried the identical bare `namestring' bug until this check and
+`%best-effort-resolve-path' were wired into them too.
 
 But `native-namestring' signals `sb-kernel:no-native-namestring-error' -- untyped by this
 project, and uncatchable by name -- for a PATH that IS wild (`wildcard*.libsvm', where the
@@ -371,11 +382,11 @@ edge case for a worse one. Mirrors `cl-gbdt/src/xgboost/file-input''s
   (when (wild-pathname-p path)
     (error 'unsupported-argument
            :backend :lightgbm
-           :argument "create-dataset-from-file's path"
-           :reason (format nil "~S is a wild pathname; LGBM_DatasetCreateFromFile takes a ~
-                                plain filename, and sb-ext:native-namestring signals its ~
-                                own untyped error for a wild pathname rather than ~
-                                composing one" path))))
+           :argument argument-description
+           :reason (format nil "~S is a wild pathname; ~A takes a plain filename, and ~
+                                sb-ext:native-namestring signals its own untyped error ~
+                                for a wild pathname rather than composing one"
+                            path function-name))))
 
 (defun %best-effort-resolve-path (path)
   "Resolve PATH the way `open' resolves a pathname designator: `truename' when that
@@ -386,16 +397,17 @@ against `*default-pathname-defaults*' instead, which applies the identical mergi
 without requiring PATH to exist. Never signals and never refuses: every PATH this
 function is given comes back as some pathname.
 
-`create-dataset-from-file' passes this function's result, not PATH itself, to
-`sb-ext:native-namestring'. Measured directly (not assumed): `native-namestring' on a
-bare relative pathname designator prints PATH's own relative spelling verbatim, with NO
-merge against `*default-pathname-defaults*' at all. A caller who rebinds that special --
-an ordinary CL pattern this project does not itself use, but places no restriction
-against -- and passes a relative PATH would therefore have had
-`LGBM_DatasetCreateFromFile' open it relative to the OS PROCESS's own working directory
-instead, which can differ from `*default-pathname-defaults*' arbitrarily: silently
-training on an unrelated file of the same name if one happens to exist there, or failing
-to find a file that does exist at the location `open' itself would have resolved PATH to.
+`create-dataset-from-file', `save-model' and `load-model' each pass this function's
+result, not PATH itself, to `sb-ext:native-namestring'. Measured directly (not assumed):
+`native-namestring' on a bare relative pathname designator prints PATH's own relative
+spelling verbatim, with NO merge against `*default-pathname-defaults*' at all. A caller
+who rebinds that special -- an ordinary CL pattern this project does not itself use, but
+places no restriction against -- and passes a relative PATH would therefore have had
+`LGBM_DatasetCreateFromFile', `LGBM_BoosterSaveModel' or `LGBM_BoosterCreateFromModelfile'
+resolve it relative to the OS PROCESS's own working directory instead, which can differ
+from `*default-pathname-defaults*' arbitrarily: silently training on, saving over, or
+loading an unrelated file of the same name if one happens to exist there, or failing to
+find a file that does exist at the location `open' itself would have resolved PATH to.
 This is the third occurrence of a hazard whose definitive analysis lives in
 `cl-gbdt/src/xgboost/file-input''s `%resolve-file-path' docstring (review round 3,
 Finding N4) -- reproduced here for LightGBM rather than cross-referenced only, since a
@@ -406,10 +418,13 @@ when it cannot resolve to an existing file, because XGBoost's `detect-file-forma
 must classify the file's own bytes and has nothing to classify without one. This function
 has no such gate to feed -- `create-dataset-from-file''s own docstring already promises a
 missing PATH is `LGBM_DatasetCreateFromFile''s own message to report, not a `probe-file'
-pre-check made here -- so this function never refuses: `MERGE-PATHNAMES' applies CL's
-merging rule to a pathname that need not exist, and the missing-file case still reaches C
-exactly as it always has, only correctly resolved first, so the C library's own error
-names the location `open' would actually have looked at.
+pre-check made here, and `save-model'/`load-model' are the same: a missing PATH on load,
+or a not-yet-existing one on save, is the library's own outcome to report -- so this
+function never refuses: `MERGE-PATHNAMES' applies CL's merging rule to a pathname that
+need not exist, and the missing-file case still reaches C exactly as it always has, only
+correctly resolved first, so the C library's own error names the location `open' would
+actually have looked at. `save-model' is the clearest case for never refusing: its PATH is
+EXPECTED not to exist yet, being created by that very call.
 
 Measured, not assumed, that the two branches do not disagree about a leading `~':
 `(pathname \"~/x.txt\")' already carries an ABSOLUTE `:HOME' directory component from
@@ -489,7 +504,7 @@ with nothing in Lisp yet referencing it, not only where the gap is wide."
     (%check-object-class backend 'lightgbm-backend "backend"
                          "create-dataset-from-file's backend argument")
     (%check-backend-open backend)
-    (%check-file-path path)
+    (%check-file-path path "create-dataset-from-file's path" "LGBM_DatasetCreateFromFile")
     (let ((reference-pointer (%reference-pointer backend reference 'lightgbm-dataset))
           (parameter-string (%parameter-string parameters)))
       (let ((dataset-pointer (%create-dataset-from-file
@@ -923,6 +938,15 @@ them -- which LightGBM spells as 0, and `%resolve-num-iteration' is what writes 
 keyword would name an empty slot. The refusal is invisible to Layer 2, whose method resolves
 :BEST first and calls this with the integer that resolution produced.
 
+PATH reaches `LGBM_BoosterSaveModel' as `sb-ext:native-namestring' of its own
+`%best-effort-resolve-path' -- `truename' when PATH resolves (it usually will not, since
+PATH is normally being created here), `merge-pathnames' against
+`*default-pathname-defaults*' otherwise -- never PATH's bare `namestring', which would
+neither merge a relative PATH against that special nor spell a literal asterisk in a real
+filename the way the caller wrote it. See `%best-effort-resolve-path' and `%check-file-path'
+for both hazards and the order they are fixed in. Signals `unsupported-argument' first, via
+`%check-file-path', when PATH is a wild pathname.
+
 Signals `wrong-backend-reference' when BOOSTER is not a booster built by this backend -- a
 dataset, an XGBoost booster, or not a handle at all. This function dispatches on nothing, so
 `%check-lightgbm-booster' is the only thing between such a handle's pointer and
@@ -933,7 +957,9 @@ inside that check, which runs before NUM-ITERATION is examined."
   (with-foreign-float-traps-masked
     (let ((pointer (%check-lightgbm-booster booster "save-model's booster argument")))
       (%reject-best-num-iteration booster num-iteration "save-model's :num-iteration")
-      (cffi:with-foreign-string (filename (namestring path))
+      (%check-file-path path "save-model's path" "LGBM_BoosterSaveModel")
+      (cffi:with-foreign-string (filename (sb-ext:native-namestring
+                                            (%best-effort-resolve-path path)))
         (%save-model pointer (%resolve-num-iteration num-iteration) filename)))
     path))
 
@@ -944,6 +970,13 @@ booster built against BACKEND.
 The returned booster has no training set -- see the `booster' class' documentation -- since
 PATH names a model, not a dataset. `evaluation' on it therefore reports nothing, and
 `update-one-iteration' signals `missing-training-set'.
+
+PATH reaches `LGBM_BoosterCreateFromModelfile' as `sb-ext:native-namestring' of its own
+`%best-effort-resolve-path', exactly as `save-model''s PATH does -- see that function's
+docstring, and `%best-effort-resolve-path'/`%check-file-path' above, for why a bare
+`namestring' resolves a relative PATH against the wrong directory and mis-escapes a
+literal asterisk. Signals `unsupported-argument' first, via `%check-file-path', when PATH
+is a wild pathname.
 
 The raw booster handle exists in C from the moment `LGBM_BoosterCreateFromModelfile' returns,
 but `make-handle' does not take ownership of it until it also succeeds; `with-pointer-ownership'
@@ -958,8 +991,10 @@ reports success but returns a null handle."
   (with-foreign-float-traps-masked
     (%check-object-class backend 'lightgbm-backend "backend" "load-model's backend argument")
     (%check-backend-open backend)
+    (%check-file-path path "load-model's path" "LGBM_BoosterCreateFromModelfile")
     (let ((booster-pointer
-            (cffi:with-foreign-string (filename (namestring path))
+            (cffi:with-foreign-string (filename (sb-ext:native-namestring
+                                                  (%best-effort-resolve-path path)))
               (cffi:with-foreign-objects ((out-num-iterations :int) (out :pointer))
                 (%create-booster-from-modelfile filename out-num-iterations out)
                 (cffi:mem-ref out :pointer)))))

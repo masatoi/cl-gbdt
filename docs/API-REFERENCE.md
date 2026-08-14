@@ -3276,6 +3276,13 @@ The returned booster has no training set -- see the `booster' class' documentati
 PATH names a model, not a dataset. `evaluation' on it therefore reports nothing, and
 `update-one-iteration' signals `missing-training-set'.
 
+PATH reaches `LGBM_BoosterCreateFromModelfile' as `sb-ext:native-namestring' of its own
+`%best-effort-resolve-path', exactly as `save-model''s PATH does -- see that function's
+docstring, and `%best-effort-resolve-path'/`%check-file-path' above, for why a bare
+`namestring' resolves a relative PATH against the wrong directory and mis-escapes a
+literal asterisk. Signals `unsupported-argument' first, via `%check-file-path', when PATH
+is a wild pathname.
+
 The raw booster handle exists in C from the moment `LGBM_BoosterCreateFromModelfile' returns,
 but `make-handle' does not take ownership of it until it also succeeds; `with-pointer-ownership'
 spans exactly that gap, freeing the raw handle on any exit that has not taken ownership rather
@@ -3306,6 +3313,14 @@ DMatrix handles at all, and only then does `XGBoosterLoadModel' populate it from
 The returned booster has no training set -- see the `booster' class' documentation -- since
 PATH names a model, not a dataset. `evaluation' on it therefore reports nothing, and
 `update-one-iteration' signals `missing-training-set'.
+
+PATH reaches `XGBoosterLoadModel' as `sb-ext:native-namestring' of its own
+`%best-effort-resolve-path', exactly as `save-model''s PATH does -- see that function's
+docstring, and `%best-effort-resolve-path'/`%check-file-path' above, for why a bare
+`namestring' resolves a relative PATH against the wrong directory and mis-escapes a literal
+asterisk, and for why XGBoost's plain-filename `fname' argument does not route through
+`cl-gbdt/src/xgboost/file-input''s URI-specific checks. Signals `unsupported-argument' first,
+via `%check-file-path', when PATH is a wild pathname.
 
 `with-pointer-ownership' spans exactly the window in which the raw booster is owned by
 nobody: any exit that has not called TAKE-OWNERSHIP -- a failing `XGBoosterLoadModel' the
@@ -4646,6 +4661,15 @@ them -- which LightGBM spells as 0, and `%resolve-num-iteration' is what writes 
 keyword would name an empty slot. The refusal is invisible to Layer 2, whose method resolves
 :BEST first and calls this with the integer that resolution produced.
 
+PATH reaches `LGBM_BoosterSaveModel' as `sb-ext:native-namestring' of its own
+`%best-effort-resolve-path' -- `truename' when PATH resolves (it usually will not, since
+PATH is normally being created here), `merge-pathnames' against
+`*default-pathname-defaults*' otherwise -- never PATH's bare `namestring', which would
+neither merge a relative PATH against that special nor spell a literal asterisk in a real
+filename the way the caller wrote it. See `%best-effort-resolve-path' and `%check-file-path'
+for both hazards and the order they are fixed in. Signals `unsupported-argument' first, via
+`%check-file-path', when PATH is a wild pathname.
+
 Signals `wrong-backend-reference' when BOOSTER is not a booster built by this backend -- a
 dataset, an XGBoost booster, or not a handle at all. This function dispatches on nothing, so
 `%check-lightgbm-booster' is the only thing between such a handle's pointer and
@@ -4676,6 +4700,17 @@ signalled, because that refusal exists only because the unified API promised a p
 
 XGBoost selects its serialization format from PATH's extension -- `.json' and `.ubj' are the
 current ones -- and reports an unrecognized extension itself, as `foreign-call-error'.
+
+PATH reaches `XGBoosterSaveModel' as `sb-ext:native-namestring' of its own
+`%best-effort-resolve-path' -- `truename' when PATH resolves (it usually will not, since
+PATH is normally being created here), `merge-pathnames' against
+`*default-pathname-defaults*' otherwise -- never PATH's bare `namestring', which would
+neither merge a relative PATH against that special nor spell a literal asterisk in a real
+filename the way the caller wrote it. See `%best-effort-resolve-path' and `%check-file-path'
+above for both hazards and the order they are fixed in. `XGBoosterSaveModel' takes a plain
+file name, not a URI -- confirmed against the vendored header, not assumed -- so
+`cl-gbdt/src/xgboost/file-input''s URI-specific checks do not apply and are not reused here.
+Signals `unsupported-argument' first, via `%check-file-path', when PATH is a wild pathname.
 
 Signals `wrong-backend-reference' when BOOSTER is not a booster built by this backend -- a
 dataset, a LightGBM booster, or not a handle at all. This function dispatches on nothing, so
