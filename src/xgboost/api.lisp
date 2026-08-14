@@ -387,8 +387,33 @@ inside a thread dmlc creates for the parse -- SBCL reports `Can't handle sig11 i
 thread' and the process is gone, with no Lisp stack for any `handler-case' to run on. This
 function classifies PATH itself, with `cl-gbdt/src/xgboost/file-input:detect-file-format',
 and signals `file-format-mismatch' -- naming PATH, the DECLARED format, and the DETECTED one
--- before the foreign call that would otherwise crash, which is the only point at which this
-failure is reportable at all.
+-- before the foreign call, for the shape that classification saw.
+
+**That classification is of PATH's first non-blank line, not of PATH.**
+`detect-file-format' reads no further once it has a verdict (see its own docstring); this
+gate therefore validates the shape that first line establishes, and a file whose first line
+is genuinely libsvm-shaped but whose later rows are not still passes it, exact-match and
+all, with the mismatched later content still reaching `XGDMatrixCreateFromURI'. PR #36's
+re-review raised this as a Critical finding and asked for it to be measured before any
+fix. Measured afterward -- ten runs, five mixed-content shapes (a CSV row second, a CSV row
+last of fifty, a row truncated mid-token, a space-delimited row embedded rather than filling
+the whole file, and a binary tail appended) against both this library and
+`LGBM_DatasetCreateFromFile' -- none of the ten crashed: three of the five shapes returned a
+clean `-1' from XGBoost, and two returned a silent, partial success (a truncated row read as
+though complete; a binary tail silently dropped, though not identically -- XGBoost and
+LightGBM disagreed on the resulting row count for the same file). **That is what ten runs
+showed, not a proof that no such input can crash.** The earlier whole-file SIGSEGVs (record
+section 4) all had every row wrong from the first; that dmlc's own row-level check is what
+stops a single bad row once an earlier one has already established the shape is a plausible
+explanation for the difference, not one independently confirmed here -- see
+`docs/superpowers/specs/2026-08-13-file-input-measurements.md' section 12 for the full
+record, including the truncation and cross-backend row-count hazards, neither of which is a
+crash but both of which a caller can meet silently. Reading the rest of PATH to validate
+every row was considered and rejected: it would mean this wrapper reads what it exists to
+let the library read once, doubling I/O on exactly the large-file case the feature is for,
+and would still not close the TOCTOU window `%resolve-file-path' already documents -- a
+scan finished before `XGDMatrixCreateFromURI' runs proves nothing about what that call
+itself will see.
 
 **The gate also stops a silent wrong answer, not only a crash.** The other direction, a real
 libsvm file declared `:csv', does not crash: measured, `train.libsvm?format=csv' returns

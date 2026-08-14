@@ -3541,6 +3541,20 @@ all (missing, wild, or a symlink to nowhere), or that resolved to a directory: n
 XGBoost's own to report any longer, since dmlc's response to several of those shapes turned out
 not to be an error either.
 
+**The classification is of `PATH`'s first non-blank line, not of `PATH`.** A file whose first
+line is genuinely libsvm-shaped but whose later rows are not is still classified `:LIBSVM` and
+still passes this gate; the mismatched later content reaches `XGDMatrixCreateFromURI` regardless.
+Measured (PR #36 re-review, ten runs against five mixed-content shapes and both libraries; see
+`docs/superpowers/specs/2026-08-13-file-input-measurements.md` section 12 for the full record):
+none of the ten crashed, but that is what ten runs showed and not a guarantee about every input.
+**A file truncated mid-row is silently accepted by both libraries as though it were complete --
+no error, a dataset built from whatever whole rows came before the cut.** A caller who hands
+either `create-dataset-from-file` a file another process is still writing can get a dataset back
+with no indication anything was missing. A corrupted tail is also read silently by both, but not
+identically: the same file gave XGBoost 3 rows and LightGBM 4 for the fixture measured. Reading
+the rest of the file to catch either case would mean this wrapper reads what it exists to let the
+library read once, so neither library's wrapper does it.
+
 **A FIFO or other blocking special file is not detected, and `PATH` is expected to name a data
 file.** ANSI Common Lisp has no portable way to ask whether a resolved path names a named pipe or
 a device rather than an ordinary regular file, so nothing above catches one -- unlike an earlier

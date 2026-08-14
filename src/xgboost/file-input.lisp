@@ -302,6 +302,17 @@ Checked in this order:
    it, a limitation of that library's own parser this rule has no bearing on).
 4. Otherwise, :CSV.
 
+Steps 1 through 4 run once, against ONE line, and this function never reads a second one:
+every verdict but :UNKNOWN, :UNREADABLE and :BINARY comes from that first non-blank line
+alone. The implication, not just the mechanism: a file whose first line is genuinely
+libsvm-shaped but whose later rows are not is classified :LIBSVM from that first line,
+with nothing here saying anything about the rest of the file at all -- classifying it is
+this function's whole job, and the rest of the file is not read to do it. PR #36's
+re-review raised exactly this as a Critical finding; `create-dataset-from-file''s own
+docstring records what was measured afterward (ten runs, no crash reproduced in any) and
+what was only inferred, not confirmed -- see that docstring and
+`docs/superpowers/specs/2026-08-13-file-input-measurements.md' section 12 for the record.
+
 Step 2 must run before step 3 and must never be reordered: measured (record section 1),
 without the comma guard the ordinary CSV line \"2024-01-01 12:00:00,1.0,2.0\" classifies
 as LIBSVM, because \"12:00:00,1.0\" satisfies <digits>:<rest> -- and libsvm-declared-on-CSV
