@@ -22,34 +22,39 @@ files (design doc section 12, layer 2), in addition to 649 assertions across 22 
 that need no shared library at all (layer 1). `train` also returns a `training-report` as
 its secondary value, and takes
 `:early-stopping` to end a run once a watched metric stops improving -- see
-[Training report](#training-report) below. `make-dataset` and `predict` also accept a
-`csr-matrix` wherever they accept a dense matrix -- see [Sparse
-input](#sparse-input-csr-matrices) below -- and both also take `:missing`, the value in
-the caller's data that means missing, gated on the `:missing-value` capability that only
-XGBoost provides -- see [Missing values](#missing-values) below. `make-dataset` also
+[Training report](docs/user-guide/training.md#training-report). `make-dataset` and
+`predict` also accept a `csr-matrix` wherever they accept a dense matrix -- see [Sparse
+input](docs/user-guide/data-and-prediction.md#sparse-input-csr-matrices) -- and both also
+take `:missing`, the value in the caller's data that means missing, gated on the
+`:missing-value` capability that only XGBoost provides -- see [Missing
+values](docs/user-guide/data-and-prediction.md#missing-values). `make-dataset` also
 takes `:categorical-features`, the 0-based columns that hold categories rather than
 quantities, gated on the `:categorical-features` capability that both backends provide
 -- `predict` takes no such argument, the trained trees already carrying the category
-sets they split on -- see [Categorical features](#categorical-features) below. `predict`
+sets they split on -- see [Categorical
+features](docs/user-guide/data-and-prediction.md#categorical-features). `predict`
 also returns the SHAPE the backend states for the result it just wrote as a second value --
 a list of integers in `array-dimensions` order, or `NIL` where the backend states none --
 gated on the `:prediction-shape` capability that both backends provide; XGBoost reads its
 own `out_shape`/`out_dim` back from the library and LightGBM derives what it can, stating
-`NIL` for `:leaf-index` -- see [Prediction shape](#prediction-shape) below. `train` also
+`NIL` for `:leaf-index` -- see
+[Prediction shape](docs/user-guide/data-and-prediction.md#prediction-shape). `train` also
 takes `:objective`, a function that turns the current raw scores into a gradient and a
 Hessian so a run boosts against the caller's own loss, gated on the `:custom-objective`
 capability that both backends provide; the two libraries flatten that array in opposite
 orders and the wrapper absorbs it, and on LightGBM `:objective` overrides any `objective`
 in `:parameters` -- all five spellings that library honours -- forcing it to `"none"`,
 since the library refuses the combination outright -- see [Custom
-objective](#custom-objective) below. `train` also takes `:evaluation`, a function called
+objective](docs/user-guide/custom-training.md#custom-objective). `train` also takes
+`:evaluation`, a function called
 once per dataset per iteration with that dataset's `predict :kind :normal` scores and the
 dataset's index -- `0` the training set, `N+1` the Nth `:valid-sets` entry -- that returns a
 metric name and a real or `NIL` value, gated on the `:custom-evaluation` capability that both
 backends provide out of different lists, LightGBM probing it and XGBoost declaring it; the
 values become their own report series, watchable by `:early-stopping` under the returned
 name, appended after the library's own series rather than replacing them -- see [Custom
-evaluation](#custom-evaluation) below. See [Usage](#usage) below for a worked example.
+evaluation](docs/user-guide/custom-training.md#custom-evaluation). See [Usage](#usage)
+below for a worked example.
 
 Loading `cl-gbdt` itself still does not require either `liblightgbm.so` or
 `libxgboost.so` to be installed -- see [Systems](#systems): a shared library is opened
@@ -88,7 +93,8 @@ something only a reader can check, not the script.
 ### Quick start
 
 Load the core system and one backend's `/unified` system -- `cl-gbdt/lightgbm` alone
-carries no `cl-gbdt:train`; see [the section below](#two-systems-per-backend) -- open the
+carries no `cl-gbdt:train`; see [Two systems per
+backend](docs/user-guide/backends.md#two-systems-per-backend) -- open the
 backend, build a dataset from a
 `double-float` matrix and its labels, train, predict, and free everything with
 `with-dataset`/`with-booster` -- explicit resource management is this library's
@@ -174,11 +180,12 @@ it, renders it as a string, reports its feature importance and evaluation metric
 dataset its own shape, and frees both -- `create-dataset`, `create-booster`,
 `update-one-iteration`, `predict`, `free-dataset`, `free-booster`, `save-model`,
 `load-model`, `model-to-string`, `feature-importance`, `evaluation`, `dataset-num-rows`,
-`dataset-num-features`, with a worked example of the first six under [Two systems per
-backend](#two-systems-per-backend) above and the rest exercised by
+`dataset-num-features`, with a worked example of the first six in [Two systems per
+backend](docs/user-guide/backends.md#two-systems-per-backend) and the rest exercised by
 `tests/functional/{lightgbm,xgboost}-standalone.lisp` -- plus a fourteenth,
 `create-dataset-from-file`, which builds the dataset straight from a file instead (see [File
-input](#file-input) below), exercised by the same two files. What such a program still cannot
+input](docs/user-guide/file-input.md#file-input)), exercised by the same two files. What such
+a program still cannot
 do is `cl-gbdt:train`'s own concepts: no training report, no early stopping and no
 `:objective` or `:evaluation` callback, none of which have a Layer 1 counterpart to be.
 

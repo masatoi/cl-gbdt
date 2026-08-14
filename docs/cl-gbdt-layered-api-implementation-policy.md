@@ -228,7 +228,7 @@ Furthermore, to prevent a recurrence, add a mechanical check that verifies the c
 - Where a required symbol is absent, `open-backend` signals `missing-foreign-symbols`.
 - Where an optional symbol is absent, only the capability concerned is disabled, rather than the whole backend being made impossible to open.
 
-LightGBM has no runtime version API, so a version must not be inferred and guaranteed. This asymmetry is already stated explicitly in `src/version.lisp` and the README.
+LightGBM has no runtime version API, so a version must not be inferred and guaranteed. This asymmetry is already stated explicitly in `src/version.lisp` and `docs/user-guide/backend-differences.md`.
 
 The connection of the XGBoost version to the tested-version warning is **implemented** (`untested-backend-version`). The remaining task is the connection to capability decisions; design it together with §7.
 

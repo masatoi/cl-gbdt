@@ -72,7 +72,8 @@ Sparse input is a capability, `:sparse-input`, true on both vendored backends. B
 `make-dataset` and `predict` re-check it for themselves rather than trusting the caller to
 have asked first, and signal `capability-unavailable` when it is false -- never a silent
 conversion to a dense matrix, exactly as [the capability
-model](#asking-a-backend-what-it-can-do) requires everywhere else. The dataset's feature
+model](backends.md#asking-a-backend-what-it-can-do) requires everywhere else. The dataset's
+feature
 count is the declared `NUM-COLUMNS`; a `NUM-COLUMNS` that disagrees with the booster's own
 feature count at prediction time is the library's own refusal to report, reaching the caller
 as `foreign-call-error` in that library's words rather than as a check invented here.
@@ -592,7 +593,8 @@ categorical column at all would save.
 `:categorical-features` needs the `:categorical-features` capability, answerable through
 `backend-supports-p` and true on both vendored backends, and **`make-dataset` re-checks it
 itself** rather than trusting a caller who asked first, exactly as [the capability
-model](#asking-a-backend-what-it-can-do) requires everywhere else. It applies identically
+model](backends.md#asking-a-backend-what-it-can-do) requires everywhere else. It applies
+identically
 whether the caller's matrix is dense or a `csr-matrix` -- the column count checked against is
 the matrix's own, and for a `csr-matrix` that is its **declared** `NUM-COLUMNS`, not the
 largest index actually stored. An index that is not an integer, is negative, is at or beyond
@@ -1076,9 +1078,11 @@ the general rule for a capability in this API -- six of the ten registered capab
 are re-checked by the operation they gate and signal `capability-unavailable` when they read
 false: `:sparse-input`, `:missing-value`, `:categorical-features`, `:custom-objective` and
 `:custom-evaluation` (each documented above, on the operation that checks it -- the last two
-at [Custom objective](#custom-objective) and [Custom evaluation](#custom-evaluation)) and
+at [Custom objective](custom-training.md#custom-objective) and
+[Custom evaluation](custom-training.md#custom-evaluation)) and
 `:model-slicing` (see [Asking a backend what it
-can do](#asking-a-backend-what-it-can-do)). `:prediction-shape` is simply not one of those
+can do](backends.md#asking-a-backend-what-it-can-do)). `:prediction-shape` is simply not one of
+those
 six, because it gates nothing a caller asks for.
 
 The two backends fill the second value from opposite directions. XGBoost's prediction entry

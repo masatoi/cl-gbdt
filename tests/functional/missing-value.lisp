@@ -551,10 +551,11 @@ something unrelated had broken."
                                (cl-gbdt:dataset-num-rows dataset))))))
           (cl-gbdt:close-backend backend))))))
 
-;;; README.markdown's Missing values section, under "Training and prediction sentinels are
-;;; not tied together", states that XGBoost does not record a dataset's sentinel on the
-;;; booster trained from it, and none is written into a saved model either -- measured when
-;;; the feature shipped, flagged by PR #19's review as measured but never pinned by a test.
+;;; docs/user-guide/data-and-prediction.md's Missing values section, under "Training and
+;;; prediction sentinels are not tied together", states that XGBoost does not record a
+;;; dataset's sentinel on the booster trained from it, and none is written into a saved model
+;;; either -- measured when the feature shipped, flagged by PR #19's review as measured but
+;;; never pinned by a test.
 ;;;
 ;;; Re-measured here rather than trusting the number the claim was first written against: a
 ;;; booster trained on this file's fixture with :MISSING *SENTINEL* produced a

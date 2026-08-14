@@ -14,7 +14,8 @@ version is that XGBoost's file-format argument, declared wrong on a unified API,
 process outright, in a thread no Lisp handler can reach.
 
 The two signatures differ because Layer 1 mirrors each library rather than harmonising them, the
-same rule every other backend-specific difference in this README follows:
+same rule every other backend-specific difference in [Backend
+differences](backend-differences.md) follows:
 
 ```lisp
 (create-dataset-from-file backend path &key parameters reference)   ; cl-gbdt/lightgbm

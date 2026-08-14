@@ -83,7 +83,9 @@ whole workflow file, not a job:
   recorded compatible-version range: LightGBM 4.0.0, XGBoost 2.0.0, and XGBoost 1.7.0. The
   1.7.0 leg is `continue-on-error: true` and expected to stay red -- it is the version-matrix
   table's failing row, kept running rather than deleted once it stopped supporting the wider
-  claim (see [Usage](#usage)'s table above): a red job that keeps confirming a measured
+  claim (see [Backend
+  differences](docs/user-guide/backend-differences.md#where-the-two-backends-genuinely-differ)'s
+  table): a red job that keeps confirming a measured
   incompatibility is worth more than a green matrix with the contradicting case quietly
   removed, and `continue-on-error` keeps it from blocking merges while it does that. The
   pinned versions (4.7.0/3.3.0) are already covered by the job above, so this job does
@@ -114,7 +116,8 @@ ros run -- --non-interactive --load tools/ci/check-abi-blacklist.lisp
 ```
 
 The last three are source scans, not loads: `check-layer-separation.lisp` proves no Layer 1
-system reaches the unified API (see [Systems](#systems)), `check-float-traps.lisp` proves
+system reaches the unified API (see [Systems](README.markdown#systems)), `check-float-traps.lisp`
+proves
 every backend `defmethod` and every publicly exported backend `defun` wraps its body in
 `with-foreign-float-traps-masked`, and `check-abi-blacklist.lisp` proves no backend imports a
 C entry point `ffi-spec/ABI-BLACKLIST.md` rules out, that every import a backend does make is

@@ -275,9 +275,9 @@ XGBoost's `XGBoosterSaveModel` has no iteration limit at all, so `save-model` th
 signals `unsupported-argument` for any non-`NIL` `:num-iteration`; `:best` resolves to an
 integer first and then meets that exact check, with no special case written around it, as
 the output above shows. The escape hatch is `cl-gbdt/xgboost:slice-model` (see [the
-differences table](#where-the-two-backends-genuinely-differ) and [Backend-specific
-packages](#backend-specific-packages) above), also shown above: slice to the best iteration
-first, then save the slice.
+differences table](backend-differences.md#where-the-two-backends-genuinely-differ) and
+[Backend-specific packages](backends.md#backend-specific-packages)), also shown above: slice
+to the best iteration first, then save the slice.
 
 ### Turning recording off: `:record-history`
 

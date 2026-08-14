@@ -56,7 +56,7 @@ persist the trained model and answer questions about it -- `save-model`, `load-m
 `dataset-num-features`, exercised by `tests/functional/{lightgbm,xgboost}-standalone.lisp`
 rather than by a worked example here -- and one more, `create-dataset-from-file`, builds a
 dataset straight from a file instead of the matrix the six above use (see [File
-input](#file-input) below). Both blocks below run in one fresh image that never
+input](file-input.md#file-input)). Both blocks below run in one fresh image that never
 defines the `cl-gbdt` package:
 
 ```lisp
@@ -115,7 +115,8 @@ second value is the shape it states for the array it just wrote, exactly as the 
 nothing at this layer translates a key, which is why LightGBM gets `"binary"` and XGBoost
 `"binary:logistic"` -- and XGBoost's `create-dataset` takes no `:parameters` at all, its
 creation config having no such concept (see [Where the two backends genuinely
-differ](#where-the-two-backends-genuinely-differ)). `tests/functional/lightgbm-standalone.lisp`
+differ](backend-differences.md#where-the-two-backends-genuinely-differ)).
+`tests/functional/lightgbm-standalone.lisp`
 and `tests/functional/xgboost-standalone.lisp` are the same run as a test, each naming its
 backend's public package and no other system *of this project* -- `rove` aside, they declare
 nothing -- so that the claim is enforced by the build rather than asserted here.
@@ -249,7 +250,8 @@ fourteen operations under its own package's symbols, plus `xgboost-backend`,
 `slice-model`, `booster-boosted-rounds` (see [the capability
 section](#asking-a-backend-what-it-can-do)), and an
 `evaluate-one-iteration` of its own, which takes different arguments and returns something
-different (see [the differences table](#where-the-two-backends-genuinely-differ)): the two
+different (see
+[the differences table](backend-differences.md#where-the-two-backends-genuinely-differ)): the two
 operations were deliberately given different names -- `cl-gbdt/lightgbm:booster-eval` reads
 the validation data LightGBM attached at train time, addressed by index, while
 `cl-gbdt/xgboost:evaluate-one-iteration` evaluates whatever DMatrices the caller passes it
@@ -358,22 +360,23 @@ Four things it promises, each of which is the point of it existing at all:
 ```
 
 `backend-info` reports the whole probed plist, false capabilities included, so it shows
-what was asked as well as what was answered. Nine of the ten registered capabilities
-answer true somewhere today: `:model-slicing`, on XGBoost only -- see the model-slicing row
-in the table below -- plus `:evaluation-history` and `:early-stopping` on both backends,
-since `train` records a history and takes `:early-stopping` (see
-[Training report](#training-report)), `:sparse-input` on both, since both libraries
-export the CSR entry points it names (see [Sparse input](#sparse-input-csr-matrices)),
-`:missing-value` on XGBoost only (see [Missing values](#missing-values)),
-`:categorical-features` on both (see [Categorical features](#categorical-features)),
+what was asked as well as what was answered. Nine of the ten registered capabilities answer
+true somewhere today: `:model-slicing`, on XGBoost only -- see the model-slicing row in
+[the differences table](backend-differences.md#where-the-two-backends-genuinely-differ) --
+plus `:evaluation-history` and `:early-stopping` on both backends, since `train` records
+a history and takes `:early-stopping` (see [Training report](training.md#training-report)),
+`:sparse-input` on both, since both libraries export the CSR entry points it names (see [Sparse
+input](data-and-prediction.md#sparse-input-csr-matrices)), `:missing-value` on XGBoost only
+(see [Missing values](data-and-prediction.md#missing-values)), `:categorical-features`
+on both (see [Categorical features](data-and-prediction.md#categorical-features)),
 `:prediction-shape` on both, since `predict` states a shape for the result it just predicted
-on both libraries (see [Prediction shape](#prediction-shape)), `:custom-objective` on
-both, since `train` boosts against a caller's own gradient and Hessian on both libraries (see
-[Custom objective](#custom-objective)), and `:custom-evaluation` on both, since `train`
-records a caller-written metric per dataset on both libraries (see [Custom
-evaluation](#custom-evaluation)). The tenth, `:multidimensional-feature-score`, is
-registered and false everywhere, which says "not supported yet" rather than "never heard of
-it".
+on both libraries (see [Prediction shape](data-and-prediction.md#prediction-shape)),
+`:custom-objective` on both, since `train` boosts against a caller's own gradient and
+Hessian on both libraries (see [Custom objective](custom-training.md#custom-objective)), and
+`:custom-evaluation` on both, since `train` records a caller-written metric per dataset on
+both libraries (see [Custom evaluation](custom-training.md#custom-evaluation)). The tenth,
+`:multidimensional-feature-score`, is registered and false everywhere, which says "not
+supported yet" rather than "never heard of it".
 
 `:evaluation-history` is true unconditionally rather than probed. The C functions behind it
 are in each backend's `*required-symbols*`, so a library missing them never opens at all

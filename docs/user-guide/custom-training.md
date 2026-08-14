@@ -388,7 +388,8 @@ unmeasured.
 Two further things this argument does not change. A library metric configured through
 `:parameters` relates to the library's own objective, not to the caller's, so what
 `:record-history` records and what `:early-stopping` watches -- see [Training
-report](#training-report) -- may be meaningless under a custom objective; nothing here signals
+report](training.md#training-report) -- may be meaningless under a custom objective; nothing
+here signals
 about that, the caller decides. And `:objective` is `funcall`ed inside `train`'s own
 floating-point-trap mask, so the caller's Lisp arithmetic runs under the same masked convention
 the two C libraries are written against: `(/ 1.0d0 0.0d0)` yields infinity rather than
@@ -908,7 +909,7 @@ the second dataset's read.
 
 A custom metric adds a `predict :kind :normal`-shaped array read plus a Lisp call, per
 dataset per iteration, on top of what `:record-history` already reads. Measured the same way
-as [that section](#turning-recording-off-record-history) -- 2000 rows x 20 columns, one
+as [that section](training.md#turning-recording-off-record-history) -- 2000 rows x 20 columns, one
 validation set, `:record-history t` in **both** arms so the only difference is whether
 `:evaluation` is supplied:
 
@@ -1053,6 +1054,7 @@ per-dataset read needs three C functions, none of them in that backend's require
 is PROBED like `:custom-objective`; XGBoost's needs one, which IS required there, so it is
 DECLARED (`src/backend.lisp`). Every check `:evaluation` is put through, and
 every error it can signal, is identical prose on both backends, as the refusal output above
-shows -- so this is not a row in [the differences table](#where-the-two-backends-genuinely-differ):
+shows -- so this is not a row in
+[the differences table](backend-differences.md#where-the-two-backends-genuinely-differ):
 there is nothing here a caller's code, as opposed to a reader of `backend-info`'s probed
 plist, can tell apart.

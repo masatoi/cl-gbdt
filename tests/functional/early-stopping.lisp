@@ -528,8 +528,8 @@ log-loss metric on the validation set at index 1 -- or NIL when REPORT has no su
 ;;; whose watcher never got the chance to see an iteration at all. :num-rounds 0 is the
 ;;; cheap, deterministic way to provoke it -- the loop `train' drives never runs, so
 ;;; `observe-iteration' is never called -- documented in `src/protocol.lisp''s `train'
-;;; docstring and README.markdown's :num-iteration :best section as one of the two cases
-;;; where supplying :early-stopping does not by itself guarantee a best iteration. No
+;;; docstring and docs/user-guide/training.md's :num-iteration :best section as one of the
+;;; two cases where supplying :early-stopping does not by itself guarantee a best iteration. No
 ;;; :valid-sets entry is needed: :dataset 0 -- the training set -- is always a valid
 ;;; watcher target, and with no iteration ever observed, no entry is ever read from it.
 

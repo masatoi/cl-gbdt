@@ -471,8 +471,8 @@ LightGBM's C API has no version entry point at all (`grep -c Version
 src/lightgbm/c-api.lisp' reports 0), so `backend-version' is always NIL on this
 backend and there is nothing to compare it against. See
 `cl-gbdt/src/lightgbm/classes''s `initialize-backend' and `check-backend-version'
-below. Recorded here anyway, for the same documentation purpose the README's
-backend-differences table serves.
+below. Recorded here anyway, for the same documentation purpose
+`docs/user-guide/backend-differences.md''s table serves.
 
 VERIFIED-LOW moved from "4.7.0" to "4.0.0" once task 4 actually ran the functional
 suite against it -- confirmed clean, same 106 assertions as the pinned "4.7.0".
@@ -1668,8 +1668,8 @@ default) while XGBoost reads one as missing, and no config key on either changes
 it is what CSR means to each library. So a `csr-matrix' that omits entries describes
 different data to the two backends and changes trained numbers silently rather than
 signalling; store every element, zeros included, when the same matrix has to mean the same
-thing on both. See README.markdown's "An absent entry is not a zero, and the two libraries
-disagree about it" for the measured runs on each.
+thing on both. See `docs/user-guide/data-and-prediction.md''s "An absent entry is not a
+zero, and the two libraries disagree about it" section for the measured runs on each.
 ```
 
 ### Slots
