@@ -2,8 +2,6 @@
 
 How `create-dataset-from-file` builds a dataset directly from a file, on each backend.
 
-## File input
-
 `cl-gbdt/lightgbm:create-dataset-from-file` and `cl-gbdt/xgboost:create-dataset-from-file` build
 a dataset by having the library read a file directly, rather than from a matrix the caller
 already holds in memory. **There is no unified form of this** -- `cl-gbdt:make-dataset` takes no

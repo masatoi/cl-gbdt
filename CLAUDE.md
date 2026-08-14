@@ -205,8 +205,7 @@ Custom evaluation section. Core
 `cl-gbdt` still loads, and is still tested, without
 either `liblightgbm.so` or `libxgboost.so` present: a shared library is opened only by
 an explicit `open-backend` call, from whichever backend system you load on top of the
-core. See `README.markdown`'s Usage section for a worked example, its system table, and
-the design doc it points at.
+core. See `README.markdown`'s Usage section for a worked example and its system table.
 
 The system is `:class :package-inferred-system`: one file, one package, and ASDF derives
 each file's dependencies from its own `uiop:define-package` clauses rather than from a
