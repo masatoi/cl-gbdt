@@ -296,7 +296,7 @@ Even where the placement of the unified API's methods is separated out, do not c
 2. Add an exhaustiveness check for the required symbols. `tools/ci/check-abi-blacklist.lisp` already "reads a backend's import-from clauses and maps them to C names through c-api.lisp's defcfun", so it is enough to point its cross-check at `*required-symbols*`. No new mechanism is needed.
 3. Adopt the check after confirming where it fails. This repository has twice shipped a check whose failure it had not seen.
 
-The document drift in the README's assertion counts is **already resolved** (243 / 106, matching the current state), so it shall be out of scope for this phase.
+The document drift in the README's assertion counts is **already resolved**, so it shall be out of scope for this phase. It has since been resolved permanently rather than by correction: the README states no assertion counts at all. `docs/FUNCTIONAL-COVERAGE.md` records where each published symbol stands against the functional suite, one row per symbol, and CI prints the live counts on every run -- so there is no longer a number in a document for the code to drift away from.
 
 This phase does not change the API structure.
 
