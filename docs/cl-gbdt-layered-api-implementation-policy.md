@@ -578,7 +578,7 @@ The state of each stage is as follows.
   the build on a name that is both wrapped and classified, so the rows were deleted rather than
   corrected. See "Why file input was not put on the unified API" above for the measurement that
   decided their shape, and the Follow-up's file-input item above for the record that this half of
-  S5 is complete. Still `## Planned`, and still S5's remaining work: LightGBM's
+  S5 is complete (PR #36). Still `## Planned`, and still S5's remaining work: LightGBM's
   `LGBM_BoosterRollbackOneIter`/`LGBM_BoosterRefit`/`LGBM_BoosterResetParameter`. The Follow-up's
   "shape-preserving XGBoost feature score" is a separate thing. `XGBoosterFeatureScore` itself is
   already wrapped, and this item is an implementation problem of changing how an existing binding

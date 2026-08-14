@@ -1021,3 +1021,258 @@ as foreign-call-error -- the P1 fix resolves PATH, it does not add a probe-file 
 missing relative file"))
           (handler-case (uiop:delete-directory-tree some-dir :validate t)
             (file-error () nil)))))))
+
+(deftest save-model-resolves-a-relative-path-against-default-pathname-defaults
+  (testing "a relative PATH is written the way `open' would resolve it, not native-namestring'd \
+bare -- proven by a same-named decoy file sitting in the process's own working directory, \
+which the unresolved form would have overwritten instead"
+    (with-open-backend (backend)
+      (multiple-value-bind (matrix label-vector) (fixture)
+        (let* ((data (cl-gbdt/lightgbm:create-dataset backend matrix :label label-vector
+                                                       :parameters *parameters*))
+               (relative-name (format nil "cl-gbdt-p6-save-~D.txt" (random 1000000)))
+               (real-dir (ensure-directories-exist
+                          (merge-pathnames (format nil "cl-gbdt-p6-save-real-~D/"
+                                                    (random 1000000))
+                                           (uiop:temporary-directory))))
+               (real-path (merge-pathnames relative-name real-dir))
+               (decoy-path (merge-pathnames relative-name (uiop:getcwd)))
+               (decoy-content "not a lightgbm model, just a decoy sentinel"))
+          (unwind-protect
+               (let ((booster (cl-gbdt/lightgbm:create-booster backend data
+                                                                :parameters *parameters*)))
+                 (unwind-protect
+                      (progn
+                        (dotimes (round 5) (cl-gbdt/lightgbm:update-one-iteration booster))
+                        ;; Plant the decoy BEFORE saving, so an unresolved bare `namestring'
+                        ;; would have overwritten it -- the fix must leave it alone.
+                        (with-open-file (stream decoy-path :direction :output
+                                                            :if-exists :supersede)
+                          (write-string decoy-content stream))
+                        (let ((*default-pathname-defaults* real-dir))
+                          (cl-gbdt/lightgbm:save-model booster relative-name))
+                        (ok (probe-file real-path)
+                            "save-model did not write to *default-pathname-defaults*'s \
+directory")
+                        (ok (string= decoy-content
+                                     (with-open-file (stream decoy-path)
+                                       (let ((buffer (make-string (length decoy-content))))
+                                         (read-sequence buffer stream)
+                                         buffer)))
+                            "save-model overwrote the decoy in the process's own working \
+directory instead of writing to *default-pathname-defaults*'s")
+                        (let ((reloaded (cl-gbdt/lightgbm:load-model backend real-path)))
+                          (unwind-protect
+                               (ok (equalp (cl-gbdt/lightgbm:predict booster matrix)
+                                           (cl-gbdt/lightgbm:predict reloaded matrix))
+                                   "the model written to *default-pathname-defaults*'s \
+directory does not round-trip")
+                            (cl-gbdt/lightgbm:free-booster reloaded))))
+                   (cl-gbdt/lightgbm:free-booster booster)))
+            (progn
+              (cl-gbdt/lightgbm:free-dataset data)
+              (handler-case (delete-file real-path) (file-error () nil))
+              (handler-case (uiop:delete-directory-tree real-dir :validate t)
+                (file-error () nil))
+              (handler-case (delete-file decoy-path) (file-error () nil)))))))))
+
+(deftest save-model-refuses-a-wild-path
+  (testing "save-model refuses a wild pathname before any foreign call"
+    (with-open-backend (backend)
+      (multiple-value-bind (matrix label-vector) (fixture)
+        (let ((data (cl-gbdt/lightgbm:create-dataset backend matrix :label label-vector
+                                                      :parameters *parameters*)))
+          (unwind-protect
+               (let ((booster (cl-gbdt/lightgbm:create-booster backend data
+                                                                :parameters *parameters*)))
+                 (unwind-protect
+                      (let ((path (merge-pathnames (pathname "cl-gbdt-wild-save*.txt")
+                                                    (uiop:temporary-directory))))
+                        (ok (handler-case
+                                (progn (cl-gbdt/lightgbm:save-model booster path) nil)
+                              (cl-gbdt/lightgbm:unsupported-argument () t))
+                            "save-model accepted a wild pathname"))
+                   (cl-gbdt/lightgbm:free-booster booster)))
+            (cl-gbdt/lightgbm:free-dataset data)))))))
+
+(deftest save-model-writes-a-file-with-a-literal-asterisk
+  (testing "a filename whose namestring backslash-escapes a literal asterisk still saves"
+    (with-open-backend (backend)
+      (multiple-value-bind (matrix label-vector) (fixture)
+        (let ((data (cl-gbdt/lightgbm:create-dataset backend matrix :label label-vector
+                                                      :parameters *parameters*))
+              (path (merge-pathnames
+                     (sb-ext:parse-native-namestring
+                      (format nil "cl-gbdt-star*save-~D.txt" (random 1000000)))
+                     (uiop:temporary-directory))))
+          (unwind-protect
+               (let ((booster (cl-gbdt/lightgbm:create-booster backend data
+                                                                :parameters *parameters*)))
+                 (unwind-protect
+                      (progn
+                        (dotimes (round 5) (cl-gbdt/lightgbm:update-one-iteration booster))
+                        (ok (equal path (cl-gbdt/lightgbm:save-model booster path))
+                            "save-model did not return the literal-asterisk path it was \
+given")
+                        (ok (probe-file path)
+                            "save-model did not write the literal-asterisk path it was \
+given -- a bare namestring would have escaped it to a different, nonexistent name"))
+                   (cl-gbdt/lightgbm:free-booster booster)))
+            (progn
+              (cl-gbdt/lightgbm:free-dataset data)
+              (handler-case (delete-file path) (file-error () nil)))))))))
+
+(deftest load-model-resolves-a-relative-path-against-default-pathname-defaults
+  (testing "a relative PATH is read the way `open' would resolve it, not native-namestring'd \
+bare -- proven by a same-named decoy file sitting in the process's own working directory, \
+which the unresolved form would have loaded instead"
+    (with-open-backend (backend)
+      (multiple-value-bind (matrix label-vector) (fixture)
+        (let* ((data (cl-gbdt/lightgbm:create-dataset backend matrix :label label-vector
+                                                       :parameters *parameters*))
+               (relative-name (format nil "cl-gbdt-p6-load-~D.txt" (random 1000000)))
+               (real-dir (ensure-directories-exist
+                          (merge-pathnames (format nil "cl-gbdt-p6-load-real-~D/"
+                                                    (random 1000000))
+                                           (uiop:temporary-directory))))
+               (real-path (merge-pathnames relative-name real-dir))
+               (decoy-path (merge-pathnames relative-name (uiop:getcwd))))
+          (unwind-protect
+               (let ((booster (cl-gbdt/lightgbm:create-booster backend data
+                                                                :parameters *parameters*)))
+                 (unwind-protect
+                      (progn
+                        (dotimes (round 5) (cl-gbdt/lightgbm:update-one-iteration booster))
+                        ;; The REAL model, written with an already-absolute path, so this
+                        ;; fixture does not itself depend on `save-model''s own fix.
+                        (cl-gbdt/lightgbm:save-model booster real-path)
+                        ;; The DECOY: not a valid model at all, so an unresolved bare
+                        ;; `namestring' loading it instead of the real file fails this test
+                        ;; either by signalling or by a wrong prediction -- both a clear
+                        ;; failure of the assertion below.
+                        (with-open-file (stream decoy-path :direction :output
+                                                            :if-exists :supersede)
+                          (write-string "not a lightgbm model" stream))
+                        ;; A single-binding `let' nested inside another, not `let*': see
+                        ;; `create-dataset-from-file-resolves-a-relative-path-against-
+                        ;; default-pathname-defaults' above for why -- `reloaded''s init-form
+                        ;; must run AFTER *default-pathname-defaults* is rebound, a dynamic
+                        ;; dependency mallet's own let*-vs-let linter cannot see across a
+                        ;; special-variable rebinding, since RELOADED's init-form never
+                        ;; mentions that symbol by name.
+                        (let ((*default-pathname-defaults* real-dir))
+                          (let ((reloaded (cl-gbdt/lightgbm:load-model
+                                           backend relative-name)))
+                            (unwind-protect
+                                 (ok (equalp (cl-gbdt/lightgbm:predict booster matrix)
+                                             (cl-gbdt/lightgbm:predict reloaded matrix))
+                                     "load-model read the decoy in the process's own \
+working directory instead of *default-pathname-defaults*'s")
+                              (cl-gbdt/lightgbm:free-booster reloaded)))))
+                   (cl-gbdt/lightgbm:free-booster booster)))
+            (progn
+              (cl-gbdt/lightgbm:free-dataset data)
+              (handler-case (delete-file real-path) (file-error () nil))
+              (handler-case (uiop:delete-directory-tree real-dir :validate t)
+                (file-error () nil))
+              (handler-case (delete-file decoy-path) (file-error () nil)))))))))
+
+(deftest load-model-refuses-a-wild-path
+  (testing "load-model refuses a wild pathname before any foreign call"
+    (with-open-backend (backend)
+      (let ((path (merge-pathnames (pathname "cl-gbdt-wild-load*.txt")
+                                    (uiop:temporary-directory))))
+        (ok (handler-case (progn (cl-gbdt/lightgbm:load-model backend path) nil)
+              (cl-gbdt/lightgbm:unsupported-argument () t))
+            "load-model accepted a wild pathname")))))
+
+(deftest load-model-reads-a-file-with-a-literal-asterisk
+  (testing "a filename whose namestring backslash-escapes a literal asterisk still loads"
+    (with-open-backend (backend)
+      (multiple-value-bind (matrix label-vector) (fixture)
+        (let ((data (cl-gbdt/lightgbm:create-dataset backend matrix :label label-vector
+                                                      :parameters *parameters*))
+              (path (merge-pathnames
+                     (sb-ext:parse-native-namestring
+                      (format nil "cl-gbdt-star*load-~D.txt" (random 1000000)))
+                     (uiop:temporary-directory))))
+          (unwind-protect
+               (let ((booster (cl-gbdt/lightgbm:create-booster backend data
+                                                                :parameters *parameters*)))
+                 (unwind-protect
+                      (progn
+                        (dotimes (round 5) (cl-gbdt/lightgbm:update-one-iteration booster))
+                        ;; Written directly via `model-to-string', bypassing `save-model'
+                        ;; entirely, so this test isolates `load-model''s own path handling
+                        ;; from `save-model''s.
+                        (with-open-file (stream path :direction :output
+                                                      :if-exists :supersede)
+                          (write-string (cl-gbdt/lightgbm:model-to-string booster) stream))
+                        (let ((reloaded (cl-gbdt/lightgbm:load-model backend path)))
+                          (unwind-protect
+                               (ok (equalp (cl-gbdt/lightgbm:predict booster matrix)
+                                           (cl-gbdt/lightgbm:predict reloaded matrix))
+                                   "load-model did not read the literal-asterisk path it \
+was given -- a bare namestring would have escaped it to a different, nonexistent name")
+                            (cl-gbdt/lightgbm:free-booster reloaded))))
+                   (cl-gbdt/lightgbm:free-booster booster)))
+            (progn
+              (cl-gbdt/lightgbm:free-dataset data)
+              (handler-case (delete-file path) (file-error () nil)))))))))
+
+(defun make-symlink (target link)
+  "Create LINK as a symbolic link to TARGET, replacing any existing file at LINK.
+
+Portable ANSI Common Lisp has no way to create a symlink at all. `src/xgboost/file-input.lisp'
+records that the project owner declined to add `sb-posix' as a further SBCL-specific
+dependency for a *library* source file's own use; this is a *test* file rather than shipped
+source, and needs a symlink only to pin PR #37's asymmetry finding on this backend too, so
+`uiop:run-program' shelling out to `ln -sf' is used instead -- UIOP is already this file's
+own dependency (`uiop:temporary-directory' elsewhere here), so nothing new is added to what
+a standalone caller of `cl-gbdt/lightgbm' would ever need to load."
+  (multiple-value-bind (out err code)
+      (uiop:run-program (list "ln" "-sf" (namestring target) (namestring link))
+                         :output :string :error-output :string :ignore-error-status t)
+    (declare (ignore out))
+    (unless (zerop code)
+      (error "ln -sf ~A ~A failed (~D): ~A" target link code err))))
+
+(deftest save-and-load-model-through-a-symlink-round-trip-regardless-of-extension
+  (testing "PR #37: this backend now shares XGBoost's rule -- the path the caller named, \
+never resolving a symlink, on both save and load -- and LightGBM has no format-by-\
+extension dispatch to make that rule matter (measured -- see \
+%resolve-path-against-defaults), so a save/load round trip through a symlink works \
+regardless of what extension the link or its target carry, pinned here on this backend \
+too rather than only on XGBoost's"
+    (with-open-backend (backend)
+      (multiple-value-bind (matrix label-vector) (fixture)
+        (let ((data (cl-gbdt/lightgbm:create-dataset backend matrix :label label-vector
+                                                      :parameters *parameters*))
+              (target (model-path
+                       (format nil "cl-gbdt-p37-lgbm-target-~D.txt" (random 1000000))))
+              (link (model-path
+                     (format nil "cl-gbdt-p37-lgbm-link-~D.json" (random 1000000)))))
+          (unwind-protect
+               (let ((booster (cl-gbdt/lightgbm:create-booster backend data
+                                                                :parameters *parameters*)))
+                 (unwind-protect
+                      (progn
+                        (dotimes (round 5) (cl-gbdt/lightgbm:update-one-iteration booster))
+                        ;; Pre-create the target so the symlink dereferences to something
+                        ;; that exists, then save straight through the .json-named symlink
+                        ;; to the .txt-named target.
+                        (cl-gbdt/lightgbm:save-model booster target)
+                        (make-symlink target link)
+                        (cl-gbdt/lightgbm:save-model booster link)
+                        (let ((reloaded (cl-gbdt/lightgbm:load-model backend link)))
+                          (unwind-protect
+                               (ok (equalp (cl-gbdt/lightgbm:predict booster matrix)
+                                           (cl-gbdt/lightgbm:predict reloaded matrix))
+                                   "save-model/load-model through a symlink whose \
+extension differs from its target's did not round-trip")
+                            (cl-gbdt/lightgbm:free-booster reloaded))))
+                   (cl-gbdt/lightgbm:free-booster booster)))
+            (progn
+              (cl-gbdt/lightgbm:free-dataset data)
+              (handler-case (delete-file target) (file-error () nil))
+              (handler-case (delete-file link) (file-error () nil)))))))))

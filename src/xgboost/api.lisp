@@ -1013,6 +1013,132 @@ one itself."
 ;;; is a shape its walk recognises, so folding the duplication away would report both entry
 ;;; points unguarded rather than remove it.
 
+(defun %check-file-path (path argument-description function-name)
+  "Signal `unsupported-argument' when PATH is a wild pathname.
+
+ARGUMENT-DESCRIPTION identifies the caller's PATH argument in the signalled condition --
+\"save-model's path\" or \"load-model's path\" -- and FUNCTION-NAME is the vendored C entry
+point PATH's `sb-ext:native-namestring' ultimately reaches, `XGBoosterSaveModel' or
+`XGBoosterLoadModel', named in the error so it reports the actual foreign call rather than a
+generic one.
+
+Both take a plain FILE NAME, not a URI: read directly from the vendored header rather than
+assumed, `ffi-spec/xgboost/include/xgboost/c_api.h' documents `fname' for each as \"File
+name. The string must be UTF-8 encoded.\", with none of `XGDMatrixCreateFromURI''s own
+`uri:'/`format=' query language -- that function's `config' parameter is JSON-encoded
+parameters for DMatrix construction, one FIELD of which, `uri', not `config' itself, is
+documented as \"The URI of the input file\".
+
+`cl-gbdt/src/xgboost/file-input''s `%check-file-uri-arguments' therefore does not apply
+here, and not for one reason common to all its checks: its reserved-character checks (a
+`?'/`#'/`;' in PATH, a reserved character inside FORMAT or a PAIRS entry, a smuggled
+`format' key among PAIRS) exist to keep a caller from injecting a second query segment or a
+`;'-separated multi-path list into a URI these two functions never compose, but its
+wild-pathname check exists for an unrelated reason stated in that function's own docstring
+-- dmlc glob-expands a wild namestring rather than opening it as the single file it names.
+A fifth check there refuses a literal `*' or `[' that `wild-pathname-p' does not see as
+wild, precautionarily, against that same glob layer. Neither the glob-driven wild-pathname
+reason nor the literal-`*'/`[' precaution applies to a plain `fname': `XGBoosterSaveModel'
+and `XGBoosterLoadModel' pass it to a plain `fopen', with no glob layer between them and
+it -- measured, not assumed: with `model-real.json' already present, loading a literal
+`model-*.json' fails with `foreign-call-error' on both backends rather than matching the
+real file, so neither library globs a plain filename. This check keeps only the rule that
+still applies regardless -- `native-namestring' signals its own untyped
+`sb-kernel:no-native-namestring-error' for a wild PATH, whatever the reason PATH is wild --
+and none of `%check-file-uri-arguments''s five URI-specific ones.
+
+`save-model' and `load-model' each pass PATH's `sb-ext:native-namestring' (by way of
+`%resolve-path-against-defaults') to their own C entry point, not PATH's `namestring' --
+`namestring' backslash-escapes a character that is a CL pathname wildcard marker but literal
+in a real filename (an asterisk, concretely), so a model genuinely named `run*1.json'
+namestrings as `run\\*1.json' and XGBoost writes or looks for a path the caller never wrote.
+`native-namestring' fixes that, but signals its own untyped, uncatchable-by-name error for a
+PATH that IS wild (`run*.json', where the asterisk really is a CL wildcard marker rather than
+the literal-character case above), so switching to it is not a bare substitution: this check
+has to run FIRST, refusing a wild PATH with a typed condition this project's own callers can
+catch, mirroring `cl-gbdt/src/lightgbm/api''s identically-named `%check-file-path', written
+for the identical reason on the other backend."
+  (when (wild-pathname-p path)
+    (error 'unsupported-argument
+           :backend :xgboost
+           :argument argument-description
+           :reason (format nil "~S is a wild pathname; ~A takes a plain filename, and ~
+                                sb-ext:native-namestring signals its own untyped error ~
+                                for a wild pathname rather than composing one"
+                            path function-name))))
+
+(defun %resolve-path-against-defaults (path)
+  "Merge PATH against `*default-pathname-defaults*' via `MERGE-PATHNAMES', unconditionally
+and only that -- never `truename', so a symlink anywhere in PATH is left exactly as the
+caller spelled it, never replaced by whatever it currently resolves to. Never signals and
+never refuses: every PATH this function is given comes back as some pathname, `MERGE-
+PATHNAMES' applying CL's merging rule to a pathname that need not exist.
+
+Named for what it does now, not what an earlier version of it did: PR #37's second review
+(Codex) found that `truename'-then-`merge-pathnames' -- what this function used to be --
+broke a save followed by a load through the SAME symlinked path. `save-model' had already
+stopped dereferencing, to honour a symlinked destination's own extension (PR #37's first
+review); with `load-model' still dereferencing, `model.json -> target.ubj' wrote JSON at
+`model.json' (correct) but then loaded it back through `target.ubj', where
+`XGBoosterLoadModel' picked the UBJ parser from that name and choked on the JSON bytes
+with `foreign-call-error'. Two resolution rules for the two callers is what produced that;
+the fix is one rule for both, not two rules chosen more carefully. `save-model' and
+`load-model' both call this function now, and pass it nothing to switch: this wrapper uses
+the path the caller named and does not resolve symlinks, on either operation.
+`XGBoosterSaveModel' and `XGBoosterLoadModel' both pick their serialization -- `.json'
+text or `.ubj' binary -- from PATH's own extension, not from any symlink target's, so a
+save and a load through the SAME path round-trip by construction: whatever `save-model'
+wrote is exactly what `load-model' reads back, because both look at the identical name.
+This function was called `%best-effort-resolve-path' while it still attempted `truename'
+with a `merge-pathnames' fallback; `truename' is gone, there is no fallback left to
+describe, and the old name would now claim an attempt this function never makes --
+renamed for the same reason `%not-a-regular-file-p' became `%directory-p' when what it
+tested changed. `cl-gbdt/src/lightgbm/api' carries an identically-named function for the
+identical reason, dropping its own `truename' branch afterward once six cases -- a
+symlink to a different-extension target, one to a same-extension target, an ordinary
+path, a relative path with a working-directory decoy, a `~' path, and a literal-`*'
+filename -- measured no difference before and after on that backend,
+`LGBM_BoosterSaveModel' and `LGBM_BoosterCreateFromModelfile' having no
+format-by-extension dispatch for `truename' to have ever been protecting there.
+
+The cost of never dereferencing falls on a symlink whose own extension does not describe
+its target's real format -- `model.ubj' pointing at bytes that are actually JSON, put
+there by something other than a `save-model' call through that same link. Measured, not
+assumed, that this cost is cheap: `XGBoosterLoadModel' on an extension it does not
+recognize at all does not refuse either -- it prints \"Unknown file format: '<ext>'. Using
+JSON ('json') as a guess.\" and proceeds, succeeding when the guess happens to be right and
+failing exactly like any other format mismatch when it is not. A `model.ubj' whose real
+bytes are JSON is no different, in what reaches the foreign call, from a plain file
+renamed from `.json' to `.ubj' with no symlink at all -- XGBoost's own extension dispatch
+already fails on that case, symlink or not, and no version of this wrapper has ever
+protected against it. Dereferencing bought that one case back at the price of breaking
+every same-path round trip, which is the worse trade.
+
+Deliberately not `cl-gbdt/src/xgboost/file-input''s `%resolve-file-path' called from here
+instead, even though both live in this same backend: that function REFUSES, returning NIL,
+when it cannot resolve to an existing file, because it feeds `create-dataset-from-file''s
+`detect-file-format' gate, which must classify the file's own bytes and has nothing to
+classify without one. This function feeds `save-model' and `load-model' instead, neither of
+which has such a gate -- `save-model''s PATH is normally EXPECTED not to exist yet, being
+created by that call, and `load-model''s own missing-PATH case is `XGBoosterLoadModel''s own
+message to report, not a `probe-file' pre-check made here -- so this function never
+refuses. See `%resolve-file-path''s own docstring for the reverse cross-reference.
+
+Measured, not assumed, that dropping `truename' does not lose relative-path or `~'
+handling, the whole reason this function exists: a relative PATH still resolves against
+`*default-pathname-defaults*', not the OS process's own working directory, because
+`MERGE-PATHNAMES' is what did that even in the old `truename'-first version's fallback
+branch; and `(pathname \"~/x.txt\")' already carries an ABSOLUTE `:HOME' directory
+component from parsing alone, before `MERGE-PATHNAMES' ever sees it, so `~' still never
+reaches C unexpanded.
+
+Runs after `%check-file-path' at every call site, never before: a wild PATH would make
+`MERGE-PATHNAMES' return a still-wild pathname (it does not resolve wildcards), and
+`native-namestring' would then signal its own untyped
+`sb-kernel:no-native-namestring-error' for it. `%check-file-path' refuses a wild PATH
+first, with a typed condition, so this function is never actually reached with one."
+  (merge-pathnames path *default-pathname-defaults*))
+
 (defun save-model (booster path)
   "Save BOOSTER's model to PATH via `XGBoosterSaveModel', and return PATH.
 
@@ -1024,8 +1150,27 @@ not exist. `cl-gbdt/src/xgboost/protocol''s method is where `unsupported-argumen
 signalled, because that refusal exists only because the unified API promised a portable
 :NUM-ITERATION that LightGBM honours.
 
-XGBoost selects its serialization format from PATH's extension -- `.json' and `.ubj' are the
-current ones -- and reports an unrecognized extension itself, as `foreign-call-error'.
+XGBoost selects its serialization format from PATH's extension -- `.json' and `.ubj' are
+the current ones. Measured, not inferred (correcting an earlier, unmeasured version of
+this sentence): an unrecognized extension does NOT make the save fail. It silently
+defaults to UBJSON, with a warning `XGBoosterSaveModel' prints on the library's own log
+rather than signalling anything Lisp-side to catch -- this wrapper has no way to turn that
+warning into a condition and does not attempt to.
+
+This wrapper uses the path the caller named and does not resolve symlinks; PATH reaches
+`XGBoosterSaveModel' as `sb-ext:native-namestring' of `(%resolve-path-against-defaults
+path)' -- `MERGE-PATHNAMES' against `*default-pathname-defaults*', never `truename' --
+never PATH's bare `namestring' either, which would neither merge a relative PATH against
+that special nor spell a literal asterisk in a real filename the way the caller wrote it.
+Because the file's own extension selects the format on both this function and
+`load-model', and both resolve PATH by the identical rule, a save and a load through the
+same path round-trip: see `%resolve-path-against-defaults' for the measurement that made
+this the rule, including the round trip PR #37's second review found broken when this
+function and `load-model' resolved PATH by two different rules instead. `XGBoosterSaveModel'
+takes a plain file name, not a URI -- confirmed against the vendored header, not assumed
+-- so `cl-gbdt/src/xgboost/file-input''s URI-specific checks do not apply and are not
+reused here. Signals `unsupported-argument' first, via `%check-file-path', when PATH is a
+wild pathname.
 
 Signals `wrong-backend-reference' when BOOSTER is not a booster built by this backend -- a
 dataset, a LightGBM booster, or not a handle at all. This function dispatches on nothing, so
@@ -1035,7 +1180,9 @@ measured against the vendored library. `released-handle-error' and `backend-not-
 from the `handle-live-pointer' inside that same check."
   (with-foreign-float-traps-masked
     (let ((pointer (%check-xgboost-booster booster "save-model's booster argument")))
-      (cffi:with-foreign-string (filename (namestring path))
+      (%check-file-path path "save-model's path" "XGBoosterSaveModel")
+      (cffi:with-foreign-string (filename (sb-ext:native-namestring
+                                            (%resolve-path-against-defaults path)))
         (%save-model pointer filename)))
     path))
 
@@ -1050,6 +1197,24 @@ The returned booster has no training set -- see the `booster' class' documentati
 PATH names a model, not a dataset. `evaluation' on it therefore reports nothing, and
 `update-one-iteration' signals `missing-training-set'.
 
+This wrapper uses the path the caller named and does not resolve symlinks; PATH reaches
+`XGBoosterLoadModel' as `sb-ext:native-namestring' of `(%resolve-path-against-defaults
+path)' -- `MERGE-PATHNAMES' against `*default-pathname-defaults*', never `truename' --
+the identical rule `save-model' uses. Because the file's own extension selects the parser
+on both this function and `save-model', and both resolve PATH the same way, a load through
+a path just saved through -- symlinked or not -- reads back exactly what was written: see
+`%resolve-path-against-defaults' for the measurement behind this rule, including the round
+trip PR #37's second review found broken when this function dereferenced a symlink and
+`save-model' did not. Measured, not assumed, and specific to this function: an extension
+`XGBoosterLoadModel' does not recognize does not refuse the load either -- it prints
+\"Unknown file format: '<ext>'. Using JSON ('json') as a guess.\" and proceeds, succeeding
+when the guess is right and failing with `foreign-call-error', the same as any other
+format mismatch, when it is not. `%resolve-path-against-defaults'/`%check-file-path' above
+also cover why a bare `namestring' resolves a relative PATH against the wrong directory
+and mis-escapes a literal asterisk, and why XGBoost's plain-filename `fname' argument does
+not route through `cl-gbdt/src/xgboost/file-input''s URI-specific checks. Signals
+`unsupported-argument' first, via `%check-file-path', when PATH is a wild pathname.
+
 `with-pointer-ownership' spans exactly the window in which the raw booster is owned by
 nobody: any exit that has not called TAKE-OWNERSHIP -- a failing `XGBoosterLoadModel' the
 likeliest -- frees it here instead of orphaning it.
@@ -1060,9 +1225,11 @@ truthfully for the wrong library. Signals `backend-not-open' when BACKEND is clo
   (with-foreign-float-traps-masked
     (%check-object-class backend 'xgboost-backend "backend" "load-model's backend argument")
     (%check-backend-open backend)
+    (%check-file-path path "load-model's path" "XGBoosterLoadModel")
     (let ((booster-pointer (%create-booster nil)))
       (with-pointer-ownership (booster-pointer #'%free-booster-unchecked take-ownership)
-        (cffi:with-foreign-string (filename (namestring path))
+        (cffi:with-foreign-string (filename (sb-ext:native-namestring
+                                              (%resolve-path-against-defaults path)))
           (%load-model booster-pointer filename))
         (take-ownership 'xgboost-booster backend :booster)))))
 

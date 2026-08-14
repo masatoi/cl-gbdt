@@ -381,9 +381,17 @@ section 1):
 (defun %resolve-file-path (path)
   "Resolve PATH, a pathname designator, to the one `truename' `create-dataset-from-file'
 then hands to BOTH `detect-file-format' and `file-uri', or NIL when PATH cannot be
-resolved to a single existing file at all -- missing, wild (`truename' itself signals
-`file-error' for a wild pathname, per the standard), or a symlink whose target does not
-exist.
+resolved at all -- missing, or wild (`truename' itself signals `file-error' for a wild
+pathname, per the standard).
+
+NOT NIL for a symlink whose target does not exist, an earlier version of this paragraph's
+claim: measured, SBCL's `truename' on a dangling symlink returns the LINK's own pathname
+rather than signalling `file-error', so this function passes that pathname through like
+any other resolved PATH. The dangling case is still refused -- just one stage later, and
+by a different mechanism than this function's own NIL: `detect-file-format', reading that
+resolved pathname, finds no real content behind it and answers `:UNREADABLE', which
+`create-dataset-from-file''s gate then refuses as a mismatch against any declared FORMAT
+-- verified end to end, not assumed from this function's behavior alone.
 
 Review round 3, Finding N4 (Critical): before this function existed,
 `create-dataset-from-file' called `detect-file-format' and `file-uri' on the SAME PATH
@@ -418,7 +426,21 @@ runs: nothing between this resolution and `XGDMatrixCreateFromURI' holds the fil
 otherwise prevents it being replaced on disk in between -- a TOCTOU window this wrapper
 cannot close from Lisp. What this function removes is this wrapper disagreeing with
 itself about which file that is; a second process racing to replace it is a different,
-unclosable problem."
+unclosable problem.
+
+`cl-gbdt/src/xgboost/api''s `%resolve-path-against-defaults' is a second, deliberately
+different resolver, added later for `save-model' and `load-model': unlike this function,
+it never refuses and never calls `truename' at all, `MERGE-PATHNAMES'-ing against
+`*default-pathname-defaults*' unconditionally, because neither of its two callers has a
+format-classification gate to feed the way this function feeds `detect-file-format' --
+`save-model''s PATH is normally expected not to exist yet, and a missing PATH on
+`load-model' is `XGBoosterLoadModel''s own message to report. It also never dereferences a
+symlink, for a reason specific to those two callers and unrelated to this function's own
+refusal: `XGBoosterSaveModel' and `XGBoosterLoadModel' both pick JSON or UBJ serialization
+from PATH's own extension, so resolving to a symlink's target would silently substitute
+the target's extension for the one the caller actually named, on either operation. This
+function's own refusal stays exactly as documented above, unaffected by that sibling's
+existence; see its docstring for the full analysis."
   (handler-case (truename path)
     (file-error () nil)))
 
