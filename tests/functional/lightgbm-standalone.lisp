@@ -1219,3 +1219,58 @@ was given -- a bare namestring would have escaped it to a different, nonexistent
             (progn
               (cl-gbdt/lightgbm:free-dataset data)
               (handler-case (delete-file path) (file-error () nil)))))))))
+
+(defun make-symlink (target link)
+  "Create LINK as a symbolic link to TARGET, replacing any existing file at LINK.
+
+Portable ANSI Common Lisp has no way to create a symlink at all. `src/xgboost/file-input.lisp'
+records that the project owner declined to add `sb-posix' as a further SBCL-specific
+dependency for a *library* source file's own use; this is a *test* file rather than shipped
+source, and needs a symlink only to pin PR #37's asymmetry finding on this backend too, so
+`uiop:run-program' shelling out to `ln -sf' is used instead -- UIOP is already this file's
+own dependency (`uiop:temporary-directory' elsewhere here), so nothing new is added to what
+a standalone caller of `cl-gbdt/lightgbm' would ever need to load."
+  (multiple-value-bind (out err code)
+      (uiop:run-program (list "ln" "-sf" (namestring target) (namestring link))
+                         :output :string :error-output :string :ignore-error-status t)
+    (declare (ignore out))
+    (unless (zerop code)
+      (error "ln -sf ~A ~A failed (~D): ~A" target link code err))))
+
+(deftest save-and-load-model-through-a-symlink-round-trip-regardless-of-extension
+  (testing "PR #37: LightGBM has no format-by-extension dispatch (measured -- see \
+%best-effort-resolve-path), so unlike XGBoost a save/load round trip through a symlink \
+whose own name's extension differs from its target's works either way -- pinning the \
+asymmetry between backends as measured, not incidental"
+    (with-open-backend (backend)
+      (multiple-value-bind (matrix label-vector) (fixture)
+        (let ((data (cl-gbdt/lightgbm:create-dataset backend matrix :label label-vector
+                                                      :parameters *parameters*))
+              (target (model-path
+                       (format nil "cl-gbdt-p37-lgbm-target-~D.txt" (random 1000000))))
+              (link (model-path
+                     (format nil "cl-gbdt-p37-lgbm-link-~D.json" (random 1000000)))))
+          (unwind-protect
+               (let ((booster (cl-gbdt/lightgbm:create-booster backend data
+                                                                :parameters *parameters*)))
+                 (unwind-protect
+                      (progn
+                        (dotimes (round 5) (cl-gbdt/lightgbm:update-one-iteration booster))
+                        ;; Pre-create the target so the symlink dereferences to something
+                        ;; that exists, then save straight through the .json-named symlink
+                        ;; to the .txt-named target.
+                        (cl-gbdt/lightgbm:save-model booster target)
+                        (make-symlink target link)
+                        (cl-gbdt/lightgbm:save-model booster link)
+                        (let ((reloaded (cl-gbdt/lightgbm:load-model backend link)))
+                          (unwind-protect
+                               (ok (equalp (cl-gbdt/lightgbm:predict booster matrix)
+                                           (cl-gbdt/lightgbm:predict reloaded matrix))
+                                   "save-model/load-model through a symlink whose \
+extension differs from its target's did not round-trip")
+                            (cl-gbdt/lightgbm:free-booster reloaded))))
+                   (cl-gbdt/lightgbm:free-booster booster)))
+            (progn
+              (cl-gbdt/lightgbm:free-dataset data)
+              (handler-case (delete-file target) (file-error () nil))
+              (handler-case (delete-file link) (file-error () nil)))))))))

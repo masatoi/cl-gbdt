@@ -1285,3 +1285,126 @@ was given -- a bare namestring would have escaped it to a different, nonexistent
             (progn
               (cl-gbdt/xgboost:free-dataset data)
               (handler-case (delete-file path) (file-error () nil)))))))))
+
+(defun make-symlink (target link)
+  "Create LINK as a symbolic link to TARGET, replacing any existing file at LINK.
+
+Portable ANSI Common Lisp has no way to create a symlink at all. `src/xgboost/file-input.lisp'
+records that the project owner declined to add `sb-posix' as a further SBCL-specific
+dependency for a *library* source file's own use; this is a *test* file rather than shipped
+source, and needs a symlink only to reproduce PR #37's finding, so `uiop:run-program' shelling
+out to `ln -sf' is used instead -- UIOP is already this file's own dependency
+(`uiop:temporary-directory' elsewhere here), so nothing new is added to what a standalone
+caller of `cl-gbdt/xgboost' would ever need to load."
+  (multiple-value-bind (out err code)
+      (uiop:run-program (list "ln" "-sf" (namestring target) (namestring link))
+                         :output :string :error-output :string :ignore-error-status t)
+    (declare (ignore out))
+    (unless (zerop code)
+      (error "ln -sf ~A ~A failed (~D): ~A" target link code err))))
+
+(defun second-byte (path)
+  "Return PATH's second octet, as a character -- the discriminator between XGBoost's two
+save formats. Measured (Phase B of PR #37's investigation): both start with `{', but JSON's
+second byte is `\"' (its `{\"learner...' opening) and UBJSON's is `L' (a length-prefixed
+binary field), so this one byte tells the two apart without parsing either."
+  (with-open-file (stream path :element-type '(unsigned-byte 8))
+    (let ((buf (make-array 2 :element-type '(unsigned-byte 8))))
+      (read-sequence buf stream)
+      (code-char (aref buf 1)))))
+
+(defun json-format-p (path)
+  "True when PATH's bytes are XGBoost's JSON save format, per `second-byte'."
+  (eql (second-byte path) #\"))
+
+(defun ubj-format-p (path)
+  "True when PATH's bytes are XGBoost's UBJSON save format, per `second-byte'."
+  (eql (second-byte path) #\L))
+
+(deftest save-model-through-a-json-symlink-to-a-ubj-target-writes-json
+  (testing "PR #37 (Codex P2): a save destination that is itself a symlink to a .ubj file \
+must still be written as JSON, matching the .json name the caller gave -- not dereferenced \
+to the symlink's .ubj target and its extension"
+    (with-open-backend (backend)
+      (multiple-value-bind (matrix label-vector) (fixture)
+        (let ((data (cl-gbdt/xgboost:create-dataset backend matrix :label label-vector))
+              (target (model-path (format nil "cl-gbdt-p37-target-a-~D.ubj" (random 1000000))))
+              (link (model-path (format nil "cl-gbdt-p37-model-a-~D.json" (random 1000000)))))
+          (unwind-protect
+               (let ((booster (cl-gbdt/xgboost:create-booster backend data
+                                                               :parameters *parameters*)))
+                 (unwind-protect
+                      (progn
+                        (dotimes (round 5) (cl-gbdt/xgboost:update-one-iteration booster))
+                        ;; Pre-create the target with real UBJ bytes so the symlink
+                        ;; dereferences to something that exists.
+                        (cl-gbdt/xgboost:save-model booster target)
+                        (make-symlink target link)
+                        (cl-gbdt/xgboost:save-model booster link)
+                        (ok (json-format-p link)
+                            "save-model wrote UBJ bytes through a .json-named symlink to a \
+.ubj target -- the destination's own extension was not honoured"))
+                   (cl-gbdt/xgboost:free-booster booster)))
+            (progn
+              (cl-gbdt/xgboost:free-dataset data)
+              (handler-case (delete-file target) (file-error () nil))
+              (handler-case (delete-file link) (file-error () nil)))))))))
+
+(deftest save-model-through-a-ubj-symlink-to-a-json-target-writes-ubj
+  (testing "the reverse of PR #37's finding: a .ubj-named symlink to a .json target must \
+still be written as UBJ, matching the .ubj name the caller gave"
+    (with-open-backend (backend)
+      (multiple-value-bind (matrix label-vector) (fixture)
+        (let ((data (cl-gbdt/xgboost:create-dataset backend matrix :label label-vector))
+              (target (model-path (format nil "cl-gbdt-p37-target-b-~D.json" (random 1000000))))
+              (link (model-path (format nil "cl-gbdt-p37-model-b-~D.ubj" (random 1000000)))))
+          (unwind-protect
+               (let ((booster (cl-gbdt/xgboost:create-booster backend data
+                                                               :parameters *parameters*)))
+                 (unwind-protect
+                      (progn
+                        (dotimes (round 5) (cl-gbdt/xgboost:update-one-iteration booster))
+                        (cl-gbdt/xgboost:save-model booster target)
+                        (make-symlink target link)
+                        (cl-gbdt/xgboost:save-model booster link)
+                        (ok (ubj-format-p link)
+                            "save-model wrote JSON bytes through a .ubj-named symlink to a \
+.json target -- the destination's own extension was not honoured"))
+                   (cl-gbdt/xgboost:free-booster booster)))
+            (progn
+              (cl-gbdt/xgboost:free-dataset data)
+              (handler-case (delete-file target) (file-error () nil))
+              (handler-case (delete-file link) (file-error () nil)))))))))
+
+(deftest load-model-through-a-symlink-still-works
+  (testing "load-model must keep dereferencing a symlink: XGBoosterLoadModel picks its \
+parser from the string it is actually given, so a symlink named with a DIFFERENT \
+extension than its real target must still resolve to the target's own name for the read \
+to pick the matching parser and succeed"
+    (with-open-backend (backend)
+      (multiple-value-bind (matrix label-vector) (fixture)
+        (let ((data (cl-gbdt/xgboost:create-dataset backend matrix :label label-vector))
+              (target (model-path
+                       (format nil "cl-gbdt-p37-load-target-~D.json" (random 1000000))))
+              (link (model-path
+                     (format nil "cl-gbdt-p37-load-link-~D.ubj" (random 1000000)))))
+          (unwind-protect
+               (let ((booster (cl-gbdt/xgboost:create-booster backend data
+                                                               :parameters *parameters*)))
+                 (unwind-protect
+                      (progn
+                        (dotimes (round 5) (cl-gbdt/xgboost:update-one-iteration booster))
+                        (cl-gbdt/xgboost:save-model booster target)
+                        (make-symlink target link)
+                        (let ((reloaded (cl-gbdt/xgboost:load-model backend link)))
+                          (unwind-protect
+                               (ok (equalp (cl-gbdt/xgboost:predict booster matrix)
+                                           (cl-gbdt/xgboost:predict reloaded matrix))
+                                   "load-model through a symlink to a differently-\
+extensioned real file did not round-trip")
+                            (cl-gbdt/xgboost:free-booster reloaded))))
+                   (cl-gbdt/xgboost:free-booster booster)))
+            (progn
+              (cl-gbdt/xgboost:free-dataset data)
+              (handler-case (delete-file target) (file-error () nil))
+              (handler-case (delete-file link) (file-error () nil)))))))))
