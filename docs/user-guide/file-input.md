@@ -55,8 +55,9 @@ not to be an error either.
 **The classification is of `PATH`'s first non-blank line, not of `PATH`.** A file whose first
 line is genuinely libsvm-shaped but whose later rows are not is still classified `:LIBSVM` and
 still passes this gate; the mismatched later content reaches `XGDMatrixCreateFromURI` regardless.
-Measured (PR #36 re-review, ten runs against five mixed-content shapes and both libraries; see
-`docs/superpowers/specs/2026-08-13-file-input-measurements.md` section 12 for the full record):
+Measured (PR #36 re-review, ten runs against five mixed-content shapes and both libraries; the
+full record is `cl-gbdt/xgboost:create-dataset-from-file`'s own docstring, reproduced in
+[`docs/API-REFERENCE.md`](../API-REFERENCE.md)):
 none of the ten crashed, but that is what ten runs showed and not a guarantee about every input.
 **A file truncated mid-row is silently accepted by both libraries as though it were complete --
 no error, a dataset built from whatever whole rows came before the cut.** A caller who hands

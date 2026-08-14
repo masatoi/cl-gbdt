@@ -43,7 +43,8 @@ backend system you loaded on top of the core -- see [Systems](#systems).
 ## Supported environments
 
 Two different claims, kept in separate columns: what CI runs on every push, and what was
-measured by hand once and recorded rather than re-run.
+measured by hand once and recorded rather than re-run. The last row is neither -- it is a
+requirement, and is marked as one.
 
 | | CI-verified | Also measured |
 |---|---|---|
@@ -53,7 +54,7 @@ measured by hand once and recorded rather than re-run.
 | Windows | not tested | -- |
 | LightGBM | 4.0.0, 4.7.0 (pinned) | 3.0.0, the inferred lower bound, has no aarch64 wheel on PyPI and stays untested there |
 | XGBoost | 2.0.0, 3.3.0 (pinned) | **1.7.0 fails**: 105 of 106 assertions pass, the ranking round trip does not |
-| ASDF | 3.3.7 or newer | -- |
+| ASDF | no version verified: CI runs `ros install asdf`, taking whatever the current release is that day | **Requirement, not a measurement: 3.3.7 or newer** -- see below |
 
 The pinned versions are the ones `ffi-spec/VERSIONS` names and `./tools/fetch-libs.sh`
 downloads, and are what the suite runs against on all three platforms. The lower version in
@@ -76,6 +77,11 @@ dies with `:LOCAL-NICKNAMES fell through ECASE expression` on any system reachin
 
 ## Installation
 
+Every command below assumes [Roswell](https://github.com/roswell/roswell), which is how this
+project runs SBCL everywhere, CI included; `ros` is its command, and installing it is step
+zero. `./tools/fetch-libs.sh` additionally needs `python3`, `pip` and `unzip` on `PATH` --
+it takes the shared libraries out of the backends' PyPI wheels.
+
 ```bash
 git clone https://github.com/masatoi/cl-gbdt ~/.roswell/local-projects/cl-gbdt
 ros install asdf
@@ -91,7 +97,8 @@ Three things happen there, and the quick start below assumes all three:
 2. **`ros install asdf`** replaces Roswell's bundled 3.3.1 -- see [Supported
    environments](#supported-environments) for what breaks without it.
 3. **`./tools/fetch-libs.sh`** downloads LightGBM's and XGBoost's prebuilt shared libraries
-   into the git-ignored `vendor/` directory. This repository bundles neither. If you already
+   into the git-ignored `vendor/` directory, via `python3 -m pip download` and `unzip` of the
+   resulting wheels. This repository bundles neither library. If you already
    have them installed, skip this step and point `CL_GBDT_LIGHTGBM_LIB` /
    `CL_GBDT_XGBOOST_LIB`, or `open-backend`'s `:path`, at them instead -- see [Finding the
    shared library](docs/user-guide/backends.md#finding-the-shared-library) for the full search
@@ -179,7 +186,7 @@ every element is coerced internally.
 | System | Purpose |
 |---|---|
 | `cl-gbdt` | Core: the package, the condition hierarchy, matrix marshalling, the backend registry and `open-backend` protocol, and the unified API's generic functions -- no methods, and no shared library needed to load it |
-| `cl-gbdt/lightgbm` | **Layer 1 for LightGBM alone.** Opens and closes the library and publishes LightGBM's own fourteen operations, from `create-dataset` through `create-dataset-from-file`. Carries none of the 13 unified-API methods, and does not define the `cl-gbdt` package |
+| `cl-gbdt/lightgbm` | **Layer 1 for LightGBM alone.** Opens and closes the library and publishes LightGBM's own fourteen operations, from `create-dataset` through `create-dataset-from-file`, plus `booster-eval` and `booster-eval-names`. Carries none of the 13 unified-API methods, and does not define the `cl-gbdt` package |
 | `cl-gbdt/lightgbm/unified` | That, plus LightGBM's methods on all 13 unified generics, plus core `cl-gbdt`. **This is what a caller of `cl-gbdt:train` loads** |
 | `cl-gbdt/xgboost` | Layer 1 for XGBoost, dividing identically -- the same fourteen operations under the same names in a different package, plus `slice-model`, `evaluate-one-iteration` and `booster-boosted-rounds` |
 | `cl-gbdt/xgboost/unified` | That, plus XGBoost's methods on all 13 unified generics, and core `cl-gbdt` with them |
@@ -215,9 +222,11 @@ do](docs/user-guide/backends.md#asking-a-backend-what-it-can-do)).
 `train` returns the booster and, as a secondary value, a `training-report`: one
 `training-series` per metric per dataset, values oldest-first, indexed the way `evaluation`
 indexes them. `:early-stopping` ends a run once a watched metric stops improving and records
-the best iteration, which `predict`, `save-model` and `model-to-string` then accept as
-`:num-iteration :best`. Both backends. Recording roughly doubles LightGBM's `train` time and
-can be turned off with `:record-history nil`. See [Training
+the best iteration; both backends report, stop and record that way. Resolving it afterwards as
+`:num-iteration :best` works on `predict` on both backends, but on `save-model` and
+`model-to-string` on **LightGBM only** -- XGBoost refuses any `:num-iteration`, `:best`
+included ([below](#where-the-backends-differ)). Recording roughly doubles LightGBM's `train`
+time and can be turned off with `:record-history nil`. See [Training
 report](docs/user-guide/training.md#training-report), [Stopping early:
 `:early-stopping`](docs/user-guide/training.md#stopping-early-early-stopping) and
 [`:num-iteration :best`](docs/user-guide/training.md#num-iteration-best).
@@ -293,9 +302,11 @@ input](docs/user-guide/file-input.md#file-input).
 
 ## Where the backends differ
 
-The differences most likely to break a program moved between backends. The full catalogue --
-every row, with the measured output that establishes it -- is in [Backend
-differences](docs/user-guide/backend-differences.md#where-the-two-backends-genuinely-differ).
+The differences most likely to break a program moved between backends. The full catalogue,
+with the measured output that establishes each row, is in [Backend
+differences](docs/user-guide/backend-differences.md#where-the-two-backends-genuinely-differ)
+-- except the `:missing` row, whose account lives with the feature itself, in [Missing
+values](docs/user-guide/data-and-prediction.md#missing-values).
 
 | | LightGBM | XGBoost |
 |---|---|---|
@@ -311,8 +322,10 @@ differences](docs/user-guide/backend-differences.md#where-the-two-backends-genui
 
 - **Windows is not tested.** CI covers Linux x86_64, Linux aarch64 and macOS aarch64. Nothing
   in the code is known to be Windows-specific; nothing has been run there either.
-- **Only SBCL is tested, and parts of the code are SBCL-only.** `sb-ext:native-namestring` in
-  XGBoost's file-input path and `sb-sys` array pinning in `src/xgboost/native.lisp` are not
+- **Only SBCL is tested, and parts of the code are SBCL-only.** `sb-sys:with-pinned-objects`
+  pins every array handed to either library -- in `src/data.lisp`, which both backends share,
+  and in each backend's own `native.lisp` -- and `sb-ext:native-namestring` composes every
+  path XGBoost is given, in its file-input and model-persistence paths alike. Neither is
   portable Common Lisp, and no other implementation has been tried.
 - **A file being written while it is read is accepted silently.** Both libraries take a file
   truncated mid-row as though it were complete -- no error, a dataset built from whatever

@@ -368,7 +368,7 @@ So implementing it would mean introducing this project's first C→Lisp callback
 
 ### Why file input was not put on the unified API
 
-Both libraries' own file-reading entry points -- `LGBM_DatasetCreateFromFile` and `XGDMatrixCreateFromURI` -- were measured against the vendored LightGBM v4.7.0 and XGBoost v3.3.0 on Linux aarch64, over the same four-row fixture written as libsvm and as CSV. The transcripts are `docs/superpowers/specs/2026-08-13-file-input-measurements.md`; every figure below is one of them, not a restatement of an earlier design document. Six findings decided the shape.
+Both libraries' own file-reading entry points -- `LGBM_DatasetCreateFromFile` and `XGDMatrixCreateFromURI` -- were measured against the vendored LightGBM v4.7.0 and XGBoost v3.3.0 on Linux aarch64, over the same four-row fixture written as libsvm and as CSV. The transcripts were taken down in `docs/superpowers/specs/2026-08-13-file-input-measurements.md`, which -- like everything under that gitignored directory, and for the same reason §18 gives -- is not in the repository; every figure below is one of them, reproduced here rather than cited, so this section is the tracked record of them. `cl-gbdt/xgboost:create-dataset-from-file`'s docstring, in `docs/API-REFERENCE.md`, is the other. Six findings decided the shape.
 
 | | Finding |
 |---|---|
