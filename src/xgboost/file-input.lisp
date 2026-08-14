@@ -381,9 +381,17 @@ section 1):
 (defun %resolve-file-path (path)
   "Resolve PATH, a pathname designator, to the one `truename' `create-dataset-from-file'
 then hands to BOTH `detect-file-format' and `file-uri', or NIL when PATH cannot be
-resolved to a single existing file at all -- missing, wild (`truename' itself signals
-`file-error' for a wild pathname, per the standard), or a symlink whose target does not
-exist.
+resolved at all -- missing, or wild (`truename' itself signals `file-error' for a wild
+pathname, per the standard).
+
+NOT NIL for a symlink whose target does not exist, an earlier version of this paragraph's
+claim: measured, SBCL's `truename' on a dangling symlink returns the LINK's own pathname
+rather than signalling `file-error', so this function passes that pathname through like
+any other resolved PATH. The dangling case is still refused -- just one stage later, and
+by a different mechanism than this function's own NIL: `detect-file-format', reading that
+resolved pathname, finds no real content behind it and answers `:UNREADABLE', which
+`create-dataset-from-file''s gate then refuses as a mismatch against any declared FORMAT
+-- verified end to end, not assumed from this function's behavior alone.
 
 Review round 3, Finding N4 (Critical): before this function existed,
 `create-dataset-from-file' called `detect-file-format' and `file-uri' on the SAME PATH

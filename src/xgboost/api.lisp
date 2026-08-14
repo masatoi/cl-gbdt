@@ -1077,30 +1077,29 @@ PATHNAMES' applying CL's merging rule to a pathname that need not exist.
 Named for what it does now, not what an earlier version of it did: PR #37's second review
 (Codex) found that `truename'-then-`merge-pathnames' -- what this function used to be --
 broke a save followed by a load through the SAME symlinked path. `save-model' had already
-stopped
-dereferencing, to honour a symlinked destination's own extension (PR #37's first review);
-with `load-model' still dereferencing, `model.json -> target.ubj' wrote JSON at `model.json'
-(correct) but then loaded it back through `target.ubj', where `XGBoosterLoadModel' picked
-the UBJ parser from that name and choked on the JSON bytes with `foreign-call-error'. Two
-resolution rules for the two callers is what produced that; the fix is one rule for both,
-not two rules chosen more carefully. `save-model' and `load-model' both call this function
-now, and pass it nothing to switch: this wrapper uses the path the caller named and does
-not resolve symlinks, on either operation. `XGBoosterSaveModel' and `XGBoosterLoadModel'
-both pick their serialization -- `.json' text or `.ubj' binary -- from PATH's own
-extension, not from any symlink target's, so a save and a load through the SAME path
-round-trip by construction: whatever `save-model' wrote is exactly what `load-model' reads
-back, because both look at the identical name. This function was called
-`%best-effort-resolve-path' while it still attempted `truename' with a `merge-pathnames'
-fallback; `truename' is gone, there is no fallback left to describe, and the old name
-would now claim an attempt this function never makes -- renamed for the same reason
-`%not-a-regular-file-p' became `%directory-p' when what it tested changed.
-`cl-gbdt/src/lightgbm/api' carries an identically-named function for the identical reason,
-dropping its own `truename' branch afterward once six cases -- a symlink to a
-different-extension target, one to a same-extension target, an ordinary path, a relative
-path with a working-directory decoy, a `~' path, and a literal-`*' filename -- measured no
-difference before and after on that backend, `LGBM_BoosterSaveModel' and
-`LGBM_BoosterCreateFromModelfile' having no format-by-extension dispatch for `truename' to
-have ever been protecting there.
+stopped dereferencing, to honour a symlinked destination's own extension (PR #37's first
+review); with `load-model' still dereferencing, `model.json -> target.ubj' wrote JSON at
+`model.json' (correct) but then loaded it back through `target.ubj', where
+`XGBoosterLoadModel' picked the UBJ parser from that name and choked on the JSON bytes
+with `foreign-call-error'. Two resolution rules for the two callers is what produced that;
+the fix is one rule for both, not two rules chosen more carefully. `save-model' and
+`load-model' both call this function now, and pass it nothing to switch: this wrapper uses
+the path the caller named and does not resolve symlinks, on either operation.
+`XGBoosterSaveModel' and `XGBoosterLoadModel' both pick their serialization -- `.json'
+text or `.ubj' binary -- from PATH's own extension, not from any symlink target's, so a
+save and a load through the SAME path round-trip by construction: whatever `save-model'
+wrote is exactly what `load-model' reads back, because both look at the identical name.
+This function was called `%best-effort-resolve-path' while it still attempted `truename'
+with a `merge-pathnames' fallback; `truename' is gone, there is no fallback left to
+describe, and the old name would now claim an attempt this function never makes --
+renamed for the same reason `%not-a-regular-file-p' became `%directory-p' when what it
+tested changed. `cl-gbdt/src/lightgbm/api' carries an identically-named function for the
+identical reason, dropping its own `truename' branch afterward once six cases -- a
+symlink to a different-extension target, one to a same-extension target, an ordinary
+path, a relative path with a working-directory decoy, a `~' path, and a literal-`*'
+filename -- measured no difference before and after on that backend,
+`LGBM_BoosterSaveModel' and `LGBM_BoosterCreateFromModelfile' having no
+format-by-extension dispatch for `truename' to have ever been protecting there.
 
 The cost of never dereferencing falls on a symlink whose own extension does not describe
 its target's real format -- `model.ubj' pointing at bytes that are actually JSON, put

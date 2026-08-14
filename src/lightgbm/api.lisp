@@ -375,10 +375,24 @@ project, and uncatchable by name -- for a PATH that IS wild (`wildcard*.libsvm',
 asterisk really is a CL wildcard marker rather than the literal-character case above), so
 switching to it is not a bare substitution: this check has to run FIRST, refusing a wild
 PATH with a typed condition this project's own callers can catch, or the fix trades one
-edge case for a worse one. Mirrors `cl-gbdt/src/xgboost/file-input''s
-`%check-file-uri-arguments', which pairs the identical two calls for the identical reason
--- LightGBM has no URI to compose and so needs none of that function's other checks
-(reserved query characters, a smuggled `format' key), only this one."
+edge case for a worse one.
+
+`cl-gbdt/src/xgboost/file-input''s `%check-file-uri-arguments' therefore does not apply
+here, and not for one reason common to all its checks: its reserved-character checks (a
+`?'/`#'/`;' in PATH, a reserved character inside FORMAT or a PAIRS entry, a smuggled
+`format' key among PAIRS) exist to keep a caller from injecting a second query segment or a
+`;'-separated multi-path list into a URI LightGBM has none of -- none of these three C
+entry points takes a URI at all, unlike XGBoost's `XGDMatrixCreateFromURI'. Its
+wild-pathname check exists for an unrelated reason stated in that function's own docstring
+-- dmlc glob-expands a wild namestring rather than opening it as the single file it names --
+and a fifth check there refuses a literal `*' or `[' that `wild-pathname-p' does not see as
+wild, precautionarily, against that same glob layer. Neither the glob-driven wild-pathname
+reason nor the literal-`*'/`[' precaution applies here: `LGBM_DatasetCreateFromFile',
+`LGBM_BoosterSaveModel' and `LGBM_BoosterCreateFromModelfile' all take a plain filename,
+with no glob layer between them and it. This check keeps only the rule that still applies
+regardless -- `native-namestring' signals its own untyped
+`sb-kernel:no-native-namestring-error' for a wild PATH, whatever the reason PATH is wild --
+and none of `%check-file-uri-arguments''s five URI-specific ones."
   (when (wild-pathname-p path)
     (error 'unsupported-argument
            :backend :lightgbm
