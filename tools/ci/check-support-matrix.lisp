@@ -39,6 +39,23 @@
 ;;;; check's purpose -- or, if the README did state it, fail this check for a reason that is
 ;;;; not real. MATRIX-VERSIONS' regex now accepts all three forms; see its own docstring.
 ;;;;
+;;;; THE OTHER SIDE OF THAT SAME FIX. Accepting the bare scalar form widened MATRIX-VERSIONS'
+;;;; own false-POSITIVE surface at the same time, because its regex carried no line anchor --
+;;;; unlike PINNED-VERSION's, in the same file, which always has. Unanchored, `lightgbm_version'
+;;;; sitting inside a `#' comment, inside a `run: |' shell block (`echo lightgbm_version:
+;;;; 9.9.9'), or glued onto some other key's name (`not_lightgbm_version:',
+;;;; `lightgbm_version_note:') could each match and feed a version into
+;;;; EXPECTED-CI-VERIFIED-VERSIONS that `version-matrix' never actually names as a leg -- and
+;;;; this direction fails the build on an ordinary, unrelated edit rather than staying silent.
+;;;; MATRIX-VERSIONS is now anchored to the whole line (`(?m)^...$'), the same way
+;;;; PINNED-VERSION already is, which rules out every case above: none of them is a standalone
+;;;; line consisting of nothing but the key, its value, and surrounding whitespace. What
+;;;; anchoring cannot rule out is a `run: |' block or heredoc whose body happens to contain a
+;;;; STANDALONE line in exactly that shape -- indistinguishable from a real matrix entry to a
+;;;; regex that has no notion of being inside a YAML scalar block. PINNED-VERSION accepts the
+;;;; identically-shaped limitation for its own file; anchoring the two alike, rather than
+;;;; trying to out-parse YAML with a larger regex, is the fix, not a claim of having none left.
+;;;;
 ;;;; WHAT IS DELIBERATELY NOT CHECKED: the "Also measured" column. LightGBM 3.0.0 and XGBoost
 ;;;; 1.7.0 live there because they were measured BY HAND, once, and recorded rather than
 ;;;; re-run on every push -- XGBoost 1.7.0 in particular is a deliberately-red result (see
@@ -66,6 +83,9 @@
 ;;;;     folded or literal scalar, for instance) -- MATRIX-VERSIONS matches the three plain
 ;;;;     scalar forms `version-matrix' actually uses today, not the whole of YAML's scalar
 ;;;;     grammar.
+;;;;   - A standalone line inside a `run: |' block or heredoc that happens to read exactly
+;;;;     `KEY: value' with nothing else on it -- see "THE OTHER SIDE OF THAT SAME FIX" above;
+;;;;     the line anchor rules out every OTHER false-positive shape, not this one.
 
 (require :asdf)
 
@@ -121,10 +141,14 @@ or NIL if that file names no such backend."
 should deduplicate. Matches all three YAML scalar forms a version can be written in -- single-
 quoted, double-quoted and bare -- since YAML permits all three and nothing here parses YAML;
 see this file's header for why matching only the single-quoted form was a real gap, not a
-theoretical one."
+theoretical one. Anchored to the whole line, the same way PINNED-VERSION already anchors its
+own regex, so a bare MATRIX-KEY sitting inside a comment, a `run:' shell line, or as a prefix
+or suffix of some other key can no longer match -- only accepting the bare scalar form
+widened this function's own surface for exactly that, which PINNED-VERSION's file format
+never exposed it to."
   (let ((versions '())
         (scanner (cl-ppcre:create-scanner
-                  (format nil "~A:\\s*[\"']?([\\d.]+)[\"']?"
+                  (format nil "(?m)^[ \\t]*~A:\\s*[\"']?([\\d.]+)[\"']?[ \\t]*$"
                           (cl-ppcre:quote-meta-chars matrix-key)))))
     (cl-ppcre:do-register-groups (version) (scanner (uiop:read-file-string +test-workflow-path+))
       (push version versions))
