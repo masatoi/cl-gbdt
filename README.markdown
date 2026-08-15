@@ -211,102 +211,51 @@ ever reaches the unified protocol, the training files, or the bare `cl-gbdt` sys
 
 ## Features
 
-Each of these is summarized here and explained, with worked examples and measured behaviour,
-in the guide it links to. Most are gated on a *capability* -- `backend-supports-p` answers
-whether the loaded shared library really provides it, and the operation re-checks it rather
-than trusting a caller who asked first (see [Asking a backend what it can
-do](docs/user-guide/backends.md#asking-a-backend-what-it-can-do)).
+Everything below is on the unified API and works on both backends unless the table says
+otherwise. Most are gated on a *capability*: `backend-supports-p` answers whether the loaded
+shared library really provides it, and the operation re-checks it rather than trusting a
+caller who asked first (see [Asking a backend what it can
+do](docs/user-guide/backends.md#asking-a-backend-what-it-can-do)). The guide column is where
+each one is explained, with the worked example and the measurement behind it.
 
-### Training report and early stopping
+| Feature | Capability | LightGBM | XGBoost | Guide |
+|---|---|---|---|---|
+| Training report, `:early-stopping` | -- | yes | yes | [Training report](docs/user-guide/training.md#training-report), [Stopping early](docs/user-guide/training.md#stopping-early-early-stopping) |
+| `:num-iteration :best` | -- | `predict`, `save-model`, `model-to-string` | `predict` only | [`:num-iteration :best`](docs/user-guide/training.md#num-iteration-best) |
+| Sparse input (`csr-matrix`) | `:sparse-input` | yes, all four `predict` kinds | yes, `:normal` and `:raw` only | [Sparse input](docs/user-guide/data-and-prediction.md#sparse-input-csr-matrices) |
+| `:missing` sentinel | `:missing-value` | **no** -- no such key in its C API | yes | [Missing values](docs/user-guide/data-and-prediction.md#missing-values) |
+| `:categorical-features` | `:categorical-features` | yes | yes, `tree_method` `hist` or `approx` | [Categorical features](docs/user-guide/data-and-prediction.md#categorical-features) |
+| `predict`'s shape, second value | `:prediction-shape` | derived; `NIL` for `:leaf-index` | stated verbatim by the library | [Prediction shape](docs/user-guide/data-and-prediction.md#prediction-shape) |
+| `train`'s `:objective` | `:custom-objective` | yes | yes | [Custom objective](docs/user-guide/custom-training.md#custom-objective) |
+| `train`'s `:evaluation` | `:custom-evaluation` | yes | yes | [Custom evaluation](docs/user-guide/custom-training.md#custom-evaluation) |
+| `create-dataset-from-file` | -- (**Layer 1 only**) | format inferred from the file | format required positionally | [File input](docs/user-guide/file-input.md) |
 
-`train` returns the booster and, as a secondary value, a `training-report`: one
-`training-series` per metric per dataset, values oldest-first, indexed the way `evaluation`
-indexes them. `:early-stopping` ends a run once a watched metric stops improving and records
-the best iteration; both backends report, stop and record that way. Resolving it afterwards as
-`:num-iteration :best` works on `predict` on both backends, but on `save-model` and
-`model-to-string` on **LightGBM only** -- XGBoost refuses any `:num-iteration`, `:best`
-included ([below](#where-the-backends-differ)). Recording roughly doubles LightGBM's `train`
-time and can be turned off with `:record-history nil`. See [Training
-report](docs/user-guide/training.md#training-report), [Stopping early:
-`:early-stopping`](docs/user-guide/training.md#stopping-early-early-stopping) and
-[`:num-iteration :best`](docs/user-guide/training.md#num-iteration-best).
+One thing worth knowing before you reach the guide, for each:
 
-### Sparse input
-
-`make-csr-matrix` builds a `csr-matrix`, which `make-dataset` and `predict` each accept
-wherever they accept a dense matrix; the dataset it builds is one nothing downstream can
-distinguish from a densely-built one. Capability `:sparse-input`, true on both backends.
-XGBoost's sparse `predict` serves `:normal` and `:raw` only, and an absent entry means `0.0`
-to LightGBM but *missing* to XGBoost -- a real difference in the trained model, not a detail.
-See [Sparse input](docs/user-guide/data-and-prediction.md#sparse-input-csr-matrices).
-
-### Missing values
-
-`make-dataset` and `predict` take `:missing`, the value in the caller's own data that stands
-for a datum they do not have -- the `-999.0` a CSV convention often uses. Capability
-`:missing-value`, **XGBoost only**: LightGBM's C API has no missing-value key at all, so any
-non-`NIL` value there signals `capability-unavailable`, a `NaN` included. XGBoost compares the
-sentinel against the data at single precision. See [Missing
-values](docs/user-guide/data-and-prediction.md#missing-values).
-
-### Categorical features
-
-`make-dataset` takes `:categorical-features`, the 0-based columns holding categories rather
-than quantities, so a split partitions the category set instead of thresholding an ordinal
-that has no order. Capability `:categorical-features`, true on both backends. `predict` takes
-no such argument -- the trained trees already carry the category sets they split on -- and on
-XGBoost `tree_method` must be `hist` or `approx`, which fails at `train` rather than at
-`make-dataset`. See [Categorical
-features](docs/user-guide/data-and-prediction.md#categorical-features).
-
-### Prediction shape
-
-`predict` returns, as a second value, the shape the backend states for the result it just
-wrote: a list of integers in `array-dimensions` order, or `NIL` where the backend states none.
-The first value is unchanged, so a caller who ignores the second sees exactly the old
-behaviour. Capability `:prediction-shape`, true on both backends, and one of the capabilities
-no operation refuses on: nothing asks for a shape, so a false answer would mean only that the
-second value is always `NIL`. XGBoost reads its own `out_shape`/`out_dim` back verbatim;
-LightGBM has no such call and derives what it can, stating `NIL` for `:leaf-index`. See
-[Prediction shape](docs/user-guide/data-and-prediction.md#prediction-shape).
-
-### Custom objective
-
-`train` takes `:objective`, a function turning the current raw scores into a gradient and a
-Hessian, so a run boosts against the caller's own loss. Capability `:custom-objective`, true
-on both backends; the two libraries flatten that array in opposite orders and the wrapper
-absorbs the difference. On LightGBM `:objective` overrides any `objective` in `:parameters` --
-all five spellings that library honours -- forcing it to `"none"`, since
-`LGBM_BoosterUpdateOneIterCustom` refuses to run while the booster holds one. See [Custom
-objective](docs/user-guide/custom-training.md#custom-objective).
-
-### Custom evaluation
-
-`train` takes `:evaluation`, a function called once per dataset per iteration with that
-dataset's `predict :kind :normal` scores and the dataset's index, returning a metric name and
-a real or `NIL`. Capability `:custom-evaluation`, true on both backends. The values become
-their own report series, appended after the library's own, and are watchable by
-`:early-stopping` under the returned name. It requires `:record-history t`, and one name per
-dataset index for the whole run. See [Custom
-evaluation](docs/user-guide/custom-training.md#custom-evaluation).
-
-### File input
-
-`create-dataset-from-file` has the library read a training file directly instead of a matrix
-already in memory. **Layer 1 only, on both backends** -- there is no unified form and no
-capability to ask about, because XGBoost's file-format argument, declared wrong, can end the
-process outright in a thread no Lisp handler can reach. LightGBM infers CSV, TSV or libsvm
-from the file itself; XGBoost requires the format positionally, and the wrapper classifies the
-file and refuses a mismatch rather than letting that crash happen. See [File
-input](docs/user-guide/file-input.md#file-input).
+- **Training report** -- one `training-series` per metric per dataset, values oldest-first,
+  indexed the way `evaluation` indexes them. Recording roughly doubles LightGBM's `train`
+  time; `:record-history nil` turns it off.
+- **Sparse input** -- an entry a `csr-matrix` does not store is `0.0` to LightGBM and
+  *missing* to XGBoost, which changes the trained model silently rather than erroring.
+- **`:missing`** -- LightGBM signals `capability-unavailable` for any non-`NIL` value, a
+  `NaN` included; XGBoost compares the sentinel at single precision.
+- **`:categorical-features`** -- `predict` takes no such argument on either backend; the
+  trained trees already carry the category sets they split on.
+- **Prediction shape** -- the first value is unchanged, so a caller who ignores the second
+  sees exactly the behaviour that predates the feature.
+- **`:objective`** -- on LightGBM it overrides any `objective` in `:parameters`, all five
+  spellings, forcing it to `"none"`; the library refuses the combination outright.
+- **`:evaluation`** -- its values become their own report series, watchable by
+  `:early-stopping`; it requires `:record-history t` and one metric name per dataset index.
+- **File input** -- no unified form and no capability to ask about: XGBoost's format
+  argument, declared wrong, can end the process in a thread no Lisp handler can reach.
 
 ## Where the backends differ
 
 The differences most likely to break a program moved between backends. The full catalogue,
-with the measured output that establishes each row, is in [Backend
-differences](docs/user-guide/backend-differences.md#where-the-two-backends-genuinely-differ)
--- except the `:missing` row, whose account lives with the feature itself, in [Missing
-values](docs/user-guide/data-and-prediction.md#missing-values).
+every row of it, is in [Backend
+differences](docs/user-guide/backend-differences.md#where-the-two-backends-genuinely-differ),
+which links each row on to the guide that measures it.
 
 | | LightGBM | XGBoost |
 |---|---|---|
@@ -325,7 +274,8 @@ values](docs/user-guide/data-and-prediction.md#missing-values).
 - **Only SBCL is tested, and parts of the code are SBCL-only.** `sb-sys:with-pinned-objects`
   pins every array handed to either library -- in `src/data.lisp`, which both backends share,
   and in each backend's own `native.lisp` -- and `sb-ext:native-namestring` composes every
-  path XGBoost is given, in its file-input and model-persistence paths alike. Neither is
+  path *either* library is given: XGBoost's file-input and model-persistence paths, and
+  LightGBM's `create-dataset-from-file`, `save-model` and `load-model`. Neither construct is
   portable Common Lisp, and no other implementation has been tried.
 - **A file being written while it is read is accepted silently.** Both libraries take a file
   truncated mid-row as though it were complete -- no error, a dataset built from whatever
@@ -342,6 +292,12 @@ values](docs/user-guide/data-and-prediction.md#missing-values).
 
 Every document this repository tracks, and the question each one answers. The licence texts
 themselves -- `LICENSE` and `LICENSES/` -- are named under [License](#license) below.
+
+**Every code block in the six guides below, and the quick start above, was actually run to
+produce the output pasted beneath it** -- SBCL via `ros run`, with `./tools/fetch-libs.sh`'s
+vendored libraries present. An `Output:` block is a transcript, not an illustration. Each
+block is self-contained: it loads the systems it needs and defines the fixtures it uses, so
+it can be pasted into a fresh REPL as it stands.
 
 ### Using the library
 

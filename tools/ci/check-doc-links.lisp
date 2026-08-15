@@ -81,15 +81,18 @@
 ;;;;
 ;;;; A NOTE ON THE COUNT THIS CHECK REPORTS, for whoever reads this next. An earlier,
 ;;;; uncommitted, throwaway resolver run by hand during this same split (Tasks 2 and 3 of the
-;;;; readme-split programme) reported 68 links checked on the tree this script also checks,
-;;;; and 37 broken on the pre-fix commit used as its negative control. This script's own
-;;;; count is higher on both counts: every occurrence counted separately (as this header
-;;;; argues above), the manually re-derived pre-fix commit count is 38 (the extra one is the
-;;;; hard-wrapped "the capability model" duplicate this header already names -- the throwaway
-;;;; script visibly missed one of its two occurrences), and the current tree is 0 failed
-;;;; either way. The two independent-resolver counts from that work agreed with each other but
-;;;; were run by uncommitted, never-reviewed-against-this-exact-property scripts; this one is
-;;;; the first version of the check that is itself reviewed, run, and kept.
+;;;; readme-split programme) reported 68 links checked on the same tree where this script
+;;;; reports 95. The gap is not a disagreement about what resolves -- both reported 0 failed
+;;;; -- it is the line-based bug this header already describes: that script matched
+;;;; `[text](target)' within one line, so every link this project's ~90-column hard wrap
+;;;; split across a newline went uncounted. 95 is the correct count and 68 was an undercount,
+;;;; reproduced deliberately by re-running that script's line-based regex here.
+;;;;
+;;;; State no other number in this comment. An earlier draft of it claimed a pre-fix broken
+;;;; count of 38 against the 37 this script prints, and explained the difference by a
+;;;; "capability model" occurrence that was in fact already inside the 37 -- prose outrunning
+;;;; code, in the header of the check written to stop prose outrunning code. If a count
+;;;; belongs here, run the script and paste what it printed.
 ;;;;
 ;;;; WHAT THIS CANNOT CATCH
 ;;;;

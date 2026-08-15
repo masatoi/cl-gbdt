@@ -10,7 +10,7 @@ the first thing to get right:
 | System | What it carries |
 |---|---|
 | `cl-gbdt/lightgbm` | **Layer 1 alone.** Opens and closes the LightGBM shared library, and publishes LightGBM's own API: the fourteen finished operations `create-dataset`, `create-booster`, `update-one-iteration`, `predict`, `free-dataset`, `free-booster`, `save-model`, `load-model`, `model-to-string`, `feature-importance`, `evaluation`, `dataset-num-rows`, `dataset-num-features` and `create-dataset-from-file` -- a whole training run, the inference after it, persisting and reloading the model, reporting on it, and reading a dataset straight from a file -- plus `booster-eval`, `booster-eval-names` and the `lightgbm-backend` class, plus the shared basis a standalone caller needs: `open-backend`, `close-backend`, `backend-supports-p` and its siblings, `make-csr-matrix` and the `csr-matrix` readers, `handle-released-p`, `booster-training-set`, `booster-validation-sets`, and the whole condition hierarchy. **`cl-gbdt:train` and the other twelve portable generic functions are not part of it**, and loading it does not define the `cl-gbdt` package at all |
-| `cl-gbdt/lightgbm/unified` | That, plus `src/lightgbm/protocol.lisp` -- LightGBM's methods on all thirteen portable generics -- plus core `cl-gbdt` itself, which it depends on. This is what the quick start above loads, and what every example here that calls `cl-gbdt:train` loads |
+| `cl-gbdt/lightgbm/unified` | That, plus `src/lightgbm/protocol.lisp` -- LightGBM's methods on all thirteen portable generics -- plus core `cl-gbdt` itself, which it depends on. This is what the [quick start](../../README.markdown#quick-start) loads, and what every example in these guides that calls `cl-gbdt:train` loads |
 
 `cl-gbdt/xgboost` and `cl-gbdt/xgboost/unified` divide identically -- the same fourteen
 operations under the same names, different symbols in a different package -- and XGBoost's
@@ -18,7 +18,8 @@ Layer 1 API additionally publishes `slice-model`, `evaluate-one-iteration` and
 `booster-boosted-rounds`. Loading one backend never loads the other, and no backend system
 is a dependency of core `cl-gbdt`; load whichever matches the shared library you have.
 **Loading both backends' `/unified` systems is how one program drives both libraries through
-one portable API** -- that is what the two-backend examples further down do.
+one portable API** -- that is what the two-backend examples in [Backend
+differences](backend-differences.md) and [Training](training.md) do.
 
 A Layer 1 system alone opens the library, answers capability questions and closes it again,
 without the `cl-gbdt` package existing -- run in a fresh image, since anything that has

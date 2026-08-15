@@ -25,6 +25,15 @@ name, is what tells the two apart in the report.
 ```lisp
 (ql:quickload '(:cl-gbdt :cl-gbdt/lightgbm/unified :cl-gbdt/xgboost/unified) :silent t)
 
+(defparameter *eval-matrix*
+  (make-array '(8 2) :element-type 'double-float
+                      :initial-contents '((0.0d0 0.0d0) (0.0d0 1.0d0) (0.0d0 2.0d0)
+                                           (0.0d0 3.0d0) (5.0d0 0.0d0) (5.0d0 1.0d0)
+                                           (5.0d0 2.0d0) (5.0d0 3.0d0))))
+(defparameter *eval-label*
+  (make-array 8 :element-type 'single-float
+                 :initial-contents '(0.0 0.0 0.0 0.0 1.0 1.0 1.0 1.0)))
+
 (defun show-report (name backend dataset-parameters booster-parameters reference-p)
   (cl-gbdt:with-dataset (train-set (apply #'cl-gbdt:make-dataset backend *eval-matrix*
                                           :label *eval-label* dataset-parameters))
@@ -160,7 +169,7 @@ resolve against signals `unsupported-argument` -- see that section for the full 
 (defun train-early-stopped (backend dataset-parameters booster-parameters metric reference-p)
   "Return (values BOOSTER REPORT TRAIN-SET VALID-SET). The caller frees all four -- the two
 datasets after BOOSTER, since BOOSTER retains both strongly for its own lifetime, exactly
-the order `with-booster' nested inside `with-dataset' would enforce above."
+the order `with-booster' nested inside `with-dataset' would enforce."
   (let* ((train-set (apply #'cl-gbdt:make-dataset backend *es-matrix* :label *es-label*
                             dataset-parameters))
          (valid-set (apply #'cl-gbdt:make-dataset backend *es-matrix*

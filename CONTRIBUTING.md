@@ -80,14 +80,16 @@ whole workflow file, not a job:
   `.dylib` discovery path is exercised at all.
 - The same workflow's `version-matrix` job (task 4) reruns layer 2 -- only layer 2, since
   layer 1 needs no library and gains nothing from repetition -- against the endpoints of the
-  recorded compatible-version range: LightGBM 4.0.0, XGBoost 2.0.0, and XGBoost 1.7.0. The
-  1.7.0 leg is `continue-on-error: true` and expected to stay red -- it is the version-matrix
-  table's failing row, kept running rather than deleted once it stopped supporting the wider
-  claim (see [Backend
-  differences](docs/user-guide/backend-differences.md#where-the-two-backends-genuinely-differ)'s
-  table): a red job that keeps confirming a measured
-  incompatibility is worth more than a green matrix with the contradicting case quietly
-  removed, and `continue-on-error` keeps it from blocking merges while it does that. The
+  recorded compatible-version range: LightGBM 4.0.0 and XGBoost 2.0.0, each against the other
+  backend's pinned version. **XGBoost 1.7.0 is not one of the legs**, though it is the
+  version-matrix table's failing row (see [Backend
+  differences](docs/user-guide/backend-differences.md#where-the-two-backends-genuinely-differ)).
+  It was added as a deliberately-red `continue-on-error` leg and then removed, because it
+  never reached the test: the 1.7.0 wheel does not install on the runner, so the leg failed in
+  `Fetch the backend shared libraries` and demonstrated nothing, at roughly six minutes and
+  enough contention to get sibling jobs cancelled. The evidence for narrowing the range is the
+  local run recorded in `src/version.lisp`'s docstring, not a red CI job — see that job's own
+  header comment in `test.yml`, which is the record of the decision. The
   pinned versions (4.7.0/3.3.0) are already covered by the job above, so this job does
   not repeat them. **One platform only, Linux x86_64** -- the three-platform matrix above
   exists to catch platform-specific bugs (byte order, calling convention, `.dylib` vs `.so`
@@ -101,7 +103,9 @@ whole workflow file, not a job:
 - `.github/workflows/lint.yml` runs the static checks on one target, since nothing they
   look at varies by machine.
 
-The logic lives in scripts rather than in the YAML, so the same checks run locally:
+The logic lives in scripts rather than in the YAML, so the same checks run locally. **This is
+the whole set — every script under `tools/ci/`, in the order CI runs them.** Run the block
+before opening a pull request, and add a line here whenever `tools/ci/` gains a script:
 
 ```bash
 CL_GBDT_TEST_SYSTEM=cl-gbdt/tests ros run -- --non-interactive \
@@ -112,17 +116,36 @@ ros run -- --non-interactive --load tools/ci/lint.lisp
 ros run -- --non-interactive --load tools/ci/check-leaf-systems.lisp
 ros run -- --non-interactive --load tools/ci/check-layer-separation.lisp
 ros run -- --non-interactive --load tools/ci/check-float-traps.lisp
+ros run -- --non-interactive --load tools/ci/check-layer-1-guards.lisp
 ros run -- --non-interactive --load tools/ci/check-abi-blacklist.lisp
+ros run -- --non-interactive --load tools/ci/check-binding-coverage.lisp
+ros run -- --non-interactive --load tools/ci/check-api-reference.lisp
+ros run -- --non-interactive --load tools/ci/check-functional-coverage.lisp
+ros run -- --non-interactive --load tools/ci/check-doc-links.lisp
+ros run -- --non-interactive --load tools/ci/check-support-matrix.lisp
 ```
 
-The last three are source scans, not loads: `check-layer-separation.lisp` proves no Layer 1
-system reaches the unified API (see [Systems](README.markdown#systems)), `check-float-traps.lisp`
-proves
+Several of those are source scans rather than loads. `check-layer-separation.lisp` proves no
+Layer 1 system reaches the unified API (see [Systems](README.markdown#systems));
+`check-float-traps.lisp` proves
 every backend `defmethod` and every publicly exported backend `defun` wraps its body in
-`with-foreign-float-traps-masked`, and `check-abi-blacklist.lisp` proves no backend imports a
+`with-foreign-float-traps-masked`; and `check-abi-blacklist.lisp` proves no backend imports a
 C entry point `ffi-spec/ABI-BLACKLIST.md` rules out, that every import a backend does make is
 declared in its `*required-symbols*` or `*optional-symbols*`, and that every capability
 either list declares is registered in `*known-capabilities*`.
+
+**The last two are this branch's own additions, and they guard documentation rather than
+code.** `check-doc-links.lisp` resolves every relative Markdown link in the tracked docs --
+the file part against the linking file's own directory, and the `#fragment`, where there is
+one, against the target's headings under GitHub's slug rule -- because the README split
+turned a handful of cross-references into dozens and nothing in CI had ever read a Markdown
+file before. `check-support-matrix.lisp` proves the CI-verified column of the README's
+supported-environments table names exactly the versions CI actually runs -- the union of
+`ffi-spec/VERSIONS`'s pin and `.github/workflows/test.yml`'s `version-matrix` job, checked in
+both directions, so a version CI tests that the README omits fails as loudly as one the README
+claims and CI does not. The "Also measured" column is deliberately outside its reach, being
+hand measurement rather than anything a machine can re-derive. Both scripts fail the build
+rather than warning, on the same terms as every check above them.
 
 Two things the test scripts do that the plain commands above do not, and that CI needs:
 
