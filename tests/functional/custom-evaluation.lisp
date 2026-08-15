@@ -819,9 +819,10 @@ numbers and the one buffer `LGBM_BoosterGetPredict' holds serves both readers.
 FALSE on XGBoost because that backend rewrites no parameter: the `binary:logistic' configured
 in *METRIC-PARAMETERS* goes on transforming, so :EVALUATION's `:normal' read is a probability
 and :OBJECTIVE's `:raw' read is the margin behind it, in the same run and off the same trees.
-That is the divergence `cl-gbdt/src/xgboost/native''s `%booster-predictions' and the README's
-Custom objective section both already describe as the price of not rewriting PARAMETERS; this
-table is where it is finally executed rather than only stated.
+That is the divergence `cl-gbdt/src/xgboost/native''s `%booster-predictions' and
+docs/user-guide/custom-training.md's Custom objective section both already describe as the
+price of not rewriting PARAMETERS; this table is where it is finally executed rather than
+only stated.
 
 The FALSE arm is the weaker assertion of the two and is deliberately not tightened into a
 figure: what it says is that the two arrays are not the same numbers, which is exactly the
@@ -1108,9 +1109,10 @@ best score, the run would not have stopped where it does."
                            (ok (and values (= 3 (length values)))))))))))
           (cl-gbdt:close-backend backend))))))
 
-;;; The malformed RETURN, which is the refusal a caller is likeliest of all to meet and the
-;;; only one this file had left unasserted. `train''s generic docstring and the README both
-;;; promise that a NAME that is not a string, or a VALUE that is neither a real nor NIL,
+;;; The malformed RETURN, which is the refusal a caller is likeliest of all to meet
+;;; and the only one this file had left unasserted. `train''s generic docstring and
+;;; docs/user-guide/custom-training.md both promise that a NAME that is not a string, or a
+;;; VALUE that is neither a real nor NIL,
 ;;; signals `unsupported-argument' naming :EVALUATION -- and until this test existed, nothing
 ;;; anywhere returned a bad one THROUGH `train'. tests/custom-metric.lisp pins
 ;;; `custom-metric-entry' in isolation; what was missing was any evidence that `train' calls

@@ -228,7 +228,7 @@ Furthermore, to prevent a recurrence, add a mechanical check that verifies the c
 - Where a required symbol is absent, `open-backend` signals `missing-foreign-symbols`.
 - Where an optional symbol is absent, only the capability concerned is disabled, rather than the whole backend being made impossible to open.
 
-LightGBM has no runtime version API, so a version must not be inferred and guaranteed. This asymmetry is already stated explicitly in `src/version.lisp` and the README.
+LightGBM has no runtime version API, so a version must not be inferred and guaranteed. This asymmetry is already stated explicitly in `src/version.lisp` and `docs/user-guide/backend-differences.md`.
 
 The connection of the XGBoost version to the tested-version warning is **implemented** (`untested-backend-version`). The remaining task is the connection to capability decisions; design it together with §7.
 
@@ -296,7 +296,7 @@ Even where the placement of the unified API's methods is separated out, do not c
 2. Add an exhaustiveness check for the required symbols. `tools/ci/check-abi-blacklist.lisp` already "reads a backend's import-from clauses and maps them to C names through c-api.lisp's defcfun", so it is enough to point its cross-check at `*required-symbols*`. No new mechanism is needed.
 3. Adopt the check after confirming where it fails. This repository has twice shipped a check whose failure it had not seen.
 
-The document drift in the README's assertion counts is **already resolved** (243 / 106, matching the current state), so it shall be out of scope for this phase.
+The document drift in the README's assertion counts is **already resolved**, so it shall be out of scope for this phase. It has since been resolved permanently rather than by correction: the README states no assertion counts at all. `docs/FUNCTIONAL-COVERAGE.md` records where each published symbol stands against the functional suite, one row per symbol, and CI prints the live counts on every run -- so there is no longer a number in a document for the code to drift away from.
 
 This phase does not change the API structure.
 
@@ -368,7 +368,7 @@ So implementing it would mean introducing this project's first C→Lisp callback
 
 ### Why file input was not put on the unified API
 
-Both libraries' own file-reading entry points -- `LGBM_DatasetCreateFromFile` and `XGDMatrixCreateFromURI` -- were measured against the vendored LightGBM v4.7.0 and XGBoost v3.3.0 on Linux aarch64, over the same four-row fixture written as libsvm and as CSV. The transcripts are `docs/superpowers/specs/2026-08-13-file-input-measurements.md`; every figure below is one of them, not a restatement of an earlier design document. Six findings decided the shape.
+Both libraries' own file-reading entry points -- `LGBM_DatasetCreateFromFile` and `XGDMatrixCreateFromURI` -- were measured against the vendored LightGBM v4.7.0 and XGBoost v3.3.0 on Linux aarch64, over the same four-row fixture written as libsvm and as CSV. The transcripts were taken down in `docs/superpowers/specs/2026-08-13-file-input-measurements.md`, which -- like everything under that gitignored directory, and for the same reason §18 gives -- is not in the repository; every figure below is one of them, reproduced here rather than cited, so this section is the tracked record of them. `cl-gbdt/xgboost:create-dataset-from-file`'s docstring, in `docs/API-REFERENCE.md`, is the other. Six findings decided the shape.
 
 | | Finding |
 |---|---|

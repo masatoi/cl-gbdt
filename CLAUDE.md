@@ -129,31 +129,36 @@ are `train`'s own concepts and stay Layer 2.
 as its secondary value, and takes `:record-history` (default `t`) to turn the per-iteration
 recording that fills it off -- recording roughly doubles LightGBM's `train` time, and on
 XGBoost it also makes a `:valid-sets` entry the library cannot evaluate fail `train` outright
-(see `README.markdown`'s Training report section). `train` also takes `:early-stopping` to end
+(see `docs/user-guide/training.md`'s Training report section). `train` also takes
+`:early-stopping` to end
 a run once a watched metric stops improving, and `predict`, `save-model` and
 `model-to-string` accept `:num-iteration :best` to resolve against the iteration it
-picked -- see `README.markdown`'s Training report section for both. `make-dataset` and
+picked -- see `docs/user-guide/training.md`'s Training report section for both. `make-dataset`
+and
 `predict` also accept a `csr-matrix` (built by `make-csr-matrix`) wherever they accept a
 dense matrix, gated on the `:sparse-input` capability that both vendored backends answer
 true; XGBoost's sparse `predict` serves `:normal` and `:raw` only, and an absent CSR entry
-means `0.0` to LightGBM but *missing* to XGBoost -- see `README.markdown`'s Sparse input
-section. `make-dataset` and `predict` also take `:missing`, the value in the caller's
+means `0.0` to LightGBM but *missing* to XGBoost -- see `docs/user-guide/data-and-prediction.md`'s
+Sparse input section. `make-dataset` and `predict` also take `:missing`, the value in the caller's
 own data that means missing, gated on the `:missing-value` capability that only XGBoost
 provides -- LightGBM signals `capability-unavailable` for any non-`NIL` value, a `NaN`
 included, since its C API has no missing-value key at all, and XGBoost compares the
-sentinel against the data at single precision -- see `README.markdown`'s Missing values
-section. `make-dataset` also takes `:categorical-features`, the 0-based columns that hold
+sentinel against the data at single precision -- see `docs/user-guide/data-and-prediction.md`'s
+Missing values section. `make-dataset` also takes `:categorical-features`, the 0-based columns
+that hold
 categories rather than quantities, gated on the `:categorical-features` capability that
 both backends provide; `predict` takes no such argument, the trained trees already
 carrying the category sets they split on, and XGBoost's `tree_method` must be `hist` or
 `approx` since `exact` refuses categorical splits, at `train` rather than `make-dataset`
--- see `README.markdown`'s Categorical features section. `predict` also returns the shape
+-- see `docs/user-guide/data-and-prediction.md`'s Categorical features section. `predict` also
+returns the shape
 the backend states for the result it just wrote as a second value -- a list of integers in
 `array-dimensions` order, or `NIL` where the backend states none -- gated on the
 `:prediction-shape` capability that both backends provide; XGBoost reads its own
 `out_shape`/`out_dim` back from the library and states it verbatim, while LightGBM has no
 such call and derives what it can, stating `NIL` for `:leaf-index` -- see
-`README.markdown`'s Prediction shape section. `train` also takes `:objective`, a function
+`docs/user-guide/data-and-prediction.md`'s Prediction shape section. `train` also takes
+`:objective`, a function
 that turns the current raw scores into a gradient and a Hessian so a run boosts against the
 caller's own loss, gated on the `:custom-objective` capability that both backends provide;
 LightGBM flattens the array group-major and XGBoost row-major, the wrapper absorbing the
@@ -168,7 +173,8 @@ array of reals all train the same model, and a non-real element signals
 only caller code inside `train`'s loop, `train` re-runs its own dataset and backend checks
 the moment it returns, so an objective that frees the training set gets
 `released-handle-error` instead of a memory fault -- see
-`README.markdown`'s Custom objective section. `train` also takes `:evaluation`, a function
+`docs/user-guide/custom-training.md`'s Custom objective section. `train` also takes
+`:evaluation`, a function
 called once per dataset per iteration, after that iteration's update, with that dataset's
 `predict :kind :normal` scores and the dataset's index -- 0 the training set, N+1 the Nth
 `:valid-sets` entry, the numbering `:early-stopping`'s `:dataset` key already uses -- and that
@@ -194,13 +200,13 @@ when it varies into a library metric's name, which the first-iteration collision
 reach -- longer than it. A name REWRITTEN IN PLACE is refused on the same terms and could not
 have been caught by the pin alone: the name is `copy-seq`d into the entry and both call sites
 take it back out of that entry for the pin and the collision check, so the caller's own string
-object reaches neither them nor the history -- see `README.markdown`'s Custom evaluation
-section. Core
+object reaches neither them nor the history -- see `docs/user-guide/custom-training.md`'s
+Custom evaluation section. Core
 `cl-gbdt` still loads, and is still tested, without
 either `liblightgbm.so` or `libxgboost.so` present: a shared library is opened only by
 an explicit `open-backend` call, from whichever backend system you load on top of the
-core. See `README.markdown`'s Usage section for a worked example, its system table, and
-the design doc it points at.
+core. See `README.markdown`'s Quick start section for a worked example, and its Systems section for
+the system table.
 
 The system is `:class :package-inferred-system`: one file, one package, and ASDF derives
 each file's dependencies from its own `uiop:define-package` clauses rather than from a
@@ -229,13 +235,14 @@ worth stating explicitly rather than leaving them to be rediscovered:
   loads correctly only when something else happens to have loaded `pkg` first, and
   breaks the moment load order shifts.
 - **`src/*/c-api.lisp` are generated and must never be hand-edited.** They are produced
-  by `tools/regen.lisp` from vendored C headers (see README's "Regenerating the
+  by `tools/regen.lisp` from vendored C headers (see `CONTRIBUTING.md`'s "Regenerating the
   bindings"). This is already enforced by `tests/bindings.lisp`'s
   `committed-bindings-match-their-committed-spec` test, which re-emits from the
   committed c2ffi spec and compares the result to the committed file byte-for-byte.
   `docs/API-REFERENCE.md` is generated the same way, from the docstrings `cl-gbdt`,
   `cl-gbdt/lightgbm` and `cl-gbdt/xgboost` export, by `tools/gen-api-reference.lisp` (see
-  README's "Regenerating the API reference"); `tools/ci/check-api-reference.lisp` is its
+  `CONTRIBUTING.md`'s "Regenerating the API reference"); `tools/ci/check-api-reference.lisp`
+  is its
   byte-for-byte checker.
 
 ### The handle layer, and `with-pointer-ownership`
@@ -405,13 +412,16 @@ ros run -- --non-interactive --load tools/ci/check-abi-blacklist.lisp
 ros run -- --non-interactive --load tools/ci/check-binding-coverage.lisp
 ros run -- --non-interactive --load tools/ci/check-api-reference.lisp
 ros run -- --non-interactive --load tools/ci/check-functional-coverage.lisp
+ros run -- --non-interactive --load tools/ci/check-doc-links.lisp
+ros run -- --non-interactive --load tools/ci/check-support-matrix.lisp
 ```
 
-Nine of those have no MCP equivalent at all — leaf systems, float traps, layer-1 guards,
+Eleven of those have no MCP equivalent at all — leaf systems, float traps, layer-1 guards,
 layer separation, ABI blacklist, binding coverage, API reference, functional coverage,
-lint. Run the whole block before committing, and at the end of any task whose plan states
-numbers. **Add a line here whenever `tools/ci/` gains a script**: `check-layer-1-guards.lisp`
-arrived in PR #28 and was missing from this list until 2026-08-12.
+doc links, support matrix, lint. Run the whole block before committing, and at the end of
+any task whose plan states numbers. **Add a line here whenever `tools/ci/` gains a script**:
+`check-layer-1-guards.lisp` arrived in PR #28 and was missing from this list until
+2026-08-12.
 
 `sbcl` is not on `PATH` in this environment; every command above goes through
 `ros run -- --non-interactive ...`, not a bare `sbcl` invocation.
@@ -451,7 +461,8 @@ tools/ci/     The scripts CI actually runs: run-tests.lisp, lint.lisp,
               check-leaf-systems.lisp, check-layer-separation.lisp, check-float-traps.lisp,
               check-layer-1-guards.lisp, check-abi-blacklist.lisp,
               check-binding-coverage.lisp, check-api-reference.lisp,
-              check-functional-coverage.lisp
+              check-functional-coverage.lisp, check-doc-links.lisp,
+              check-support-matrix.lisp
 tools/        regen.lisp (regenerates src/*/c-api.lisp), gen-api-reference.lisp
               (regenerates docs/API-REFERENCE.md), and the shell scripts they and CI call
 ffi-spec/     Vendored C headers and the c2ffi specs generated from them;

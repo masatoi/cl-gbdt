@@ -752,8 +752,9 @@ both backends -- `predict' consults neither backend's retained training-set hand
 ;;; above sends either library the one thing a sparse format exists for: an entry that is
 ;;; not there.
 ;;;
-;;; The fixture below does. It is the same shape of demonstration README.markdown's "An
-;;; absent entry is not a zero" section carries, run as assertions.
+;;; The fixture below does. It is the same shape of demonstration
+;;; docs/user-guide/data-and-prediction.md's "An absent entry is not a zero" section carries,
+;;; run as assertions.
 
 (defparameter *omitted-entry-rows*
   '((0 0 0) (0 1 0) (0 0 2) (0 3 3)

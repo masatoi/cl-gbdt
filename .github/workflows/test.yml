@@ -113,8 +113,9 @@ jobs:
     # Task 4: turns src/version.lisp's recorded compatible-version range from a claim
     # inferred by comparing C headers (tools/check-upstream.lisp) into one actually
     # measured by running layer 2 against real, older/newer libraries -- see
-    # README.markdown's "Where the two backends genuinely differ" section for the
-    # results and src/version.lisp's *lightgbm-version-range*/*xgboost-version-range*
+    # docs/user-guide/backend-differences.md's "Where the two backends genuinely differ"
+    # section for the results and src/version.lisp's
+    # *lightgbm-version-range*/*xgboost-version-range*
     # docstrings for the full account.
     #
     # Endpoints of the recorded range only, not every release in between -- the pinned

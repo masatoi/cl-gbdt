@@ -136,8 +136,8 @@ LightGBM's C API has no version entry point at all (`grep -c Version
 src/lightgbm/c-api.lisp' reports 0), so `backend-version' is always NIL on this
 backend and there is nothing to compare it against. See
 `cl-gbdt/src/lightgbm/classes''s `initialize-backend' and `check-backend-version'
-below. Recorded here anyway, for the same documentation purpose the README's
-backend-differences table serves.
+below. Recorded here anyway, for the same documentation purpose
+`docs/user-guide/backend-differences.md''s table serves.
 
 VERIFIED-LOW moved from \"4.7.0\" to \"4.0.0\" once task 4 actually ran the functional
 suite against it -- confirmed clean, same 106 assertions as the pinned \"4.7.0\".
