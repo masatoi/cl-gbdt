@@ -26,6 +26,19 @@
 ;;;;;; the second is the one a reader would never notice on their own, since it looks like
 ;;;; extra assurance rather than a false claim.
 ;;;;
+;;;; READING `test.yml' WITHOUT A YAML PARSER. There is no YAML library in this project's
+;;;; dependencies, and adding one for two keys would not be proportionate, so MATRIX-VERSIONS
+;;;; reads `lightgbm_version:'/`xgboost_version:' with a regex instead. A first version of
+;;;; that regex matched only the single-quoted scalar (`lightgbm_version: '4.0.0''); YAML
+;;;; permits three ways to write the same value -- single-quoted, double-quoted
+;;;; (`"4.0.0"') and bare (`4.0.0') -- and `test.yml' happening to use the first one made the
+;;;; gap invisible rather than absent. The failure mode runs in both directions and the worse
+;;;; one is silent: a version written the other two ways would either go undetected by
+;;;; MATRIX-VERSIONS entirely -- so if the README also omitted it, this check would report
+;;;; agreement while CI actually tested an unverified version, exactly backwards from this
+;;;; check's purpose -- or, if the README did state it, fail this check for a reason that is
+;;;; not real. MATRIX-VERSIONS' regex now accepts all three forms; see its own docstring.
+;;;;
 ;;;; WHAT IS DELIBERATELY NOT CHECKED: the "Also measured" column. LightGBM 3.0.0 and XGBoost
 ;;;; 1.7.0 live there because they were measured BY HAND, once, and recorded rather than
 ;;;; re-run on every push -- XGBoost 1.7.0 in particular is a deliberately-red result (see
@@ -49,6 +62,10 @@
 ;;;;     permanently red (`continue-on-error') -- see that job's XGBoost 1.7.0 story for why
 ;;;;     that distinction matters and is NOT this script's job to draw; it reads the matrix
 ;;;;     declaratively, not by asking whether the leg's last run actually passed.
+;;;;   - A version written in YAML flow or block styles this regex does not anticipate (a
+;;;;     folded or literal scalar, for instance) -- MATRIX-VERSIONS matches the three plain
+;;;;     scalar forms `version-matrix' actually uses today, not the whole of YAML's scalar
+;;;;     grammar.
 
 (require :asdf)
 
@@ -101,10 +118,14 @@ or NIL if that file names no such backend."
 (defun matrix-versions (matrix-key)
   "Return every version +TEST-WORKFLOW-PATH+'s `version-matrix' job names for MATRIX-KEY
 (\"lightgbm_version\" or \"xgboost_version\"), duplicates included -- callers that want a set
-should deduplicate."
+should deduplicate. Matches all three YAML scalar forms a version can be written in -- single-
+quoted, double-quoted and bare -- since YAML permits all three and nothing here parses YAML;
+see this file's header for why matching only the single-quoted form was a real gap, not a
+theoretical one."
   (let ((versions '())
         (scanner (cl-ppcre:create-scanner
-                  (format nil "~A:\\s*'([\\d.]+)'" (cl-ppcre:quote-meta-chars matrix-key)))))
+                  (format nil "~A:\\s*[\"']?([\\d.]+)[\"']?"
+                          (cl-ppcre:quote-meta-chars matrix-key)))))
     (cl-ppcre:do-register-groups (version) (scanner (uiop:read-file-string +test-workflow-path+))
       (push version versions))
     (nreverse versions)))

@@ -9,11 +9,18 @@
 ;;;; cross-references and six new `docs/user-guide/*.md' guides started linking to each
 ;;;; other. This is the first check either kind of drift gets.
 ;;;;
-;;;; WHAT IS SCANNED. The set the split's own throwaway resolvers (Tasks 2 and 3 of the
-;;;; readme-split programme) already proved clean, not just the three files a narrower reading
-;;;; of the brief would suggest: `README.markdown', `CONTRIBUTING.md', `CLAUDE.md',
-;;;; `THIRD-PARTY-LICENSES.md', both `ffi-spec/*.md' files, the policy document, and all six
-;;;; `docs/user-guide/*.md' guides -- see +SCANNED-FILES+.
+;;;; WHAT IS SCANNED. Every tracked `*.md' and `*.markdown' file `git ls-files' finds,
+;;;; `docs/API-REFERENCE.md' excluded (see below) -- DISCOVER-SCANNED-FILES, not a
+;;;; hand-maintained list. A hand list was tried first and shipped wrong: it named the
+;;;; thirteen files a throwaway resolver from earlier in this split had already proved clean,
+;;;; and silently missed every other tracked Markdown file this repository carries --
+;;;; `docs/FUNCTIONAL-COVERAGE.md' and both `prompts/*.md' files among them, none of which any
+;;;; check had ever read either. `git ls-files' naturally excludes `docs/superpowers/', which
+;;;; is git-ignored, and anything not yet added to the index, so neither needs listing here.
+;;;; A file this check has never heard of is not a file it can check; discovery means a new
+;;;; tracked `.md' file is scanned the moment it is added, list or no list -- which is the
+;;;; property the fixed list this replaced never had, and exactly the kind of gap this whole
+;;;; task exists to close.
 ;;;;
 ;;;; WHAT COUNTS AS A LINK. Markdown inline links, `[text](target)', matched across the whole
 ;;;; file rather than line by line -- a line-based first attempt earlier in this same
@@ -66,7 +73,8 @@
 ;;;; current tree, since no two headings collide today, but a cheap correctness property to
 ;;;; hold anyway rather than silently mis-check the day one does.
 ;;;;
-;;;; EXCLUDED: `docs/API-REFERENCE.md'. It is GENERATED (see
+;;;; EXCLUDED FROM BOTH ROLES -- scanned-as-a-source and linked-to-with-a-fragment --:
+;;;; `docs/API-REFERENCE.md', via +EXCLUDED-FILES+. It is GENERATED (see
 ;;;; tools/ci/check-api-reference.lisp), and its 332 internal anchors are explicit `<a
 ;;;; id="...">' tags emitted by src/docgen/, not headings run through GitHub's slug rule at
 ;;;; all -- `## \`cl-gbdt:backend-supports-p\`' slugs to `cl-gbdtbackend-supports-p' under the
@@ -76,8 +84,11 @@
 ;;;; against a file no human hand-edits and the generator does not intend to satisfy this
 ;;;; rule. This checker still confirms the file itself EXISTS when something links to it
 ;;;; (`docs/user-guide/file-input.md' does, with no fragment); it only skips the fragment
-;;;; check when the resolved target is this file. Do not remove this exclusion without fixing
-;;;; the emitter to produce slug-following anchors instead -- see +EXCLUDED-FRAGMENT-TARGETS+.
+;;;; check when the resolved target is this file, and skips scanning it as a source of links
+;;;; of its own -- not because it might fail (it is internally consistent by construction,
+;;;; verified byte-for-byte elsewhere), but because policing a generated file is not this
+;;;; check's job. Do not remove this exclusion without fixing the emitter to produce
+;;;; slug-following anchors instead.
 ;;;;
 ;;;; A NOTE ON COUNTS, for whoever reads this next: THIS COMMENT NAMES NONE, deliberately.
 ;;;;
@@ -97,7 +108,11 @@
 ;;;; the second shows why: this number moves whenever any scanned document gains or loses a
 ;;;; link, which is most commits that touch documentation, so a count written here is stale
 ;;;; almost immediately. THE SCRIPT PRINTS ITS OWN COUNTS ON EVERY RUN. Read them there, and
-;;;; do not copy them back into this comment.
+;;;; do not copy them back into this comment. The fixed list this replaced is the same lesson
+;;;; from a different angle: a review found it covered fewer tracked files than it claimed to
+;;;; (docs/FUNCTIONAL-COVERAGE.md and both prompts/*.md files, all link-free when measured, so
+;;;; the fix changed no verdict); DISCOVER-SCANNED-FILES exists so that measurement cannot go
+;;;; stale the way a written-down list, or a written-down count, already had.
 ;;;;
 ;;;; WHAT THIS CANNOT CATCH
 ;;;;
@@ -105,35 +120,29 @@
 ;;;;     this only checks that a target exists and, if fragmented, that some heading derives
 ;;;;     to the fragment, never that the destination is the one the prose actually means.
 ;;;;   - Reference-style links (`[text][ref]' plus a `[ref]: target' definition elsewhere) --
-;;;;     none exist anywhere in +SCANNED-FILES+ today (checked by hand before writing this),
-;;;;     so support was not built; a reference-style link added later passes through
+;;;;     none exist anywhere in the discovered set today (checked by hand before writing
+;;;;     this), so support was not built; a reference-style link added later passes through
 ;;;;     +LINK-SCANNER+ unmatched rather than being checked or flagged.
 ;;;;   - A target inside a fenced code block that was meant to be a real, checked link --
 ;;;;     BLANK-FENCED-CODE-BLOCKS treats the whole block as inert by design.
+;;;;   - A tracked Markdown file outside `*.md'/`*.markdown' (there is none today) or a file
+;;;;     not yet `git add'-ed -- DISCOVER-SCANNED-FILES only sees what `git ls-files' sees.
 
 (require :asdf)
 
 (ql:quickload '("cl-ppcre") :silent t)
 
-(defparameter +scanned-files+
-  '("README.markdown" "CONTRIBUTING.md" "CLAUDE.md" "THIRD-PARTY-LICENSES.md"
-    "ffi-spec/ABI-BLACKLIST.md" "ffi-spec/BINDING-COVERAGE.md"
-    "docs/cl-gbdt-layered-api-implementation-policy.md"
-    "docs/user-guide/backend-differences.md" "docs/user-guide/backends.md"
-    "docs/user-guide/custom-training.md" "docs/user-guide/data-and-prediction.md"
-    "docs/user-guide/file-input.md" "docs/user-guide/training.md")
-  "Repository-root-relative paths this check scans FOR links. Every one of these is a source
-of links, not just a possible target -- a target that is not in this list (docs/FUNCTIONAL-
-COVERAGE.md, LICENSE, docs/API-REFERENCE.md, ...) is still resolved and, unless excluded
-below, anchor-checked; it is simply never scanned for outgoing links of its own. See this
-file's header for why this set is broader than a first reading of the brief suggests.")
+(defparameter +scanned-file-globs+
+  '("*.md" "*.markdown")
+  "Glob patterns passed to `git ls-files' to discover which tracked files this check scans
+FOR links. See DISCOVER-SCANNED-FILES and this file's header.")
 
-(defparameter +excluded-fragment-targets+
+(defparameter +excluded-files+
   '("docs/API-REFERENCE.md")
-  "Resolved targets (repository-root-relative, as RESOLVE-TARGET-FILE produces) whose
-fragment is never checked against SLUGIFY, even though the file's own existence still is.
-See this file's header for why docs/API-REFERENCE.md is the one entry: its anchors are
-generated <a id=...> tags, not slugged headings.")
+  "Files DISCOVER-SCANNED-FILES removes from the discovered set, and whose fragment
+CHECK-FILE-LINKS never checks against SLUGIFY even when a still-scanned file links INTO
+them. See this file's header for why docs/API-REFERENCE.md is the one entry: it is
+generated, and its anchors are explicit <a id=...> tags, not slugged headings.")
 
 (defparameter +external-prefixes+
   '("http:" "https:" "mailto:")
@@ -155,7 +164,7 @@ with trailing whitespace and closing hashes stripped.")
   (cl-ppcre:create-scanner "^ {0,3}```")
   "Matches a fenced-code-block delimiter line, up to three leading spaces allowed per
 CommonMark. Toggled on each match by BLANK-FENCED-CODE-BLOCKS; the specific fence length
-(three or more backticks) is not distinguished, since nothing in +SCANNED-FILES+ nests one
+(three or more backticks) is not distinguished, since nothing in the discovered set nests one
 fence inside another of a different length.")
 
 (defun die (format-control &rest arguments)
@@ -165,6 +174,17 @@ Every offending link is already printed as its own FAIL line by the caller befor
 so this call's own line is always a summary, never the only line a failure prints."
   (format *error-output* "~&FAIL ~?~%" format-control arguments)
   (uiop:quit 1))
+
+(defun discover-scanned-files ()
+  "Return the list of every tracked file `git ls-files' finds under +SCANNED-FILE-GLOBS+, in
+the order `git ls-files' returns them, +EXCLUDED-FILES+ removed. Discovery, not a
+hand-maintained list, is deliberate -- see this file's header. `git ls-files' only sees
+tracked files, so anything git-ignored (docs/superpowers/ among them) or not yet `git add'-ed
+is invisible here the same way it is invisible to a commit."
+  (let ((output (uiop:run-program (list* "git" "ls-files" +scanned-file-globs+)
+                                   :output '(:string :stripped t))))
+    (remove-if (lambda (file) (member file +excluded-files+ :test #'string=))
+               (uiop:split-string output :separator '(#\Newline)))))
 
 (defun blank-fenced-code-blocks (content)
   "Return CONTENT with every fenced code block's interior, and its opening and closing fence
@@ -218,7 +238,7 @@ must already be known to exist -- callers check TARGET-EXISTS-P first."
 (defun strip-whitespace (string)
   "Return STRING with every space, tab, newline and carriage return removed -- normalizes a
 link target that was itself hard-wrapped across a newline back into one contiguous path or
-fragment. None of +SCANNED-FILES+ uses a link title (`(target \"title\")'), the one
+fragment. Nothing in the discovered set uses a link title (`(target \"title\")'), the one
 construct where an internal space would be meaningful, so this is safe here."
   (remove-if (lambda (ch) (member ch '(#\Space #\Tab #\Newline #\Return))) string))
 
@@ -239,7 +259,7 @@ string if PATH-STRING has no `/'."
 (defun normalize-relative-path (path-string)
   "Collapse `.' and `..' components out of PATH-STRING, a POSIX-style relative path, without
 touching the filesystem. A leading `..' with nothing left to pop, or a leading `/', is not
-expected in +SCANNED-FILES+'s own links and is not specially handled."
+expected in the discovered set's own links and is not specially handled."
   (let ((components '()))
     (dolist (part (uiop:split-string path-string :separator '(#\/)))
       (cond ((or (string= part "") (string= part ".")) nil)
@@ -250,7 +270,7 @@ expected in +SCANNED-FILES+'s own links and is not specially handled."
 (defun resolve-target-file (source-file file-part)
   "Resolve FILE-PART -- a link target's portion before any `#fragment', possibly empty for a
 same-file link -- against SOURCE-FILE's own directory. See this file's header for why this,
-not repository-root resolution, is the convention every link in +SCANNED-FILES+ actually
+not repository-root resolution, is the convention every link this check scans actually
 needs."
   (if (string= file-part "")
       source-file
@@ -296,7 +316,7 @@ found, and FAILURES a list of human-readable failure descriptions, in the order 
                               source-file line raw-text raw-target resolved)
                      failures))
               ((and (plusp (length fragment))
-                    (not (member resolved +excluded-fragment-targets+ :test #'string=))
+                    (not (member resolved +excluded-files+ :test #'string=))
                     (not (member fragment (file-heading-slugs resolved) :test #'string=)))
                (push (format nil "~A:~D: [~A](~A) -> #~A does not derive from any heading ~
                                   in ~A"
@@ -308,7 +328,7 @@ found, and FAILURES a list of human-readable failure descriptions, in the order 
 
 (let ((total-checked 0)
       (all-failures '()))
-  (dolist (source-file +scanned-files+)
+  (dolist (source-file (discover-scanned-files))
     (multiple-value-bind (checked failures) (check-file-links source-file)
       (incf total-checked checked)
       (setf all-failures (append all-failures failures))))
