@@ -6,7 +6,8 @@ Where LightGBM and XGBoost genuinely differ, for a caller moving code between th
 
 A caller moving code from one backend to the other needs this in one place -- checked
 directly against both backends' source, not only the differences the design doc calls
-out first:
+out first. Every difference is stated in full here; where one is also measured at length
+elsewhere, the row links on to that guide:
 
 | | LightGBM | XGBoost |
 |---|---|---|

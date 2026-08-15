@@ -81,7 +81,11 @@ whole workflow file, not a job:
 - The same workflow's `version-matrix` job (task 4) reruns layer 2 -- only layer 2, since
   layer 1 needs no library and gains nothing from repetition -- against the endpoints of the
   recorded compatible-version range: LightGBM 4.0.0 and XGBoost 2.0.0, each against the other
-  backend's pinned version. **XGBoost 1.7.0 is not one of the legs**, though it is the
+  backend's pinned version. **It does not run on pull requests** -- each leg costs six to
+  nine minutes, and adding two of them was enough, on a busy runner pool, to leave every job
+  queued and get sibling jobs cancelled; what it checks changes when upstream releases, not
+  when we commit, so it runs on push to master and weekly instead. Expect it after a merge,
+  not on your PR. **XGBoost 1.7.0 is not one of the legs**, though it is the
   version-matrix table's failing row (see [Backend
   differences](docs/user-guide/backend-differences.md#where-the-two-backends-genuinely-differ)).
   It was added as a deliberately-red `continue-on-error` leg and then removed, because it
@@ -115,8 +119,8 @@ CL_GBDT_TEST_SYSTEM=cl-gbdt/tests/functional ros run -- --non-interactive \
 ros run -- --non-interactive --load tools/ci/lint.lisp
 ros run -- --non-interactive --load tools/ci/check-leaf-systems.lisp
 ros run -- --non-interactive --load tools/ci/check-layer-separation.lisp
-ros run -- --non-interactive --load tools/ci/check-float-traps.lisp
 ros run -- --non-interactive --load tools/ci/check-layer-1-guards.lisp
+ros run -- --non-interactive --load tools/ci/check-float-traps.lisp
 ros run -- --non-interactive --load tools/ci/check-abi-blacklist.lisp
 ros run -- --non-interactive --load tools/ci/check-binding-coverage.lisp
 ros run -- --non-interactive --load tools/ci/check-api-reference.lisp

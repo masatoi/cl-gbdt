@@ -79,20 +79,25 @@
 ;;;; check when the resolved target is this file. Do not remove this exclusion without fixing
 ;;;; the emitter to produce slug-following anchors instead -- see +EXCLUDED-FRAGMENT-TARGETS+.
 ;;;;
-;;;; A NOTE ON THE COUNT THIS CHECK REPORTS, for whoever reads this next. An earlier,
-;;;; uncommitted, throwaway resolver run by hand during this same split (Tasks 2 and 3 of the
-;;;; readme-split programme) reported 68 links checked on the same tree where this script
-;;;; reports 95. The gap is not a disagreement about what resolves -- both reported 0 failed
-;;;; -- it is the line-based bug this header already describes: that script matched
-;;;; `[text](target)' within one line, so every link this project's ~90-column hard wrap
-;;;; split across a newline went uncounted. 95 is the correct count and 68 was an undercount,
-;;;; reproduced deliberately by re-running that script's line-based regex here.
+;;;; A NOTE ON COUNTS, for whoever reads this next: THIS COMMENT NAMES NONE, deliberately.
 ;;;;
-;;;; State no other number in this comment. An earlier draft of it claimed a pre-fix broken
-;;;; count of 38 against the 37 this script prints, and explained the difference by a
-;;;; "capability model" occurrence that was in fact already inside the 37 -- prose outrunning
-;;;; code, in the header of the check written to stop prose outrunning code. If a count
-;;;; belongs here, run the script and paste what it printed.
+;;;; An earlier, uncommitted, throwaway resolver run by hand during this same split (Tasks 2
+;;;; and 3 of the readme-split programme) reported a materially LOWER "links checked" figure
+;;;; than this script does on the same tree. That gap was never a disagreement about what
+;;;; resolves -- both reported zero failures -- but the line-based bug this header describes
+;;;; above: that script matched `[text](target)' within a single line, so every link this
+;;;; project's ~90-column hard wrap split across a newline went uncounted. This script's
+;;;; figure is the correct one; the throwaway script's was an undercount.
+;;;;
+;;;; Two successive drafts of this comment stated a count and were wrong: the first claimed a
+;;;; pre-fix broken total that disagreed with what the script printed, explaining the gap by a
+;;;; duplicate already inside it; the second fixed that by measurement and then named a
+;;;; "links checked" total that the very commit correcting it changed. Both were prose
+;;;; outrunning code, in the header of the check written to stop prose outrunning code -- and
+;;;; the second shows why: this number moves whenever any scanned document gains or loses a
+;;;; link, which is most commits that touch documentation, so a count written here is stale
+;;;; almost immediately. THE SCRIPT PRINTS ITS OWN COUNTS ON EVERY RUN. Read them there, and
+;;;; do not copy them back into this comment.
 ;;;;
 ;;;; WHAT THIS CANNOT CATCH
 ;;;;

@@ -212,15 +212,16 @@ ever reaches the unified protocol, the training files, or the bare `cl-gbdt` sys
 ## Features
 
 Everything below is on the unified API and works on both backends unless the table says
-otherwise. Most are gated on a *capability*: `backend-supports-p` answers whether the loaded
-shared library really provides it, and the operation re-checks it rather than trusting a
-caller who asked first (see [Asking a backend what it can
+otherwise. **The Capability column names the keyword `backend-supports-p` answers for that
+feature, or `--` where the feature has no registered capability at all** -- naming one does
+not by itself mean an operation refuses on it, only that the question can be asked and
+answered about the shared library that was actually loaded (see [Asking a backend what it can
 do](docs/user-guide/backends.md#asking-a-backend-what-it-can-do)). The guide column is where
-each one is explained, with the worked example and the measurement behind it.
+each feature is explained, with the worked example and the measurement behind it.
 
 | Feature | Capability | LightGBM | XGBoost | Guide |
 |---|---|---|---|---|
-| Training report, `:early-stopping` | -- | yes | yes | [Training report](docs/user-guide/training.md#training-report), [Stopping early](docs/user-guide/training.md#stopping-early-early-stopping) |
+| Training report, `:early-stopping` | `:evaluation-history`, `:early-stopping` | yes | yes | [Training report](docs/user-guide/training.md#training-report), [Stopping early](docs/user-guide/training.md#stopping-early-early-stopping) |
 | `:num-iteration :best` | -- | `predict`, `save-model`, `model-to-string` | `predict` only | [`:num-iteration :best`](docs/user-guide/training.md#num-iteration-best) |
 | Sparse input (`csr-matrix`) | `:sparse-input` | yes, all four `predict` kinds | yes, `:normal` and `:raw` only | [Sparse input](docs/user-guide/data-and-prediction.md#sparse-input-csr-matrices) |
 | `:missing` sentinel | `:missing-value` | **no** -- no such key in its C API | yes | [Missing values](docs/user-guide/data-and-prediction.md#missing-values) |
@@ -295,9 +296,14 @@ themselves -- `LICENSE` and `LICENSES/` -- are named under [License](#license) b
 
 **Every code block in the six guides below, and the quick start above, was actually run to
 produce the output pasted beneath it** -- SBCL via `ros run`, with `./tools/fetch-libs.sh`'s
-vendored libraries present. An `Output:` block is a transcript, not an illustration. Each
-block is self-contained: it loads the systems it needs and defines the fixtures it uses, so
-it can be pasted into a fresh REPL as it stands.
+vendored libraries present. An `Output:` block is a transcript, not an illustration.
+
+Outside [Data and prediction](docs/user-guide/data-and-prediction.md), each of those blocks
+also **stands alone**: it loads the systems it needs and defines its own fixtures, so it can
+be pasted into a fresh REPL as it stands -- measured, by extracting all twenty and running
+each in a fresh image. Data and prediction's blocks instead build on each other: nine of its
+fourteen reuse a matrix, a label or a helper defined in an earlier block of that same guide,
+so read its blocks in order, or evaluate the earlier ones first.
 
 ### Using the library
 
