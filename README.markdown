@@ -17,11 +17,14 @@ The layering, and the reasoning behind every decision in it, are recorded in
 
 ## Status
 
-**Pre-release, version `0.0.1`, and no tags have been cut.** Install it from a git checkout
-(see [Installation](#installation)); there is no Quicklisp release to depend on yet. Nothing
-here is versioned for compatibility yet either -- what is published is a compatibility
-obligation from the moment it is published, per policy section 14, but the version number
-does not yet record that.
+**Version `0.1.0`, the first tagged release.** Install it from a git checkout (see
+[Installation](#installation)); there is no Quicklisp release to depend on yet.
+
+`0.x` means the published surface can still change in a minor bump. What is published is a
+compatibility obligation from the moment it is published, per policy section 14 -- that has
+been true since before there was a version number and has not changed -- but until `1.0.0` the
+version number does not promise that a minor release keeps it. A breaking change will say so in
+its release notes.
 
 **Functional.** Both backends implement all 13 generic functions of the unified API --
 `make-dataset`, `dataset-num-rows`, `dataset-num-features`, `train`, `update-one-iteration`,

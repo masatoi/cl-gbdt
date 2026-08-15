@@ -1,5 +1,5 @@
 (defsystem "cl-gbdt"
-  :version "0.0.1"
+  :version "0.1.0"
   :author "Satoshi Imai <satoshi.imai@gmail.com>"
   :license "MIT"
   :description "Common Lisp wrapper exposing LightGBM and XGBoost through one API"
