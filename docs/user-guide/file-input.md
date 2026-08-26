@@ -99,9 +99,9 @@ parsing as LibSVM"`, a limitation of that library's own parser rather than of ei
 **XGBoost's text-file path is deprecated upstream.** Every text-file attempt, including one this
 wrapper's own gate refuses, prints once per process, to stderr: `WARNING: .../data.cc:963: Text
 file input has been deprecated since 3.1`. It is published anyway, because
-`ffi-spec/BINDING-COVERAGE.md` already named `XGDMatrixCreateFromURI` as `XGDMatrixCreateFromFile`'s
-own replacement -- wrapping it is what makes that recommendation reachable rather than a dead
-pointer, not a bet against the deprecation.
+`ffi-spec/ABI-BLACKLIST.md` names `XGDMatrixCreateFromURI` as `XGDMatrixCreateFromFile`'s own
+replacement, in its moot table -- wrapping it is what makes that recommendation reachable
+rather than a dead pointer, not a bet against the deprecation.
 
 Neither function takes a `LABEL`, `WEIGHT`, `GROUP` or `FEATURE-NAMES` argument at all: the file
 already carries whatever `create-dataset`'s caller would otherwise pass separately, and by the

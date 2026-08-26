@@ -182,7 +182,7 @@ including the plain classification and multiclass round trips, feature-importanc
 save/load, and every close-backend guard) passed unchanged at 1.7.0 -- this is a real
 function returning different numbers, not a symptom of a missing symbol or a crash, so
 `probe-foreign-symbols' and `tools/check-upstream.lisp''s header comparison could never
-have caught it. `xgboost==2.0.0' was tried next and passed everything the pinned
+have caught it. `xgboost==2.0.0' was tried next and passed everything the then-pinned
 \"3.3.0\" does, so INFERRED-LOW moved up to meet VERIFIED-LOW at \"2.0.0\" rather than
 leave the disproven \"1.7.0\" claim in place under a wider, ABI-only label. Nothing
 between 1.7.0 and 2.0.0 was tested, so this range makes no claim about it either.
@@ -197,8 +197,9 @@ local run, that backed the \"3.3.0\" point it replaces, whose own VERIFIED-EVIDE
 also cites task 4's local version matrix, so this move does not weaken the standard.
 Going forward, CI's `test' job (`test.yml') is configured to run that same suite
 against 3.4.1 on all three of its platforms -- linux-x86_64, linux-aarch64, and
-macos-aarch64 -- on every push, extending this evidence beyond the one platform
-measured here. 3.4.0 itself was not tested, the same way the gap between 1.7.0 and
+macos-aarch64 -- on pushes to master and on every pull request, extending this
+evidence beyond the one platform measured here. 3.4.0 itself was not tested, the
+same way the gap between 1.7.0 and
 2.0.0 above was not: this range's endpoints are what was actually measured, not a
 claim about every version between them.")
 

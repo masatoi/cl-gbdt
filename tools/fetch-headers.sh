@@ -11,7 +11,7 @@
 set -euo pipefail
 
 LIGHTGBM_TAG="${LIGHTGBM_TAG:-v4.7.0}"
-XGBOOST_TAG="${XGBOOST_TAG:-v3.3.0}"
+XGBOOST_TAG="${XGBOOST_TAG:-v3.4.1}"
 
 # Headers reachable from LightGBM/c_api.h. Verified with:
 #   grep -E '^#include <LightGBM/' c_api.h arrow.h export.h

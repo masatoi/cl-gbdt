@@ -288,8 +288,10 @@ ros run -- --non-interactive --load tools/regen.lisp
 ```
 
 1. `tools/fetch-headers.sh` downloads the headers reachable from each backend's
-   `c_api.h`, at the tags pinned in `ffi-spec/VERSIONS`, into `ffi-spec/`. No
-   patching or hand-editing.
+   `c_api.h`, at the tags its own `LIGHTGBM_TAG`/`XGBOOST_TAG` defaults name
+   (overridable from the environment), into `ffi-spec/`, then writes
+   `ffi-spec/VERSIONS` to match what it fetched. Those defaults are the pin's real
+   source, not a value read back from that file. No patching or hand-editing.
 2. The `docker build` compiles c2ffi, pinned to an exact commit on its LLVM-18
    branch, into the `cl-gbdt-c2ffi:llvm-18` image. `tools/c2ffi.sh` invokes that
    image; `tools/regen.lisp` invokes `tools/c2ffi.sh`.
