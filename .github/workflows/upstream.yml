@@ -16,8 +16,8 @@ name: upstream
 #   pin-is-current  drift  try      meaning
 #   ----------------------------------------------------------------------------
 #   pass            pass   skipped  the pin is current; nothing to do
-#   FAIL            pass   pass     a new release exists and the bump is safe
-#   FAIL            pass   FAIL     a new release exists and it breaks behaviour
+#   FAIL            pass   pass     a new release exists and the suite passes as-is
+#   FAIL            pass   FAIL     a new release exists and the suite does not pass as-is
 #   FAIL            FAIL   skipped  a new release changed a declaration cl-gbdt imports
 #   discover FAIL                   the detector could not look -- never "no drift found"
 #
@@ -25,6 +25,17 @@ name: upstream
 # annotation-only job and over auto-filed issues; CONTRIBUTING.md's "Continuous
 # integration" section carries the response procedure, without which the choice would just
 # be a build nobody knows what to do with.
+#
+# On XGBoost, one test fails on EVERY new release by construction:
+# `xgboost-api-open-backend-against-vendored-library-warns-nothing' asserts that
+# `open-backend' emits no `untested-backend-version' warning, and `src/version.lisp''s
+# `*xgboost-version-range*' names the currently pinned version as its `inferred-high'. A
+# release the pin has not caught up to is, by definition, past that high end, so
+# `open-backend' correctly warns and this one test fails -- not because the release
+# misbehaves, but because the recorded range has not been widened yet, which is the bump's
+# job, not `try''s. Any OTHER failing test means the new version really does behave
+# differently. LightGBM's C API exposes no version to check against, so nothing here is
+# checked for it and its legs never hit this path.
 
 on:
   push:
