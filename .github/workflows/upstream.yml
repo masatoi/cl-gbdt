@@ -1,0 +1,222 @@
+name: upstream
+
+# Detects that LightGBM or XGBoost has released, and answers -- in the same run -- whether
+# cl-gbdt could take the new version.
+#
+# Its own workflow file rather than a job inside test.yml, for the reason the headers of
+# both existing workflow files already give: a GitHub Actions badge covers a whole workflow
+# file, not a job. These jobs inside test.yml would turn the `tests' badge red because
+# upstream released, conflating "this library is broken" with "this library is one version
+# behind". For the same reason no badge for THIS workflow is added to the README: a red
+# badge named `upstream' reads, to a visitor, as a broken library. The signal is for the
+# maintainer and belongs in the Actions tab.
+#
+# RED MEANS ONE OF FOUR THINGS, and which one is readable from which job failed:
+#
+#   pin-is-current  drift  try      meaning
+#   ----------------------------------------------------------------------------
+#   pass            pass   skipped  the pin is current; nothing to do
+#   FAIL            pass   pass     a new release exists and the bump is safe
+#   FAIL            pass   FAIL     a new release exists and it breaks behaviour
+#   FAIL            FAIL   skipped  a new release changed a declaration cl-gbdt imports
+#   discover FAIL                   the detector could not look -- never "no drift found"
+#
+# The only way to silence a behind pin is to bump it. That is a deliberate choice over an
+# annotation-only job and over auto-filed issues; CONTRIBUTING.md's "Continuous
+# integration" section carries the response procedure, without which the choice would just
+# be a build nobody knows what to do with.
+
+on:
+  push:
+    # ci/upstream-detection is TEMPORARY -- it exists so the four jobs below can be run for
+    # real on the branch that introduces them, and is removed before merge. GitHub offers a
+    # workflow_dispatch trigger only for a workflow already on the default branch, and this
+    # workflow does not run on pull requests, so a push from the branch is the only way to
+    # exercise it beforehand.
+    branches: [master, ci/upstream-detection]
+  # The same weekly slot test.yml's version-matrix uses, so the two upstream-facing jobs
+  # wake together rather than at two times someone has to remember separately.
+  schedule:
+    - cron: '0 6 * * 1'
+  workflow_dispatch:
+
+# Deliberately NOT on pull requests. Nothing here is about the diff under review, and the
+# `try' job below costs six to nine minutes -- test.yml's version-matrix header records
+# what adding legs of that size to the pull-request path did to the runner pool.
+#
+# Unlike version-matrix, this workflow DOES run on push to master, and that departs from
+# that job's stated cadence argument ("what this job checks changes when upstream releases,
+# not when we commit"). It does not apply here: pin-is-current's subject is
+# ffi-spec/VERSIONS, which changes when we commit. A bump has to be able to turn this
+# workflow green, and push is the event that shows it.
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+# Neither existing workflow declares one; this is a deliberate inconsistency in the safe
+# direction. These jobs read the checkout and the public network and nothing else, and a
+# workflow that states what it needs cannot silently gain more when a repository or
+# organisation default changes.
+permissions:
+  contents: read
+
+jobs:
+  discover:
+    # Fails ONLY when it could not look. A behind pin is reported, not raised: raising here
+    # would skip `try', and "is the bump safe?" is the question this workflow exists to
+    # answer in the same run as "are we behind?".
+    name: discover
+    runs-on: ubuntu-latest
+    outputs:
+      lightgbm_latest: ${{ steps.latest.outputs.lightgbm_latest }}
+      xgboost_latest: ${{ steps.latest.outputs.xgboost_latest }}
+      lightgbm_pinned: ${{ steps.latest.outputs.lightgbm_pinned }}
+      xgboost_pinned: ${{ steps.latest.outputs.xgboost_pinned }}
+      behind: ${{ steps.latest.outputs.behind }}
+      matrix: ${{ steps.latest.outputs.matrix }}
+
+    steps:
+      - uses: actions/checkout@v4
+
+      # GitHub runs `run:' under `bash -e -o pipefail', so a curl failure inside the
+      # script's pipelines reaches this step rather than being swallowed by tee.
+      - name: What PyPI has, and what ffi-spec/VERSIONS pins
+        id: latest
+        run: ./tools/latest-upstream.sh | tee -a "$GITHUB_OUTPUT"
+
+      - name: Summary
+        env:
+          LIGHTGBM_PINNED: ${{ steps.latest.outputs.lightgbm_pinned }}
+          LIGHTGBM_LATEST: ${{ steps.latest.outputs.lightgbm_latest }}
+          XGBOOST_PINNED: ${{ steps.latest.outputs.xgboost_pinned }}
+          XGBOOST_LATEST: ${{ steps.latest.outputs.xgboost_latest }}
+        run: |
+          {
+            echo "| Backend | pinned | latest on PyPI |"
+            echo "|---|---|---|"
+            echo "| LightGBM | $LIGHTGBM_PINNED | $LIGHTGBM_LATEST |"
+            echo "| XGBoost | $XGBOOST_PINNED | $XGBOOST_LATEST |"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+  pin-is-current:
+    # The whole of the "red means the pin is behind" decision, kept in a job of its own so
+    # that a reader can tell "we are behind" from "something broke" at a glance. No
+    # Roswell, no wheels, no network.
+    name: pin-is-current
+    needs: discover
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: ffi-spec/VERSIONS pins the latest release of both backends
+        # Values are passed through env rather than interpolated into the script body, so
+        # nothing from the network can be read as shell.
+        env:
+          BEHIND: ${{ needs.discover.outputs.behind }}
+          LIGHTGBM_PINNED: ${{ needs.discover.outputs.lightgbm_pinned }}
+          LIGHTGBM_LATEST: ${{ needs.discover.outputs.lightgbm_latest }}
+          XGBOOST_PINNED: ${{ needs.discover.outputs.xgboost_pinned }}
+          XGBOOST_LATEST: ${{ needs.discover.outputs.xgboost_latest }}
+        run: |
+          if [ "$BEHIND" != true ]; then
+            echo "ffi-spec/VERSIONS pins the latest release of both backends."
+            exit 0
+          fi
+          echo "ffi-spec/VERSIONS is behind upstream:"
+          [ "$LIGHTGBM_PINNED" = "$LIGHTGBM_LATEST" ] \
+            || echo "  lightgbm  $LIGHTGBM_PINNED -> $LIGHTGBM_LATEST"
+          [ "$XGBOOST_PINNED" = "$XGBOOST_LATEST" ] \
+            || echo "  xgboost   $XGBOOST_PINNED -> $XGBOOST_LATEST"
+          echo
+          echo "This job stays red until the pin is bumped. Read the drift and try jobs"
+          echo "first -- together they say whether the bump is safe. The procedure is in"
+          echo "CONTRIBUTING.md, under 'When the upstream workflow is red'."
+          exit 1
+
+  drift:
+    # Checks the LATEST tag, not the pinned one -- that is this job's whole reason to
+    # exist. Passing the latest for BOTH backends unconditionally, rather than only for the
+    # one that is behind, costs nothing and gives the current backend a useful check for
+    # free: its vendored header against the tag it claims to have come from.
+    #
+    # tools/check-upstream.lisp reads sources rather than loading cl-gbdt, so this job
+    # needs neither the local-projects symlink nor a checkout ASDF can see. `ros install
+    # asdf' is here anyway, matching every other job in this repository: it costs about
+    # twenty seconds against a failure mode that would otherwise appear first on a
+    # scheduled run nobody is watching.
+    name: drift
+    needs: discover
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Roswell
+        run: |
+          curl -fsSL https://raw.githubusercontent.com/roswell/roswell/master/scripts/install-for-ci.sh | sh
+          echo "$HOME/.roswell/bin" >> "$GITHUB_PATH"
+
+      - name: Install a current ASDF
+        run: ros install asdf
+
+      - name: No imported declaration changed at the latest tag
+        env:
+          CHECK_UPSTREAM_LIGHTGBM_TAG: v${{ needs.discover.outputs.lightgbm_latest }}
+          CHECK_UPSTREAM_XGBOOST_TAG: v${{ needs.discover.outputs.xgboost_latest }}
+        run: ros run -- --non-interactive --load tools/check-upstream.lisp
+
+  try:
+    # `needs: drift' means a red drift skips this automatically, which is right: when a
+    # declaration cl-gbdt imports has changed, the answer is already in hand and nine
+    # minutes of functional suite adds nothing to it.
+    #
+    # The matrix comes from discover and holds only the backends actually behind, each
+    # paired with the OTHER backend's pinned version. Linux x86_64 only: a library version
+    # difference is a property of the upstream C source and is identical on every platform
+    # cl-gbdt runs on, so crossing this axis with all three would triple the cost for no
+    # new information (test.yml:144-146 makes the same argument for version-matrix).
+    #
+    # Layer 2 only. Layer 1 needs no shared library and reruns nothing new when the library
+    # version changes.
+    name: try (${{ matrix.name }})
+    needs: [discover, drift]
+    if: needs.discover.outputs.behind == 'true'
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix: ${{ fromJSON(needs.discover.outputs.matrix) }}
+
+    steps:
+      - uses: actions/checkout@v4
+
+      # x86_64 takes the prebuilt Roswell path that already sudo's and does not need this
+      # today. It is here so that a future runner-image change cannot break this job the
+      # way it broke linux-aarch64 -- see the long comment in test.yml's `test' job.
+      - name: Give the Roswell installer the directories it writes
+        run: sudo install -d -o "$(id -u)" -g "$(id -g)" /usr/local/etc /usr/local/share/man/man1
+
+      - name: Install Roswell
+        run: |
+          curl -fsSL https://raw.githubusercontent.com/roswell/roswell/master/scripts/install-for-ci.sh | sh
+          echo "$HOME/.roswell/bin" >> "$GITHUB_PATH"
+
+      - name: Make the checkout visible to ASDF
+        run: |
+          mkdir -p ~/.roswell/local-projects
+          ln -sfn "$GITHUB_WORKSPACE" ~/.roswell/local-projects/cl-gbdt
+
+      - name: Install a current ASDF
+        # Roswell ships ASDF 3.3.1, whose package-inferred-system dependency scanner does
+        # not know :local-nicknames; src/regen/emit.lisp uses one.
+        run: ros install asdf
+
+      - name: Fetch the backend shared libraries
+        env:
+          LIGHTGBM_VERSION: ${{ matrix.lightgbm_version }}
+          XGBOOST_VERSION: ${{ matrix.xgboost_version }}
+        run: ./tools/fetch-libs.sh
+
+      - name: Layer 2 - the functional suite against this combination
+        env:
+          CL_GBDT_TEST_SYSTEM: cl-gbdt/tests/functional
+        run: ros run -- --non-interactive --load tools/ci/run-tests.lisp
