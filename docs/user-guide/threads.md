@@ -9,14 +9,30 @@ changes that.
 
 ## Safe
 
-**Distinct handles, from distinct threads, while the backend stays open.** cl-gbdt keeps no
-shared mutable state on the path from a public call to the C library: a `dataset` or `booster`
-is a CLOS object wrapping one foreign pointer, and every operation on it reads that pointer and
-calls into the shared library. Nothing is interned, cached or pooled between calls. Several
-threads each building their own dataset and booster from the same already-open backend, and
-reading -- never writing -- the same input arrays, share only the backend itself and those
-arrays. That is precisely the arrangement `tests/functional/threads.lisp`'s
-`concurrent-training-agrees-with-serial-training` exercises, and its own docstring says so.
+**Distinct handles, from distinct threads, while the backend stays open -- for what cl-gbdt
+itself holds.** cl-gbdt keeps no shared mutable state on the path from a public call to the C
+library: a `dataset` or `booster` is a CLOS object wrapping one foreign pointer, and every
+operation on it reads that pointer and calls into the shared library. Nothing is interned,
+cached or pooled between calls. Several threads each building their own dataset and booster
+from the same already-open backend, and reading -- never writing -- the same input arrays,
+share only the backend itself, those arrays, and SBCL's global finalizer registry -- every
+`make-handle` (`src/handle.lisp`) call writes to it, and SBCL documents `sb-ext:finalize`
+itself as thread-safe, so that third piece of shared state is a guarantee this project is
+borrowing, not one it built. That is the arrangement `tests/functional/threads.lisp`'s
+`concurrent-training-agrees-with-serial-training` exercises, and `%train-and-predict`'s
+docstring -- the function each of its threads calls -- says so.
+
+**What this does not establish: that LightGBM or XGBoost is itself safe for two independent
+boosters trained at once.** Everything above is a claim about cl-gbdt's own state, not about
+either library's internals, and this project has not tested either library's behaviour under
+concurrent training with its default OpenMP threading left on -- that the libraries themselves
+tolerate concurrent independent use is an assumption, not a measured result. The one test that
+trains concurrently, `concurrent-training-agrees-with-serial-training`, first pins both
+libraries to a single internal thread -- `*single-threaded-parameters*` sets `:num-threads 1`
+for LightGBM and `:nthread 1` for XGBoost -- precisely to take each library's own internal
+parallelism out of the picture. A green run of it is therefore silent on the case a caller is
+actually likely to run: several Lisp threads training against a library left at its default
+internal thread count. Treat that combination as untested, not as covered by this tier.
 
 **Floating-point trap masking needs no setup from the caller.**
 `with-foreign-float-traps-masked` acts on the calling thread alone and restores whatever trap
@@ -36,7 +52,7 @@ message right there, never later and never from a different thread.
 `tests/functional/threads.lisp`'s `threads-report-their-own-foreign-errors` exercises that
 claim under load -- four threads per backend, each provoking 500 failing calls with a token
 unique to that thread, asserting every message it reads back carries its own token and no other
-thread's. **Read that test's own header before citing it further: this is a sampling test, not
+thread's. **Read this file's own header before citing it further: this is a sampling test, not
 a proof.** `check-foreign-call` reads the last-error buffer immediately after the failing call
 returns, so a process-global buffer would only be *observed* here if another thread's failure
 happened to land inside that same sub-millisecond window; 500 rounds buy this test more chances

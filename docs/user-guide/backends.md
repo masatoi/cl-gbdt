@@ -49,9 +49,8 @@ open:            NIL
 ```
 
 Opening and closing a backend from more than one thread has its own rules, distinct from
-everything else on this page -- see [Thread
-safety](threads.md#unsafe-and-documentation-will-not-make-it-safe) for what is and is not safe
-to do with a `backend` once more than one thread can reach it.
+everything else on this page -- see [Thread safety](threads.md) for what is and is not safe to
+do with a `backend` once more than one thread can reach it.
 
 **A Layer 1 system alone trains, predicts, persists and reports.** Fourteen operations per
 backend are Layer 1's whole surface, with no unified API in the image at all: six of them

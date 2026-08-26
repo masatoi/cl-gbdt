@@ -3,9 +3,9 @@
 ;;;; WHAT A GREEN RUN OF THIS FILE DOES NOT MEAN. Read this before citing it.
 ;;;;
 ;;;; `threads-report-their-own-foreign-errors' is the only falsifiable claim here. It
-;;;; establishes that both libraries' last-error buffers are per-thread, and it fails if that
-;;;; is false: with a process-global buffer, threads would routinely read each other's
-;;;; messages.
+;;;; SAMPLES whether both libraries' last-error buffers are per-thread, and fails when a
+;;;; sample catches a collision: with a process-global buffer, threads would sometimes read
+;;;; each other's messages, though not on every run.
 ;;;;
 ;;;; That claim is itself a SAMPLING test, not a proof, and it is the strength of the claim
 ;;;; that changes, not the claim itself. `check-foreign-call' (`src/foreign.lisp') reads the
@@ -51,9 +51,13 @@ trains a model inside a functional suite that already runs about three minutes."
   "Times each thread provokes a foreign error in `threads-report-their-own-foreign-errors'.
 
 Each round is one failing `train' call on an eight-row fixture, so raising this is cheap:
-measured at roughly 1 second total, both backends and all four threads together, against
-roughly 0.1 second for the 8 rounds this file used before that number was found to be too
-small to say anything. `check-foreign-call' (`src/foreign.lisp') reads the last-error buffer
+re-measured at roughly 1.0 second total, both backends and all four threads together (two
+runs: 1009ms, 1020ms), against roughly 0.1 second for the 8 rounds this file used before that
+number was found to be too small to say anything (two runs: 84ms, 114ms). The ~10x wall-clock
+increase for a 62.5x round increase is real, not stale: at 8 rounds fixed per-run cost --
+opening the backend, building the fixture, spawning `*thread-count*' OS threads -- dominates
+the total, and only a small part of either run is `train' calls actually scaling with round
+count. `check-foreign-call' (`src/foreign.lisp') reads the last-error buffer
 immediately after the failing call returns, so a process-global buffer is only OBSERVED when
 another thread's failing call lands inside that sub-millisecond window -- at a low round count
 a genuinely global buffer could easily pass by chance alone. More rounds buy this test more

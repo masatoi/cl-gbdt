@@ -4,8 +4,8 @@
 ;;;; `with-booster' are testable without a shared library because `free-dataset' and
 ;;;; `free-booster' are generic functions, so `tests/backend.lisp' specialises them on a
 ;;;; `mock-handle'. `close-backend' is a `defun', not a generic, so the same trick would
-;;;; mean reaching into `cl-gbdt/src/backend' with `::' to force the openness slot -- and
-;;;; no test in this repository uses `::'. A real backend makes the observation directly:
+;;;; mean reaching into `cl-gbdt/src/backend' with `::' to force the openness slot. A real
+;;;; backend makes the observation directly:
 ;;;; `backend-open-p' answers before and after.
 
 (uiop:define-package #:cl-gbdt/tests/functional/with-backend
