@@ -36,6 +36,16 @@
   (:use #:cl #:rove)
   (:import-from #:sb-thread)
   (:import-from #:cl-gbdt)
+  ;; Zero symbols, both of them: they run at load time to register :lightgbm and :xgboost
+  ;; with `open-backend' -- see `register-backend' in each backend's classes.lisp -- and to
+  ;; define each backend's methods on `cl-gbdt''s generics. Without these clauses,
+  ;; package-inferred-system has no edge to those files at all, and this file's two `dolist'
+  ;; forms opening `(:lightgbm :xgboost)' would signal `unknown-backend' on the first
+  ;; iteration if run alone. `unified' rather than `all' since the Layer 1 split: `all' is
+  ;; Layer 1 alone now, carrying the `register-backend' call but not the protocol methods,
+  ;; so the `cl-gbdt:train' calls below would find no applicable method.
+  (:import-from #:cl-gbdt/src/lightgbm/unified)
+  (:import-from #:cl-gbdt/src/xgboost/unified)
   (:import-from #:cl-gbdt/tests/functional/support
                 #:with-backend-library
                 #:make-separable-dataset

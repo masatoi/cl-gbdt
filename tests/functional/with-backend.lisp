@@ -11,6 +11,17 @@
 (uiop:define-package #:cl-gbdt/tests/functional/with-backend
   (:use #:cl #:rove)
   (:import-from #:cl-gbdt)
+  ;; Zero symbols: this file's two tests both open :xgboost -- the LightGBM one moved to
+  ;; tests/backend.lisp already -- through `cl-gbdt:open-backend' and `cl-gbdt:with-backend',
+  ;; the portable API, not either backend's own package. This clause is what runs
+  ;; `register-backend' at load time to make :xgboost known to `open-backend' -- see
+  ;; `register-backend' in xgboost/classes.lisp. Without it, package-inferred-system has no
+  ;; edge to that file at all and `(cl-gbdt:open-backend :xgboost)' below would signal
+  ;; `unknown-backend'. `unified' rather than `all' since the Layer 1 split: `all' is Layer 1
+  ;; alone now, and this file exercises the portable unified surface rather than either
+  ;; backend's own Layer 1 package, matching the identical clause in evaluation.lisp. No
+  ;; LightGBM clause: this file no longer has a LightGBM test to need one for.
+  (:import-from #:cl-gbdt/src/xgboost/unified)
   (:import-from #:cl-gbdt/tests/functional/support
                 #:with-backend-library))
 
