@@ -39,7 +39,12 @@ name: upstream
 
 on:
   push:
-    branches: [master]
+    # ci/upstream-detection is TEMPORARY -- it exists so the fixes made on this branch can
+    # be run for real before merge, and is removed once the run is recorded. GitHub offers a
+    # workflow_dispatch trigger only for a workflow already on the default branch, and this
+    # workflow does not run on pull requests, so a push from the branch is the only way to
+    # exercise it beforehand.
+    branches: [master, ci/upstream-detection]
   # The same weekly slot test.yml's version-matrix uses, so the two upstream-facing jobs
   # wake together rather than at two times someone has to remember separately.
   schedule:
@@ -85,11 +90,20 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      # GitHub runs `run:' under `bash -e -o pipefail', so a curl failure inside the
-      # script's pipelines reaches this step rather than being swallowed by tee.
+      # A `run:' step with no `shell:' key gets `bash -e {0}' -- NOT `-o pipefail'. Confirmed
+      # from this branch's own run log, which printed `shell: /usr/bin/bash -e {0}'; no
+      # workflow in this repository sets `shell:' anywhere. Piping the script through `tee'
+      # would make the step's exit status tee's, which is always 0 -- a failing script would
+      # go green with every output empty, exactly the "reports nothing changed" failure this
+      # workflow exists to prevent. Adding `shell: bash' would restore pipefail and work, but
+      # would leave correctness resting on another shell option a later edit could drop
+      # without seeing the consequence. Simpler: there is no pipeline here to get wrong.
       - name: What PyPI has, and what ffi-spec/VERSIONS pins
         id: latest
-        run: ./tools/latest-upstream.sh | tee -a "$GITHUB_OUTPUT"
+        run: |
+          ./tools/latest-upstream.sh > "$RUNNER_TEMP/latest-upstream.env"
+          cat "$RUNNER_TEMP/latest-upstream.env" >> "$GITHUB_OUTPUT"
+          cat "$RUNNER_TEMP/latest-upstream.env"
 
       - name: Summary
         env:

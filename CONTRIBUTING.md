@@ -71,8 +71,8 @@ install instead of the vendored copy.
 
 ## Continuous integration
 
-Two workflows, so the badges above report independently — a GitHub Actions badge covers a
-whole workflow file, not a job:
+Three workflow files below, though only two carry a badge above — a GitHub Actions badge
+covers a whole workflow file, not a job, which is why the two badges report independently:
 
 - `.github/workflows/test.yml` runs both suites on Linux x86_64, Linux aarch64 and macOS
   aarch64. The matrix is the point: the bindings are generated on one machine and
@@ -236,10 +236,14 @@ What to do when it is red:
    `src/version.lisp`'s recorded range and the README's supported-environments table all
    move with it, and `tools/ci/check-support-matrix.lisp` will fail until the last of them
    does.
-3. **If `drift` is red**, upstream changed the declaration of a function cl-gbdt imports.
-   `ffi-spec/ABI-BLACKLIST.md` names this tool as its own maintenance path: a function
-   reported ABSENT moves from that file's "still present" table to "moot", and one reported
-   CHANGED is added to "still present".
+3. **If `drift` is red**, upstream changed the declaration of a function cl-gbdt imports --
+   or `tools/check-upstream.lisp` could not look at all. Its own header lists a fetch
+   failure, a tag that does not exist upstream among them, as another cause of the same
+   FAIL; this is reachable whenever PyPI reports a version whose `v`-prefixed GitHub tag is
+   absent or spelled differently. **Read the job's output** before concluding a declaration
+   changed. `ffi-spec/ABI-BLACKLIST.md` names this tool as its own maintenance path: a
+   function reported ABSENT moves from that file's "still present" table to "moot", and one
+   reported CHANGED is added to "still present".
 4. **If `try` is red**, read *which* tests failed before concluding anything.
    On XGBoost, `xgboost-api-open-backend-against-vendored-library-warns-nothing` fails on
    every new release by construction: it asserts `open-backend` emits no
