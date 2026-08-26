@@ -26,7 +26,7 @@ lgbm_dest="${spec_root}/lightgbm/include/LightGBM"
 rm -rf "${spec_root}/lightgbm/include"
 mkdir -p "${lgbm_dest}"
 echo "==> fetching LightGBM ${LIGHTGBM_TAG}"
-curl -sSL "https://github.com/microsoft/LightGBM/archive/refs/tags/${LIGHTGBM_TAG}.tar.gz" \
+curl -sSL "https://github.com/lightgbm-org/LightGBM/archive/refs/tags/${LIGHTGBM_TAG}.tar.gz" \
   | tar -xz -C "${work}" "LightGBM-${LIGHTGBM_TAG#v}/include/LightGBM"
 for header in "${LIGHTGBM_HEADERS[@]}"; do
   src="${work}/LightGBM-${LIGHTGBM_TAG#v}/include/LightGBM/${header}"

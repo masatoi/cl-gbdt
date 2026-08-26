@@ -126,7 +126,7 @@
      :c-api-package "CL-GBDT/SRC/LIGHTGBM/C-API"
      :backend-path "src/lightgbm/native.lisp"
      :vendored-header "ffi-spec/lightgbm/include/LightGBM/c_api.h"
-     :url "https://raw.githubusercontent.com/microsoft/LightGBM/~A/include/LightGBM/c_api.h"
+     :url "https://raw.githubusercontent.com/lightgbm-org/LightGBM/~A/include/LightGBM/c_api.h"
      :tag-env-var "CHECK_UPSTREAM_LIGHTGBM_TAG")
     (:id "XGBoost"
      :versions-key "xgboost"

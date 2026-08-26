@@ -4,7 +4,7 @@
 [![lint](https://github.com/masatoi/cl-gbdt/actions/workflows/lint.yml/badge.svg?branch=master)](https://github.com/masatoi/cl-gbdt/actions/workflows/lint.yml)
 
 A Common Lisp library that wraps two gradient boosting decision tree
-implementations -- [LightGBM](https://github.com/microsoft/LightGBM) and
+implementations -- [LightGBM](https://github.com/lightgbm-org/LightGBM) and
 [XGBoost](https://github.com/dmlc/xgboost) -- behind a single high-level API.
 
 The same `cl-gbdt:train` and `cl-gbdt:predict` call drives either library, so a program can
