@@ -211,6 +211,18 @@
                           :num-columns 10000000000 :implicit-value :none)))
         "row 0 stores 1 of the declared 10000000000 columns")))
 
+(deftest csr-matrix-none-accepts-a-zero-row-matrix
+  ;; A zero-row matrix trivially stores every element of every row it has (there are no
+  ;; rows to contradict this). This test completes instantly rather than allocating ten
+  ;; billion fixnums, so it is only useful if it succeeds fast: the point is that :NONE
+  ;; skips the STAMPS allocation for a matrix with no rows at all, guarding the one path
+  ;; `%require-positive-num-columns' cannot reach.
+  (testing ":NONE accepts a zero-row matrix even with an implausible NUM-COLUMNS"
+    (ok (cl-gbdt:csr-matrix-implicit-value
+         (cl-gbdt:make-csr-matrix :indptr '(0) :indices '() :values '()
+                                  :num-columns 10000000000 :implicit-value :none))
+        "a zero-row matrix with an enormous NUM-COLUMNS completes instantly")))
+
 (deftest csr-matrix-reports-its-shape
   (testing "the readers return what was built, already coerced"
     (let ((m (%csr)))

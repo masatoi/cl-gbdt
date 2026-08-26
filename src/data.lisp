@@ -343,9 +343,12 @@ with a real allocation before a single row had been examined, exhausting the hea
 this function was always going to reject anyway. The check costs nothing on a matrix that will
 pass: such a matrix's row 0 always has exactly NUM-COLUMNS elements, the same fact the loop
 below re-establishes for every other row, so checking it again once STAMPS exists is redundant
-but harmless there. A matrix with no rows at all has no row 0 to check and is accepted
-vacuously, as before. Do not reorder this back to \"allocate, then loop\" -- that is the exact
-shape that regresses this.
+but harmless there. A matrix with no rows at all is accepted vacuously -- it stores every
+element of every row it has, there being none to contradict it -- and STAMPS is not allocated
+for it either: it has no row 0 for the check above to reject, so an allocation outside this
+`when' would reach that same implausible NUM-COLUMNS by the one path the check cannot guard.
+Do not reorder this back to \"allocate, then loop\", and do not lift the allocation out of the
+`when' -- either is the exact shape that regresses this.
 
 Runs only when :NONE was declared, and only after `%require-indices-in-range', so every element
 of INDICES is a legal index into STAMPS."
@@ -357,26 +360,26 @@ of INDICES is a legal index into STAMPS."
                  :expected (format nil "row 0 to store all ~D columns, as :IMPLICIT-VALUE ~
                                         :NONE declares"
                                    num-columns)
-                 :given row-0-length))))
-    (let ((stamps (make-array num-columns :element-type 'fixnum :initial-element -1)))
-      (dotimes (row num-rows)
-        (let ((start (aref indptr row))
-              (end (aref indptr (1+ row))))
-          (unless (= (- end start) num-columns)
-            (error 'dimension-mismatch
-                   :expected (format nil "row ~D to store all ~D columns, as :IMPLICIT-VALUE ~
-                                          :NONE declares"
-                                     row num-columns)
-                   :given (- end start)))
-          (loop :for k :from start :below end
-                :for column := (aref indices k)
-                :do (when (= (aref stamps column) row)
-                      (error 'dimension-mismatch
-                             :expected (format nil "row ~D to store each of its ~D columns once, ~
-                                                    as :IMPLICIT-VALUE :NONE declares"
-                                               row num-columns)
-                             :given (format nil "column ~D stored twice" column)))
-                    (setf (aref stamps column) row)))))))
+                 :given row-0-length)))
+      (let ((stamps (make-array num-columns :element-type 'fixnum :initial-element -1)))
+        (dotimes (row num-rows)
+          (let ((start (aref indptr row))
+                (end (aref indptr (1+ row))))
+            (unless (= (- end start) num-columns)
+              (error 'dimension-mismatch
+                     :expected (format nil "row ~D to store all ~D columns, as :IMPLICIT-VALUE ~
+                                            :NONE declares"
+                                       row num-columns)
+                     :given (- end start)))
+            (loop :for k :from start :below end
+                  :for column := (aref indices k)
+                  :do (when (= (aref stamps column) row)
+                        (error 'dimension-mismatch
+                               :expected (format nil "row ~D to store each of its ~D columns ~
+                                                      once, as :IMPLICIT-VALUE :NONE declares"
+                                                 row num-columns)
+                               :given (format nil "column ~D stored twice" column)))
+                      (setf (aref stamps column) row))))))))
 
 (defun make-csr-matrix (&key indptr indices values num-columns implicit-value)
   "Return a `csr-matrix' holding INDPTR, INDICES and VALUES in standard CSR layout, one
