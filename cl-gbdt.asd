@@ -143,10 +143,10 @@ guard, and have no portable fallback."
                ;; run does NOT establish; read that before citing it as evidence of thread
                ;; safety, which it is not.
                "cl-gbdt/tests/functional/threads"
-               ;; The one entry here that does NOT build on those *FIXTURES*: a custom
-               ;; objective's claim is that it reproduces a built-in one exactly, so it
-               ;; states a deterministic fixture of its own. `train''s :OBJECTIVE, and the
-               ;; `:custom-objective' capability that gates it.
+               ;; Like `with-backend' and `threads' above, this entry does not build on
+               ;; those *FIXTURES* either: a custom objective's claim is that it reproduces
+               ;; a built-in one exactly, so it states a deterministic fixture of its own.
+               ;; `train''s :OBJECTIVE, and the `:custom-objective' capability that gates it.
                "cl-gbdt/tests/functional/custom-objective"
                ;; Nor does this one, and for a related reason: `train''s :EVALUATION, and
                ;; the `:custom-evaluation' capability that gates it. A caller-written metric
