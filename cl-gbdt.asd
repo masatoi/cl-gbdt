@@ -138,6 +138,11 @@ guard, and have no portable fallback."
                ;; rather than layer 1 because `close-backend' is a `defun' and cannot be
                ;; specialised on a mock the way `free-dataset' is in tests/backend.lisp.
                "cl-gbdt/tests/functional/with-backend"
+               ;; The only file here that starts threads. `sb-thread' directly -- this system
+               ;; is already declared SBCL-only above. Its header says at length what a green
+               ;; run does NOT establish; read that before citing it as evidence of thread
+               ;; safety, which it is not.
+               "cl-gbdt/tests/functional/threads"
                ;; The one entry here that does NOT build on those *FIXTURES*: a custom
                ;; objective's claim is that it reproduces a built-in one exactly, so it
                ;; states a deterministic fixture of its own. `train''s :OBJECTIVE, and the
