@@ -68,6 +68,13 @@ jobs:
         # order shifts. Each leaf is loaded in its own fresh image to catch that.
         run: ros run -- --non-interactive --load tools/ci/check-leaf-systems.lisp
 
+      - name: Every source file is reachable from a declared system
+        # src/all.lisp's package list is hand-maintained, and a file whose package nobody
+        # lists is never compiled, never loaded, and never asserted on -- the silent failure
+        # that file's own header describes. This walks every defsystem in cl-gbdt.asd and
+        # fails on any .lisp under src/ or tests/ that no closure reaches.
+        run: ros run -- --non-interactive --load tools/ci/check-source-reachability.lisp
+
       - name: Layer 1 does not depend on Layer 2
         # cl-gbdt/lightgbm and cl-gbdt/xgboost are meant to be usable without the unified
         # API. Nothing but this check stops a later :import-from from quietly undoing that:

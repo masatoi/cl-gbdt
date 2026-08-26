@@ -405,6 +405,7 @@ CL_GBDT_TEST_SYSTEM=cl-gbdt/tests/functional ros run -- --non-interactive \
   --load tools/ci/run-tests.lisp                        # layer 2
 ros run -- --non-interactive --load tools/ci/lint.lisp   # mallet + column-width check
 ros run -- --non-interactive --load tools/ci/check-leaf-systems.lisp
+ros run -- --non-interactive --load tools/ci/check-source-reachability.lisp
 ros run -- --non-interactive --load tools/ci/check-layer-separation.lisp
 ros run -- --non-interactive --load tools/ci/check-float-traps.lisp
 ros run -- --non-interactive --load tools/ci/check-layer-1-guards.lisp
@@ -416,12 +417,12 @@ ros run -- --non-interactive --load tools/ci/check-doc-links.lisp
 ros run -- --non-interactive --load tools/ci/check-support-matrix.lisp
 ```
 
-Eleven of those have no MCP equivalent at all — leaf systems, float traps, layer-1 guards,
-layer separation, ABI blacklist, binding coverage, API reference, functional coverage,
-doc links, support matrix, lint. Run the whole block before committing, and at the end of
-any task whose plan states numbers. **Add a line here whenever `tools/ci/` gains a script**:
-`check-layer-1-guards.lisp` arrived in PR #28 and was missing from this list until
-2026-08-12.
+Twelve of those have no MCP equivalent at all — leaf systems, source reachability, float
+traps, layer-1 guards, layer separation, ABI blacklist, binding coverage, API reference,
+functional coverage, doc links, support matrix, lint. Run the whole block before
+committing, and at the end of any task whose plan states numbers. **Add a line here
+whenever `tools/ci/` gains a script**: `check-layer-1-guards.lisp` arrived in PR #28 and
+was missing from this list until 2026-08-12.
 
 `sbcl` is not on `PATH` in this environment; every command above goes through
 `ros run -- --non-interactive ...`, not a bare `sbcl` invocation.
@@ -458,11 +459,11 @@ src/docgen/   The API-reference emitter (introspect.lisp, render.lisp, emit.lisp
 tests/        Rove test suites, layer 1 (no shared library) plus tests/functional/,
               layer 2 (calls the real shared libraries)
 tools/ci/     The scripts CI actually runs: run-tests.lisp, lint.lisp,
-              check-leaf-systems.lisp, check-layer-separation.lisp, check-float-traps.lisp,
-              check-layer-1-guards.lisp, check-abi-blacklist.lisp,
-              check-binding-coverage.lisp, check-api-reference.lisp,
-              check-functional-coverage.lisp, check-doc-links.lisp,
-              check-support-matrix.lisp
+              check-leaf-systems.lisp, check-source-reachability.lisp,
+              check-layer-separation.lisp, check-layer-1-guards.lisp,
+              check-float-traps.lisp, check-abi-blacklist.lisp, check-binding-coverage.lisp,
+              check-api-reference.lisp, check-functional-coverage.lisp,
+              check-doc-links.lisp, check-support-matrix.lisp
 tools/        regen.lisp (regenerates src/*/c-api.lisp), gen-api-reference.lisp
               (regenerates docs/API-REFERENCE.md), and the shell scripts they and CI call
 ffi-spec/     Vendored C headers and the c2ffi specs generated from them;
