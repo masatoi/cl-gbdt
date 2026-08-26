@@ -2863,6 +2863,14 @@ Free DATASET. Does nothing if it was already freed.
 
 Freeing the same DATASET from two threads at once can end the process outright
 rather than signalling anything catchable -- see `docs/user-guide/threads.md'.
+
+Freeing DATASET while any call is in flight, on another thread, on a booster
+that holds it -- as its training set or as one of its validation sets -- can
+end the process the same way. The `released-handle-error' an already-freed
+handle signals on its next use is a single-threaded guarantee: it holds when
+the free and the next call are sequential on one thread, not when a call on
+that booster is already running elsewhere. See `docs/user-guide/threads.md'
+for both backends' windows.
 ```
 
 ### Methods

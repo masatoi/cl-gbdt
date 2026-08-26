@@ -952,7 +952,10 @@ every iteration, so both kinds are the training-set case there.
 `booster-training-set' is NIL for a `load-model' booster, which has no training set and needs
 no check -- `cl-gbdt/src/xgboost/api''s `update-one-iteration' signals `missing-training-set'
 for that case rather than this function; `booster-validation-sets' is NIL when no validation
-set was attached."
+set was attached.
+
+This is a check-then-act, not a concurrency guard, and was never meant to be one -- see
+`docs/user-guide/threads.md'."
   (let ((training-set (booster-training-set booster)))
     (when (and training-set (handle-released-p training-set))
       (error 'released-handle-error :object training-set)))
