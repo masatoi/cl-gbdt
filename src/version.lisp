@@ -191,14 +191,16 @@ Both bounds moved again, from \"3.3.0\" to \"3.4.1\": 3.4.1 removes
 `XGDMatrixCreateFromFile' from XGBoost's C API (see `ffi-spec/ABI-BLACKLIST.md''s moot
 table), but that function was already blacklisted and never imported by this project,
 and every declaration cl-gbdt does import is unchanged -- confirmed by
-`tools/check-upstream.lisp' before the pin moved. The whole functional suite passes
-against 3.4.1, and unlike the single local run the earlier \"3.3.0\" figure rested on,
-CI's `test' job (`test.yml') now runs that same suite against 3.4.1 on three
-platforms -- linux-x86_64, linux-aarch64, and macos-aarch64 -- on every push; that
-three-platform result is what VERIFIED-HIGH's move to \"3.4.1\" rests on. 3.4.0 itself
-was not tested, the same way the gap between 1.7.0 and 2.0.0 above was not: this
-range's endpoints are what was actually measured, not a claim about every version
-between them.")
+`tools/check-upstream.lisp' before the pin moved. The whole functional suite passed
+against 3.4.1 on this machine, linux-aarch64 -- the same kind of evidence, a single
+local run, that backed the \"3.3.0\" point it replaces, whose own VERIFIED-EVIDENCE
+also cites task 4's local version matrix, so this move does not weaken the standard.
+Going forward, CI's `test' job (`test.yml') is configured to run that same suite
+against 3.4.1 on all three of its platforms -- linux-x86_64, linux-aarch64, and
+macos-aarch64 -- on every push, extending this evidence beyond the one platform
+measured here. 3.4.0 itself was not tested, the same way the gap between 1.7.0 and
+2.0.0 above was not: this range's endpoints are what was actually measured, not a
+claim about every version between them.")
 
 (defun version-range-tested-description (range)
   "Return RANGE's evidence as a list of two strings -- the verified point/range, then
