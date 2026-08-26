@@ -147,7 +147,7 @@
 ;;; by loading the unified core for `cl-gbdt:make-csr-matrix' or by naming the internal
 ;;; `cl-gbdt/src/data' directly -- so half of two published contracts was unreachable from the
 ;;; package that publishes them. `make-csr-matrix', the `csr-matrix' structure type and its
-;;; five readers are named; `foreign-matrix', `with-foreign-matrix' and the rest of that package
+;;; six readers are named; `foreign-matrix', `with-foreign-matrix' and the rest of that package
 ;;; stay out, being the plumbing a dense matrix is handed to C through and not something a
 ;;; caller builds. The dense path, which is every ordinary array, still needs none of it.
 ;;; `booster-training-set' and `booster-validation-sets' from `handle' are here for the same
@@ -159,7 +159,7 @@
 ;;; already published, is what makes the answer worth having, since a retained dataset can have
 ;;; been freed.
 ;;;
-;;; None of those nine is a symbol of this package's own: they are the very symbols
+;;; None of those ten is a symbol of this package's own: they are the very symbols
 ;;; `cl-gbdt/src/data' and `cl-gbdt/src/handle' define, so unlike `predict' and the ten other
 ;;; doubled operation names above, a caller holding both `cl-gbdt' and `cl-gbdt/xgboost' sees
 ;;; one symbol reached two ways and has nothing to disambiguate.
@@ -183,7 +183,7 @@
 ;;; `close-backend' are `defun's in `src/backend.lisp', outside the check's own file-pattern
 ;;; glob, and the condition accessors `:use-reexport'ed from `cl-gbdt/src/conditions' are
 ;;; reader functions `define-condition' generates, not `defun's the check would count. The
-;;; sparse surface adds none either: `make-csr-matrix' and the five readers are the functions
+;;; sparse surface adds none either: `make-csr-matrix' and the six readers are the functions
 ;;; `defstruct' generates in `src/data.lisp', which that glob does not reach and which the scan
 ;;; would not count as `defun's if it did.
 ;;;
@@ -204,6 +204,7 @@
                 #:open-backend)
   (:import-from #:cl-gbdt/src/data
                 #:csr-matrix
+                #:csr-matrix-implicit-value
                 #:csr-matrix-indices
                 #:csr-matrix-indptr
                 #:csr-matrix-num-columns
@@ -257,6 +258,7 @@
            #:save-model
            #:update-one-iteration
            #:csr-matrix
+           #:csr-matrix-implicit-value
            #:csr-matrix-indices
            #:csr-matrix-indptr
            #:csr-matrix-num-columns

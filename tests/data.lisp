@@ -122,14 +122,62 @@
     (ok (eq :float (cl-gbdt:foreign-element-type 'single-float)))))
 
 (defun %csr (&key (indptr '(0 2 3)) (indices '(0 2 1))
-                  (values '(1.0d0 2.0d0 3.0d0)) (num-columns 3))
-  (cl-gbdt:make-csr-matrix :indptr indptr :indices indices
-                           :values values :num-columns num-columns))
+                  (values '(1.0d0 2.0d0 3.0d0)) (num-columns 3) implicit-value)
+  (cl-gbdt:make-csr-matrix :indptr indptr :indices indices :values values
+                           :num-columns num-columns :implicit-value implicit-value))
 
 (defun %signals-dimension-mismatch-p (thunk)
   ;; handler-case, not rove's `signals' -- see prompts/repl-driven-development.md.
   (handler-case (progn (funcall thunk) nil)
     (cl-gbdt:dimension-mismatch () t)))
+
+(defun %signals-unsupported-argument-p (thunk)
+  ;; handler-case, not rove's `signals' -- see prompts/repl-driven-development.md.
+  (handler-case (progn (funcall thunk) nil)
+    (cl-gbdt:unsupported-argument () t)))
+
+(deftest csr-matrix-accepts-every-legal-implicit-value
+  (testing "NIL, a zero, :MISSING and :NONE are each accepted and read back"
+    (ok (null (cl-gbdt:csr-matrix-implicit-value (%csr)))
+        "an undeclared matrix reads back NIL")
+    (ok (eq :missing (cl-gbdt:csr-matrix-implicit-value (%csr :implicit-value :missing)))
+        ":MISSING reads back")
+    (ok (eql 0.0d0 (cl-gbdt:csr-matrix-implicit-value (%csr :implicit-value 0)))
+        "the integer 0 is canonicalized to 0.0d0")
+    (ok (eql 0.0d0 (cl-gbdt:csr-matrix-implicit-value (%csr :implicit-value -0.0)))
+        "negative zero is canonicalized to the same 0.0d0, so a backend may compare with EQL")))
+
+(deftest csr-matrix-rejects-an-illegal-implicit-value
+  ;; A non-zero real is refused rather than stored: no backend implies a non-zero value for
+  ;; absence, so it is a claim nothing could honour.
+  (testing "anything outside the legal set signals"
+    (dolist (bad '(1.0d0 -3 "missing" :zero t))
+      (ok (%signals-unsupported-argument-p (lambda () (%csr :implicit-value bad)))
+          (format nil "whether ~S was rejected" bad)))))
+
+(deftest csr-matrix-none-accepts-a-matrix-storing-every-element
+  (testing ":NONE is accepted when each row stores all NUM-COLUMNS columns exactly once"
+    (ok (cl-gbdt:csr-matrix-implicit-value
+         (%csr :indptr '(0 3) :indices '(0 1 2) :values '(1.0d0 2.0d0 3.0d0)
+               :num-columns 3 :implicit-value :none))
+        "a fully-stored single row")))
+
+(deftest csr-matrix-none-rejects-a-short-row
+  (testing ":NONE is refused when a row stores fewer entries than the declared width"
+    (ok (%signals-dimension-mismatch-p (lambda () (%csr :implicit-value :none)))
+        "%csr's default matrix stores 2 then 1 of 3 columns")))
+
+(deftest csr-matrix-none-rejects-a-row-storing-one-column-twice
+  ;; The case a count alone cannot catch, and the reason `%require-every-element-stored'
+  ;; stamps columns rather than comparing lengths: this row stores three entries for three
+  ;; columns, so the count is right, while column 0 is stored twice and column 2 not at all.
+  ;; `make-csr-matrix' does not reject duplicate indices in general -- they are legal CSR --
+  ;; so nothing else in this file would notice.
+  (testing ":NONE is refused when a row repeats a column and omits another"
+    (ok (%signals-dimension-mismatch-p
+         (lambda () (%csr :indptr '(0 3) :indices '(0 0 1) :values '(1.0d0 2.0d0 3.0d0)
+                          :num-columns 3 :implicit-value :none)))
+        "three entries, three columns, column 2 never stored")))
 
 (deftest csr-matrix-reports-its-shape
   (testing "the readers return what was built, already coerced"
@@ -154,9 +202,10 @@
   ;; at all, so there is nothing left to run. Each reader's own `fboundp' is asserted
   ;; alongside it, so a NIL below cannot be a misspelled symbol rather than a missing
   ;; writer.
-  (testing "none of the four accessors has a writer"
+  (testing "none of the five accessors has a writer"
     (dolist (reader '(cl-gbdt:csr-matrix-indptr cl-gbdt:csr-matrix-indices
-                      cl-gbdt:csr-matrix-values cl-gbdt:csr-matrix-num-columns))
+                      cl-gbdt:csr-matrix-values cl-gbdt:csr-matrix-num-columns
+                      cl-gbdt:csr-matrix-implicit-value))
       (ok (fboundp reader)
           (format nil "whether ~S names a reader at all" reader))
       (ok (not (fboundp (list 'setf reader)))
