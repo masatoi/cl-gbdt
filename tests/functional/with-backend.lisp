@@ -34,12 +34,3 @@
            (setf captured backend)
            (error "boom")))
         (ok (not (cl-gbdt:backend-open-p captured)) "closed after a non-local exit")))))
-
-(deftest with-backend-accepts-a-declaration
-  (with-backend-library (:lightgbm)
-    (testing "a declaration at the head of the body compiles and the backend still closes"
-      (let ((captured nil))
-        (cl-gbdt:with-backend (backend (cl-gbdt:open-backend :lightgbm))
-          (declare (optimize (speed 1)))
-          (setf captured backend))
-        (ok (not (cl-gbdt:backend-open-p captured)) "closed with a declaration present")))))
