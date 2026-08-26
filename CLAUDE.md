@@ -139,7 +139,12 @@ and
 dense matrix, gated on the `:sparse-input` capability that both vendored backends answer
 true; XGBoost's sparse `predict` serves `:normal` and `:raw` only, and an absent CSR entry
 means `0.0` to LightGBM but *missing* to XGBoost -- see `docs/user-guide/data-and-prediction.md`'s
-Sparse input section. `make-dataset` and `predict` also take `:missing`, the value in the caller's
+Sparse input section. `make-csr-matrix` also takes `:implicit-value`, the caller's declaration
+of what an absent entry means in their own data -- `NIL` (undeclared, the default), a `zerop`
+real, `:missing`, or `:none` (nothing is absent) -- and `make-dataset` and `predict` each refuse
+a declaration the backend does not match with `unsupported-argument`, before any foreign call;
+an undeclared matrix is checked by neither. `make-dataset` and `predict` also take `:missing`,
+the value in the caller's
 own data that means missing, gated on the `:missing-value` capability that only XGBoost
 provides -- LightGBM signals `capability-unavailable` for any non-`NIL` value, a `NaN`
 included, since its C API has no missing-value key at all, and XGBoost compares the

@@ -197,6 +197,20 @@
                :num-columns 3 :implicit-value :none))
         "two fully-stored rows, the second reusing every column index the first used")))
 
+(deftest csr-matrix-none-rejects-a-huge-num-columns-before-allocating
+  ;; `%require-every-element-stored' checks row 0's own stored length against NUM-COLUMNS
+  ;; before allocating STAMPS, which it sizes by NUM-COLUMNS -- see that function's own
+  ;; docstring for why the order matters. NUM-COLUMNS has no upper bound of its own (only
+  ;; `%require-positive-num-columns' below), so a value this implausible is a plausible
+  ;; outcome of a corrupt header field, not a contrived one. Without the ordering this test
+  ;; guards, this would try to allocate ten billion fixnums instead of signalling; this test
+  ;; is only useful because it completes instantly rather than exhausting the heap.
+  (testing ":NONE with an implausible NUM-COLUMNS signals rather than allocating"
+    (ok (%signals-dimension-mismatch-p
+         (lambda () (%csr :indptr '(0 1) :indices '(0) :values '(1.0d0)
+                          :num-columns 10000000000 :implicit-value :none)))
+        "row 0 stores 1 of the declared 10000000000 columns")))
+
 (deftest csr-matrix-reports-its-shape
   (testing "the readers return what was built, already coerced"
     (let ((m (%csr)))

@@ -105,8 +105,11 @@ The training fixture, and the only one `:NONE' can be declared on."
                        (cl-gbdt:make-dataset backend (declared-csr 0.0d0)
                                              :label *labels*)))))
         (ok reason "whether it signalled unsupported-argument at all")
-        (ok (and reason (search "missing" reason))
-            (format nil "whether the reason says absence is missing here: ~A" reason))))
+        ;; "missing" alone appears in both backends' reason strings -- LightGBM's own names
+        ;; `zero_as_missing' -- so this would still pass with the two messages swapped.
+        ;; "Store the zeros explicitly" is unique to XGBoost's.
+        (ok (and reason (search "Store the zeros explicitly" reason))
+            (format nil "whether the reason is XGBoost's own, not LightGBM's: ~A" reason))))
     (testing "predict refuses it too -- a separate code path, separately gated"
       (cl-gbdt:with-dataset (dataset (cl-gbdt:make-dataset backend (complete-csr nil)
                                                            :label *labels*))
@@ -131,13 +134,34 @@ The training fixture, and the only one `:NONE' can be declared on."
 
 (deftest an-undeclared-matrix-is-checked-by-neither-backend
   ;; The compatibility guarantee: NIL means today's behaviour, on both backends, unchanged.
+  ;; Covers both call sites that gate on :IMPLICIT-VALUE: make-dataset below, and predict --
+  ;; on COMPLETE-CSR's own booster, the same pairing LIGHTGBM-REFUSES-A-MISSING-DECLARATION
+  ;; and XGBOOST-REFUSES-A-ZERO-DECLARATION use to prove predict's refusal, reused here to
+  ;; prove predict's silence on an undeclared matrix instead.
   (dolist (backend-name '(:lightgbm :xgboost))
     (with-open-backend (backend backend-name)
       (testing (format nil "~A: an undeclared matrix builds a dataset as it always did"
                        backend-name)
         (cl-gbdt:with-dataset (dataset (cl-gbdt:make-dataset backend (declared-csr nil)
                                                              :label *labels*))
-          (ok (= 4 (cl-gbdt:dataset-num-rows dataset)) "the dataset was built"))))))
+          (ok (= 4 (cl-gbdt:dataset-num-rows dataset)) "the dataset was built")))
+      (testing (format nil "~A: predict on an undeclared matrix is unchanged too"
+                       backend-name)
+        (cl-gbdt:with-dataset (dataset (cl-gbdt:make-dataset backend (complete-csr nil)
+                                                             :label *labels*))
+          (cl-gbdt:with-booster
+              (booster (cl-gbdt:train backend dataset :num-rounds 1
+                                      :parameters (ecase backend-name
+                                                    (:lightgbm '(:objective "binary"
+                                                                 :num-leaves 2
+                                                                 :min-data-in-leaf 1
+                                                                 :min-data-in-bin 1
+                                                                 :verbose -1))
+                                                    (:xgboost '(:objective "binary:logistic"
+                                                                :max-depth 2
+                                                                :verbosity 0)))))
+            (ok (= 4 (array-dimension (cl-gbdt:predict booster (declared-csr nil)) 0))
+                "predict ran to completion on the undeclared matrix")))))))
 
 (deftest csr-matrix-implicit-value-reads-back-what-was-declared
   ;; Needs no backend: the refusals above are only trustworthy proof of anything if

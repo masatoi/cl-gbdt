@@ -281,6 +281,60 @@ foreign call when the declaration disagrees with the backend's own reading of ab
 | `:missing` | **refuse** | accept |
 | `:none` (nothing is absent) | accept | accept |
 
+Measured: refusing one declaration on each backend, at `make-dataset`, and printing the
+condition raised.
+
+```lisp
+(ql:quickload '(:cl-gbdt :cl-gbdt/lightgbm/unified :cl-gbdt/xgboost/unified) :silent t)
+
+;; *sparse* and *label* as defined above.
+(defun declaring (implicit-value)
+  (cl-gbdt:make-csr-matrix :indptr (cl-gbdt:csr-matrix-indptr *sparse*)
+                           :indices (cl-gbdt:csr-matrix-indices *sparse*)
+                           :values (cl-gbdt:csr-matrix-values *sparse*)
+                           :num-columns (cl-gbdt:csr-matrix-num-columns *sparse*)
+                           :implicit-value implicit-value))
+
+(defun refuse (name backend matrix dataset-parameters)
+  (handler-case
+      (cl-gbdt:with-dataset (dataset (apply #'cl-gbdt:make-dataset backend matrix
+                                            :label *label* dataset-parameters))
+        (format t "~A: NOT refused (unexpected) rows=~D~%" name
+                (cl-gbdt:dataset-num-rows dataset)))
+    (cl-gbdt:unsupported-argument (c)
+      (format t "~A SIGNALED UNSUPPORTED-ARGUMENT~%  ~A~%" name c))))
+
+(let ((lgbm (cl-gbdt:open-backend :lightgbm))
+      (xgb (cl-gbdt:open-backend :xgboost)))
+  (refuse "LightGBM, :implicit-value :missing" lgbm (declaring :missing)
+          '(:parameters (:min-data-in-leaf 1 :min-data-in-bin 1 :verbose -1)))
+  (refuse "XGBoost,  :implicit-value 0" xgb (declaring 0) '())
+  (cl-gbdt:close-backend lgbm)
+  (cl-gbdt:close-backend xgb))
+```
+
+Output:
+
+```
+LightGBM, :implicit-value :missing SIGNALED UNSUPPORTED-ARGUMENT
+  the matrix's declared :IMPLICIT-VALUE :MISSING is not supported by LIGHTGBM: an absent entry is 0.0 to this backend, not missing. LightGBM's own `zero_as_missing' can
+make one missing, but only when it is set on the booster as well as the dataset, and cl-gbdt
+reads neither -- so it cannot verify this declaration. Leave :IMPLICIT-VALUE undeclared if you
+have set that flag..
+XGBoost,  :implicit-value 0 SIGNALED UNSUPPORTED-ARGUMENT
+  the matrix's declared :IMPLICIT-VALUE 0.0d0 is not supported by XGBOOST: an absent entry is missing to this backend, not 0.0. Store the zeros explicitly and declare
+:NONE if 0.0 is what you mean..
+```
+
+`declaring` reuses `*sparse*`'s own stored arrays -- the same eight rows, every element still
+stored -- with a fresh `:implicit-value` on top, rather than retyping the literals. Both
+refusals happen inside `make-dataset`, before either backend's shared library is touched, and
+each report names the mismatched declaration and explains why in words specific to that
+backend. Both texts contain the bare word "missing", so the functional suite's own refusal
+tests key on a longer, backend-specific phrase instead -- LightGBM's names the `zero_as_missing`
+flag, XGBoost's says "Store the zeros explicitly" -- to keep checking the right message rather
+than either.
+
 `:none` is verified **structurally**, at `make-csr-matrix` construction, rather than merely
 counted: a row's element count alone does not establish that nothing is absent, because
 `make-csr-matrix` does not reject a column index repeated within a row -- duplicates are legal
