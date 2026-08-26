@@ -82,7 +82,7 @@
   "The command a stage 2 failure message tells the reader to run.")
 
 (defparameter +minimum-published-symbols+
-  '(("cl-gbdt" . 145) ("cl-gbdt/lightgbm" . 93) ("cl-gbdt/xgboost" . 94))
+  '(("cl-gbdt" . 146) ("cl-gbdt/lightgbm" . 93) ("cl-gbdt/xgboost" . 94))
   "Per-package floor on published symbol count, re-measured against a live COLLECT-ENTRIES
 run on 2026-08-13 to match docs/API-REFERENCE.md's own per-package index counts as committed
 that day -- not copied from any earlier plan or brief. See this file's header, item 4, for why
@@ -92,7 +92,11 @@ smaller surface.
 
 Raised from 141/88/89 by file-input-layer-1's Task 6: `create-dataset-from-file' joins both
 backend packages, and `file-format-mismatch' and its three readers join all three public
-packages through `cl-gbdt/src/conditions'.")
+packages through `cl-gbdt/src/conditions'.
+
+`cl-gbdt' raised from 145 to 146 by thread-safety-contract's Task 1: `with-backend' joins
+`cl-gbdt' alone, through `src/all.lisp''s re-export of `cl-gbdt/src/protocol' -- neither
+backend package publishes it, so `cl-gbdt/lightgbm' and `cl-gbdt/xgboost' stay at 93/94.")
 
 (defun die (format-control &rest arguments)
   "Print FORMAT-CONTROL/ARGUMENTS to *ERROR-OUTPUT* as a FAIL line and exit with status 1.
