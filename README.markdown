@@ -297,7 +297,7 @@ which links each row on to the guide that measures it.
 Every document this repository tracks, and the question each one answers. The licence texts
 themselves -- `LICENSE` and `LICENSES/` -- are named under [License](#license) below.
 
-**Every code block in the six guides below, and the quick start above, was actually run to
+**Every code block in the seven guides below, and the quick start above, was actually run to
 produce the output pasted beneath it** -- SBCL via `ros run`, with `./tools/fetch-libs.sh`'s
 vendored libraries present. An `Output:` block is a transcript, not an illustration.
 
@@ -318,6 +318,7 @@ so read its blocks in order, or evaluate the earlier ones first.
 | [`docs/user-guide/custom-training.md`](docs/user-guide/custom-training.md) | `train`'s `:objective` and `:evaluation` callbacks -- boosting against your own loss and recording your own metrics |
 | [`docs/user-guide/file-input.md`](docs/user-guide/file-input.md) | `create-dataset-from-file` on each backend, and everything measured about getting its format argument wrong |
 | [`docs/user-guide/backend-differences.md`](docs/user-guide/backend-differences.md) | The full catalogue of where LightGBM and XGBoost genuinely differ, plus the version matrix behind [Supported environments](#supported-environments) |
+| [`docs/user-guide/threads.md`](docs/user-guide/threads.md) | What is safe to do from more than one thread, what is not, and why cl-gbdt adds no locking of its own |
 | [`docs/API-REFERENCE.md`](docs/API-REFERENCE.md) | Every symbol `cl-gbdt`, `cl-gbdt/lightgbm` and `cl-gbdt/xgboost` export, one entry each. Generated from the docstrings, so it cannot drift from the code -- never hand-edit it |
 
 ### Working on the library

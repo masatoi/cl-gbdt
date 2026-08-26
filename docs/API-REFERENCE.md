@@ -1158,6 +1158,10 @@ identifies which C function reported CODE, for the condition's report.
 
 ```text
 Close BACKEND. Does nothing if it is already closed.
+
+That is a single-threaded promise: the openness check and the shutdown are not
+atomic, so closing BACKEND while another thread is inside a call on it is a hazard,
+not a no-op -- see `docs/user-guide/threads.md'.
 ```
 
 <a id="cl-gbdt-lightgbm-create-booster"></a>
@@ -2757,6 +2761,9 @@ Reader of `cl-gbdt:foreign-matrix`'s `rows` slot. See `cl-gbdt:foreign-matrix`.
 
 ```text
 Free BOOSTER. Does nothing if it was already freed.
+
+Freeing the same BOOSTER from two threads at once can end the process outright
+rather than signalling anything catchable -- see `docs/user-guide/threads.md'.
 ```
 
 ### Methods
@@ -2853,6 +2860,9 @@ is the caller's own or the one inside `cl-gbdt''s `with-booster'.
 
 ```text
 Free DATASET. Does nothing if it was already freed.
+
+Freeing the same DATASET from two threads at once can end the process outright
+rather than signalling anything catchable -- see `docs/user-guide/threads.md'.
 ```
 
 ### Methods
@@ -3952,6 +3962,9 @@ Open the backend NAME and return a `backend' instance.
 PATH, when supplied, takes precedence over the shared library search. Signals a
 condition when NAME is unregistered or initialization fails. Close a successful
 instance with `close-backend'.
+
+The backend it returns may be used from several threads at once, subject to the
+contract in `docs/user-guide/threads.md'.
 ```
 
 <a id="cl-gbdt-predict"></a>
@@ -4546,6 +4559,12 @@ already-released HANDLE does nothing -- this is what lets `free-dataset' and
 `free-booster' promise that freeing an already-freed handle is a no-op. Also cancels
 HANDLE's finalizer, since that finalizer exists only to report a free that never
 happened, and this one just did.
+
+Freeing HANDLE from two threads at once is unsafe: the check above and the free it
+guards are a check-then-act on a cons cell, not an atomic operation, so both threads
+can read it as not-yet-released and both go on to call FREE-FUNCTION. That is not a
+catchable Lisp condition -- it can end the process outright, skipping every
+`unwind-protect' on the way. See `docs/user-guide/threads.md'.
 ```
 
 <a id="cl-gbdt-released-handle-error"></a>

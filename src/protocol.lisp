@@ -661,10 +661,16 @@ this is checked before any foreign call rather than left to crash -- and
 `backend-not-open' when BOOSTER's backend has since been closed."))
 
 (defgeneric free-dataset (dataset)
-  (:documentation "Free DATASET. Does nothing if it was already freed."))
+  (:documentation "Free DATASET. Does nothing if it was already freed.
+
+Freeing the same DATASET from two threads at once can end the process outright
+rather than signalling anything catchable -- see `docs/user-guide/threads.md'."))
 
 (defgeneric free-booster (booster)
-  (:documentation "Free BOOSTER. Does nothing if it was already freed."))
+  (:documentation "Free BOOSTER. Does nothing if it was already freed.
+
+Freeing the same BOOSTER from two threads at once can end the process outright
+rather than signalling anything catchable -- see `docs/user-guide/threads.md'."))
 
 ;;; ---------------------------------------------------------------------------
 ;;; Fallbacks: the backend is loaded, its unified-API methods are not

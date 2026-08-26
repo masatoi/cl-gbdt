@@ -165,7 +165,13 @@ FREE-FUNCTION is a function of one argument, HANDLE's pointer. A second call on 
 already-released HANDLE does nothing -- this is what lets `free-dataset' and
 `free-booster' promise that freeing an already-freed handle is a no-op. Also cancels
 HANDLE's finalizer, since that finalizer exists only to report a free that never
-happened, and this one just did."
+happened, and this one just did.
+
+Freeing HANDLE from two threads at once is unsafe: the check above and the free it
+guards are a check-then-act on a cons cell, not an atomic operation, so both threads
+can read it as not-yet-released and both go on to call FREE-FUNCTION. That is not a
+catchable Lisp condition -- it can end the process outright, skipping every
+`unwind-protect' on the way. See `docs/user-guide/threads.md'."
   (let ((released (%handle-released-cell handle)))
     (unless (car released)
       (funcall free-function (handle-pointer handle))

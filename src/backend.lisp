@@ -91,7 +91,10 @@ Implemented by each backend."))
 
 PATH, when supplied, takes precedence over the shared library search. Signals a
 condition when NAME is unregistered or initialization fails. Close a successful
-instance with `close-backend'."
+instance with `close-backend'.
+
+The backend it returns may be used from several threads at once, subject to the
+contract in `docs/user-guide/threads.md'."
   (let ((class-name (find-backend-class name)))
     (unless class-name
       (error 'unknown-backend
@@ -104,7 +107,11 @@ instance with `close-backend'."
       backend)))
 
 (defun close-backend (backend)
-  "Close BACKEND. Does nothing if it is already closed."
+  "Close BACKEND. Does nothing if it is already closed.
+
+That is a single-threaded promise: the openness check and the shutdown are not
+atomic, so closing BACKEND while another thread is inside a call on it is a hazard,
+not a no-op -- see `docs/user-guide/threads.md'."
   (when (backend-openp backend)
     (shutdown-backend backend)
     (setf (backend-openp backend) nil))
