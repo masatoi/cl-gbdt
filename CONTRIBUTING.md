@@ -106,6 +106,13 @@ whole workflow file, not a job:
   other's pinned version, not against each other's endpoints too.
 - `.github/workflows/lint.yml` runs the static checks on one target, since nothing they
   look at varies by machine.
+- `.github/workflows/upstream.yml` asks PyPI once a week — and on every push to master —
+  whether LightGBM or XGBoost has released, and answers in the same run whether cl-gbdt
+  could take the new version. **It does not run on pull requests**, and it has no README
+  badge: a red badge named `upstream` reads, to a visitor, as a broken library, where what
+  it actually means is that the pin is one version behind. Its four jobs each mean one
+  thing, so which job is red says which of four things happened — see
+  [When the upstream workflow is red](#when-the-upstream-workflow-is-red) below.
 
 The logic lives in scripts rather than in the YAML, so the same checks run locally. **This is
 the whole set — every script under `tools/ci/`, in the order CI runs them.** Run the block
@@ -192,6 +199,70 @@ the package the `defpackage` clauses its file actually needs.
 **On macOS the functional tests also need `brew install libomp`.** The macOS wheels link
 against `@rpath/libomp.dylib` and, unlike the manylinux ones, do not vendor an OpenMP
 runtime, so `dlopen` fails without it.
+
+### When the upstream workflow is red
+
+`.github/workflows/upstream.yml` runs four jobs, and the combination says which of four
+things happened:
+
+| `pin-is-current` | `drift` | `try` | What it means |
+|---|---|---|---|
+| pass | pass | skipped | The pin is current. Nothing to do. |
+| **fail** | pass | pass | A new release exists and **the suite passes as-is**. |
+| **fail** | pass | **fail** | A new release exists and **the suite does not pass as-is**. |
+| **fail** | **fail** | skipped | A new release **changed a declaration cl-gbdt imports**. |
+| \- | \- | \- | `discover` failed: **the detector could not look**. Never read this as "nothing changed". |
+
+`discover` asks PyPI what the latest stable releases are and compares them with
+`ffi-spec/VERSIONS`. `pin-is-current` fails when they differ. `drift` runs
+`tools/check-upstream.lisp` against the *latest* tag rather than the pinned one. `try`
+fetches the latest wheel and runs layer 2 against it, on the backends that are actually
+behind — and only when `drift` was clean, since a changed declaration has already answered
+the question.
+
+**`pin-is-current` stays red until `ffi-spec/VERSIONS` is bumped.** There is no
+acknowledgement file and no way to mark a release as skipped; that was chosen deliberately
+over an annotation-only job, on the grounds that a weekly job summary nobody opens is the
+same as no detector at all.
+
+What to do when it is red:
+
+1. **Read `drift` and `try` first.** They say whether the bump is safe, and a red
+   `pin-is-current` on its own says nothing about that.
+2. **If both are green**, perform the version bump: it is its own piece of work, and
+   [Regenerating the bindings](#regenerating-the-bindings) below is the procedure. Bumping
+   `ffi-spec/VERSIONS` alone is not enough — the vendored headers, the generated
+   `src/*/c-api.lisp`, `ffi-spec/BINDING-COVERAGE.md`, `ffi-spec/ABI-BLACKLIST.md`,
+   `src/version.lisp`'s recorded range and the README's supported-environments table all
+   move with it, and `tools/ci/check-support-matrix.lisp` will fail until the last of them
+   does.
+3. **If `drift` is red**, upstream changed the declaration of a function cl-gbdt imports.
+   `ffi-spec/ABI-BLACKLIST.md` names this tool as its own maintenance path: a function
+   reported ABSENT moves from that file's "still present" table to "moot", and one reported
+   CHANGED is added to "still present".
+4. **If `try` is red**, read *which* tests failed before concluding anything.
+   On XGBoost, `xgboost-api-open-backend-against-vendored-library-warns-nothing` fails on
+   every new release by construction: it asserts `open-backend` emits no
+   `untested-backend-version` warning, and `src/version.lisp`'s `*xgboost-version-range*`
+   names the pinned version as its `inferred-high`. **That test failing alone means the
+   recorded range has not been widened yet**, which the bump does. LightGBM's C API
+   exposes no version, so its legs never reach this path.
+   Any *other* failing test is a real behavioural difference, and it belongs in
+   `src/version.lisp`'s recorded range and in
+   [Backend differences](docs/user-guide/backend-differences.md), the way XGBoost 1.7.0's
+   `rank:pairwise` failure already is.
+5. **If `discover` is red**, the detector could not look — PyPI was unreachable, or reported
+   a version in a shape the script refuses to guess at. Nothing about upstream has been
+   established either way.
+
+To run the detection half by hand, without waiting for a schedule:
+
+```bash
+./tools/latest-upstream.sh
+```
+
+Once the workflow is on `master`, a whole run can also be triggered on demand with
+`gh workflow run upstream.yml`.
 
 ## Regenerating the bindings
 
