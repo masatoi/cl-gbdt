@@ -22,10 +22,11 @@
 ;;;;
 ;;;; A concurrency test can find a bug; it cannot show the absence of one. Nothing here makes
 ;;;; any of `docs/user-guide/threads.md''s "unsafe" cases safe, and nothing here should be
-;;;; cited as though it had. The two worst of those cases -- freeing one handle from two
-;;;; threads, and closing a backend under a call in flight -- are deliberately NOT tested:
-;;;; both end the process rather than failing an assertion, so a test of them would take the
-;;;; suite down instead of reporting.
+;;;; cited as though it had. The three worst of those cases -- freeing one handle from two
+;;;; threads, closing a backend under a call in flight, and freeing a dataset out from under
+;;;; a booster with a call in flight on it -- are deliberately NOT tested: all three end the
+;;;; process rather than failing an assertion, so a test of them would take the suite down
+;;;; instead of reporting.
 ;;;;
 ;;;; `sb-thread' directly, not `bordeaux-threads': this system is already declared SBCL-only
 ;;;; in cl-gbdt.asd and its files already call `sb-sys' directly, so a portability dependency
