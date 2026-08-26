@@ -125,6 +125,7 @@ CL_GBDT_TEST_SYSTEM=cl-gbdt/tests/functional ros run -- --non-interactive \
   --load tools/ci/run-tests.lisp          # layer 2, needs ./tools/fetch-libs.sh first
 ros run -- --non-interactive --load tools/ci/lint.lisp
 ros run -- --non-interactive --load tools/ci/check-leaf-systems.lisp
+ros run -- --non-interactive --load tools/ci/check-source-reachability.lisp
 ros run -- --non-interactive --load tools/ci/check-layer-separation.lisp
 ros run -- --non-interactive --load tools/ci/check-layer-1-guards.lisp
 ros run -- --non-interactive --load tools/ci/check-float-traps.lisp
@@ -145,16 +146,17 @@ C entry point `ffi-spec/ABI-BLACKLIST.md` rules out, that every import a backend
 declared in its `*required-symbols*` or `*optional-symbols*`, and that every capability
 either list declares is registered in `*known-capabilities*`.
 
-**The last two are this branch's own additions, and they guard documentation rather than
-code.** `check-doc-links.lisp` resolves every relative Markdown link in the tracked docs --
-the file part against the linking file's own directory, and the `#fragment`, where there is
-one, against the target's headings under GitHub's slug rule -- because the README split
-turned a handful of cross-references into dozens and nothing in CI had ever read a Markdown
-file before. `check-support-matrix.lisp` proves the CI-verified column of the README's
-supported-environments table names exactly the versions CI actually runs -- the union of
-`ffi-spec/VERSIONS`'s pin and `.github/workflows/test.yml`'s `version-matrix` job, checked in
-both directions, so a version CI tests that the README omits fails as loudly as one the README
-claims and CI does not. The "Also measured" column is deliberately outside its reach, being
+**`check-doc-links.lisp` and `check-support-matrix.lisp` are this branch's own additions,
+and they guard documentation rather than code.** `check-doc-links.lisp` resolves every
+relative Markdown link in the tracked docs -- the file part against the linking file's own
+directory, and the `#fragment`, where there is one, against the target's headings under
+GitHub's slug rule -- because the README split turned a handful of cross-references into
+dozens and nothing in CI had ever read a Markdown file before. `check-support-matrix.lisp`
+proves the CI-verified column of the README's supported-environments table names exactly
+the versions CI actually runs -- the union of `ffi-spec/VERSIONS`'s pin and
+`.github/workflows/test.yml`'s `version-matrix` job, checked in both directions, so a
+version CI tests that the README omits fails as loudly as one the README claims and CI
+does not. The "Also measured" column is deliberately outside its reach, being
 hand measurement rather than anything a machine can re-derive. Both scripts fail the build
 rather than warning, on the same terms as every check above them.
 

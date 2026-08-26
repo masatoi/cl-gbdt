@@ -2,15 +2,16 @@
 ;;;;
 ;;;; Under package-inferred-system each source file owns its own package. This file
 ;;;; reassembles them into CL-GBDT, which is what callers use and what the library
-;;;; has always exported. Adding a symbol to any of the four packages below exports
+;;;; has always exported. Adding a symbol to any of the ten packages below exports
 ;;;; it from CL-GBDT automatically; nothing is listed twice.
 ;;;;
-;;;; The list of four packages below is hand-maintained: package-inferred-system
+;;;; The list of ten packages below is hand-maintained: package-inferred-system
 ;;;; does not enumerate src/ on its own. Add a src/foo.lisp and forget to list its
 ;;;; package here, and nothing ever refers to cl-gbdt/src/foo, so ASDF has no edge
 ;;;; to discover it by -- (ql:quickload :cl-gbdt) never even compiles the file, let
-;;;; alone exports its symbols. There is no separate failing test for this one: the
-;;;; silent failure is the file never being loaded at all, not an assertion to trip.
+;;;; alone exports its symbols. tools/ci/check-source-reachability.lisp is now the
+;;;; failing test for this one, walking every defsystem in cl-gbdt.asd to find any
+;;;; .lisp under src/ or tests/ that no closure reaches.
 
 (uiop:define-package #:cl-gbdt/src/all
   (:use-reexport #:cl-gbdt/src/conditions
