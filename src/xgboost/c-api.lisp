@@ -31,11 +31,6 @@ Nothing outside the backend system should call these directly."))
 (cffi:defcfun ("XGBGetGlobalConfig" xgb-get-global-config) :int
   (out-config :pointer))
 
-(cffi:defcfun ("XGDMatrixCreateFromFile" xgd-matrix-create-from-file) :int
-  (fname :pointer)
-  (silent :int)
-  (out :pointer))
-
 (cffi:defcfun ("XGDMatrixCreateFromURI" xgd-matrix-create-from-uri) :int
   (config :pointer)
   (out :pointer))

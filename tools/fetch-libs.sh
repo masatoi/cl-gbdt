@@ -9,7 +9,7 @@
 set -euo pipefail
 
 LIGHTGBM_VERSION="${LIGHTGBM_VERSION:-4.7.0}"
-XGBOOST_VERSION="${XGBOOST_VERSION:-3.3.0}"
+XGBOOST_VERSION="${XGBOOST_VERSION:-3.4.1}"
 
 repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 dest="${repo_root}/vendor"
