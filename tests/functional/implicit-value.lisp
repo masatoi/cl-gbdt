@@ -143,6 +143,16 @@ The training fixture, and the only one `:NONE' can be declared on."
   ;; Needs no backend: the refusals above are only trustworthy proof of anything if
   ;; make-dataset and predict are reading the same value make-csr-matrix stored, and this is
   ;; the reader they read it through.
+  ;;
+  ;; It is already exercised for real, indirectly, by every deftest above: each hands a
+  ;; DECLARED-CSR or COMPLETE-CSR matrix to make-dataset on a really-open backend --
+  ;; LIGHTGBM-REFUSES-A-MISSING-DECLARATION and XGBOOST-REFUSES-A-ZERO-DECLARATION hand one
+  ;; to predict too -- and cl-gbdt/src/config/implicit-value's check-implicit-value calls
+  ;; csr-matrix-implicit-value on every one of those calls, NIL declarations included. The
+  ;; functional-coverage checker cannot see that: it walks only the literal symbols written
+  ;; in tests/functional/*.lisp's own source, never what a call reaches inside src/, and no
+  ;; deftest above ever writes the symbol csr-matrix-implicit-value itself. This test exists
+  ;; to give the checker something it can see, not to add exercise that was missing.
   (testing "the four legal declarations round-trip through csr-matrix-implicit-value"
     (ok (null (cl-gbdt:csr-matrix-implicit-value (declared-csr nil)))
         "NIL declares nothing")

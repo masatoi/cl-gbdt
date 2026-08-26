@@ -1693,13 +1693,15 @@ conditions. `foreign-matrix' above is reader-only for the same reason: a `csr-ma
 exists is one both backends can be handed.
 
 An entry a row does not store is *absent*, not zero, and the two libraries read absence
-differently: LightGBM reads an absent entry as `0.0' (its own `zero_as_missing' is off by
-default) while XGBoost reads one as missing, and no config key on either changes that --
-it is what CSR means to each library. So a `csr-matrix' that omits entries describes
-different data to the two backends and changes trained numbers silently rather than
-signalling; store every element, zeros included, when the same matrix has to mean the same
-thing on both. See `docs/user-guide/data-and-prediction.md''s "An absent entry is not a
-zero, and the two libraries disagree about it" section for the measured runs on each.
+differently. LightGBM reads an absent entry as `0.0' while its own `zero_as_missing' is
+off, which is the default -- that flag can change it. XGBoost reads one as missing, and no
+key this project has found changes that: measured as none found, not established that none
+exists. So a `csr-matrix' that omits entries describes different data to the two backends
+and changes trained numbers silently rather than signalling; store every element, zeros
+included, when the same matrix has to mean the same thing on both. See
+`docs/user-guide/data-and-prediction.md''s "An absent entry is not a zero, and the two
+libraries disagree about it" section for the measured runs on each, and its "LightGBM's
+`zero_as_missing', measured" subsection for what that flag changes.
 
 `:IMPLICIT-VALUE' is how a caller states which of those their data means. `:NONE' states
 that nothing is absent -- every element is stored -- and is the only declaration both

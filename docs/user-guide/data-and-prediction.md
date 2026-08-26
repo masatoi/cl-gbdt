@@ -190,9 +190,11 @@ pass a `csr-matrix` in the first place -- and this API charges it rather than hi
 ### An absent entry is not a zero, and the two libraries disagree about it
 
 An entry a `csr-matrix` does not store is *absent*, and the two libraries read absence
-differently: **LightGBM reads an absent entry as `0.0`** (its own `zero_as_missing` is off by
-default), while **XGBoost reads one as missing**. No config key changes either -- that is
-what CSR means to each library. This matters because dropping zeros is exactly what a CSR
+differently: **LightGBM reads an absent entry as `0.0`** while its own `zero_as_missing` flag
+is off, which is the default -- that flag *can* change what LightGBM reads, measured below in
+[LightGBM's `zero_as_missing`, measured](#lightgbms-zero_as_missing-measured). **XGBoost reads
+one as missing**, and no key this project has found changes that -- measured as none found,
+not established that none exists. This matters because dropping zeros is exactly what a CSR
 conversion normally does, and the disagreement changes results silently rather than erroring:
 
 ```lisp
