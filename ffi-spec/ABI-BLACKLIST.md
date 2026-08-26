@@ -21,20 +21,23 @@ unsafe or points at the wrong signature.
 |---|---|---|
 | `LGBM_DatasetCreateFromMats` | Silent ABI break: the vendored reference implementations' header declared `int is_row_major`; current LightGBM declares `int* is_row_major`. Same name, same argument count, different pointee-ness -- a call compiled against the old signature corrupts memory instead of failing. | `LGBM_DatasetCreateFromMat`, or the streaming API (`LGBM_DatasetInitStreaming` + `LGBM_DatasetPushRows` + `LGBM_DatasetMarkFinished`) |
 | `XGDMatrixCreateFromDataIter` | Gained a `float missing` argument upstream since the reference implementations were written. A call built against the old arity passes the wrong values to whatever parameter now occupies that slot. | `XGDMatrixCreateFromCallback` |
-| `XGDMatrixCreateFromFile` | Already removed from XGBoost's upstream `master` branch as of design doc section 2.1's measurement, one release after the v3.3.0 tag this project currently vendors (`ffi-spec/VERSIONS`) -- so it is still emitted today, but relying on it means relying on something already gone in the version this project will track next. | `XGDMatrixCreateFromURI` |
 
-## Moot -- removed upstream, never emitted
+## Moot -- not in the generated bindings
 
 Design doc section 2.1 found that the reference implementation
 (`gitlab.common-lisp.net/cungil/xgboost`) calls five functions that upstream
-`master` has since removed; `XGDMatrixCreateFromFile` above is one of them. These
-four are the rest, and unlike it, they are simply absent from XGBoost v3.3.0
-itself (the version `ffi-spec/VERSIONS` pins), so they were never emitted into
-`src/xgboost/c-api.lisp` in the first place: `wanted-p` in `src/regen/emit.lisp`
-only emits what the vendored header declares, and the vendored header does not
-declare these. Listed here so a future contributor who sees them mentioned in the
-reference implementation's source does not go looking for them in this project's
-bindings.
+`master` has since removed. Four of them -- `XGDMatrixCreateFromCSREx`,
+`XGDMatrixCreateFromCSCEx`, `XGBoosterGetModelRaw` and `XGDMatrixSetGroup` -- are
+simply absent from every tag this project has ever vendored, so they were never
+emitted into `src/xgboost/c-api.lisp` at all: `wanted-p` in `src/regen/emit.lisp`
+only emits what the vendored header declares, and no vendored header has declared
+these. The fifth, `XGDMatrixCreateFromFile`, is different: it was still emitted as
+of the v3.3.0 tag this project vendored first, and only dropped out when the pin
+moved to v3.4.1, which removed it upstream. All five end up in the same place --
+absent from the current bindings -- so all five are listed here, but only four of
+them were never present to begin with. Listed here so a future contributor who
+sees any of these five mentioned in the reference implementation's source does not
+go looking for them in this project's bindings.
 
 | Function | Reason | Replacement |
 |---|---|---|
@@ -42,6 +45,7 @@ bindings.
 | `XGDMatrixCreateFromCSCEx` | Removed upstream | `XGDMatrixCreateFromCSC` |
 | `XGBoosterGetModelRaw` | Removed upstream | `XGBoosterSaveModelToBuffer` |
 | `XGDMatrixSetGroup` | Removed upstream | `XGDMatrixSetInfoFromInterface` |
+| `XGDMatrixCreateFromFile` | Removed upstream between the v3.3.0 tag this project vendored first and the v3.4.1 tag it vendors now (`ffi-spec/VERSIONS`), so it was emitted into `src/xgboost/c-api.lisp` until this project's pin moved and stopped being emitted the moment it did. | `XGDMatrixCreateFromURI` |
 
 ## Maintaining this list
 
