@@ -187,7 +187,7 @@ binary, so COLUMN is always 0, but the shape still has to be unpacked by hand."
 ;;; Task 3 wired `check-backend-version' into this backend's `initialize-backend' --
 ;;; see `cl-gbdt/src/xgboost/classes''s `initialize-backend' and
 ;;; `cl-gbdt/src/version''s `*xgboost-version-range*'. The vendored library here is
-;;; 3.3.0, XGBoost's own recorded VERIFIED point and *XGBOOST-VERSION-RANGE*'s
+;;; 3.4.1, XGBoost's own recorded VERIFIED point and *XGBOOST-VERSION-RANGE*'s
 ;;; INFERRED-HIGH -- inside the range by construction. A warning here would mean the
 ;;; range itself is recorded wrong, not that the vendored library is somehow suspect.
 

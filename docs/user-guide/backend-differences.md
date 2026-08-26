@@ -26,7 +26,7 @@ elsewhere, the row links on to that guide:
 | `evaluation`'s values | `LGBM_BoosterGetEval`'s own doubles, returned unmodified -- the secondary value says `:value-source :library-doubles` | Parsed out of the single formatted line `XGBoosterEvalOneIter` produces -- `:value-source :parsed-text`, with that line itself kept verbatim under `:raw`, and a value XGBoost spelled `inf`/`nan` coming back as `nil` rather than a number. The same line is `cl-gbdt/xgboost:evaluate-one-iteration`'s own primary value at Layer 1, for a caller who wants it without going through the portable API |
 | Model slicing | No counterpart at all: LightGBM's C API has nothing that extracts a range of boosting rounds into a new model, so `(backend-supports-p backend :model-slicing)` is `nil` and there is no LightGBM function to call | `cl-gbdt/xgboost:slice-model` (Layer 1, XGBoost-only), over `XGBoosterSlice`. Returns a new booster holding a half-open `[begin, end)` range of the parent's layers, independent of it -- freeing the parent leaves the slice usable. Deliberately not part of the unified API: with no LightGBM counterpart a portable version could only signal for every caller of one backend, or emulate, and emulating is what [the capability model](backends.md#asking-a-backend-what-it-can-do) exists to rule out |
 | `train`'s `:objective` | **Overrides** any `objective` in `:parameters` -- all five spellings this library honours, `objective_type`, `app`, `application` and `loss` included -- forcing it to `"none"`, since `LGBM_BoosterUpdateOneIterCustom` refuses to run while the booster holds an objective function at all | Never rewrites `:parameters`; a configured objective's own prediction transform stays in effect, so a custom-objective run's `predict :kind :normal` differs from `:raw` there, while LightGBM's are identical. See [Custom objective](custom-training.md#custom-objective) for both |
-| `backend-version` | Always `nil` -- LightGBM's C API has no version entry point | A `"MAJOR.MINOR.PATCH"` string, e.g. `"3.3.0"` |
+| `backend-version` | Always `nil` -- LightGBM's C API has no version entry point | A `"MAJOR.MINOR.PATCH"` string, e.g. `"3.4.1"` |
 | Untested-version warning | Never signalled -- there is no version to compare, so `open-backend` never checks one | `open-backend` signals `untested-backend-version` (a warning, not an error) when the loaded version falls outside the recorded supported range |
 
 `src/version.lisp` records that supported range as two distinguishable claims: a narrow
@@ -38,9 +38,11 @@ caller, not a signal of trouble.
 
 A version matrix (task 4) turned part of each inferred range into a measured one by actually
 running the functional suite -- not just comparing headers -- against the range's endpoints.
-The counts below are what that suite had when the matrix was measured; it has grown since,
-and the rows are left as the measurement recorded them rather than restated against a total
-that run never saw:
+Those runs were made on 2026-08-06, when the functional suite had 106 assertions; every `106`
+below is what the suite had that day, not a current figure -- it has grown since, and the
+rows are left as each measurement recorded it rather than restated against a total that run
+never saw. The `XGBoost 3.4.1` row was measured separately, on 2026-08-26 once 3.4.1 became
+the pin, against the suite as it then stood:
 
 | library | version | result |
 |---|---|---|
@@ -49,7 +51,13 @@ that run never saw:
 | LightGBM | 4.7.0 (pinned) | ✅ all 106 assertions pass |
 | XGBoost | 1.7.0 | ❌ 105 of 106 pass; the ranking round trip fails (see below) |
 | XGBoost | 2.0.0 | ✅ all 106 assertions pass |
-| XGBoost | 3.3.0 (pinned) | ✅ all 106 assertions pass |
+| XGBoost | 3.3.0 | ✅ all 106 assertions pass |
+| XGBoost | 3.4.1 (pinned) | ✅ all 1008 assertions pass |
+
+3.3.0 stops being a CI-verified version with this table: `.github/workflows/test.yml`'s
+`version-matrix` job tests the recorded range's endpoints only, and 3.3.0 is now interior to
+2.0.0-3.4.1 rather than an endpoint. It stays inside the range on the evidence in
+`src/version.lisp`'s docstring, which this table does not itself re-run.
 
 XGBoost 1.7.0 is a real, measured incompatibility, not a gap in coverage: every assertion
 `tools/check-upstream.lisp` cannot see -- plain classification and multiclass round trips,
@@ -138,7 +146,7 @@ Output:
 
 ```
 LightGBM backend-version: NIL
-XGBoost  backend-version: "3.3.0"
+XGBoost  backend-version: "3.4.1"
 LightGBM :reference accepted; aligned dataset has 4 rows
 XGBoost  :reference SIGNALED UNSUPPORTED-ARGUMENT: make-dataset's :reference is not supported by XGBOOST: XGBoost has no bin-mapper alignment; :reference is a LightGBM-only concept.
 XGBoost  :group accepted; grouped dataset has 4 rows

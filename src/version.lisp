@@ -121,12 +121,13 @@ that argument. VERIFIED-LOW/HIGH always fall within [INFERRED-LOW, INFERRED-HIGH
    :verified-low "4.0.0" :verified-high "4.7.0"
    :verified-evidence (concatenate
                         'string
-                        "106 functional assertions pass against both endpoints, "
+                        "the functional suite passed against both endpoints, measured 2026-08 "
+                        "when it had 106 assertions, "
                         "task 4's local version matrix")
    :inferred-low "3.0.0" :inferred-high "4.7.0"
    :inferred-evidence (concatenate
                         'string
-                        "the 38 imported functions' declarations (18 of them "
+                        "the 54 imported functions' declarations (28 of them "
                         "LightGBM's) are unchanged across this range, per "
                         "tools/check-upstream.lisp"))
   "LightGBM's recorded compatible-version range.
@@ -151,15 +152,16 @@ next matrix run.")
 
 (defparameter *xgboost-version-range*
   (make-version-range
-   :verified-low "2.0.0" :verified-high "3.3.0"
+   :verified-low "2.0.0" :verified-high "3.4.1"
    :verified-evidence (concatenate
                         'string
-                        "106 functional assertions pass against both endpoints, "
+                        "the functional suite passed against both endpoints, measured 2026-08 "
+                        "when it had 106 assertions, "
                         "task 4's local version matrix")
-   :inferred-low "2.0.0" :inferred-high "3.3.0"
+   :inferred-low "2.0.0" :inferred-high "3.4.1"
    :inferred-evidence (concatenate
                         'string
-                        "the 38 imported functions' declarations (20 of them "
+                        "the 54 imported functions' declarations (26 of them "
                         "XGBoost's) are unchanged all the way back to 1.7.0, per "
                         "tools/check-upstream.lisp -- but task 4 measured 1.7.0 itself "
                         "and it failed (see below), so the claimed range does not "
@@ -180,10 +182,26 @@ including the plain classification and multiclass round trips, feature-importanc
 save/load, and every close-backend guard) passed unchanged at 1.7.0 -- this is a real
 function returning different numbers, not a symptom of a missing symbol or a crash, so
 `probe-foreign-symbols' and `tools/check-upstream.lisp''s header comparison could never
-have caught it. `xgboost==2.0.0' was tried next and passed everything the pinned
+have caught it. `xgboost==2.0.0' was tried next and passed everything the then-pinned
 \"3.3.0\" does, so INFERRED-LOW moved up to meet VERIFIED-LOW at \"2.0.0\" rather than
 leave the disproven \"1.7.0\" claim in place under a wider, ABI-only label. Nothing
-between 1.7.0 and 2.0.0 was tested, so this range makes no claim about it either.")
+between 1.7.0 and 2.0.0 was tested, so this range makes no claim about it either.
+
+Both bounds moved again, from \"3.3.0\" to \"3.4.1\": 3.4.1 removes
+`XGDMatrixCreateFromFile' from XGBoost's C API (see `ffi-spec/ABI-BLACKLIST.md''s moot
+table), but that function was already blacklisted and never imported by this project,
+and every declaration cl-gbdt does import is unchanged -- confirmed by
+`tools/check-upstream.lisp' before the pin moved. The whole functional suite passed
+against 3.4.1 on this machine, linux-aarch64 -- the same kind of evidence, a single
+local run, that backed the \"3.3.0\" point it replaces, whose own VERIFIED-EVIDENCE
+also cites task 4's local version matrix, so this move does not weaken the standard.
+Going forward, CI's `test' job (`test.yml') is configured to run that same suite
+against 3.4.1 on all three of its platforms -- linux-x86_64, linux-aarch64, and
+macos-aarch64 -- on pushes to master and on every pull request, extending this
+evidence beyond the one platform measured here. 3.4.0 itself was not tested, the
+same way the gap between 1.7.0 and
+2.0.0 above was not: this range's endpoints are what was actually measured, not a
+claim about every version between them.")
 
 (defun version-range-tested-description (range)
   "Return RANGE's evidence as a list of two strings -- the verified point/range, then

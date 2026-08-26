@@ -94,7 +94,7 @@ covers a whole workflow file, not a job, which is why the two badges report inde
   enough contention to get sibling jobs cancelled. The evidence for narrowing the range is the
   local run recorded in `src/version.lisp`'s docstring, not a red CI job — see that job's own
   header comment in `test.yml`, which is the record of the decision. The
-  pinned versions (4.7.0/3.3.0) are already covered by the job above, so this job does
+  pinned versions (4.7.0/3.4.1) are already covered by the job above, so this job does
   not repeat them. **One platform only, Linux x86_64** -- the three-platform matrix above
   exists to catch platform-specific bugs (byte order, calling convention, `.dylib` vs `.so`
   discovery) in bindings generated once and committed; a library *version* difference is a
@@ -288,8 +288,11 @@ ros run -- --non-interactive --load tools/regen.lisp
 ```
 
 1. `tools/fetch-headers.sh` downloads the headers reachable from each backend's
-   `c_api.h`, at the tags pinned in `ffi-spec/VERSIONS`, into `ffi-spec/`. No
-   patching or hand-editing.
+   `c_api.h`, at the tags `ffi-spec/VERSIONS` pins -- its `LIGHTGBM_TAG`/`XGBOOST_TAG`
+   defaults read that file, so they cannot drift from it -- into `ffi-spec/`, then
+   rewrites `ffi-spec/VERSIONS` to match what it fetched. An environment override both
+   selects the tag to fetch and becomes the new pin, once the file is rewritten to
+   match it: that is how a version bump is performed. No patching or hand-editing.
 2. The `docker build` compiles c2ffi, pinned to an exact commit on its LLVM-18
    branch, into the `cl-gbdt-c2ffi:llvm-18` image. `tools/c2ffi.sh` invokes that
    image; `tools/regen.lisp` invokes `tools/c2ffi.sh`.
@@ -298,6 +301,20 @@ ros run -- --non-interactive --load tools/regen.lisp
    validates the result (minimum function count, required symbols present, no
    architecture-dependent types) before replacing the committed file. A failed
    validation leaves the previously committed file untouched.
+
+**`tools/regen.lisp` always rewrites both backends' `.spec` files, even when only one
+header changed.** c2ffi's own output is not byte-stable across separate runs -- its
+internal `ns`/`id` numbers on anonymous structs and macro-derived `const` entries can
+shift, and entries can reorder, with no effect on the emitted `src/*/c-api.lisp` when
+nothing in that backend's header actually changed. A regeneration aimed at one backend
+should therefore `git checkout <base-commit> -- <the other backend's .spec path>` before
+committing, so the diff reflects only the backend that changed, then re-run
+`cl-gbdt/tests`'s `committed-bindings-match-their-committed-spec` to confirm the reverted
+spec still reproduces the committed bindings for both backends. Separately,
+`tools/fetch-headers.sh` `rm -rf`s each backend's whole `include/` directory before
+repopulating just the headers, so both committed `.spec` files transiently show as
+deleted in `git status` between the fetch and the following `regen.lisp` run -- expected,
+and resolved once regeneration recreates them.
 
 Expected output ends with two lines like:
 

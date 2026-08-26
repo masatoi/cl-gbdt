@@ -27,7 +27,7 @@ with substantial portions of the software. The header files carry their copyrigh
 point at a `LICENSE` in their own project root, which is not distributed here — so the texts
 are vendored verbatim under `LICENSES/` at the same tags recorded in `ffi-spec/VERSIONS`.
 
-XGBoost has no `NOTICE` file at v3.3.0, so Apache 2.0 section 4(d) adds no further
+XGBoost has no `NOTICE` file at v3.4.1, so Apache 2.0 section 4(d) adds no further
 attribution requirement.
 
 ## Generated bindings

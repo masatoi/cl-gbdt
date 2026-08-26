@@ -295,7 +295,6 @@ rather than leaving it to whoever edits one of them.
 |---|---|
 | `LGBM_DatasetCreateFromMats` | See that file's own row for the silent `int` / `int*` `is_row_major` break. It names two replacements, and they do not fare alike here: `LGBM_DatasetCreateFromMat` is already wrapped and is the one to reach for, while the other -- the streaming API -- is itself excluded above, so a reader following that half of the recommendation should stop there rather than take it as licence. |
 | `XGDMatrixCreateFromDataIter` | See that file's own row for the `float missing` argument gained upstream since the reference implementations were written. Its named replacement, `XGDMatrixCreateFromCallback`, is itself excluded above as a C callback -- so unlike `LGBM_DatasetCreateFromMats`, neither the blacklisted function nor its replacement is reachable, and this operation is unavailable rather than merely unwrapped. |
-| `XGDMatrixCreateFromFile` | See that file's own row: already gone from XGBoost's `master`, one release after the tag `ffi-spec/VERSIONS` pins. Its named replacement, `XGDMatrixCreateFromURI`, is now wrapped as `create-dataset-from-file`, which is the recommendation this file has acted on. Upstream's own header marks this deprecated since 2.0.0 in favour of that same function, so the blacklist and the header agree; the blacklist's reason is the stronger of the two and is the one that governs. |
 
 ## Excluded — superseded by a wrapped entry point
 

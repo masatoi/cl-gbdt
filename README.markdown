@@ -56,7 +56,7 @@ requirement, and is marked as one.
 | macOS | aarch64 | -- |
 | Windows | not tested | -- |
 | LightGBM | 4.0.0, 4.7.0 (pinned) | 3.0.0, the inferred lower bound, has no aarch64 wheel on PyPI and stays untested there |
-| XGBoost | 2.0.0, 3.3.0 (pinned) | **1.7.0 fails**: 105 of 106 assertions pass, the ranking round trip does not |
+| XGBoost | 2.0.0, 3.4.1 (pinned) | **1.7.0 fails**: 105 of 106 assertions pass (measured 2026-08-06, when the suite had 106), the ranking round trip does not |
 | ASDF | no version verified: CI runs `ros install asdf`, taking whatever the current release is that day | **Requirement, not a measurement: 3.3.7 or newer** -- see below |
 
 The pinned versions are the ones `ffi-spec/VERSIONS` names and `./tools/fetch-libs.sh`
@@ -269,7 +269,7 @@ which links each row on to the guide that measures it.
 | `predict`'s `:kind` on a `csr-matrix` | All four kinds | `:normal` and `:raw` only -- its CSR entry point is the *inplace* one, which refuses `:contrib` and `:leaf-index` |
 | `save-model`'s `:num-iteration` | Limits how many trees are saved | `unsupported-argument` -- `XGBoosterSaveModel` always saves every round |
 | Model slicing | No counterpart at all; `(backend-supports-p backend :model-slicing)` is `nil` | `cl-gbdt/xgboost:slice-model`, Layer 1 and XGBoost-only: a new booster over a half-open range of the parent's layers |
-| `backend-version` | Always `nil` -- the C API has no version entry point | A `"MAJOR.MINOR.PATCH"` string, e.g. `"3.3.0"` |
+| `backend-version` | Always `nil` -- the C API has no version entry point | A `"MAJOR.MINOR.PATCH"` string, e.g. `"3.4.1"` |
 
 ## Known limitations
 
