@@ -10,8 +10,12 @@
 ;;;; package here, and nothing ever refers to cl-gbdt/src/foo, so ASDF has no edge
 ;;;; to discover it by -- (ql:quickload :cl-gbdt) never even compiles the file, let
 ;;;; alone exports its symbols. tools/ci/check-source-reachability.lisp is now the
-;;;; failing test for this one, walking every defsystem in cl-gbdt.asd to find any
-;;;; .lisp under src/ or tests/ that no closure reaches.
+;;;; failing test for a file no system reaches at all, walking every defsystem in
+;;;; cl-gbdt.asd to find any .lisp under src/ or tests/ that no closure reaches --
+;;;; but it does not catch a src/ file reached only through a test's own dependency:
+;;;; that one still loads under cl-gbdt/tests while cl-gbdt itself never compiles
+;;;; it. So this list still has to be maintained by hand and by eye; the check
+;;;; narrows the silent-failure window rather than closing it.
 
 (uiop:define-package #:cl-gbdt/src/all
   (:use-reexport #:cl-gbdt/src/conditions

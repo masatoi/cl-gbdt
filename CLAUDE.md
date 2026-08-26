@@ -459,11 +459,11 @@ src/docgen/   The API-reference emitter (introspect.lisp, render.lisp, emit.lisp
 tests/        Rove test suites, layer 1 (no shared library) plus tests/functional/,
               layer 2 (calls the real shared libraries)
 tools/ci/     The scripts CI actually runs: run-tests.lisp, lint.lisp,
-              check-leaf-systems.lisp, check-layer-separation.lisp, check-float-traps.lisp,
-              check-layer-1-guards.lisp, check-abi-blacklist.lisp,
-              check-binding-coverage.lisp, check-api-reference.lisp,
-              check-functional-coverage.lisp, check-doc-links.lisp,
-              check-support-matrix.lisp, check-source-reachability.lisp
+              check-leaf-systems.lisp, check-source-reachability.lisp,
+              check-layer-separation.lisp, check-layer-1-guards.lisp,
+              check-float-traps.lisp, check-abi-blacklist.lisp, check-binding-coverage.lisp,
+              check-api-reference.lisp, check-functional-coverage.lisp,
+              check-doc-links.lisp, check-support-matrix.lisp
 tools/        regen.lisp (regenerates src/*/c-api.lisp), gen-api-reference.lisp
               (regenerates docs/API-REFERENCE.md), and the shell scripts they and CI call
 ffi-spec/     Vendored C headers and the c2ffi specs generated from them;

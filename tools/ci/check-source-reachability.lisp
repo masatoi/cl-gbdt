@@ -74,7 +74,11 @@
   "Each tree this check scans, paired with the floor on how many `.lisp' files it must find
 there. Measured 2026-08-26: `src/' holds 42 and `tests/' 41. The floors sit well below both on
 purpose -- they catch a glob that matched nothing, not a tree that grew, and adding a file must
-never require touching them. See THE FLOORS in this file's header.")
+never require touching them. See THE FLOORS in this file's header.
+
+Hardcoded to these two, the same as `tools/ci/check-leaf-systems.lisp''s `+leaf-roots+'. A
+tree added elsewhere -- `examples/', `contrib/' -- with `.lisp' sources wired to no system
+leaves both that check and this one green, and nothing here would say why.")
 
 (defparameter +minimum-systems+ 5
   "Floor on how many `defsystem' forms reading `cl-gbdt.asd' must yield. Nine are declared
@@ -128,15 +132,27 @@ because a plan may name a file a `.asd' declares and the tree does not carry, an
 job is to report unreachable files, not to be the first thing that notices a missing one."
   (let ((reached (make-hash-table :test #'equal)))
     (dolist (name system-names reached)
-      (dolist (component (asdf:required-components (asdf:find-system name)
-                                                   :other-systems t
-                                                   :keep-component 'asdf:cl-source-file))
-        (let ((path (asdf:component-pathname component)))
-          (when (and path (probe-file path))
-            (setf (gethash (namestring (truename path)) reached) t)))))))
+      (let ((system (asdf:find-system name nil)))
+        (unless system
+          (die "system ~A is not on ASDF's search path -- likely cause: this repository ~
+                is not registered with ASDF (e.g. missing the ~~/.roswell/local-projects ~
+                symlink CI creates); run this from the repository root with the project ~
+                registered."
+               name))
+        (dolist (component (asdf:required-components system
+                                                     :other-systems t
+                                                     :keep-component 'asdf:cl-source-file))
+          (let ((path (asdf:component-pathname component)))
+            (when (and path (probe-file path))
+              (setf (gethash (namestring (truename path)) reached) t))))))))
 
 (defun tree-files (root tree)
-  "Return every `.lisp' file under TREE, a directory name relative to ROOT."
+  "Return every `.lisp' file under TREE, a directory name relative to ROOT.
+
+Globs the filesystem directly rather than asking `git ls-files' the way
+`tools/ci/check-doc-links.lisp' does -- deliberately: an untracked REPL scratch file such
+as `src/try.lisp' reddens this check locally the moment it exists, before it is ever
+`git add'-ed, while CI, which only ever has tracked files checked out, stays green."
   (directory (merge-pathnames (format nil "~A/**/*.lisp" tree) root)))
 
 (let ((root (truename (uiop:getcwd)))
