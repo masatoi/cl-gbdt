@@ -10,15 +10,38 @@
 # this project exists to avoid.
 set -euo pipefail
 
-LIGHTGBM_TAG="${LIGHTGBM_TAG:-v4.7.0}"
-XGBOOST_TAG="${XGBOOST_TAG:-v3.4.1}"
+repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+spec_root="${repo_root}/ffi-spec"
+versions_file="${spec_root}/VERSIONS"
+
+# Read the tag pinned for KEY in ffi-spec/VERSIONS, in the v-prefixed form this script
+# wants (a git tag / URL path segment). tools/latest-upstream.sh's
+# pinned_in_versions_file reads the same file with the same sed shape but strips the
+# "v", since it wants a bare version to compare -- mind the difference. Fails loudly,
+# naming the file, rather than falling back to a default: a silent fallback is exactly
+# how the old hardcoded defaults drifted from the pin in the first place.
+pinned_tag() {
+  local key="$1"
+  local tag
+  tag="$(sed -n "s/^${key} \(v[0-9][0-9]*\.[0-9][0-9]*\.[0-9][0-9]*\)\$/\1/p" "${versions_file}")"
+  if [ -z "${tag}" ]; then
+    echo "error: ${versions_file} has no '${key} v<MAJOR.MINOR.PATCH>' line." >&2
+    return 1
+  fi
+  printf '%s' "${tag}"
+}
+
+# The pin lives in ffi-spec/VERSIONS; these defaults read it back so the tags fetched
+# here cannot drift from it. An environment override is how a version bump is
+# performed: `XGBOOST_TAG=v3.4.2 tools/fetch-headers.sh` fetches that tag instead, and
+# below, writes it into ffi-spec/VERSIONS as the new pin.
+LIGHTGBM_TAG="${LIGHTGBM_TAG:-$(pinned_tag lightgbm)}"
+XGBOOST_TAG="${XGBOOST_TAG:-$(pinned_tag xgboost)}"
 
 # Headers reachable from LightGBM/c_api.h. Verified with:
 #   grep -E '^#include <LightGBM/' c_api.h arrow.h export.h
 LIGHTGBM_HEADERS=(c_api.h arrow.h export.h)
 
-repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-spec_root="${repo_root}/ffi-spec"
 work="$(mktemp -d)"
 trap 'rm -rf "${work}"' EXIT
 
