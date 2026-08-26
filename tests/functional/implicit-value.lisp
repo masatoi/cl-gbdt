@@ -138,3 +138,17 @@ The training fixture, and the only one `:NONE' can be declared on."
         (cl-gbdt:with-dataset (dataset (cl-gbdt:make-dataset backend (declared-csr nil)
                                                              :label *labels*))
           (ok (= 4 (cl-gbdt:dataset-num-rows dataset)) "the dataset was built"))))))
+
+(deftest csr-matrix-implicit-value-reads-back-what-was-declared
+  ;; Needs no backend: the refusals above are only trustworthy proof of anything if
+  ;; make-dataset and predict are reading the same value make-csr-matrix stored, and this is
+  ;; the reader they read it through.
+  (testing "the four legal declarations round-trip through csr-matrix-implicit-value"
+    (ok (null (cl-gbdt:csr-matrix-implicit-value (declared-csr nil)))
+        "NIL declares nothing")
+    (ok (eql :missing (cl-gbdt:csr-matrix-implicit-value (declared-csr :missing)))
+        ":MISSING round-trips")
+    (ok (eql 0.0d0 (cl-gbdt:csr-matrix-implicit-value (declared-csr 0.0d0)))
+        "a zero round-trips, canonicalized to 0.0d0")
+    (ok (eql :none (cl-gbdt:csr-matrix-implicit-value (complete-csr :none)))
+        ":NONE round-trips")))

@@ -17,7 +17,7 @@ hold Lisp conventions Markdown would render as something else.
 
 ## Packages
 
-### `cl-gbdt` -- 146 symbols
+### `cl-gbdt` -- 147 symbols
 
 - [`*known-capabilities*`](#cl-gbdt-known-capabilities)
 - [`*lightgbm-version-range*`](#cl-gbdt-lightgbm-version-range)
@@ -51,6 +51,7 @@ hold Lisp conventions Markdown would render as something else.
 - [`check-foreign-call`](#cl-gbdt-check-foreign-call)
 - [`close-backend`](#cl-gbdt-close-backend)
 - [`csr-matrix`](#cl-gbdt-csr-matrix)
+- [`csr-matrix-implicit-value`](#cl-gbdt-csr-matrix-implicit-value)
 - [`csr-matrix-indices`](#cl-gbdt-csr-matrix-indices)
 - [`csr-matrix-indptr`](#cl-gbdt-csr-matrix-indptr)
 - [`csr-matrix-num-columns`](#cl-gbdt-csr-matrix-num-columns)
@@ -166,7 +167,7 @@ hold Lisp conventions Markdown would render as something else.
 - [`wrong-backend-reference-expected`](#cl-gbdt-wrong-backend-reference-expected)
 - [`wrong-backend-reference-given`](#cl-gbdt-wrong-backend-reference-given)
 
-### `cl-gbdt/lightgbm` -- 93 symbols
+### `cl-gbdt/lightgbm` -- 94 symbols
 
 - [`*known-capabilities*`](#cl-gbdt-known-capabilities)
 - [`backend-capabilities`](#cl-gbdt-backend-capabilities)
@@ -198,6 +199,7 @@ hold Lisp conventions Markdown would render as something else.
 - [`create-dataset`](#cl-gbdt-lightgbm-create-dataset)
 - [`create-dataset-from-file`](#cl-gbdt-lightgbm-create-dataset-from-file)
 - [`csr-matrix`](#cl-gbdt-csr-matrix)
+- [`csr-matrix-implicit-value`](#cl-gbdt-csr-matrix-implicit-value)
 - [`csr-matrix-indices`](#cl-gbdt-csr-matrix-indices)
 - [`csr-matrix-indptr`](#cl-gbdt-csr-matrix-indptr)
 - [`csr-matrix-num-columns`](#cl-gbdt-csr-matrix-num-columns)
@@ -262,7 +264,7 @@ hold Lisp conventions Markdown would render as something else.
 - [`wrong-backend-reference-expected`](#cl-gbdt-wrong-backend-reference-expected)
 - [`wrong-backend-reference-given`](#cl-gbdt-wrong-backend-reference-given)
 
-### `cl-gbdt/xgboost` -- 94 symbols
+### `cl-gbdt/xgboost` -- 95 symbols
 
 - [`*known-capabilities*`](#cl-gbdt-known-capabilities)
 - [`backend-capabilities`](#cl-gbdt-backend-capabilities)
@@ -293,6 +295,7 @@ hold Lisp conventions Markdown would render as something else.
 - [`create-dataset`](#cl-gbdt-xgboost-create-dataset)
 - [`create-dataset-from-file`](#cl-gbdt-xgboost-create-dataset-from-file)
 - [`csr-matrix`](#cl-gbdt-csr-matrix)
+- [`csr-matrix-implicit-value`](#cl-gbdt-csr-matrix-implicit-value)
 - [`csr-matrix-indices`](#cl-gbdt-csr-matrix-indices)
 - [`csr-matrix-indptr`](#cl-gbdt-csr-matrix-indptr)
 - [`csr-matrix-num-columns`](#cl-gbdt-csr-matrix-num-columns)
@@ -1338,7 +1341,10 @@ call when BACKEND is not open -- see `%check-backend-open'. Signals `capability-
 naming `:sparse-input' when MATRIX is a `csr-matrix' and that capability reads false,
 `wrong-backend-reference' when REFERENCE is supplied and is not a `lightgbm-dataset',
 `released-handle-error' when it has already been freed, and `backend-not-open' when its own
-backend has since been closed -- see `%reference-pointer'. Signals `foreign-call-error' when
+backend has since been closed -- see `%reference-pointer'. Also signals `unsupported-argument',
+before any foreign call, when MATRIX is a `csr-matrix' whose `:IMPLICIT-VALUE' is `:MISSING':
+an absent entry is `0.0' to this library, not missing -- see
+`cl-gbdt/src/config/implicit-value'. Signals `foreign-call-error' when
 the creation call reports success but writes a null handle: a library-contract violation, but
 one every later call through this handle would otherwise dereference blindly.
 
@@ -1400,7 +1406,10 @@ the openness check below, which for another backend's object would answer about 
 shared library; see `%check-object-class'. Signals `backend-not-open' before any foreign
 call when BACKEND is not open -- see `%check-backend-open'. Signals `capability-unavailable'
 naming `:sparse-input' when MATRIX is a `csr-matrix' and that capability reads false -- see
-`%check-sparse-input'. Signals `foreign-call-error' when the creation call reports success but
+`%check-sparse-input'. Also signals `unsupported-argument', before any foreign call, when
+MATRIX is a `csr-matrix' whose `:IMPLICIT-VALUE' is `0.0d0': an absent entry is missing to this
+library, not `0.0' -- see `cl-gbdt/src/config/implicit-value'. Signals `foreign-call-error'
+when the creation call reports success but
 writes a null handle: a library-contract violation, but one every later call through this
 handle would otherwise dereference blindly.
 
@@ -1675,7 +1684,7 @@ double-float (*))'. All three are already coerced to what a backend hands to the
 a backend method only needs to pin them -- see `with-foreign-matrix' in this same file for
 the dense equivalent.
 
-Every slot is `:read-only t', so there is no `setf' expander for any of the four
+Every slot is `:read-only t', so there is no `setf' expander for any of the five
 accessors. `make-csr-matrix' is the only way to build one and it validates everything a
 backend later relies on; a writable slot would make that validation defeatable after the
 fact, and a matrix whose INDPTR had been replaced by a list would reach the C API as a raw
@@ -1691,6 +1700,12 @@ different data to the two backends and changes trained numbers silently rather t
 signalling; store every element, zeros included, when the same matrix has to mean the same
 thing on both. See `docs/user-guide/data-and-prediction.md''s "An absent entry is not a
 zero, and the two libraries disagree about it" section for the measured runs on each.
+
+`:IMPLICIT-VALUE' is how a caller states which of those their data means. `:NONE' states
+that nothing is absent -- every element is stored -- and is the only declaration both
+backends accept, since it is the only one that does not depend on which library reads the
+matrix. An undeclared matrix, `:IMPLICIT-VALUE' left NIL, is checked by nothing: the
+divergence above is still the caller's to manage.
 ```
 
 ### Slots
@@ -1714,6 +1729,21 @@ zero, and the two libraries disagree about it" section for the measured runs on 
 
 - **Readers** `csr-matrix-num-columns`
 
+
+#### `implicit-value`
+
+- **Readers** `csr-matrix-implicit-value`
+
+
+<a id="cl-gbdt-csr-matrix-implicit-value"></a>
+
+## `cl-gbdt:csr-matrix-implicit-value`
+
+- **Kind** function
+- **Signature** `(csr-matrix-implicit-value instance)`
+- **Exported from** `cl-gbdt`, `cl-gbdt/lightgbm`, `cl-gbdt/xgboost`
+
+Reader of `cl-gbdt:csr-matrix`'s `implicit-value` slot. See `cl-gbdt:csr-matrix`.
 
 <a id="cl-gbdt-csr-matrix-indices"></a>
 
@@ -3384,7 +3414,7 @@ truthfully for the wrong library. Signals `backend-not-open' when BACKEND is clo
 ## `cl-gbdt:make-csr-matrix`
 
 - **Kind** function
-- **Signature** `(make-csr-matrix &key indptr indices values num-columns)`
+- **Signature** `(make-csr-matrix &key indptr indices values num-columns implicit-value)`
 - **Exported from** `cl-gbdt`, `cl-gbdt/lightgbm`, `cl-gbdt/xgboost`
 
 ```text
@@ -3395,6 +3425,15 @@ INDPTR, INDICES and VALUES may each be any sequence -- list or vector -- and com
 already coerced to the specialized arrays `csr-matrix-indptr', `csr-matrix-indices' and
 `csr-matrix-values' store; see the struct's own docstring for exactly which types, and
 for why NUM-COLUMNS is required rather than inferred.
+
+IMPLICIT-VALUE declares what an entry the matrix does not store means to whichever backend
+reads it: NIL, a real for which `zerop' is true, `:MISSING' or `:NONE'. NIL is the default
+and means the matrix declares nothing. A zero, in any of `0', `0.0', `0.0d0' or `-0.0d0',
+is stored as `0.0d0'. An IMPLICIT-VALUE outside that set signals `unsupported-argument';
+`:NONE' on a matrix where some row does not store every one of its NUM-COLUMNS columns
+exactly once signals `dimension-mismatch'. The declaration is only recorded here -- it is
+checked against a backend's own reading of absence by `make-dataset' and `predict', not by
+this function.
 
 Signals `dimension-mismatch' when NUM-COLUMNS is not a positive integer; when INDICES
 and VALUES have different lengths; when INDPTR does not start at 0, decreases anywhere,
@@ -4259,7 +4298,10 @@ resolution produced, so the keyword itself never arrives from there.
 
 Signals `capability-unavailable' naming `:sparse-input' when MATRIX is a `csr-matrix' and that
 capability reads false -- see `%check-sparse-input' above, which checks it before any foreign
-call. Everything else means exactly what it means for a dense matrix: both entry points take
+call. Also signals `unsupported-argument', before any foreign call, when MATRIX is a
+`csr-matrix' whose `:IMPLICIT-VALUE' is `:MISSING': an absent entry is `0.0' to this library,
+not missing -- see `cl-gbdt/src/config/implicit-value'. Everything else means exactly what it
+means for a dense matrix: both entry points take
 the same PREDICT-TYPE, the same START-ITERATION/NUM-ITERATION pair and the same parameter
 string, and both fill the same buffer in the same row-major order, so KIND and NUM-ITERATION
 are honoured identically on either path -- all four KINDs included, unlike
@@ -4370,7 +4412,9 @@ ingestion path.
 
 Signals `capability-unavailable' naming `:sparse-input' when MATRIX is a `csr-matrix' and that
 capability reads false -- see `%check-sparse-input' above, which checks it before any foreign
-call.
+call. Also signals `unsupported-argument', before any foreign call, when MATRIX is a
+`csr-matrix' whose `:IMPLICIT-VALUE' is `0.0d0': an absent entry is missing to this library,
+not `0.0' -- see `cl-gbdt/src/config/implicit-value'.
 
 Signals `wrong-backend-reference' when BOOSTER is not a booster built by this backend -- a
 dataset, a LightGBM booster, or not a handle at all. This function dispatches on nothing, so
@@ -5975,6 +6019,10 @@ Signalling here, instead of silently discarding the argument, is deliberate: thi
 repeatedly found a silently-dropped argument to be the failure mode where a caller moves
 working code from one backend to the other and gets different, wrong behaviour with no
 indication anything changed.
+
+The backend clause of the report is conditional because BACKEND is NIL wherever the refusal
+happens before any backend is involved -- `make-csr-matrix''s :IMPLICIT-VALUE, which is
+checked at construction, is the first such site.
 ```
 
 ### Slots

@@ -12,8 +12,8 @@ nothing downstream, `train` included, can distinguish from a densely-built one.
 `INDPTR`, `INDICES` and `VALUES` may each be **any sequence**, and are validated and coerced
 once, at construction: `INDPTR` and `INDICES` to `(simple-array (signed-byte 32) (*))`,
 `VALUES` to `(simple-array double-float (*))`. A backend method therefore only has to pin
-what the struct already holds. The four slots are **read-only**: `csr-matrix-indptr` and its
-three siblings are readers with no `setf` expander, so that construction-time validation
+what the struct already holds. The five slots are **read-only**: `csr-matrix-indptr` and its
+four siblings are readers with no `setf` expander, so that construction-time validation
 cannot be undone afterwards. **`NUM-COLUMNS` is required and never inferred** from the
 largest index `INDICES` happens to hold: a matrix's declared width and its largest stored
 index are different facts -- the trailing columns can legitimately hold nothing at all, and
@@ -263,6 +263,109 @@ what you mean and you are on LightGBM; store them when the same matrix has to me
 thing on both. Both halves are asserted per backend by the functional suite's
 `an-omitted-entry-is-zero-to-lightgbm-and-missing-to-xgboost`, on a fixture that also sends
 each library a row storing nothing at all.
+
+`make-csr-matrix` takes `:implicit-value`, so a caller can state once what an absent entry
+means in their own data and have the wrapper refuse a call that disagrees with it, rather than
+silently train the different numbers the comparison above just measured. The declaration is
+`NIL` (the default), a real for which `zerop` is true, `:missing`, or `:none` -- the claim that
+nothing is absent, every element stored. Both `make-dataset` and `predict` check it, two
+separate code paths each gated on its own, and refuse with `unsupported-argument` before any
+foreign call when the declaration disagrees with the backend's own reading of absence:
+
+| Declared | LightGBM | XGBoost |
+|---|---|---|
+| `NIL` (default, undeclared) | accept | accept |
+| a real that is `zerop` (stored as `0.0d0`) | accept | **refuse** |
+| `:missing` | **refuse** | accept |
+| `:none` (nothing is absent) | accept | accept |
+
+`:none` is verified **structurally**, at `make-csr-matrix` construction, rather than merely
+counted: a row's element count alone does not establish that nothing is absent, because
+`make-csr-matrix` does not reject a column index repeated within a row -- duplicates are legal
+CSR that both libraries accept -- so a row storing one column twice and another not at all has
+exactly the right length while still leaving one of its columns absent. Declaring `:none` on
+such a matrix signals `dimension-mismatch`, not `unsupported-argument`: the declaration itself
+is legal and the matrix fails it, a size claim like the ones `make-csr-matrix` already checks.
+
+An undeclared matrix -- `:implicit-value` left `NIL`, the default -- is checked by **nothing**.
+Everything measured above still applies to it exactly as it always did.
+
+### LightGBM's `zero_as_missing`, measured
+
+The obvious question about the LightGBM refusal above is LightGBM's own `zero_as_missing`
+parameter: if it can make an absent entry mean *missing*, doesn't the refusal turn away a true
+claim? Three runs, reusing `*sparse*` and `*zeros-dropped*` from above, settle what the flag
+actually does:
+
+```lisp
+(ql:quickload :cl-gbdt/lightgbm/unified :silent t)
+
+;; *sparse*, *zeros-dropped* and *label* as defined above.
+(defun train-model-string (backend matrix &key dataset-zam booster-zam)
+  (let ((dataset-parameters (append '(:min-data-in-leaf 1 :min-data-in-bin 1 :verbose -1)
+                                     (when dataset-zam '(:zero-as-missing "true"))))
+        (booster-parameters (append '(:objective "binary" :num-leaves 2 :min-data-in-leaf 1
+                                       :min-data-in-bin 1 :verbose -1)
+                                     (when booster-zam '(:zero-as-missing "true")))))
+    (cl-gbdt:with-dataset (dataset (cl-gbdt:make-dataset backend matrix :label *label*
+                                                          :parameters dataset-parameters))
+      (cl-gbdt:with-booster (booster (cl-gbdt:train backend dataset :num-rounds 10
+                                                     :parameters booster-parameters))
+        (cl-gbdt:model-to-string booster)))))
+
+(defun recorded-flag (model-string)
+  (let ((pos (search "[zero_as_missing:" model-string)))
+    (subseq model-string pos (+ pos 19))))
+
+;; The parameter string itself is built correctly regardless of what follows.
+(format t "parameter string: ~S~%"
+        (cl-gbdt/src/lightgbm/native::%parameter-string '(:zero-as-missing "true" :verbose -1)))
+
+(let ((lgbm (cl-gbdt:open-backend :lightgbm)))
+  (let ((plain (train-model-string lgbm *sparse*))
+        (dataset-only (train-model-string lgbm *sparse* :dataset-zam t)))
+    (format t "1. set on make-dataset's :parameters alone: recorded ~A, byte-identical: ~S~%"
+            (recorded-flag dataset-only) (string= plain dataset-only)))
+  (let ((plain (train-model-string lgbm *sparse*))
+        (both (train-model-string lgbm *sparse* :dataset-zam t :booster-zam t)))
+    (format t "2. set on both make-dataset's and train's :parameters: recorded ~A, ~
+              byte-identical: ~S~%"
+            (recorded-flag both) (string= plain both)))
+  (let ((stored (train-model-string lgbm *sparse* :dataset-zam t :booster-zam t))
+        (dropped (train-model-string lgbm *zeros-dropped* :dataset-zam t :booster-zam t)))
+    (format t "3. with it set in both places, stored vs. zeros-dropped byte-identical: ~S~%"
+            (string= stored dropped)))
+  (cl-gbdt:close-backend lgbm))
+```
+
+Output:
+
+```
+parameter string: "zero_as_missing=true verbose=-1"
+1. set on make-dataset's :parameters alone: recorded [zero_as_missing: 0, byte-identical: T
+2. set on both make-dataset's and train's :parameters: recorded [zero_as_missing: 1, byte-identical: NIL
+3. with it set in both places, stored vs. zeros-dropped byte-identical: T
+```
+
+Setting `zero_as_missing` on `make-dataset`'s `:parameters` alone does nothing: the model
+records `[zero_as_missing: 0]` and is byte-identical to the run without it, even though the
+parameter string itself is built correctly, as run 1's own first line confirms. The flag has
+to be set on `train`'s `:parameters` too before it bites -- run 2 does that, and the model
+both records `[zero_as_missing: 1]` and differs. With it set in both places, run 3 trains
+`*sparse*` and `*zeros-dropped*` to **byte-identical** models: an absent entry and a stored
+zero become the same thing, exactly what the flag is documented to do.
+
+So `:implicit-value :missing` genuinely **is** a true claim on LightGBM under that
+configuration, and this project's refusal turns it away anyway. The reason is not that
+LightGBM cannot do it -- that would be false, and a false statement does not belong on the
+public surface -- it is that neither call site checking the declaration can see the
+configuration that makes it true: `make-dataset` never sees the parameters `train` is later
+called with, and `predict` sees neither dataset's nor booster's. A check reading
+`make-dataset`'s own `:parameters` would answer confidently and wrongly, since the flag alone
+there -- run 1 above -- changes nothing at all. A caller who has genuinely set
+`zero_as_missing` on both the dataset and the booster should simply leave `:implicit-value`
+undeclared: the declaration is opt-in, and undeclared costs nothing under that configuration
+either.
 
 ### Why CSR only, and not CSC
 
