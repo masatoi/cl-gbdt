@@ -17,7 +17,7 @@ hold Lisp conventions Markdown would render as something else.
 
 ## Packages
 
-### `cl-gbdt` -- 145 symbols
+### `cl-gbdt` -- 146 symbols
 
 - [`*known-capabilities*`](#cl-gbdt-known-capabilities)
 - [`*lightgbm-version-range*`](#cl-gbdt-lightgbm-version-range)
@@ -153,6 +153,7 @@ hold Lisp conventions Markdown would render as something else.
 - [`version-range-verified-evidence`](#cl-gbdt-version-range-verified-evidence)
 - [`version-range-verified-high`](#cl-gbdt-version-range-verified-high)
 - [`version-range-verified-low`](#cl-gbdt-version-range-verified-low)
+- [`with-backend`](#cl-gbdt-with-backend)
 - [`with-booster`](#cl-gbdt-with-booster)
 - [`with-dataset`](#cl-gbdt-with-dataset)
 - [`with-foreign-float-traps-masked`](#cl-gbdt-with-foreign-float-traps-masked)
@@ -1157,6 +1158,10 @@ identifies which C function reported CODE, for the condition's report.
 
 ```text
 Close BACKEND. Does nothing if it is already closed.
+
+That is a single-threaded promise: the openness check and the shutdown are not
+atomic, so closing BACKEND while another thread is inside a call on it is a hazard,
+not a no-op -- see `docs/user-guide/threads.md'.
 ```
 
 <a id="cl-gbdt-lightgbm-create-booster"></a>
@@ -2756,6 +2761,9 @@ Reader of `cl-gbdt:foreign-matrix`'s `rows` slot. See `cl-gbdt:foreign-matrix`.
 
 ```text
 Free BOOSTER. Does nothing if it was already freed.
+
+Freeing the same BOOSTER from two threads at once can end the process outright
+rather than signalling anything catchable -- see `docs/user-guide/threads.md'.
 ```
 
 ### Methods
@@ -2852,6 +2860,17 @@ is the caller's own or the one inside `cl-gbdt''s `with-booster'.
 
 ```text
 Free DATASET. Does nothing if it was already freed.
+
+Freeing the same DATASET from two threads at once can end the process outright
+rather than signalling anything catchable -- see `docs/user-guide/threads.md'.
+
+Freeing DATASET while any call is in flight, on another thread, on a booster
+that holds it -- as its training set or as one of its validation sets -- can
+end the process the same way. The `released-handle-error' an already-freed
+handle signals on its next use is a single-threaded guarantee: it holds when
+the free and the next call are sequential on one thread, not when a call on
+that booster is already running elsewhere. See `docs/user-guide/threads.md'
+for both backends' windows.
 ```
 
 ### Methods
@@ -3951,6 +3970,9 @@ Open the backend NAME and return a `backend' instance.
 PATH, when supplied, takes precedence over the shared library search. Signals a
 condition when NAME is unregistered or initialization fails. Close a successful
 instance with `close-backend'.
+
+The backend it returns may be used from several threads at once, subject to the
+contract in `docs/user-guide/threads.md'.
 ```
 
 <a id="cl-gbdt-predict"></a>
@@ -4545,6 +4567,12 @@ already-released HANDLE does nothing -- this is what lets `free-dataset' and
 `free-booster' promise that freeing an already-freed handle is a no-op. Also cancels
 HANDLE's finalizer, since that finalizer exists only to report a free that never
 happened, and this one just did.
+
+Freeing HANDLE from two threads at once is unsafe: the check above and the free it
+guards are a check-then-act on a cons cell, not an atomic operation, so both threads
+can read it as not-yet-released and both go on to call FREE-FUNCTION. That is not a
+catchable Lisp condition -- it can end the process outright, skipping every
+`unwind-protect' on the way. See `docs/user-guide/threads.md'.
 ```
 
 <a id="cl-gbdt-released-handle-error"></a>
@@ -6482,6 +6510,42 @@ Reader of `cl-gbdt:version-range`'s `verified-high` slot. See `cl-gbdt:version-r
 - **Exported from** `cl-gbdt`
 
 Reader of `cl-gbdt:version-range`'s `verified-low` slot. See `cl-gbdt:version-range`.
+
+<a id="cl-gbdt-with-backend"></a>
+
+## `cl-gbdt:with-backend`
+
+- **Kind** macro
+- **Signature** `(with-backend (var form) &body body)`
+- **Exported from** `cl-gbdt`
+
+```text
+Bind VAR to the backend FORM returns, evaluate BODY, and always close it.
+
+Nest this OUTSIDE `with-dataset' and `with-booster', never inside them. `close-backend'
+calls `cffi:close-foreign-library', and once it has, `free-dataset' and `free-booster' on
+that backend `warn' and leak rather than calling the C free -- deliberately, because the
+older path called into a possibly-unmapped library. A `with-backend' nested inside a
+handle's macro therefore closes the library first and leaks the handle second:
+
+    (with-backend (backend (open-backend :xgboost))
+      (with-dataset (train (make-dataset backend matrix :label labels))
+        (with-booster (model (train backend train :num-rounds 10))
+          (predict model matrix))))
+
+Declarations at the head of BODY are moved onto a fresh binding of VAR that shadows the one
+FORM's value is stored in, exactly as in `with-dataset' and for the same empirically-verified
+reason: splicing them onto the outer binding, which `unwind-protect''s cleanup clause also
+reads, puts an `(ignore VAR)' declaration from BODY in the same scope as that read, which
+SBCL flags as reading an ignored variable. Do not simplify this to `progn' or a single
+binding.
+
+This macro takes no lock and makes no claim about concurrency. Closing a backend while
+another thread is inside a call on it is one of the hazards
+`docs/user-guide/threads.md' names -- the check `handle-live-pointer' makes and the C call
+that follows it are not held together, so nothing here prevents a close landing between
+them.
+```
 
 <a id="cl-gbdt-with-booster"></a>
 

@@ -868,7 +868,10 @@ freed out from under the booster is a segfault, not a catchable Lisp condition, 
 every one of them has to be checked here, before any foreign call.
 `booster-training-set' is NIL for a `load-model' booster, which has no training set
 and needs no check; `booster-validation-sets' is NIL when `train' was called with
-no VALID-SETS."
+no VALID-SETS.
+
+This is a check-then-act, not a concurrency guard, and was never meant to be
+one -- see `docs/user-guide/threads.md'."
   (let ((training-set (booster-training-set booster)))
     (when (and training-set (handle-released-p training-set))
       (error 'released-handle-error :object training-set)))

@@ -85,8 +85,8 @@ over both backends.
 
 **Status: functional.** Both backends implement
 all 13 generic functions of the unified API -- `make-dataset`, `train`, `predict`, and
-the rest -- against the real shared libraries, exercised by 1008 functional assertions
-across 15 test files in `cl-gbdt/tests/functional` (layer 2) on top of 687 assertions
+the rest -- against the real shared libraries, exercised by 1051 functional assertions
+across 17 test files in `cl-gbdt/tests/functional` (layer 2) on top of 688 assertions
 across 23 test files that need no shared library at all (layer 1).
 
 **Each backend is two systems.** `cl-gbdt/<backend>` is that backend's **Layer 1 alone**:

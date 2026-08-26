@@ -134,10 +134,19 @@ guard, and have no portable fallback."
                ;; operation refuses on -- a false answer means a NIL second value rather
                ;; than a signal.
                "cl-gbdt/tests/functional/prediction-shape"
-               ;; The one entry here that does NOT build on those *FIXTURES*: a custom
-               ;; objective's claim is that it reproduces a built-in one exactly, so it
-               ;; states a deterministic fixture of its own. `train''s :OBJECTIVE, and the
-               ;; `:custom-objective' capability that gates it.
+               ;; `with-backend', the third of the `with-*' lifetime macros. Functional
+               ;; rather than layer 1 because `close-backend' is a `defun' and cannot be
+               ;; specialised on a mock the way `free-dataset' is in tests/backend.lisp.
+               "cl-gbdt/tests/functional/with-backend"
+               ;; The only file here that starts threads. `sb-thread' directly -- this system
+               ;; is already declared SBCL-only above. Its header says at length what a green
+               ;; run does NOT establish; read that before citing it as evidence of thread
+               ;; safety, which it is not.
+               "cl-gbdt/tests/functional/threads"
+               ;; Like `with-backend' and `threads' above, this entry does not build on
+               ;; those *FIXTURES* either: a custom objective's claim is that it reproduces
+               ;; a built-in one exactly, so it states a deterministic fixture of its own.
+               ;; `train''s :OBJECTIVE, and the `:custom-objective' capability that gates it.
                "cl-gbdt/tests/functional/custom-objective"
                ;; Nor does this one, and for a related reason: `train''s :EVALUATION, and
                ;; the `:custom-evaluation' capability that gates it. A caller-written metric

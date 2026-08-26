@@ -282,7 +282,7 @@ classified in ~A: ~{~%  ~A~}"
                      unclassified))))
     classified))
 
-(defparameter +minimum-covered+ 93
+(defparameter +minimum-covered+ 94
   "The fewest published symbols the functional suite may reference.
 
 A floor because the two together are invisible to every other check here: delete an export AND its
@@ -293,7 +293,10 @@ argument in the pull request. Re-measure rather than trusting this comment.
 Raised from 87 to 93 by file-input-layer-1's Task 6: `create-dataset-from-file' is named
 directly, on both backends, by `tests/functional/{lightgbm,xgboost}-standalone.lisp', and
 `file-format-mismatch' and its three readers are caught and read back for real by
-`xgboost-standalone.lisp'.")
+`xgboost-standalone.lisp'.
+
+Raised from 93 to 94 by thread-safety-contract's Task 1: `with-backend' is now named by
+`tests/functional/with-backend.lisp'.")
 
 (defparameter +maximum-unproven+ 29
   "The most rows `## Unproven' may hold.

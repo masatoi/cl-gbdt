@@ -188,6 +188,30 @@
          (error "boom")))
       (ok (equal '(:booster) *freed*)))))
 
+;; This checks the shadow-binding by compiling a BODY that ignores its bound variable, not
+;; by running one -- `compile' never opens a backend, so no shared library is needed. The
+;; failure mode it watches for is a STYLE-WARNING ("reading an ignored variable"), not an
+;; ERROR: a naive `with-backend' that splices the `(ignore ...)' declaration into the
+;; single outer `let' (rather than a shadow-bound inner one) produces exactly that
+;; warning, because `unwind-protect''s cleanup clause reads that same binding. Splicing
+;; the declaration into a `progn' instead is not a naive `with-backend' at all -- `progn'
+;; is not a Common Lisp declaration context, so that produces an unrelated compile-time
+;; ERROR this test's `handler-bind' on `warning' would not even see.
+(deftest with-backend-shadow-binding-silences-an-ignored-variable-warning
+  (testing "an (ignore ...) declaration in the body does not make the cleanup read an ignored \
+variable"
+    (let ((warnings nil))
+      (handler-bind ((warning (lambda (condition)
+                                (push condition warnings)
+                                (muffle-warning condition))))
+        (compile nil '(lambda (backend-form)
+                        (cl-gbdt:with-backend (backend backend-form)
+                          (declare (ignore backend))
+                          nil))))
+      (ok (null warnings)
+          (format nil "compiling a with-backend body that ignores its variable warned: ~S"
+                  warnings)))))
+
 (deftest backend-supports-p-answers-a-declared-capability
   (testing "a capability the backend recorded as true reads back true"
     (let ((backend (cl-gbdt:open-backend :mock)))

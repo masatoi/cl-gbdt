@@ -116,40 +116,38 @@ Load the core system and one backend's `/unified` system -- `cl-gbdt/lightgbm` a
 no `cl-gbdt:train`; see [Systems](#systems) -- open the backend, build a dataset from a
 `double-float` matrix and its labels, train, predict, and free everything.
 
-`with-dataset` and `with-booster` free their handles on the way out, and the `unwind-protect`
-around them does the same for the backend: explicit resource management is this library's
-documented first-class pattern, and the finalizers behind it are a safety net, not something
-to rely on.
+`with-dataset` and `with-booster` free their handles on the way out, and
+[`with-backend`](docs/user-guide/threads.md#with-backend) does the same for the backend around
+both of them: explicit resource management is this library's documented first-class pattern,
+and the finalizers behind it are a safety net, not something to rely on.
 
 ```lisp
 (ql:quickload '(:cl-gbdt :cl-gbdt/lightgbm/unified) :silent t)
 
-(let ((backend (cl-gbdt:open-backend :lightgbm)))
-  (unwind-protect
-       (let ((matrix (make-array '(8 2) :element-type 'double-float
-                                  :initial-contents '((0.0d0 0.0d0) (0.0d0 1.0d0)
-                                                       (0.0d0 2.0d0) (0.0d0 3.0d0)
-                                                       (5.0d0 0.0d0) (5.0d0 1.0d0)
-                                                       (5.0d0 2.0d0) (5.0d0 3.0d0))))
-             (label (make-array 8 :element-type 'single-float
-                                 :initial-contents '(0.0 0.0 0.0 0.0 1.0 1.0 1.0 1.0))))
-         (cl-gbdt:with-dataset (dataset (cl-gbdt:make-dataset
-                                          backend matrix
-                                          :label label
-                                          :parameters '(:min-data-in-leaf 1 :min-data-in-bin 1
-                                                         :verbose -1)))
-           (format t "rows=~D features=~D~%"
-                   (cl-gbdt:dataset-num-rows dataset) (cl-gbdt:dataset-num-features dataset))
-           (cl-gbdt:with-booster (booster (cl-gbdt:train
-                                            backend dataset
-                                            :num-rounds 10
-                                            :parameters '(:objective "binary" :num-leaves 2
-                                                           :min-data-in-leaf 1
-                                                           :min-data-in-bin 1
-                                                           :verbose -1)))
-             (format t "predictions:~%~S~%" (cl-gbdt:predict booster matrix)))))
-    (cl-gbdt:close-backend backend))
-  (format t "done~%"))
+(cl-gbdt:with-backend (backend (cl-gbdt:open-backend :lightgbm))
+  (let ((matrix (make-array '(8 2) :element-type 'double-float
+                             :initial-contents '((0.0d0 0.0d0) (0.0d0 1.0d0)
+                                                  (0.0d0 2.0d0) (0.0d0 3.0d0)
+                                                  (5.0d0 0.0d0) (5.0d0 1.0d0)
+                                                  (5.0d0 2.0d0) (5.0d0 3.0d0))))
+        (label (make-array 8 :element-type 'single-float
+                            :initial-contents '(0.0 0.0 0.0 0.0 1.0 1.0 1.0 1.0))))
+    (cl-gbdt:with-dataset (dataset (cl-gbdt:make-dataset
+                                     backend matrix
+                                     :label label
+                                     :parameters '(:min-data-in-leaf 1 :min-data-in-bin 1
+                                                    :verbose -1)))
+      (format t "rows=~D features=~D~%"
+              (cl-gbdt:dataset-num-rows dataset) (cl-gbdt:dataset-num-features dataset))
+      (cl-gbdt:with-booster (booster (cl-gbdt:train
+                                       backend dataset
+                                       :num-rounds 10
+                                       :parameters '(:objective "binary" :num-leaves 2
+                                                      :min-data-in-leaf 1
+                                                      :min-data-in-bin 1
+                                                      :verbose -1)))
+        (format t "predictions:~%~S~%" (cl-gbdt:predict booster matrix))))))
+(format t "done~%")
 ```
 
 Output:
@@ -173,9 +171,11 @@ Three things that block a first run if they are got wrong:
 - **`with-booster` nests inside `with-dataset`, never the other way around.** A booster holds
   a strong reference to the dataset it was trained on, so `with-dataset`'s cleanup must run
   after `with-booster`'s, and only this nesting guarantees that order.
-- **`close-backend` runs last, outside both**, since it closes the shared library both
-  handles' pointers are backed by. The `unwind-protect` is what makes that true even when the
-  body leaves by signalling.
+- **`with-backend` nests outside both `with-dataset` and `with-booster`, never inside them.**
+  `close-backend` calls `cffi:close-foreign-library`, which both handles' pointers are backed
+  by, so it must run last; `with-backend` closes its backend on every exit from its body,
+  normal or not, the same way `with-dataset` and `with-booster` already guarantee for their
+  own handles.
 - **`:parameters` is each library's own vocabulary**, keyword-spelled: `:min-data-in-leaf`
   becomes `min_data_in_leaf`, `t`/`nil` become `"true"`/`"false"`. There is no allowlist, so
   a backend-specific key works unchanged -- see
@@ -297,7 +297,7 @@ which links each row on to the guide that measures it.
 Every document this repository tracks, and the question each one answers. The licence texts
 themselves -- `LICENSE` and `LICENSES/` -- are named under [License](#license) below.
 
-**Every code block in the six guides below, and the quick start above, was actually run to
+**Every code block in the seven guides below, and the quick start above, was actually run to
 produce the output pasted beneath it** -- SBCL via `ros run`, with `./tools/fetch-libs.sh`'s
 vendored libraries present. An `Output:` block is a transcript, not an illustration.
 
@@ -318,6 +318,7 @@ so read its blocks in order, or evaluate the earlier ones first.
 | [`docs/user-guide/custom-training.md`](docs/user-guide/custom-training.md) | `train`'s `:objective` and `:evaluation` callbacks -- boosting against your own loss and recording your own metrics |
 | [`docs/user-guide/file-input.md`](docs/user-guide/file-input.md) | `create-dataset-from-file` on each backend, and everything measured about getting its format argument wrong |
 | [`docs/user-guide/backend-differences.md`](docs/user-guide/backend-differences.md) | The full catalogue of where LightGBM and XGBoost genuinely differ, plus the version matrix behind [Supported environments](#supported-environments) |
+| [`docs/user-guide/threads.md`](docs/user-guide/threads.md) | What is safe to do from more than one thread, what is not, and why cl-gbdt adds no locking of its own |
 | [`docs/API-REFERENCE.md`](docs/API-REFERENCE.md) | Every symbol `cl-gbdt`, `cl-gbdt/lightgbm` and `cl-gbdt/xgboost` export, one entry each. Generated from the docstrings, so it cannot drift from the code -- never hand-edit it |
 
 ### Working on the library
