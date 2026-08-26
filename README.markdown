@@ -56,7 +56,7 @@ requirement, and is marked as one.
 | macOS | aarch64 | -- |
 | Windows | not tested | -- |
 | LightGBM | 4.0.0, 4.7.0 (pinned) | 3.0.0, the inferred lower bound, has no aarch64 wheel on PyPI and stays untested there |
-| XGBoost | 2.0.0, 3.3.0 (pinned) | **1.7.0 fails**: 105 of 106 assertions pass, the ranking round trip does not |
+| XGBoost | 2.0.0, 3.4.1 (pinned) | **1.7.0 fails**: 105 of 106 assertions pass (measured 2026-08-06, when the suite had 106), the ranking round trip does not |
 | ASDF | no version verified: CI runs `ros install asdf`, taking whatever the current release is that day | **Requirement, not a measurement: 3.3.7 or newer** -- see below |
 
 The pinned versions are the ones `ffi-spec/VERSIONS` names and `./tools/fetch-libs.sh`

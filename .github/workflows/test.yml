@@ -119,7 +119,7 @@ jobs:
     # docstrings for the full account.
     #
     # Endpoints of the recorded range only, not every release in between -- the pinned
-    # versions (4.7.0/3.3.0) are already exercised by the `test' job above, so this adds
+    # versions (4.7.0/3.4.1) are already exercised by the `test' job above, so this adds
     # exactly the two ends: LightGBM's lowest installable version and XGBoost's lowest
     # verified-compatible one.
     #
@@ -170,7 +170,7 @@ jobs:
         include:
           - name: lightgbm-4.0.0
             lightgbm_version: '4.0.0'
-            xgboost_version: '3.3.0'
+            xgboost_version: '3.4.1'
           - name: xgboost-2.0.0
             lightgbm_version: '4.7.0'
             xgboost_version: '2.0.0'

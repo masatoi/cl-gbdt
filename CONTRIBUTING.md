@@ -94,7 +94,7 @@ covers a whole workflow file, not a job, which is why the two badges report inde
   enough contention to get sibling jobs cancelled. The evidence for narrowing the range is the
   local run recorded in `src/version.lisp`'s docstring, not a red CI job — see that job's own
   header comment in `test.yml`, which is the record of the decision. The
-  pinned versions (4.7.0/3.3.0) are already covered by the job above, so this job does
+  pinned versions (4.7.0/3.4.1) are already covered by the job above, so this job does
   not repeat them. **One platform only, Linux x86_64** -- the three-platform matrix above
   exists to catch platform-specific bugs (byte order, calling convention, `.dylib` vs `.so`
   discovery) in bindings generated once and committed; a library *version* difference is a
