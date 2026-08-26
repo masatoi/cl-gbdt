@@ -9,7 +9,7 @@
 (uiop:define-package #:cl-gbdt/src/protocol
   (:use #:cl)
   (:import-from #:alexandria #:parse-body)
-  (:import-from #:cl-gbdt/src/backend #:backend #:backend-name)
+  (:import-from #:cl-gbdt/src/backend #:backend #:backend-name #:close-backend)
   (:import-from #:cl-gbdt/src/handle #:dataset #:booster #:handle-backend)
   (:import-from #:cl-gbdt/src/conditions #:backend-methods-not-loaded)
   (:export #:make-dataset
@@ -26,7 +26,8 @@
            #:free-dataset
            #:free-booster
            #:with-dataset
-           #:with-booster))
+           #:with-booster
+           #:with-backend))
 
 (in-package #:cl-gbdt/src/protocol)
 
@@ -859,3 +860,37 @@ BODY are shadow-bound as in `with-dataset', for the same reason."
               ,@declarations
               ,@forms)
          (free-booster ,var)))))
+
+(defmacro with-backend ((var form) &body body)
+  "Bind VAR to the backend FORM returns, evaluate BODY, and always close it.
+
+Nest this OUTSIDE `with-dataset' and `with-booster', never inside them. `close-backend'
+calls `cffi:close-foreign-library', and once it has, `free-dataset' and `free-booster' on
+that backend `warn' and leak rather than calling the C free -- deliberately, because the
+older path called into a possibly-unmapped library. A `with-backend' nested inside a
+handle's macro therefore closes the library first and leaks the handle second:
+
+    (with-backend (backend (open-backend :xgboost))
+      (with-dataset (train (make-dataset backend matrix :label labels))
+        (with-booster (model (train backend train :num-rounds 10))
+          (predict model matrix))))
+
+Declarations at the head of BODY are moved onto a fresh binding of VAR that shadows the one
+FORM's value is stored in, exactly as in `with-dataset' and for the same empirically-verified
+reason: splicing them onto the outer binding, which `unwind-protect''s cleanup clause also
+reads, puts an `(ignore VAR)' declaration from BODY in the same scope as that read, which
+SBCL flags as reading an ignored variable. Do not simplify this to `progn' or a single
+binding.
+
+This macro takes no lock and makes no claim about concurrency. Closing a backend while
+another thread is inside a call on it is one of the hazards
+`docs/user-guide/threads.md' names -- the check `handle-live-pointer' makes and the C call
+that follows it are not held together, so nothing here prevents a close landing between
+them."
+  (multiple-value-bind (forms declarations) (parse-body body)
+    `(let ((,var ,form))
+       (unwind-protect
+            (let ((,var ,var))
+              ,@declarations
+              ,@forms)
+         (close-backend ,var)))))

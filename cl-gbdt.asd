@@ -134,6 +134,10 @@ guard, and have no portable fallback."
                ;; operation refuses on -- a false answer means a NIL second value rather
                ;; than a signal.
                "cl-gbdt/tests/functional/prediction-shape"
+               ;; `with-backend', the third of the `with-*' lifetime macros. Functional
+               ;; rather than layer 1 because `close-backend' is a `defun' and cannot be
+               ;; specialised on a mock the way `free-dataset' is in tests/backend.lisp.
+               "cl-gbdt/tests/functional/with-backend"
                ;; The one entry here that does NOT build on those *FIXTURES*: a custom
                ;; objective's claim is that it reproduces a built-in one exactly, so it
                ;; states a deterministic fixture of its own. `train''s :OBJECTIVE, and the
