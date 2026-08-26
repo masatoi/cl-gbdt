@@ -145,7 +145,11 @@
     (ok (eql 0.0d0 (cl-gbdt:csr-matrix-implicit-value (%csr :implicit-value 0)))
         "the integer 0 is canonicalized to 0.0d0")
     (ok (eql 0.0d0 (cl-gbdt:csr-matrix-implicit-value (%csr :implicit-value -0.0)))
-        "negative zero is canonicalized to the same 0.0d0, so a backend may compare with EQL")))
+        "negative zero is canonicalized to the same 0.0d0, so a backend may compare with EQL")
+    (ok (eql 0.0d0 (cl-gbdt:csr-matrix-implicit-value (%csr :implicit-value 0.0d0)))
+        "0.0d0 itself round-trips unchanged")
+    (ok (eql 0.0d0 (cl-gbdt:csr-matrix-implicit-value (%csr :implicit-value 0.0)))
+        "positive single-float 0.0 is canonicalized to 0.0d0 too")))
 
 (deftest csr-matrix-rejects-an-illegal-implicit-value
   ;; A non-zero real is refused rather than stored: no backend implies a non-zero value for
@@ -178,6 +182,20 @@
          (lambda () (%csr :indptr '(0 3) :indices '(0 0 1) :values '(1.0d0 2.0d0 3.0d0)
                           :num-columns 3 :implicit-value :none)))
         "three entries, three columns, column 2 never stored")))
+
+(deftest csr-matrix-none-accepts-a-column-restored-by-a-later-row
+  ;; `%require-every-element-stored' uses ROW itself as a generation counter, comparing
+  ;; `(aref stamps column)' against the current row rather than clearing STAMPS between rows.
+  ;; So a column claimed by row 0 must be claimable again by row 1. Every other :NONE test in
+  ;; this file fails or passes entirely inside row 0, so a plain boolean "have I seen this
+  ;; column at all" array -- which would wrongly reject a legitimate second row like this one
+  ;; -- would pass every other test here. This is the one that would catch that regression.
+  (testing ":NONE is accepted when a later row re-stores a column an earlier row already used"
+    (ok (cl-gbdt:csr-matrix-implicit-value
+         (%csr :indptr '(0 3 6) :indices '(0 1 2 0 1 2)
+               :values '(1.0d0 2.0d0 3.0d0 4.0d0 5.0d0 6.0d0)
+               :num-columns 3 :implicit-value :none))
+        "two fully-stored rows, the second reusing every column index the first used")))
 
 (deftest csr-matrix-reports-its-shape
   (testing "the readers return what was built, already coerced"
