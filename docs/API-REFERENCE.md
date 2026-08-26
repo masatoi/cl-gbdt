@@ -17,7 +17,7 @@ hold Lisp conventions Markdown would render as something else.
 
 ## Packages
 
-### `cl-gbdt` -- 145 symbols
+### `cl-gbdt` -- 146 symbols
 
 - [`*known-capabilities*`](#cl-gbdt-known-capabilities)
 - [`*lightgbm-version-range*`](#cl-gbdt-lightgbm-version-range)
@@ -153,6 +153,7 @@ hold Lisp conventions Markdown would render as something else.
 - [`version-range-verified-evidence`](#cl-gbdt-version-range-verified-evidence)
 - [`version-range-verified-high`](#cl-gbdt-version-range-verified-high)
 - [`version-range-verified-low`](#cl-gbdt-version-range-verified-low)
+- [`with-backend`](#cl-gbdt-with-backend)
 - [`with-booster`](#cl-gbdt-with-booster)
 - [`with-dataset`](#cl-gbdt-with-dataset)
 - [`with-foreign-float-traps-masked`](#cl-gbdt-with-foreign-float-traps-masked)
@@ -6482,6 +6483,42 @@ Reader of `cl-gbdt:version-range`'s `verified-high` slot. See `cl-gbdt:version-r
 - **Exported from** `cl-gbdt`
 
 Reader of `cl-gbdt:version-range`'s `verified-low` slot. See `cl-gbdt:version-range`.
+
+<a id="cl-gbdt-with-backend"></a>
+
+## `cl-gbdt:with-backend`
+
+- **Kind** macro
+- **Signature** `(with-backend (var form) &body body)`
+- **Exported from** `cl-gbdt`
+
+```text
+Bind VAR to the backend FORM returns, evaluate BODY, and always close it.
+
+Nest this OUTSIDE `with-dataset' and `with-booster', never inside them. `close-backend'
+calls `cffi:close-foreign-library', and once it has, `free-dataset' and `free-booster' on
+that backend `warn' and leak rather than calling the C free -- deliberately, because the
+older path called into a possibly-unmapped library. A `with-backend' nested inside a
+handle's macro therefore closes the library first and leaks the handle second:
+
+    (with-backend (backend (open-backend :xgboost))
+      (with-dataset (train (make-dataset backend matrix :label labels))
+        (with-booster (model (train backend train :num-rounds 10))
+          (predict model matrix))))
+
+Declarations at the head of BODY are moved onto a fresh binding of VAR that shadows the one
+FORM's value is stored in, exactly as in `with-dataset' and for the same empirically-verified
+reason: splicing them onto the outer binding, which `unwind-protect''s cleanup clause also
+reads, puts an `(ignore VAR)' declaration from BODY in the same scope as that read, which
+SBCL flags as reading an ignored variable. Do not simplify this to `progn' or a single
+binding.
+
+This macro takes no lock and makes no claim about concurrency. Closing a backend while
+another thread is inside a call on it is one of the hazards
+`docs/user-guide/threads.md' names -- the check `handle-live-pointer' makes and the C call
+that follows it are not held together, so nothing here prevents a close landing between
+them.
+```
 
 <a id="cl-gbdt-with-booster"></a>
 
