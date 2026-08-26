@@ -39,12 +39,7 @@ name: upstream
 
 on:
   push:
-    # ci/upstream-detection is TEMPORARY -- it exists so the fixes made on this branch can
-    # be run for real before merge, and is removed once the run is recorded. GitHub offers a
-    # workflow_dispatch trigger only for a workflow already on the default branch, and this
-    # workflow does not run on pull requests, so a push from the branch is the only way to
-    # exercise it beforehand.
-    branches: [master, ci/upstream-detection]
+    branches: [master]
   # The same weekly slot test.yml's version-matrix uses, so the two upstream-facing jobs
   # wake together rather than at two times someone has to remember separately.
   schedule:
