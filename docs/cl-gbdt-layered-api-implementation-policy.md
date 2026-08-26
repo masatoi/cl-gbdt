@@ -36,7 +36,7 @@ This structure was reasonable at the stage where the basic features were being i
 Note that since the first version of this document was written, the following mechanisms have gone into `master`. The design for making it three layers may take them as given.
 
 - Build-time enforcement of the ABI blacklist (`tools/ci/check-abi-blacklist.lisp`). It fails when a backend imports an unstable C function. It also reports import names that cannot be resolved.
-- Upstream drift detection (`tools/check-upstream.lisp`). It compares **only the functions a backend imports** against the vendored headers. Comparing the headers as a whole makes both upstreams look unstable, but restricted to the functions used there are 0 breaking changes across LightGBM v3.0.0-v4.7.0 and XGBoost v2.0.0-v3.3.0.
+- Upstream drift detection (`tools/check-upstream.lisp`). It compares **only the functions a backend imports** against the vendored headers. Comparing the headers as a whole makes both upstreams look unstable, but restricted to the functions used there are 0 breaking changes across LightGBM v3.0.0-v4.7.0 and XGBoost v2.0.0-v3.4.1.
 - A record of the supported version range and the `untested-backend-version` warning (`src/version.lisp`). It keeps verified and inferred distinct. Only XGBoost can be cross-checked at runtime.
 - An exhaustiveness check for float trap masking (`tools/ci/check-float-traps.lisp`).
 - An exhaustiveness assertion for `src/all.lisp`'s re-export list.

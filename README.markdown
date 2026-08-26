@@ -269,7 +269,7 @@ which links each row on to the guide that measures it.
 | `predict`'s `:kind` on a `csr-matrix` | All four kinds | `:normal` and `:raw` only -- its CSR entry point is the *inplace* one, which refuses `:contrib` and `:leaf-index` |
 | `save-model`'s `:num-iteration` | Limits how many trees are saved | `unsupported-argument` -- `XGBoosterSaveModel` always saves every round |
 | Model slicing | No counterpart at all; `(backend-supports-p backend :model-slicing)` is `nil` | `cl-gbdt/xgboost:slice-model`, Layer 1 and XGBoost-only: a new booster over a half-open range of the parent's layers |
-| `backend-version` | Always `nil` -- the C API has no version entry point | A `"MAJOR.MINOR.PATCH"` string, e.g. `"3.3.0"` |
+| `backend-version` | Always `nil` -- the C API has no version entry point | A `"MAJOR.MINOR.PATCH"` string, e.g. `"3.4.1"` |
 
 ## Known limitations
 
