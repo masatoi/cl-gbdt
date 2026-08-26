@@ -114,6 +114,8 @@
                 #:missing-training-set
                 #:unsupported-argument
                 #:wrong-backend-reference)
+  (:import-from #:cl-gbdt/src/config/implicit-value
+                #:check-implicit-value)
   (:import-from #:cl-gbdt/src/xgboost/file-input)
   (:import-from #:cl-gbdt/src/data
                 #:csr-matrix
@@ -180,6 +182,20 @@ library that has neither."
   (unless (backend-supports-p backend :sparse-input)
     (error 'capability-unavailable
            :backend (backend-name backend) :capability :sparse-input)))
+
+(defun %check-implicit-value (backend matrix)
+  "Signal `unsupported-argument' when MATRIX declares an absence meaning XGBoost does not read.
+
+An absent entry is missing to this library, so a zero declaration is refused and a `:MISSING'
+one accepted; NIL and `:NONE' always pass. The comparison and both messages live in
+`cl-gbdt/src/config/implicit-value' so that this backend and LightGBM cannot drift apart about
+what they refuse -- the same reason `%check-sparse-input' above is called from both of this
+file's CSR sites rather than written twice.
+
+Called from the same two places as `%check-sparse-input', immediately after it: `%dataset-pointer'
+on `create-dataset''s behalf, and `predict'. Not exported, for the same reason that one is not:
+nothing outside this file calls it, and an export is one more claim to keep true."
+  (check-implicit-value (backend-name backend) matrix :missing))
 
 ;;; ---------------------------------------------------------------------------
 ;;; The class gate, for the frees and the creators
@@ -277,6 +293,7 @@ and nothing in CI will notice if it does not."
     (if (typep matrix 'csr-matrix)
         (progn
           (%check-sparse-input backend)
+          (%check-implicit-value backend matrix)
           (values (%create-dmatrix-from-csr (csr-matrix-indptr matrix)
                                             (csr-matrix-indices matrix)
                                             (csr-matrix-values matrix)
@@ -328,7 +345,10 @@ the openness check below, which for another backend's object would answer about 
 shared library; see `%check-object-class'. Signals `backend-not-open' before any foreign
 call when BACKEND is not open -- see `%check-backend-open'. Signals `capability-unavailable'
 naming `:sparse-input' when MATRIX is a `csr-matrix' and that capability reads false -- see
-`%check-sparse-input'. Signals `foreign-call-error' when the creation call reports success but
+`%check-sparse-input'. Also signals `unsupported-argument', before any foreign call, when
+MATRIX is a `csr-matrix' whose `:IMPLICIT-VALUE' is `0.0d0': an absent entry is missing to this
+library, not `0.0' -- see `cl-gbdt/src/config/implicit-value'. Signals `foreign-call-error'
+when the creation call reports success but
 writes a null handle: a library-contract violation, but one every later call through this
 handle would otherwise dereference blindly.
 
@@ -839,7 +859,9 @@ ingestion path.
 
 Signals `capability-unavailable' naming `:sparse-input' when MATRIX is a `csr-matrix' and that
 capability reads false -- see `%check-sparse-input' above, which checks it before any foreign
-call.
+call. Also signals `unsupported-argument', before any foreign call, when MATRIX is a
+`csr-matrix' whose `:IMPLICIT-VALUE' is `0.0d0': an absent entry is missing to this library,
+not `0.0' -- see `cl-gbdt/src/config/implicit-value'.
 
 Signals `wrong-backend-reference' when BOOSTER is not a booster built by this backend -- a
 dataset, a LightGBM booster, or not a handle at all. This function dispatches on nothing, so
@@ -966,6 +988,7 @@ one itself."
         (if (typep matrix 'csr-matrix)
             (progn
               (%check-sparse-input (handle-backend booster))
+              (%check-implicit-value (handle-backend booster) matrix)
               (predict-into (csr-matrix-num-rows matrix)
                             (lambda (out-shape out-dim out-result)
                               (%predict-from-csr booster-pointer

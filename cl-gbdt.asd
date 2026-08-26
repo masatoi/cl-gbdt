@@ -120,6 +120,10 @@ guard, and have no portable fallback."
                ;; `cl-gbdt:csr-matrix' on both backends, and the `:sparse-input'
                ;; capability that gates it.
                "cl-gbdt/tests/functional/sparse-input"
+               ;; The declaration that goes with the file above: `make-csr-matrix''s
+               ;; :IMPLICIT-VALUE, what an absent entry means in the caller's own data, and
+               ;; the per-backend refusal of a declaration that disagrees.
+               "cl-gbdt/tests/functional/implicit-value"
                ;; And once more again: `make-dataset''s :MISSING, the value that means
                ;; missing, and the `:missing-value' capability that gates it -- true on
                ;; XGBoost, false on LightGBM, which signals instead.
