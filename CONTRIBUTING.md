@@ -299,6 +299,20 @@ ros run -- --non-interactive --load tools/regen.lisp
    architecture-dependent types) before replacing the committed file. A failed
    validation leaves the previously committed file untouched.
 
+**`tools/regen.lisp` always rewrites both backends' `.spec` files, even when only one
+header changed.** c2ffi's own output is not byte-stable across separate runs -- its
+internal `ns`/`id` numbers on anonymous structs and macro-derived `const` entries can
+shift, and entries can reorder, with no effect on the emitted `src/*/c-api.lisp` when
+nothing in that backend's header actually changed. A regeneration aimed at one backend
+should therefore `git checkout <base-commit> -- <the other backend's .spec path>` before
+committing, so the diff reflects only the backend that changed, then re-run
+`cl-gbdt/tests`'s `committed-bindings-match-their-committed-spec` to confirm the reverted
+spec still reproduces the committed bindings for both backends. Separately,
+`tools/fetch-headers.sh` `rm -rf`s each backend's whole `include/` directory before
+repopulating just the headers, so both committed `.spec` files transiently show as
+deleted in `git status` between the fetch and the following `regen.lisp` run -- expected,
+and resolved once regeneration recreates them.
+
 Expected output ends with two lines like:
 
 ```
