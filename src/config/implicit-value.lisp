@@ -60,6 +60,15 @@ ABSENT-MEANS is what an absent entry means to the calling backend: `0.0d0' for L
 structurally and which is therefore true on either backend. The remaining two pass only on the
 backend that reads absence their way.
 
+ABSENT-MEANS is what its backend reads **in that backend's default configuration**, so passing
+is as unverified as refusing. LightGBM's `zero_as_missing' is the case that makes this concrete
+-- under it a zero declaration is false and this accepts it, while `:MISSING' is true and this
+refuses it -- and neither call site can see the flag, since it takes effect only when the
+booster carries it too. This function therefore states a comparison against a documented
+default, not against a configuration it has inspected; a caller who has changed that default
+should declare nothing at all. See each backend's `%check-implicit-value' for the same point in
+that backend's own terms.
+
 `eql' rather than `equal' or a numeric `=': `make-csr-matrix' canonicalizes every zero real to
 `0.0d0' precisely so this comparison can be identity-shaped, and `=' would additionally have to
 guard against a NaN declaration that `%require-legal-implicit-value' has already refused."

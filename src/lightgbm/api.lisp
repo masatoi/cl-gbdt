@@ -162,8 +162,20 @@ on a library that has neither."
 (defun %check-implicit-value (backend matrix)
   "Signal `unsupported-argument' when MATRIX declares an absence meaning LightGBM does not read.
 
-An absent entry is `0.0' to this library, so a `:MISSING' declaration is refused and a zero one
-accepted; NIL and `:NONE' always pass. The comparison and both messages live in
+An absent entry is `0.0' to this library **in its default configuration**, so a `:MISSING'
+declaration is refused and a zero one accepted; NIL and `:NONE' always pass.
+
+That acceptance is as unverified as the refusal, and deliberately so. LightGBM's
+`zero_as_missing' -- set on the booster as well as the dataset -- makes an absent entry mean
+*missing*, which turns `:MISSING' into a true claim this still refuses and a zero one into a
+false claim this still accepts. Neither can be checked from here: `create-dataset' never sees
+the booster's parameters and `predict' sees neither, and the flag only bites when both carry
+it. So the rule is symmetric even though only the refusal announces itself -- a caller who has
+set `zero_as_missing' must leave :IMPLICIT-VALUE undeclared entirely, not merely avoid
+`:MISSING'. `docs/user-guide/data-and-prediction.md''s \"LightGBM's `zero_as_missing',
+measured\" subsection carries the runs.
+
+The comparison and both messages live in
 `cl-gbdt/src/config/implicit-value' so that this backend and XGBoost cannot drift apart about
 what they refuse -- the same reason `%check-sparse-input' above is called from both of this
 file's CSR sites rather than written twice.

@@ -423,6 +423,15 @@ there -- run 1 above -- changes nothing at all. A caller who has genuinely set
 undeclared: the declaration is opt-in, and undeclared costs nothing under that configuration
 either.
 
+That last sentence is the whole rule, and it is worth stating in the direction the refusal
+does not advertise. Under `zero_as_missing`, LightGBM **accepts** `:implicit-value 0.0` --
+which is now the false claim -- just as readily as it refuses `:missing`, which is now the
+true one. The wrapper is not weighing the two: it compares your declaration against what
+LightGBM reads *in its default configuration*, and passing is exactly as unverified as
+refusing. So a caller who has set the flag must leave `:implicit-value` undeclared
+altogether, not merely avoid `:missing`; declaring `0.0` there buys a check that agrees with
+the wrong answer.
+
 ### Why CSR only, and not CSC
 
 XGBoost has `XGDMatrixCreateFromCSC` -- it is bound in `src/xgboost/c-api.lisp` like every

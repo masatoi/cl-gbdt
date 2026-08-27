@@ -58,9 +58,14 @@ than inferred.
 
 What a `csr-matrix' MEANS, however, is not the same on both backends when it omits entries:
 LightGBM reads an absent entry as `0.0' and XGBoost reads one as missing, so the dataset
-built here is only the same data on both when every element is stored. Nothing signals when
-it is not -- the trained numbers simply differ. See the `csr-matrix' struct's own docstring,
-where that divergence is stated as the property of the value it is.
+built here is only the same data on both when every element is stored. Whether anything
+signals when it is not depends on the matrix: one built with `make-csr-matrix''s
+:IMPLICIT-VALUE has its declaration checked against this backend's own reading of absence and
+signals `unsupported-argument' when the two disagree, before any foreign call; one left
+undeclared -- the default -- is checked by nothing, and the trained numbers simply differ.
+See the `csr-matrix' struct's own docstring, where that divergence is stated as the property
+of the value it is, and `make-csr-matrix''s for what each declaration claims and which
+backend accepts it.
 
 FEATURE-NAMES must be a proper list; a dotted list, a circular one, or a value that is no list
 at all signals `unsupported-argument' naming `:feature-names'. `listp' is true of a dotted
@@ -475,9 +480,14 @@ check the library already makes.
 
 An entry the `csr-matrix' omits does not mean the same thing to the two libraries -- `0.0'
 to LightGBM, missing to XGBoost -- so the rows predicted on here are only the same rows on
-both backends when every element is stored. Nothing signals when they are not; the numbers
-returned simply differ. See the `csr-matrix' struct's own docstring, where that divergence
-is stated as the property of the value it is.
+both backends when every element is stored. Whether anything signals when they are not depends
+on the matrix: one built with `make-csr-matrix''s :IMPLICIT-VALUE has its declaration checked
+against this backend's own reading of absence and signals `unsupported-argument' when the two
+disagree, before any foreign call; one left undeclared -- the default -- is checked by nothing,
+and the numbers returned simply differ. `predict' checks this on its own, not by inheriting
+whatever `make-dataset' concluded: the matrix predicted on need not be the one trained on.
+See the `csr-matrix' struct's own docstring, where that divergence is stated as the property
+of the value it is.
 
 KIND is `:normal' (default, transformed predictions), `:raw' (raw scores),
 `:leaf-index' (leaf indices) or `:contrib' (feature contributions). All four are available
