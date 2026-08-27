@@ -17,9 +17,9 @@ The layering, and the reasoning behind every decision in it, are recorded in
 
 ## Status
 
-**`v0.1.0` is the only tagged release, and this document describes `master`, which is ahead
-of it.** Installation is a git checkout (see [Installation](#installation)), so it gives you
-`master` unless you ask for the tag; there is no Quicklisp release to depend on yet.
+**Version `0.2.0` is the current release.** Installation is a git checkout (see
+[Installation](#installation)), which gives you `master` unless you ask for the tag; there is
+no Quicklisp release to depend on yet.
 
 `0.x` means the published surface can still change in a minor bump. What is published is a
 compatibility obligation from the moment it is published, per policy section 14 -- that has
