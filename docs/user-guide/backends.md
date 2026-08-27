@@ -280,11 +280,13 @@ handle or a result.
 
 ## Finding the shared library
 
-Every `open-backend` has a matching `close-backend`, and
+Every `open-backend` needs a matching `close-backend`.
 [`with-backend`](threads.md#with-backend) pairs them for you the way `with-dataset` and
-`with-booster` pair theirs -- it goes outside both, since `close-backend` unloads the library
-their pointers are backed by. The examples in this guide close by hand only because each is
-showing one narrow thing about the call itself.
+`with-booster` pair theirs, and goes outside both, since `close-backend` unloads the library
+their pointers are backed by. All three are **unified-API macros**, published by `cl-gbdt` and
+by neither backend package -- the symbol listing above is the evidence -- so a program on a
+bare Layer 1 system closes and frees by hand because that is the only thing available to it,
+as the [Two systems per backend](#two-systems-per-backend) examples do.
 
 `open-backend`'s `:path`, when supplied, wins outright over everything else. Otherwise,
 in order: `CL_GBDT_LIGHTGBM_LIB` / `CL_GBDT_XGBOOST_LIB`, then the vendored directory
