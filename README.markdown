@@ -17,8 +17,9 @@ The layering, and the reasoning behind every decision in it, are recorded in
 
 ## Status
 
-**Version `0.1.0`, the first tagged release.** Install it from a git checkout (see
-[Installation](#installation)); there is no Quicklisp release to depend on yet.
+**`v0.1.0` is the only tagged release, and this document describes `master`, which is ahead
+of it.** Installation is a git checkout (see [Installation](#installation)), so it gives you
+`master` unless you ask for the tag; there is no Quicklisp release to depend on yet.
 
 `0.x` means the published surface can still change in a minor bump. What is published is a
 compatibility obligation from the moment it is published, per policy section 14 -- that has
@@ -227,6 +228,7 @@ each feature is explained, with the worked example and the measurement behind it
 | Training report, `:early-stopping` | `:evaluation-history`, `:early-stopping` | yes | yes | [Training report](docs/user-guide/training.md#training-report), [Stopping early](docs/user-guide/training.md#stopping-early-early-stopping) |
 | `:num-iteration :best` | -- | `predict`, `save-model`, `model-to-string` | `predict` only | [`:num-iteration :best`](docs/user-guide/training.md#num-iteration-best) |
 | Sparse input (`csr-matrix`) | `:sparse-input` | yes, all four `predict` kinds | yes, `:normal` and `:raw` only | [Sparse input](docs/user-guide/data-and-prediction.md#sparse-input-csr-matrices) |
+| `make-csr-matrix`'s `:implicit-value` | -- | accepts a zero, refuses `:missing` | accepts `:missing`, refuses a zero | [An absent entry is not a zero](docs/user-guide/data-and-prediction.md#an-absent-entry-is-not-a-zero-and-the-two-libraries-disagree-about-it) |
 | `:missing` sentinel | `:missing-value` | **no** -- no such key in its C API | yes | [Missing values](docs/user-guide/data-and-prediction.md#missing-values) |
 | `:categorical-features` | `:categorical-features` | yes | yes, `tree_method` `hist` or `approx` | [Categorical features](docs/user-guide/data-and-prediction.md#categorical-features) |
 | `predict`'s shape, second value | `:prediction-shape` | derived; `NIL` for `:leaf-index` | stated verbatim by the library | [Prediction shape](docs/user-guide/data-and-prediction.md#prediction-shape) |
@@ -239,6 +241,9 @@ One thing worth knowing before you reach the guide, for each:
 - **Training report** -- one `training-series` per metric per dataset, values oldest-first,
   indexed the way `evaluation` indexes them. Recording roughly doubles LightGBM's `train`
   time; `:record-history nil` turns it off.
+- **`:num-iteration :best`** -- resolves against the iteration the training report picked, so
+  it needs a booster `train` produced: at Layer 1, where `create-booster` writes no best
+  iteration, it is refused with `unsupported-argument`.
 - **Sparse input** -- an entry a `csr-matrix` does not store is `0.0` to LightGBM and
   *missing* to XGBoost; left undeclared, that still changes the trained model silently
   rather than erroring.
@@ -302,16 +307,17 @@ which links each row on to the guide that measures it.
 Every document this repository tracks, and the question each one answers. The licence texts
 themselves -- `LICENSE` and `LICENSES/` -- are named under [License](#license) below.
 
-**Every code block in the seven guides below, and the quick start above, was actually run to
-produce the output pasted beneath it** -- SBCL via `ros run`, with `./tools/fetch-libs.sh`'s
-vendored libraries present. An `Output:` block is a transcript, not an illustration.
+**Every code block in the seven guides below that carries an `Output:` block was actually run
+to produce it** -- SBCL via `ros run`, with `./tools/fetch-libs.sh`'s vendored libraries
+present, as was the quick start above. An `Output:` block is a transcript, not an
+illustration; the few blocks without one show a signature rather than a program.
 
-Outside [Data and prediction](docs/user-guide/data-and-prediction.md), each of those blocks
-also **stands alone**: it loads the systems it needs and defines its own fixtures, so it can
-be pasted into a fresh REPL as it stands -- measured, by extracting all twenty and running
-each in a fresh image. Data and prediction's blocks instead build on each other: nine of its
-fourteen reuse a matrix, a label or a helper defined in an earlier block of that same guide,
-so read its blocks in order, or evaluate the earlier ones first.
+Outside [Data and prediction](docs/user-guide/data-and-prediction.md), those blocks also
+**stand alone**: each loads the systems it needs and defines its own fixtures, so it can be
+pasted into a fresh REPL as it stands -- measured, by extracting each and running it in a
+fresh image. Data and prediction's blocks instead build on each other: most reuse a matrix, a
+label or a helper defined in an earlier block of that same guide, so read its blocks in order,
+or evaluate the earlier ones first.
 
 ### Using the library
 

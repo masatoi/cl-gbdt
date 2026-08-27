@@ -52,8 +52,9 @@ Opening and closing a backend from more than one thread has its own rules, disti
 everything else on this page -- see [Thread safety](threads.md) for what is and is not safe to
 do with a `backend` once more than one thread can reach it.
 
-**A Layer 1 system alone trains, predicts, persists and reports.** Fourteen operations per
-backend are Layer 1's whole surface, with no unified API in the image at all: six of them
+**A Layer 1 system alone trains, predicts, persists and reports.** Fourteen operations are
+common to both backends -- XGBoost adds `slice-model`, which LightGBM has no counterpart for
+-- and they are reachable with no unified API in the image at all: six of them
 carry a whole run -- `create-dataset`, `create-booster`, `update-one-iteration`, `predict`,
 `free-dataset` and `free-booster`, the ones exercised by both blocks below -- seven more
 persist the trained model and answer questions about it -- `save-model`, `load-model`,
@@ -191,7 +192,7 @@ neither package re-exports (policy sections 3 and 11):
 Output:
 
 ```
-93 external symbols, 53 of them the condition hierarchy
+94 external symbols, 53 of them the condition hierarchy
 (CL-GBDT/SRC/BACKEND:*KNOWN-CAPABILITIES*
  CL-GBDT/SRC/BACKEND:BACKEND-CAPABILITIES CL-GBDT/SRC/BACKEND:BACKEND-INFO
  CL-GBDT/SRC/BACKEND:BACKEND-LIBRARY-PATH CL-GBDT/SRC/BACKEND:BACKEND-NAME
@@ -203,13 +204,12 @@ Output:
  CL-GBDT/SRC/HANDLE:BOOSTER-VALIDATION-SETS CL-GBDT/SRC/BACKEND:CLOSE-BACKEND
  CL-GBDT/SRC/LIGHTGBM/API:CREATE-BOOSTER
  CL-GBDT/SRC/LIGHTGBM/API:CREATE-DATASET
- CL-GBDT/SRC/LIGHTGBM/API:CREATE-DATASET-FROM-FILE
- CL-GBDT/SRC/DATA:CSR-MATRIX CL-GBDT/SRC/DATA:CSR-MATRIX-INDICES
+ CL-GBDT/SRC/LIGHTGBM/API:CREATE-DATASET-FROM-FILE CL-GBDT/SRC/DATA:CSR-MATRIX
+ CL-GBDT/SRC/DATA:CSR-MATRIX-IMPLICIT-VALUE CL-GBDT/SRC/DATA:CSR-MATRIX-INDICES
  CL-GBDT/SRC/DATA:CSR-MATRIX-INDPTR CL-GBDT/SRC/DATA:CSR-MATRIX-NUM-COLUMNS
  CL-GBDT/SRC/DATA:CSR-MATRIX-NUM-ROWS CL-GBDT/SRC/DATA:CSR-MATRIX-VALUES
  CL-GBDT/SRC/HANDLE:DATASET CL-GBDT/SRC/LIGHTGBM/API:DATASET-NUM-FEATURES
- CL-GBDT/SRC/LIGHTGBM/API:DATASET-NUM-ROWS
- CL-GBDT/SRC/LIGHTGBM/API:EVALUATION
+ CL-GBDT/SRC/LIGHTGBM/API:DATASET-NUM-ROWS CL-GBDT/SRC/LIGHTGBM/API:EVALUATION
  CL-GBDT/SRC/LIGHTGBM/API:FEATURE-IMPORTANCE
  CL-GBDT/SRC/LIGHTGBM/API:FREE-BOOSTER CL-GBDT/SRC/LIGHTGBM/API:FREE-DATASET
  CL-GBDT/SRC/HANDLE:HANDLE-BACKEND CL-GBDT/SRC/HANDLE:HANDLE-RELEASED-P
@@ -220,7 +220,7 @@ Output:
  CL-GBDT/SRC/LIGHTGBM/API:UPDATE-ONE-ITERATION)
 ```
 
-Those 93 fall into three groups. **LightGBM's own API** is seventeen of them: the fourteen
+Those 94 fall into three groups. **LightGBM's own API** is seventeen of them: the fourteen
 finished operations enumerated above -- `create-dataset`, `create-booster`,
 `update-one-iteration`, `predict`, `free-dataset`, `free-booster`, `save-model`,
 `load-model`, `model-to-string`, `feature-importance`, `evaluation`, `dataset-num-rows`,
@@ -235,11 +235,11 @@ those seventeen names -- `predict`, `update-one-iteration`, `free-dataset`, `fre
 `dataset-num-rows` and `dataset-num-features` -- are *also* names `cl-gbdt` exports, and
 these are **different symbols**: plain functions here, generic functions there, so an image
 holding both packages has to say which it means. **The shared basis** is the other
-twenty-three non-condition symbols: `open-backend`, `close-backend`,
+twenty-four non-condition symbols: `open-backend`, `close-backend`,
 `backend-supports-p` and the rest of the backend readers, `handle-released-p`,
 `handle-backend`, `booster-training-set` and `booster-validation-sets`, the
 `dataset`/`booster` handle classes, and `make-csr-matrix` with the `csr-matrix` type and its
-five readers, so that the sparse half of `create-dataset` and `predict` is reachable from the
+six readers, so that the sparse half of `create-dataset` and `predict` is reachable from the
 package that publishes them. These are republished here, rather than left to core `cl-gbdt`,
 so that a program loading this Layer 1 system alone can open, question and close a backend
 without naming an internal package -- and unlike the eleven doubled operation names, they are
@@ -249,8 +249,8 @@ disambiguate. And **the condition hierarchy** is the remaining 53, re-exported w
 Layer 1 caller catches `foreign-call-error` or `backend-library-not-found` by the same name
 a unified-API caller does.
 
-`cl-gbdt/xgboost` is the same shape -- 94 external symbols, the same 53 conditions and the
-same 23 shared-basis symbols -- with eighteen of its own rather than seventeen: the same
+`cl-gbdt/xgboost` is the same shape -- 95 external symbols, the same 53 conditions and the
+same 24 shared-basis symbols -- with eighteen of its own rather than seventeen: the same
 fourteen operations under its own package's symbols, plus `xgboost-backend`,
 `slice-model`, `booster-boosted-rounds` (see [the capability
 section](#asking-a-backend-what-it-can-do)), and an
@@ -279,6 +279,12 @@ finished operations built on top of them that take a backend or a handle and han
 handle or a result.
 
 ## Finding the shared library
+
+Every `open-backend` has a matching `close-backend`, and
+[`with-backend`](threads.md#with-backend) pairs them for you the way `with-dataset` and
+`with-booster` pair theirs -- it goes outside both, since `close-backend` unloads the library
+their pointers are backed by. The examples in this guide close by hand only because each is
+showing one narrow thing about the call itself.
 
 `open-backend`'s `:path`, when supplied, wins outright over everything else. Otherwise,
 in order: `CL_GBDT_LIGHTGBM_LIB` / `CL_GBDT_XGBOOST_LIB`, then the vendored directory
