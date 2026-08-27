@@ -331,7 +331,7 @@ e.g. \"make-dataset's :reference\", for the report.")
            :documentation "Why BACKEND cannot honor the argument."))
   (:report
    (lambda (condition stream)
-     (format stream "~A is not supported by ~A~@[: ~A~]."
+     (format stream "~A is not supported~@[ by ~A~]~@[: ~A~]."
              (or (unsupported-argument-argument condition) "The argument")
              (unsupported-argument-backend condition)
              (unsupported-argument-reason condition))))
@@ -343,7 +343,11 @@ wrong backend, this is about an argument naming a concept the backend does not h
 Signalling here, instead of silently discarding the argument, is deliberate: this project has
 repeatedly found a silently-dropped argument to be the failure mode where a caller moves
 working code from one backend to the other and gets different, wrong behaviour with no
-indication anything changed."))
+indication anything changed.
+
+The backend clause of the report is conditional because BACKEND is NIL wherever the refusal
+happens before any backend is involved -- `make-csr-matrix''s :IMPLICIT-VALUE, which is
+checked at construction, is the first such site."))
 
 (define-condition file-format-mismatch (data-error)
   ((path :initarg :path

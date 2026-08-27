@@ -94,6 +94,8 @@
                 #:foreign-call-error
                 #:unsupported-argument
                 #:wrong-backend-reference)
+  (:import-from #:cl-gbdt/src/config/implicit-value
+                #:check-implicit-value)
   (:import-from #:cl-gbdt/src/config/prediction-shape
                 #:contrib-shape)
   (:import-from #:cl-gbdt/src/data
@@ -156,6 +158,32 @@ on a library that has neither."
   (unless (backend-supports-p backend :sparse-input)
     (error 'capability-unavailable
            :backend (backend-name backend) :capability :sparse-input)))
+
+(defun %check-implicit-value (backend matrix)
+  "Signal `unsupported-argument' when MATRIX declares an absence meaning LightGBM does not read.
+
+An absent entry is `0.0' to this library **in its default configuration**, so a `:MISSING'
+declaration is refused and a zero one accepted; NIL and `:NONE' always pass.
+
+That acceptance is as unverified as the refusal, and deliberately so. LightGBM's
+`zero_as_missing' -- set on the booster as well as the dataset -- makes an absent entry mean
+*missing*, which turns `:MISSING' into a true claim this still refuses and a zero one into a
+false claim this still accepts. Neither can be checked from here: `create-dataset' never sees
+the booster's parameters and `predict' sees neither, and the flag only bites when both carry
+it. So the rule is symmetric even though only the refusal announces itself -- a caller who has
+set `zero_as_missing' must leave :IMPLICIT-VALUE undeclared entirely, not merely avoid
+`:MISSING'. `docs/user-guide/data-and-prediction.md''s \"LightGBM's `zero_as_missing',
+measured\" subsection carries the runs.
+
+The comparison and both messages live in
+`cl-gbdt/src/config/implicit-value' so that this backend and XGBoost cannot drift apart about
+what they refuse -- the same reason `%check-sparse-input' above is called from both of this
+file's CSR sites rather than written twice.
+
+Called from the same two places as `%check-sparse-input', immediately after it: `%dataset-pointer'
+on `create-dataset''s behalf, and `predict'. Not exported, for the same reason that one is not:
+nothing outside this file calls it, and an export is one more claim to keep true."
+  (check-implicit-value (backend-name backend) matrix 0.0d0))
 
 ;;; ---------------------------------------------------------------------------
 ;;; The class gate, for the frees and the creators
@@ -273,6 +301,7 @@ differs."
   (if (typep matrix 'csr-matrix)
       (progn
         (%check-sparse-input backend)
+        (%check-implicit-value backend matrix)
         (values (%create-dataset-from-csr (csr-matrix-indptr matrix)
                                           (csr-matrix-indices matrix)
                                           (csr-matrix-values matrix)
@@ -314,7 +343,10 @@ call when BACKEND is not open -- see `%check-backend-open'. Signals `capability-
 naming `:sparse-input' when MATRIX is a `csr-matrix' and that capability reads false,
 `wrong-backend-reference' when REFERENCE is supplied and is not a `lightgbm-dataset',
 `released-handle-error' when it has already been freed, and `backend-not-open' when its own
-backend has since been closed -- see `%reference-pointer'. Signals `foreign-call-error' when
+backend has since been closed -- see `%reference-pointer'. Also signals `unsupported-argument',
+before any foreign call, when MATRIX is a `csr-matrix' whose `:IMPLICIT-VALUE' is `:MISSING':
+an absent entry is `0.0' to this library, not missing -- see
+`cl-gbdt/src/config/implicit-value'. Signals `foreign-call-error' when
 the creation call reports success but writes a null handle: a library-contract violation, but
 one every later call through this handle would otherwise dereference blindly.
 
@@ -836,7 +868,10 @@ resolution produced, so the keyword itself never arrives from there.
 
 Signals `capability-unavailable' naming `:sparse-input' when MATRIX is a `csr-matrix' and that
 capability reads false -- see `%check-sparse-input' above, which checks it before any foreign
-call. Everything else means exactly what it means for a dense matrix: both entry points take
+call. Also signals `unsupported-argument', before any foreign call, when MATRIX is a
+`csr-matrix' whose `:IMPLICIT-VALUE' is `:MISSING': an absent entry is `0.0' to this library,
+not missing -- see `cl-gbdt/src/config/implicit-value'. Everything else means exactly what it
+means for a dense matrix: both entry points take
 the same PREDICT-TYPE, the same START-ITERATION/NUM-ITERATION pair and the same parameter
 string, and both fill the same buffer in the same row-major order, so KIND and NUM-ITERATION
 are honoured identically on either path -- all four KINDs included, unlike
@@ -929,6 +964,7 @@ call, it does not and should not decide what counts as a valid model output."
         (if (typep matrix 'csr-matrix)
             (progn
               (%check-sparse-input (handle-backend booster))
+              (%check-implicit-value (handle-backend booster) matrix)
               (predict-into (csr-matrix-num-rows matrix) "LGBM_BoosterPredictForCSR"
                             (lambda (parameter-cstring out-len buffer)
                               (%predict-for-csr pointer

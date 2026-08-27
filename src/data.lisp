@@ -12,6 +12,7 @@
   (:import-from #:cffi)
   (:import-from #:cl-gbdt/src/conditions
                 #:dimension-mismatch
+                #:unsupported-argument
                 #:unsupported-element-type)
   (:export #:foreign-matrix
            #:foreign-matrix-pointer
@@ -28,6 +29,7 @@
            #:csr-matrix-indices
            #:csr-matrix-values
            #:csr-matrix-num-columns
+           #:csr-matrix-implicit-value
            #:csr-matrix-num-rows))
 
 (in-package #:cl-gbdt/src/data)
@@ -180,7 +182,7 @@ double-float (*))'. All three are already coerced to what a backend hands to the
 a backend method only needs to pin them -- see `with-foreign-matrix' in this same file for
 the dense equivalent.
 
-Every slot is `:read-only t', so there is no `setf' expander for any of the four
+Every slot is `:read-only t', so there is no `setf' expander for any of the five
 accessors. `make-csr-matrix' is the only way to build one and it validates everything a
 backend later relies on; a writable slot would make that validation defeatable after the
 fact, and a matrix whose INDPTR had been replaced by a list would reach the C API as a raw
@@ -189,19 +191,28 @@ conditions. `foreign-matrix' above is reader-only for the same reason: a `csr-ma
 exists is one both backends can be handed.
 
 An entry a row does not store is *absent*, not zero, and the two libraries read absence
-differently: LightGBM reads an absent entry as `0.0' (its own `zero_as_missing' is off by
-default) while XGBoost reads one as missing, and no config key on either changes that --
-it is what CSR means to each library. So a `csr-matrix' that omits entries describes
-different data to the two backends and changes trained numbers silently rather than
-signalling; store every element, zeros included, when the same matrix has to mean the same
-thing on both. See `docs/user-guide/data-and-prediction.md''s \"An absent entry is not a
-zero, and the two libraries disagree about it\" section for the measured runs on each."
+differently. LightGBM reads an absent entry as `0.0' while its own `zero_as_missing' is
+off, which is the default -- that flag can change it. XGBoost reads one as missing, and no
+key this project has found changes that: measured as none found, not established that none
+exists. So a `csr-matrix' that omits entries describes different data to the two backends
+and changes trained numbers silently rather than signalling; store every element, zeros
+included, when the same matrix has to mean the same thing on both. See
+`docs/user-guide/data-and-prediction.md''s \"An absent entry is not a zero, and the two
+libraries disagree about it\" section for the measured runs on each, and its \"LightGBM's
+`zero_as_missing', measured\" subsection for what that flag changes.
+
+`:IMPLICIT-VALUE' is how a caller states which of those their data means. `:NONE' states
+that nothing is absent -- every element is stored -- and is the only declaration both
+backends accept, since it is the only one that does not depend on which library reads the
+matrix. An undeclared matrix, `:IMPLICIT-VALUE' left NIL, is checked by nothing: the
+divergence above is still the caller's to manage."
   (indptr nil :read-only t)
   (indices nil :read-only t)
   ;; Named VALUES for the same reason `training-series' is: it is the word for what the
   ;; slot holds. Shadows `cl:values' inside a `with-slots' over this struct.
   (values nil :read-only t)
-  (num-columns nil :read-only t))
+  (num-columns nil :read-only t)
+  (implicit-value nil :read-only t))
 
 (defun csr-matrix-num-rows (matrix)
   "Return MATRIX's row count, one less than the length of its INDPTR array.
@@ -286,7 +297,91 @@ as a raw, undocumented `type-error', not one of this file's own conditions."
 `coerce'."
   (map '(simple-array double-float (*)) (lambda (value) (coerce value 'double-float)) vector))
 
-(defun make-csr-matrix (&key indptr indices values num-columns)
+(defun %require-legal-implicit-value (implicit-value)
+  "Signal `unsupported-argument' unless IMPLICIT-VALUE is one of the four legal declarations.
+
+The legal set is NIL, a real for which `zerop' is true, `:MISSING' and `:NONE'. A non-zero real
+gets no special case: no backend implies a non-zero value for an absent entry, so it is a claim
+nothing could honour, and storing it would leave a matrix no backend can accept. Signalled with
+no BACKEND -- there is none at construction -- which is why `unsupported-argument''s report
+makes that clause conditional."
+  (unless (or (null implicit-value)
+              (eq implicit-value :missing)
+              (eq implicit-value :none)
+              (and (realp implicit-value) (zerop implicit-value)))
+    (error 'unsupported-argument
+           :argument "make-csr-matrix's :IMPLICIT-VALUE"
+           :reason (format nil "~S is not NIL, a zero, :MISSING or :NONE"
+                           implicit-value))))
+
+(defun %canonical-implicit-value (implicit-value)
+  "Return IMPLICIT-VALUE as the struct stores it: every zero real becomes `0.0d0'.
+
+`0', `0.0', `0.0d0' and `-0.0d0' are all legal ways to say the same thing, and a backend
+comparing the stored declaration against its own reading of absence should not have to know
+which the caller wrote. Canonicalizing here is what lets that comparison be `eql'. The same
+reason `%coerce-value-vector' normalizes VALUES rather than storing whatever was handed in."
+  (if (and (realp implicit-value) (zerop implicit-value))
+      0.0d0
+      implicit-value))
+
+(defun %require-every-element-stored (indptr indices num-columns)
+  "Signal `dimension-mismatch' unless every row stores all NUM-COLUMNS columns exactly once.
+
+This is what `:IMPLICIT-VALUE :NONE' declares, and comparing lengths alone would not establish
+it: `make-csr-matrix' does not reject a column index repeated within a row -- duplicates are
+legal CSR that both libraries accept -- so a row storing one column twice and another not at
+all has exactly the right length. STAMPS holds, per column, the row that last claimed it, so a
+repeat inside one row is caught without clearing the array between rows; -1 cannot collide with
+a row index. O(nnz) time, O(NUM-COLUMNS) space.
+
+Row 0's own stored length is checked against NUM-COLUMNS *before* STAMPS, sized by
+NUM-COLUMNS, is allocated -- deliberately, not merely for style. `%require-positive-num-columns'
+bounds NUM-COLUMNS below but not above, so a caller (or a corrupt upstream header field) can
+hand in an implausibly large one, and allocating STAMPS first would try to satisfy that value
+with a real allocation before a single row had been examined, exhausting the heap on a matrix
+this function was always going to reject anyway. The check costs nothing on a matrix that will
+pass: such a matrix's row 0 always has exactly NUM-COLUMNS elements, the same fact the loop
+below re-establishes for every other row, so checking it again once STAMPS exists is redundant
+but harmless there. A matrix with no rows at all is accepted vacuously -- it stores every
+element of every row it has, there being none to contradict it -- and STAMPS is not allocated
+for it either: it has no row 0 for the check above to reject, so an allocation outside this
+`when' would reach that same implausible NUM-COLUMNS by the one path the check cannot guard.
+Do not reorder this back to \"allocate, then loop\", and do not lift the allocation out of the
+`when' -- either is the exact shape that regresses this.
+
+Runs only when :NONE was declared, and only after `%require-indices-in-range', so every element
+of INDICES is a legal index into STAMPS."
+  (let ((num-rows (1- (length indptr))))
+    (when (plusp num-rows)
+      (let ((row-0-length (- (aref indptr 1) (aref indptr 0))))
+        (unless (= row-0-length num-columns)
+          (error 'dimension-mismatch
+                 :expected (format nil "row 0 to store all ~D columns, as :IMPLICIT-VALUE ~
+                                        :NONE declares"
+                                   num-columns)
+                 :given row-0-length)))
+      (let ((stamps (make-array num-columns :element-type 'fixnum :initial-element -1)))
+        (dotimes (row num-rows)
+          (let ((start (aref indptr row))
+                (end (aref indptr (1+ row))))
+            (unless (= (- end start) num-columns)
+              (error 'dimension-mismatch
+                     :expected (format nil "row ~D to store all ~D columns, as :IMPLICIT-VALUE ~
+                                            :NONE declares"
+                                       row num-columns)
+                     :given (- end start)))
+            (loop :for k :from start :below end
+                  :for column := (aref indices k)
+                  :do (when (= (aref stamps column) row)
+                        (error 'dimension-mismatch
+                               :expected (format nil "row ~D to store each of its ~D columns ~
+                                                      once, as :IMPLICIT-VALUE :NONE declares"
+                                                 row num-columns)
+                               :given (format nil "column ~D stored twice" column)))
+                      (setf (aref stamps column) row))))))))
+
+(defun make-csr-matrix (&key indptr indices values num-columns implicit-value)
   "Return a `csr-matrix' holding INDPTR, INDICES and VALUES in standard CSR layout, one
 NUM-COLUMNS wide.
 
@@ -294,6 +389,15 @@ INDPTR, INDICES and VALUES may each be any sequence -- list or vector -- and com
 already coerced to the specialized arrays `csr-matrix-indptr', `csr-matrix-indices' and
 `csr-matrix-values' store; see the struct's own docstring for exactly which types, and
 for why NUM-COLUMNS is required rather than inferred.
+
+IMPLICIT-VALUE declares what an entry the matrix does not store means to whichever backend
+reads it: NIL, a real for which `zerop' is true, `:MISSING' or `:NONE'. NIL is the default
+and means the matrix declares nothing. A zero, in any of `0', `0.0', `0.0d0' or `-0.0d0',
+is stored as `0.0d0'. An IMPLICIT-VALUE outside that set signals `unsupported-argument';
+`:NONE' on a matrix where some row does not store every one of its NUM-COLUMNS columns
+exactly once signals `dimension-mismatch'. The declaration is only recorded here -- it is
+checked against a backend's own reading of absence by `make-dataset' and `predict', not by
+this function.
 
 Signals `dimension-mismatch' when NUM-COLUMNS is not a positive integer; when INDICES
 and VALUES have different lengths; when INDPTR does not start at 0, decreases anywhere,
@@ -305,6 +409,7 @@ integer too large for it reaches `%coerce-index-vector' as a raw `type-error'. E
 check runs against INDPTR, INDICES and VALUES before any of the three is coerced, so a
 malformed matrix is rejected without paying for the copy a valid one needs."
   (%require-positive-num-columns num-columns)
+  (%require-legal-implicit-value implicit-value)
   (let ((indptr-vector (coerce indptr 'vector))
         (indices-vector (coerce indices 'vector))
         (values-vector (coerce values 'vector)))
@@ -314,7 +419,10 @@ malformed matrix is rejected without paying for the copy a valid one needs."
     (%require-int32-elements indices-vector)
     (%require-indices-in-range indices-vector num-columns)
     (%require-real-values values-vector)
+    (when (eq implicit-value :none)
+      (%require-every-element-stored indptr-vector indices-vector num-columns))
     (%make-csr-matrix :indptr (%coerce-index-vector indptr-vector)
                       :indices (%coerce-index-vector indices-vector)
                       :values (%coerce-value-vector values-vector)
-                      :num-columns num-columns)))
+                      :num-columns num-columns
+                      :implicit-value (%canonical-implicit-value implicit-value))))

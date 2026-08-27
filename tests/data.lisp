@@ -122,14 +122,107 @@
     (ok (eq :float (cl-gbdt:foreign-element-type 'single-float)))))
 
 (defun %csr (&key (indptr '(0 2 3)) (indices '(0 2 1))
-                  (values '(1.0d0 2.0d0 3.0d0)) (num-columns 3))
-  (cl-gbdt:make-csr-matrix :indptr indptr :indices indices
-                           :values values :num-columns num-columns))
+                  (values '(1.0d0 2.0d0 3.0d0)) (num-columns 3) implicit-value)
+  (cl-gbdt:make-csr-matrix :indptr indptr :indices indices :values values
+                           :num-columns num-columns :implicit-value implicit-value))
 
 (defun %signals-dimension-mismatch-p (thunk)
   ;; handler-case, not rove's `signals' -- see prompts/repl-driven-development.md.
   (handler-case (progn (funcall thunk) nil)
     (cl-gbdt:dimension-mismatch () t)))
+
+(defun %signals-unsupported-argument-p (thunk)
+  ;; handler-case, not rove's `signals' -- see prompts/repl-driven-development.md.
+  (handler-case (progn (funcall thunk) nil)
+    (cl-gbdt:unsupported-argument () t)))
+
+(deftest csr-matrix-accepts-every-legal-implicit-value
+  (testing "NIL, a zero, :MISSING and :NONE are each accepted and read back"
+    (ok (null (cl-gbdt:csr-matrix-implicit-value (%csr)))
+        "an undeclared matrix reads back NIL")
+    (ok (eq :missing (cl-gbdt:csr-matrix-implicit-value (%csr :implicit-value :missing)))
+        ":MISSING reads back")
+    (ok (eql 0.0d0 (cl-gbdt:csr-matrix-implicit-value (%csr :implicit-value 0)))
+        "the integer 0 is canonicalized to 0.0d0")
+    (ok (eql 0.0d0 (cl-gbdt:csr-matrix-implicit-value (%csr :implicit-value -0.0)))
+        "negative zero is canonicalized to the same 0.0d0, so a backend may compare with EQL")
+    (ok (eql 0.0d0 (cl-gbdt:csr-matrix-implicit-value (%csr :implicit-value 0.0d0)))
+        "0.0d0 itself round-trips unchanged")
+    (ok (eql 0.0d0 (cl-gbdt:csr-matrix-implicit-value (%csr :implicit-value 0.0)))
+        "positive single-float 0.0 is canonicalized to 0.0d0 too")))
+
+(deftest csr-matrix-rejects-an-illegal-implicit-value
+  ;; A non-zero real is refused rather than stored: no backend implies a non-zero value for
+  ;; absence, so it is a claim nothing could honour.
+  (testing "anything outside the legal set signals"
+    (dolist (bad '(1.0d0 -3 "missing" :zero t))
+      (ok (%signals-unsupported-argument-p (lambda () (%csr :implicit-value bad)))
+          (format nil "whether ~S was rejected" bad)))))
+
+(deftest csr-matrix-none-accepts-a-matrix-storing-every-element
+  (testing ":NONE is accepted when each row stores all NUM-COLUMNS columns exactly once"
+    (ok (cl-gbdt:csr-matrix-implicit-value
+         (%csr :indptr '(0 3) :indices '(0 1 2) :values '(1.0d0 2.0d0 3.0d0)
+               :num-columns 3 :implicit-value :none))
+        "a fully-stored single row")))
+
+(deftest csr-matrix-none-rejects-a-short-row
+  (testing ":NONE is refused when a row stores fewer entries than the declared width"
+    (ok (%signals-dimension-mismatch-p (lambda () (%csr :implicit-value :none)))
+        "%csr's default matrix stores 2 then 1 of 3 columns")))
+
+(deftest csr-matrix-none-rejects-a-row-storing-one-column-twice
+  ;; The case a count alone cannot catch, and the reason `%require-every-element-stored'
+  ;; stamps columns rather than comparing lengths: this row stores three entries for three
+  ;; columns, so the count is right, while column 0 is stored twice and column 2 not at all.
+  ;; `make-csr-matrix' does not reject duplicate indices in general -- they are legal CSR --
+  ;; so nothing else in this file would notice.
+  (testing ":NONE is refused when a row repeats a column and omits another"
+    (ok (%signals-dimension-mismatch-p
+         (lambda () (%csr :indptr '(0 3) :indices '(0 0 1) :values '(1.0d0 2.0d0 3.0d0)
+                          :num-columns 3 :implicit-value :none)))
+        "three entries, three columns, column 2 never stored")))
+
+(deftest csr-matrix-none-accepts-a-column-restored-by-a-later-row
+  ;; `%require-every-element-stored' uses ROW itself as a generation counter, comparing
+  ;; `(aref stamps column)' against the current row rather than clearing STAMPS between rows.
+  ;; So a column claimed by row 0 must be claimable again by row 1. Every other :NONE test in
+  ;; this file fails or passes entirely inside row 0, so a plain boolean "have I seen this
+  ;; column at all" array -- which would wrongly reject a legitimate second row like this one
+  ;; -- would pass every other test here. This is the one that would catch that regression.
+  (testing ":NONE is accepted when a later row re-stores a column an earlier row already used"
+    (ok (cl-gbdt:csr-matrix-implicit-value
+         (%csr :indptr '(0 3 6) :indices '(0 1 2 0 1 2)
+               :values '(1.0d0 2.0d0 3.0d0 4.0d0 5.0d0 6.0d0)
+               :num-columns 3 :implicit-value :none))
+        "two fully-stored rows, the second reusing every column index the first used")))
+
+(deftest csr-matrix-none-rejects-a-huge-num-columns-before-allocating
+  ;; `%require-every-element-stored' checks row 0's own stored length against NUM-COLUMNS
+  ;; before allocating STAMPS, which it sizes by NUM-COLUMNS -- see that function's own
+  ;; docstring for why the order matters. NUM-COLUMNS has no upper bound of its own (only
+  ;; `%require-positive-num-columns' below), so a value this implausible is a plausible
+  ;; outcome of a corrupt header field, not a contrived one. Without the ordering this test
+  ;; guards, this would try to allocate ten billion fixnums instead of signalling; this test
+  ;; is only useful because it completes instantly rather than exhausting the heap.
+  (testing ":NONE with an implausible NUM-COLUMNS signals rather than allocating"
+    (ok (%signals-dimension-mismatch-p
+         (lambda () (%csr :indptr '(0 1) :indices '(0) :values '(1.0d0)
+                          :num-columns 10000000000 :implicit-value :none)))
+        "row 0 stores 1 of the declared 10000000000 columns")))
+
+(deftest csr-matrix-none-accepts-a-zero-row-matrix-without-allocating
+  ;; A zero-row matrix satisfies :NONE vacuously: it stores every element of every row it
+  ;; has, there being no row to contradict it. `%require-every-element-stored' has no row 0
+  ;; to length-check here, so the check that guards the STAMPS allocation in the test above
+  ;; cannot fire, and only skipping the allocation for a matrix with no rows keeps this from
+  ;; trying to allocate ten billion fixnums. The assertion is about the allocation, not the
+  ;; returned value: this test is only useful because it completes instantly.
+  (testing ":NONE accepts a zero-row matrix without allocating STAMPS"
+    (ok (cl-gbdt:csr-matrix-implicit-value
+         (%csr :indptr '(0) :indices '() :values '()
+               :num-columns 10000000000 :implicit-value :none))
+        "a zero-row matrix declared :NONE, with an implausible NUM-COLUMNS")))
 
 (deftest csr-matrix-reports-its-shape
   (testing "the readers return what was built, already coerced"
@@ -154,9 +247,10 @@
   ;; at all, so there is nothing left to run. Each reader's own `fboundp' is asserted
   ;; alongside it, so a NIL below cannot be a misspelled symbol rather than a missing
   ;; writer.
-  (testing "none of the four accessors has a writer"
+  (testing "none of the five accessors has a writer"
     (dolist (reader '(cl-gbdt:csr-matrix-indptr cl-gbdt:csr-matrix-indices
-                      cl-gbdt:csr-matrix-values cl-gbdt:csr-matrix-num-columns))
+                      cl-gbdt:csr-matrix-values cl-gbdt:csr-matrix-num-columns
+                      cl-gbdt:csr-matrix-implicit-value))
       (ok (fboundp reader)
           (format nil "whether ~S names a reader at all" reader))
       (ok (not (fboundp (list 'setf reader)))

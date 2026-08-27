@@ -240,7 +240,12 @@ One thing worth knowing before you reach the guide, for each:
   indexed the way `evaluation` indexes them. Recording roughly doubles LightGBM's `train`
   time; `:record-history nil` turns it off.
 - **Sparse input** -- an entry a `csr-matrix` does not store is `0.0` to LightGBM and
-  *missing* to XGBoost, which changes the trained model silently rather than erroring.
+  *missing* to XGBoost; left undeclared, that still changes the trained model silently
+  rather than erroring.
+- **`:implicit-value`** -- states what an absent entry means: `NIL` (undeclared, the
+  default), a `zerop` real, `:missing`, or `:none`. `make-dataset` and `predict` each
+  refuse a declaration the backend does not match with `unsupported-argument`, before any
+  foreign call.
 - **`:missing`** -- LightGBM signals `capability-unavailable` for any non-`NIL` value, a
   `NaN` included; XGBoost compares the sentinel at single precision.
 - **`:categorical-features`** -- `predict` takes no such argument on either backend; the

@@ -82,7 +82,7 @@
   "The command a stage 2 failure message tells the reader to run.")
 
 (defparameter +minimum-published-symbols+
-  '(("cl-gbdt" . 146) ("cl-gbdt/lightgbm" . 93) ("cl-gbdt/xgboost" . 94))
+  '(("cl-gbdt" . 147) ("cl-gbdt/lightgbm" . 94) ("cl-gbdt/xgboost" . 95))
   "Per-package floor on published symbol count, re-measured against a live COLLECT-ENTRIES
 run on 2026-08-13 to match docs/API-REFERENCE.md's own per-package index counts as committed
 that day -- not copied from any earlier plan or brief. See this file's header, item 4, for why
@@ -96,7 +96,12 @@ packages through `cl-gbdt/src/conditions'.
 
 `cl-gbdt' raised from 145 to 146 by thread-safety-contract's Task 1: `with-backend' joins
 `cl-gbdt' alone, through `src/all.lisp''s re-export of `cl-gbdt/src/protocol' -- neither
-backend package publishes it, so `cl-gbdt/lightgbm' and `cl-gbdt/xgboost' stay at 93/94.")
+backend package publishes it, so `cl-gbdt/lightgbm' and `cl-gbdt/xgboost' stay at 93/94.
+
+All three raised again, by one each, by csr-implicit-value's Task 3: `csr-matrix-implicit-value'
+joins all three public packages, through `src/data.lisp''s own :export clause, which both
+backends' `all.lisp' re-export unchanged the same way they already do for `csr-matrix-values'
+and its other siblings.")
 
 (defun die (format-control &rest arguments)
   "Print FORMAT-CONTROL/ARGUMENTS to *ERROR-OUTPUT* as a FAIL line and exit with status 1.

@@ -282,7 +282,7 @@ classified in ~A: ~{~%  ~A~}"
                      unclassified))))
     classified))
 
-(defparameter +minimum-covered+ 94
+(defparameter +minimum-covered+ 95
   "The fewest published symbols the functional suite may reference.
 
 A floor because the two together are invisible to every other check here: delete an export AND its
@@ -296,7 +296,14 @@ directly, on both backends, by `tests/functional/{lightgbm,xgboost}-standalone.l
 `xgboost-standalone.lisp'.
 
 Raised from 93 to 94 by thread-safety-contract's Task 1: `with-backend' is now named by
-`tests/functional/with-backend.lisp'.")
+`tests/functional/with-backend.lisp'.
+
+Raised from 94 to 95 by csr-implicit-value's Task 3: `csr-matrix-implicit-value' is named
+directly by `tests/functional/implicit-value.lisp''s
+`csr-matrix-implicit-value-reads-back-what-was-declared', added there for exactly this reason --
+without it the symbol was published but unreferenced by anything under `tests/functional/`, and
+this checker demanded either a row here or a real reference; a real reference is what a symbol
+this project trains and predicts with deserves over a row saying no test exists.")
 
 (defparameter +maximum-unproven+ 29
   "The most rows `## Unproven' may hold.
