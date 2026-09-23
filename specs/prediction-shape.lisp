@@ -5,10 +5,11 @@
 ;;;; NUM-FEATURES is not negative, and ELEMENT-COUNT is a positive multiple of
 ;;;; NUM-ROWS x (NUM-FEATURES + 1). The contract states that as two exclusive cases.
 ;;;;
-;;;; The generator is not decoration. Drawn independently over these ranges, the divisible
-;;;; case came up 3 times in 200 trials, and ELEMENT-COUNT 0 with positive rows -- the
-;;;; zero-class boundary the docstring singles out -- not once in 1000, so an implementation
-;;;; that accepted a zero-class shape passed. `contrib-shape-arguments' draws half its calls
+;;;; The generator is not decoration. Drawn independently over these ranges at seed 42, the
+;;;; divisible case came up 3 times in 200 trials, and ELEMENT-COUNT 0 with positive rows --
+;;;; the zero-class boundary the docstring singles out -- once in 1000, so an implementation
+;;;; that accepted a zero-class shape passed the 200-trial budget and was caught only at trial
+;;;; 280 (docs/cl-spec-dogfooding.md, G3). `contrib-shape-arguments' draws half its calls
 ;;;; from constructed shapes, a quarter at ELEMENT-COUNT 0, and the rest uniformly.
 
 (uiop:define-package #:cl-gbdt/specs/prediction-shape

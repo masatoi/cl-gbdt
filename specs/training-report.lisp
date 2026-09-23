@@ -14,8 +14,10 @@
 ;;;; docs/cl-spec-dogfooding.md.
 ;;;;
 ;;;; The constructors take only keyword arguments, and a generated keyword call may omit any of
-;;;; them; with `:pre' demanding the ones that matter, 175 of 200 generated calls were refused.
-;;;; Their whole-call generators always supply every key instead.
+;;;; them; with `:pre' demanding the ones that matter, 175 of 200 generated calls to
+;;;; `make-training-series' and 150 of 200 to `make-training-report' were refused at seed 42
+;;;; (docs/cl-spec-dogfooding.md, G5). Their whole-call generators always supply every key
+;;;; instead.
 
 (uiop:define-package #:cl-gbdt/specs/training-report
   (:use #:cl)
