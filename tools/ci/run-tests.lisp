@@ -13,6 +13,7 @@
 ;;;;
 ;;;;   cl-gbdt/tests             must open NO foreign library
 ;;;;   cl-gbdt/tests/functional  must open BOTH backend libraries
+;;;;   cl-gbdt/tests/specs       must open NO foreign library
 ;;;;
 ;;;; Without that second check, a runner with no vendor/ directory would skip every
 ;;;; test and report success -- the exact outcome the functional suite exists to
