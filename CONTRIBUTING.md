@@ -72,7 +72,10 @@ spec-check   symbol: "cl-gbdt/src/parameters:normalize-parameters"  profile: "no
 ```
 
 `function=` runs a contract only and `symbol=` the Properties about a symbol only, so run
-both. [`docs/cl-spec-dogfooding.md`](docs/cl-spec-dogfooding.md) lists every definition,
+both. If the worker's registry lost the definitions -- `cl-spec:clear-registry`, or a freshly
+bound `cl-spec:*registry*` -- `(cl-gbdt/specs/all:register-specifications)` reloads just the
+specification files into it; do not reach for `asdf:load-system ... :force t`, which may
+recompile cl-spec itself under live objects. [`docs/cl-spec-dogfooding.md`](docs/cl-spec-dogfooding.md) lists every definition,
 its seed-42 result, and what cl-spec could not yet express.
 
 ## Running the functional tests

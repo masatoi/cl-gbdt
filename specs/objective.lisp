@@ -66,6 +66,9 @@ Compared as rationals, so the check itself does no floating-point arithmetic tha
     (:when (not (realp value)))
     (:signals (type unsupported-element-type)))))
 
+;;; A generation domain for the Properties below, which only ever see generated keys. `member'
+;;; compares with EQL, so as a validator it would refuse a freshly made "objective" string;
+;;; it is not used to validate a caller's data anywhere.
 (defspec objective-key
   (member :objective :objective-type :app :application :loss
           "objective" "OBJECTIVE" "objective_type" "App"
@@ -73,8 +76,10 @@ Compared as rationals, so the check itself does no floating-point arithmetic tha
           :applications :losses "apps" "obj"
           :num-class :num-leaves :learning-rate :metric))
 
+;;; `(and (type list) ...)' because a `tuple' alone admits a vector, and `pairs-plist'
+;;; destructures lists.
 (defspec objective-pairs
-  (list-of (tuple objective-key parameter-value) :max-length 8))
+  (list-of (and (type list) (tuple objective-key parameter-value)) :max-length 8))
 
 (defproperty objective-parameters-ends-with-the-one-canonical-objective
     ((pairs objective-pairs))

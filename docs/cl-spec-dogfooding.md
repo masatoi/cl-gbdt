@@ -26,15 +26,17 @@ what could be specified, what could not, what was done instead, and the evidence
 cl-mcp worker, after `load-system cl-gbdt clear_fasls=true` and `load-system
 cl-gbdt/specs/check-it`, with the local cl-spec checkout at exactly the pinned revision. Where
 a number from planning did not reproduce, the entry says so and gives the re-measured one.
-The `*print-case*` fix (see [Findings about cl-gbdt](#findings-about-cl-gbdt)) widened
-`parameter-value` to hold symbols, which changed the digests of the seven definitions built on
-it and the first two mutation results; those were re-measured the same way after the fix.
+Two later changes moved the declarations, and every digest, case count and mutation result
+below was re-measured the same way after each: the `*print-case*` fix (see [Findings about
+cl-gbdt](#findings-about-cl-gbdt)), which widened `parameter-value` to hold symbols, and the
+declared-domain fixes from PR review (G8).
 
 ## What was specified
 
 Six Function Specs, each run with `spec-check function=... trials=200 seed="42"`, and nine
 Properties, each run with `spec-check property=... profile=normal seed="42"`. Every row
-passed; every contract rejected 0 inputs (none has a `:pre`) and every `:cases` contract
+passed; every contract rejected 0 generated inputs -- three have a `:pre`, which their
+generators satisfy by construction (G5, G8) -- and every `:cases` contract
 called every case. `rejected` is not measured for a Property -- each call reported
 `rejection-counts-unmeasured` and `input-coverage-unmeasured` among its `verification_gaps`,
 and each contract call reported `input-coverage-unmeasured`.
@@ -42,20 +44,20 @@ and each contract call reported `input-coverage-unmeasured`.
 | Definition | Kind | Clauses used | Seed 42 result | Digest (`fnv1a64-v1:`) |
 |---|---|---|---|---|
 | `contrib-shape` | Function Spec | `:cases`, `:post`, `:args-generator` | 200/200, 0 rejected; `:derivable` 99, `:underivable` 101 | `4de05ef75c7c211a` |
-| `normalize-parameters` | Function Spec | `:cases`, `:signals`, `:post`, `:args-generator` | 200/200, 0 rejected; `:even-length` 99, `:odd-length` 101 | `2e36e7eaf93ae0eb` |
+| `normalize-parameters` | Function Spec | `:cases`, `:signals`, `:pre`, `:post`, `:args-generator` | 200/200, 0 rejected; `:even-length` 99, `:odd-length` 101 | `ee2e63a910959e94` |
 | `objective-single-float` | Function Spec | `:cases`, `:signals`, `:post`, built-in generation | 200/200, 0 rejected; `:real` 111, `:not-real` 89 | `875553b8e348d02a` |
-| `make-training-series` | Function Spec | `object-of` return, `:post`, `:args-generator` | 200/200, 0 rejected | `726be1b6b8664d4e` |
-| `make-training-report` | Function Spec | `object-of` return, `:post`, `:args-generator` | 200/200, 0 rejected | `0c23249e1b9e10a9` |
-| `training-report-from-history` | Function Spec | `object-of` return, `:post`, built-in generation | 200/200, 0 rejected | `fee928ebb658dfc0` |
-| `normalize-parameters-keeps-order-and-renames-keys` | Property (invariant) | built-in generation | 200/200 | `c7202880eedadc97` |
-| `normalize-parameters-values-denote-themselves` | Property (round-trip) | built-in generation | 200/200 | `a8afcada9d9d6f56` |
-| `normalize-parameters-ignores-the-caller-s-printer` | Property (invariant) | built-in generation | 200/200 | `292986cea7676c83` |
-| `objective-parameters-ends-with-the-one-canonical-objective` | Property (invariant) | built-in generation | 200/200 | `76141ae1b8a0567d` |
-| `objective-parameters-keeps-every-other-entry-in-order` | Property (invariant) | built-in generation | 200/200 | `0e3876c721139e31` |
-| `objective-parameters-is-idempotent` | Property (idempotence) | built-in generation | 200/200 | `543ed97880a7a4da` |
-| `history-yields-one-series-per-pair-in-first-appearance-order` | Property (invariant) | built-in generation | 200/200 | `fa7831b1f67d89bd` |
-| `history-series-values-are-the-pair-s-values-in-order` | Property (invariant) | built-in generation | 200/200 | `1dddcb123495d8ad` |
-| `history-series-name-is-the-dataset-s-name` | Property (invariant) | built-in generation | 200/200 | `d280ffacd441c00a` |
+| `make-training-series` | Function Spec | `object-of` return, `:pre`, `:post`, `:args-generator` | 200/200, 0 rejected | `9c4f12ea038c9dbd` |
+| `make-training-report` | Function Spec | `object-of` return, `:pre`, `:post`, `:args-generator` | 200/200, 0 rejected | `d6ff12b3a7478da8` |
+| `training-report-from-history` | Function Spec | `object-of` return, `:post`, built-in generation | 200/200, 0 rejected | `e213621eb87d33db` |
+| `normalize-parameters-keeps-order-and-renames-keys` | Property (invariant) | built-in generation | 200/200 | `59ccbf9dafea18e3` |
+| `normalize-parameters-values-denote-themselves` | Property (round-trip) | built-in generation | 200/200 | `d803ac1508cea629` |
+| `normalize-parameters-ignores-the-caller-s-printer` | Property (invariant) | built-in generation | 200/200 | `ec690a0043d8d5e1` |
+| `objective-parameters-ends-with-the-one-canonical-objective` | Property (invariant) | built-in generation | 200/200 | `1bb00063d8475032` |
+| `objective-parameters-keeps-every-other-entry-in-order` | Property (invariant) | built-in generation | 200/200 | `8f1ff2d0025de731` |
+| `objective-parameters-is-idempotent` | Property (idempotence) | built-in generation | 200/200 | `8dd9a5ef5f4852e4` |
+| `history-yields-one-series-per-pair-in-first-appearance-order` | Property (invariant) | built-in generation | 200/200 | `a12e3de0c035750d` |
+| `history-series-values-are-the-pair-s-values-in-order` | Property (invariant) | built-in generation | 200/200 | `edf236a43a0795cc` |
+| `history-series-name-is-the-dataset-s-name` | Property (invariant) | built-in generation | 200/200 | `63d4aba0cd71dd15` |
 
 "Built-in generation" means the arguments are drawn from their declared specs; several of
 those specs have custom-generator children from `specs/values.lisp` (see G1). A digest covers
@@ -78,8 +80,9 @@ stays in Rove *and* gets that rule written here.
   plist refused, and `*print-base*` 16 not leaking. The three `normalize-parameters`
   Properties state the rules those examples were chosen to illustrate -- names and order;
   every value reads back as itself with no Lisp-only syntax; independence from
-  `*print-base*`, `*print-radix*` and `*read-default-float-format*` -- over generated plists
-  mixing integers, strings, booleans, single-floats, doubles and ratios. The contract adds the
+  `*print-base*`, `*print-radix*`, `*read-default-float-format*` and `*print-case*` -- over
+  generated plists mixing integers, strings, booleans, symbols, single-floats, doubles and
+  ratios. The contract adds the
   even/odd split with the `data-error` refusal.
 - **`tests/prediction-shape.lisp`** pins a multiclass split, a single-class model, an inexact
   division, the zero-class exact division, and degenerate counts. The `contrib-shape`
@@ -98,8 +101,9 @@ stays in Rove *and* gets that rule written here.
   wider domain the implementation's hash-table fold actually guarantees.
 - **`tests/training-report.lisp`** pins that each reader returns its initarg, an unnamed
   series, NIL values, the early-stopping slots and `print-object`. The two constructor
-  contracts state "reports back exactly what it was built from" (by `eq`/`eql`) for generated
-  arguments, with the result validated by `object-of`.
+  contracts state "reports back the same contents it was built from" (by `equal`/`equalp`, not
+  `eq`: the API promises contents, not that the object keeps the caller's very string or
+  vector) for generated arguments, with the result validated by `object-of`.
 
 **No Rove test was removed or edited.** Each pins either a measured value (`0.05d0`,
 `1.0d-7`, the alias list measured against LightGBM 4.7.0) or a regression that once
@@ -235,8 +239,11 @@ for a gap that recurs, so an improvement line is given for those alone, kept to 
   refused **150 of 200** (planning had recorded 146 under a `:pre` that was not kept; 150 is
   this re-run's number, for the `:pre` just stated). A demand on one key alone, `:pre
   num-rounds`, still refused 104.
-- **Fallback:** a whole-call `:args-generator` for each constructor that always supplies every
-  key, so 0 are refused -- at the cost of G2.
+- **Fallback:** the supplied-p variables and the `:pre` stay in each contract -- they are what
+  the contract *admits* -- and a whole-call `:args-generator` for each constructor supplies
+  those keys, so 0 generated calls are refused, at the cost of G2. The first version of the
+  bundle dropped the `:pre` along with the rejections, which left the contracts admitting
+  `(make-training-series)`; see G8.
 - **Also:** both generators, like `normalize-parameters-arguments`, draw a narrower domain
   than their declared `:args` (`best-score` 0..999 as whole doubles, at most three series;
   `normalize-parameters` five keys and integer values 0..999). The declared `:args` still
@@ -267,13 +274,63 @@ for a gap that recurs, so an improvement line is given for those alone, kept to 
   its definitions in a `register-specifications` function) and definitions a structural editor
   can address by name.
 - **Result:** a `defspec-function` inside a `defun` is invisible to `lisp-edit-form`, which
-  addresses top-level forms by `form_type` and `form_name`. Top-level was chosen;
-  re-registration is by `(asdf:load-system "cl-gbdt/specs" :force t)`. The header of
-  `specs/all.lisp` records this.
-- **Pain:** re-registration is coarser. A reload replaces what it loads and leaves the rest,
-  which is also why a long-lived worker can hold stale registrations -- Task 1's first
+  addresses top-level forms by `form_type` and `form_name`. Top-level was chosen, and
+  `cl-gbdt/specs/all:register-specifications` re-`load`s each specification file from source
+  into `cl-spec:*registry*` as bound -- `tests/specs/checks.lisp`'s
+  `register-specifications-fills-a-fresh-registry` holds it to that against an empty registry.
+  The first version documented `(asdf:load-system "cl-gbdt/specs" :force t)` instead. Measured
+  in a fresh `ros run` image after `cl-spec:clear-registry`, that did bring back all 6 contracts
+  and 9 Properties -- but by reloading cl-spec itself too (621 redefinitions), and it did so
+  equally with `:force` given a list of the specification systems, and with no `:force` at all.
+  Whether a load re-evaluates a dependency is up to the ASDF plan, not something ASDF promises
+  for `:force t`, and in a long-lived worker redefining cl-spec's classes under live objects is
+  worse than the stale registry it cures. So the documented route had to go either way.
+- **Pain:** a reload replaces what it loads and leaves the rest, which is also why a long-lived
+  worker can hold stale registrations -- Task 1's first
   `run-tests` failed on five leftover planning-session Function Specs until the worker was
   reset, and `tests/specs/checks.lisp`'s registry-completeness test is what caught it.
+
+### G8 -- a whole-call generator hides a declared domain the target cannot take
+
+- **Status:** a defect in this bundle's first version, found in PR review, and fixed. The
+  cl-spec half is what made it invisible. **Recurred:** yes -- four contracts in two files.
+- **Target:** `normalize-parameters`, both report constructors, `training-report-from-history`.
+- **Wanted:** a contract's declared argument domain -- its `:args` specs and `:pre` -- to be
+  one the target actually accepts, whatever the generator happens to draw.
+- **Result:** four contracts admitted calls their targets cannot take, and every seed-42 run
+  passed, because each run only saw what its generator drew. `cl-spec:check-call` against the
+  first version's contracts:
+  - `normalize-parameters` on `(42 7)`: the element spec `(or parameter-key parameter-value)`
+    admits a number at a key position; `:error` (the target cannot name `42`).
+  - `make-training-series` with no arguments, and `make-training-report` with none: every
+    key is optional in an `&key` contract, and the omitted ones are NIL, which the slots do not
+    admit; `:failed` on the return spec.
+  - `make-training-series` with an adjustable `:values` vector: `(vector-of ...)` admits it,
+    the constructor stores it as given, and the return spec's `simple-vector` refuses it;
+    `:failed`.
+  - `training-report-from-history` with an entry `#(0 "l2" 1d0)`: `tuple` admits a vector,
+    and the target destructures a list.
+
+  And one in the other direction, found while writing the regression test: `history-entry`
+  named its metric `(member "l2" "auc" "binary_logloss")`, and `member` compares with EQL, so
+  it admitted only those three string objects -- a freshly made `"l2"`, as any backend
+  returns, was refused (`invalid-call-arguments`). It passed only because the generator
+  handed back the very literals.
+- **Fix:** `:pre (keys-are-keywords-p plist)` for `normalize-parameters`; supplied-p
+  variables and `:pre` for the constructors' required keys (G5); `(and (type simple-vector)
+  (vector-of ...))` for `series-values-input`; `(and (type list) (tuple ...))` for every
+  tuple a helper destructures; a `metric-name` spec that validates any string and generates
+  fresh ones from three names. `tests/specs/checks.lisp`'s
+  `declared-domains-exclude-what-the-targets-cannot-take` pins each call above as refused or
+  rejected, and the fresh `"l2"` as admitted.
+- **Pain:** nothing in a passing run points at this. cl-spec checks each generated call
+  *against* `:args` -- `invalid-generated-arguments` catches a generator that strays outside
+  -- but not the converse, and with `:args-generator` the declared domain is simply never
+  sampled. The only probe was writing counterexample calls by hand for `check-call`.
+- **Proposed improvement:** a way to sample a contract's declared domain independently of its
+  `:args-generator` -- for instance, a check mode that also draws from the `:args` specs and
+  reports admitted calls whose target signals or fails its return spec -- and a documentation
+  note that `member` over strings validates by identity.
 
 ## Findings about cl-gbdt
 
@@ -408,7 +465,7 @@ In package `cl-gbdt/specs/history`:
                  (cl-spec:trial-observation-arguments
                   (cl-spec:property-result-shrunk-evidence result)))))
     (setf (fdefinition 'training-report-from-history) original)))
-;; => (:FAILED ((((0 "l2" NIL))) (NIL NIL "HF31BdpN84rXmoy7" "K70jiib")))
+;; => (:FAILED ((((0 "l2" NIL))) (NIL "RBdpN84rX" NIL NIL)))
 ```
 
 Failed on trial 1, from a six-iteration history; HISTORY shrank (`:used`) to one iteration

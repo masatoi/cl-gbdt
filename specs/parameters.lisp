@@ -24,6 +24,7 @@
   (:import-from #:cl-gbdt/specs/values
                 #:pairs-plist
                 #:parameter-key
+                #:parameter-pair
                 #:parameter-value)
   (:export #:normalize-parameters-keeps-order-and-renames-keys
            #:normalize-parameters-values-denote-themselves
@@ -38,6 +39,11 @@
 (defun string-pair-p (object)
   "True when OBJECT is a (NAME . VALUE) cons of two strings."
   (and (consp object) (stringp (car object)) (stringp (cdr object))))
+
+(defun keys-are-keywords-p (plist)
+  "True when every key position of PLIST -- position 0, 2, 4 and so on, the last element of
+an odd-length PLIST included -- holds a keyword."
+  (loop :for key :in plist :by #'cddr :always (keywordp key)))
 
 (defun denotes-p (value text)
   "True when TEXT, `normalize-parameters''s rendering of VALUE, denotes VALUE.
@@ -68,9 +74,12 @@ number (a ratio as its `double-float')."
                              (random 1000))))))
 
 (defspec-function normalize-parameters
-  "An even plist becomes one (NAME . VALUE) string pair per key; an odd one is refused."
+  "A plist whose key positions hold keywords: even-length, it becomes one (NAME . VALUE)
+string pair per key; odd-length, it is refused with `data-error'."
   (:args (plist (list-of (or parameter-key parameter-value) :max-length 9)))
   (:args-generator normalize-parameters-arguments)
+  ;; The element spec alone would admit (42 7), which the implementation cannot name.
+  (:pre (keys-are-keywords-p plist))
   (:cases
    (:even-length
     (:when (evenp (length plist)))
@@ -81,7 +90,7 @@ number (a ratio as its `double-float')."
     (:signals (type data-error)))))
 
 (defproperty normalize-parameters-keeps-order-and-renames-keys
-    ((pairs (list-of (tuple parameter-key parameter-value) :max-length 8)))
+    ((pairs (list-of parameter-pair :max-length 8)))
   "One pair per key, in plist order; each name is the key lower-cased with `_' for `-'."
   (:about normalize-parameters)
   (:kind :invariant)
@@ -98,7 +107,7 @@ number (a ratio as its `double-float')."
                 pairs result))))
 
 (defproperty normalize-parameters-values-denote-themselves
-    ((pairs (list-of (tuple parameter-key parameter-value) :max-length 8)))
+    ((pairs (list-of parameter-pair :max-length 8)))
   "Every rendered value reads back as the value it came from, with no Lisp-only syntax."
   (:about normalize-parameters)
   (:kind :round-trip)
@@ -107,7 +116,7 @@ number (a ratio as its `double-float')."
          pairs (normalize-parameters (pairs-plist pairs))))
 
 (defproperty normalize-parameters-ignores-the-caller-s-printer
-    ((pairs (list-of (tuple parameter-key parameter-value) :max-length 8))
+    ((pairs (list-of parameter-pair :max-length 8))
      (base (range integer 2 36))
      (radix boolean)
      (float-format (member single-float double-float short-float long-float))

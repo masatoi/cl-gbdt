@@ -19,7 +19,8 @@
   (:import-from #:cl-spec/main)
   (:import-from #:cl-gbdt/specs/all
                 #:contract-names
-                #:property-names))
+                #:property-names
+                #:register-specifications))
 
 (in-package #:cl-gbdt/tests/specs/checks)
 
@@ -129,3 +130,63 @@ on a real case"))))
                     (cl-spec:property-result-status result)))
         (ok (eql +property-trials+ (cl-spec:property-result-trials result))
             (format nil "~S ran ~S trials" name (cl-spec:property-result-trials result)))))))
+
+(defun call-verdict (name arguments)
+  "Check the one call NAME applied to ARGUMENTS against NAME's registered contract.
+
+Return `:refused' when ARGUMENTS miss the contract's declared argument specs, and otherwise the
+`check-call' status: `:rejected' when `:pre' refuses the call, else `:passed', `:failed' or
+`:error' for what the target did with it."
+  (handler-case (cl-spec:call-check-result-status (cl-spec:check-call name arguments))
+    (cl-spec:invalid-call-arguments () :refused)))
+
+(deftest declared-domains-exclude-what-the-targets-cannot-take
+  ;; Every contract here is run by a generator that draws only well-formed calls, so a
+  ;; declared argument domain wider than what the target accepts never shows up in
+  ;; `every-contract-holds-at-the-fixed-seed': the generator hides it. Each call below is
+  ;; admitted by some contract as first written and fails in the target. The contract must
+  ;; refuse it -- by an argument spec or by `:pre' -- instead of promising a result for it.
+  (dolist (case
+           (list (list "a plist whose key position holds a number"
+                       'cl-gbdt/src/parameters:normalize-parameters
+                       (list (list 42 7)))
+                 (list "a series built with none of its required initargs"
+                       'cl-gbdt/src/training-report:make-training-series
+                       (list))
+                 (list "a report built without its round count"
+                       'cl-gbdt/src/training-report:make-training-report
+                       (list))
+                 (list "a series whose values vector is adjustable, not simple"
+                       'cl-gbdt/src/training-report:make-training-series
+                       (list :index 0 :metric "l2"
+                             :values (make-array 1 :adjustable t :initial-element 1d0)))
+                 (list "a history entry that is a vector, not a list"
+                       'cl-gbdt/src/training/history:training-report-from-history
+                       (list (list (list (vector 0 (copy-seq "l2") 1d0)))
+                             1 (list nil nil nil nil)))))
+    (destructuring-bind (description name arguments) case
+      (testing description
+        (let ((verdict (call-verdict name arguments)))
+          (ok (member verdict '(:refused :rejected))
+              (format nil "~S on ~S is ~S, which must be :refused or :rejected" name
+                      arguments verdict))))))
+  (testing "a history entry naming its metric with a freshly made string is admitted"
+    ;; The other direction: `(member "l2" ...)' compares with EQL, so it admits only the very
+    ;; string objects written in the spec and refuses the metric names a backend returns.
+    (ok (eq :passed (call-verdict 'cl-gbdt/src/training/history:training-report-from-history
+                                  (list (list (list (list 0 (copy-seq "l2") 1d0)))
+                                        1 (list nil nil nil nil))))
+        "a fresh \"l2\" is a metric name like any other")))
+
+(deftest register-specifications-fills-a-fresh-registry
+  (testing "every listed definition is registered again into an empty registry"
+    ;; After `cl-spec:clear-registry', or under a freshly bound `cl-spec:*registry*', the
+    ;; definitions are gone; this is the call that puts them back without reloading cl-spec.
+    (let ((registry (cl-spec:make-hash-table-registry)))
+      (let ((cl-spec:*registry* registry))
+        (handler-bind ((style-warning #'muffle-warning))
+          (register-specifications)))
+      (ok (null (set-exclusive-or (cl-spec:list-function-specs registry) (contract-names)))
+          "the contracts are back")
+      (ok (null (set-exclusive-or (cl-spec:list-properties registry) (property-names)))
+          "the properties are back"))))

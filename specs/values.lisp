@@ -17,6 +17,7 @@
            #:non-integer-ratio
            #:non-integer-ratio-generator
            #:parameter-key
+           #:parameter-pair
            #:parameter-value
            #:pairs-plist
            #:plist-pairs))
@@ -49,6 +50,10 @@
 (defspec parameter-value
   (or (range integer -100000 100000) string boolean (range real -1000 1000)
       finite-double non-integer-ratio (member :gbdt :dart :rf :binary :multiclass)))
+
+;;; A `tuple' alone admits a vector as well as a list; the helpers below destructure lists.
+(defspec parameter-pair
+  (and (type list) (tuple parameter-key parameter-value)))
 
 (defun pairs-plist (pairs)
   "Return the plist whose key/value pairs are PAIRS, a list of (KEY VALUE) lists, in order."

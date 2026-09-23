@@ -9,15 +9,19 @@
 ;;;;
 ;;;; `series-values' is the slot's documented type -- a `simple-vector' of double-floats and
 ;;;; NILs -- and has no generator (an `and' of a type and a `satisfies' has no strategy).
-;;;; `series-values-input' is the generable spelling of the same domain; `vector-of' happens to
-;;;; produce simple-vectors. Two specs for one concept is recorded in
+;;;; `series-values-input' is the generable spelling of the same domain, and states
+;;;; `simple-vector' itself rather than relying on `vector-of' happening to produce one: the
+;;;; constructor stores the vector as given, so an adjustable vector admitted here would come
+;;;; back failing `series-values'. Two specs for one concept is recorded in
 ;;;; docs/cl-spec-dogfooding.md.
 ;;;;
-;;;; The constructors take only keyword arguments, and a generated keyword call may omit any of
-;;;; them; with `:pre' demanding the ones that matter, 175 of 200 generated calls to
-;;;; `make-training-series' and 150 of 200 to `make-training-report' were refused at seed 42
-;;;; (docs/cl-spec-dogfooding.md, G5). Their whole-call generators always supply every key
-;;;; instead.
+;;;; The constructors take only keyword arguments, and a keyword the caller omits is NIL. So
+;;;; each contract names, with a supplied-p variable and `:pre', the keys whose NIL no slot
+;;;; admits; without that it would promise a well-formed result for `(make-training-series)'.
+;;;; A generated keyword call may omit any key, and under that `:pre' 175 of 200 generated calls
+;;;; to `make-training-series' and 150 of 200 to `make-training-report' were refused at seed 42
+;;;; (docs/cl-spec-dogfooding.md, G5), so whole-call generators supply those keys -- which
+;;;; changes what is sampled, not what the contract admits.
 
 (uiop:define-package #:cl-gbdt/specs/training-report
   (:use #:cl)
@@ -71,7 +75,7 @@
   (and (type simple-vector) (vector-of (satisfies double-or-nil-p))))
 
 (defspec series-values-input
-  (vector-of (nullable finite-double) :max-length 6))
+  (and (type simple-vector) (vector-of (nullable finite-double) :max-length 6)))
 
 (defgenerator training-series-generator ()
   (make-training-series :index (random 4) :name (draw-name)
@@ -99,17 +103,21 @@
         :metric (nth (random (length *metrics*)) *metrics*) :values (draw-values)))
 
 (defspec-function make-training-series
-  "The series reports back, through its readers, exactly what it was built from."
-  (:args &key ((:index index) (range integer 0 20))
+  "Given its index, metric and values, the series reports back through its readers the same
+contents it was built from."
+  (:args &key ((:index index) (range integer 0 20) index-p)
               ((:name name) (nullable string))
-              ((:metric metric) string)
-              ((:values values) series-values-input))
+              ((:metric metric) string metric-p)
+              ((:values values) series-values-input values-p))
   (:args-generator make-training-series-arguments)
+  ;; NAME may be omitted: NIL is the documented unnamed series. The other three default to
+  ;; NIL too, which no series slot admits, so a call without them is outside the contract.
+  (:pre index-p metric-p values-p)
   (:returns training-series-object)
   (:post (and (eql (training-series-index result) index)
-              (eq (training-series-name result) name)
-              (eq (training-series-metric result) metric)
-              (eq (training-series-values result) values))))
+              (equal (training-series-name result) name)
+              (equal (training-series-metric result) metric)
+              (equalp (training-series-values result) values))))
 
 (defgenerator make-training-report-arguments ()
   (list :series (loop :repeat (random 4)
@@ -123,15 +131,19 @@
         :early-stopped-p (zerop (random 2))))
 
 (defspec-function make-training-report
-  "The report reports back, through its readers, exactly what it was built from."
+  "Given its round count, the report reports back through its readers the same contents it
+was built from."
   (:args &key ((:series series) (list-of training-series-object))
-              ((:num-rounds num-rounds) (range integer 0 50))
+              ((:num-rounds num-rounds) (range integer 0 50) num-rounds-p)
               ((:best-iteration best-iteration) (nullable (range integer 0 50)))
               ((:best-score best-score) (nullable finite-double))
               ((:early-stopped-p early-stopped-p) boolean))
   (:args-generator make-training-report-arguments)
+  ;; Every other key may be omitted: NIL is an empty series list and "not determined" for the
+  ;; three early-stopping fields. A report with no round count is outside the contract.
+  (:pre num-rounds-p)
   (:returns training-report-object)
-  (:post (and (eq (training-report-series result) series)
+  (:post (and (equal (training-report-series result) series)
               (eql (training-report-num-rounds result) num-rounds)
               (eql (training-report-best-iteration result) best-iteration)
               (eql (training-report-best-score result) best-score)

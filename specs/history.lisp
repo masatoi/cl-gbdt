@@ -7,8 +7,10 @@
 ;;;; carries its dataset's name; and NUM-ROUNDS and the early-stopping fields are recorded as
 ;;;; given (the Function Spec).
 ;;;;
-;;;; HISTORY is generated from built-in specs, not a custom generator, so counterexamples
-;;;; shrink: a NIL-dropping implementation's failure shrank to (((0 "l2" NIL))) in planning.
+;;;; HISTORY's lists and tuples are generated from built-in specs, not a whole-call generator,
+;;;; so counterexamples shrink: a NIL-dropping implementation's failure shrank to one
+;;;; iteration holding one entry. Only the metric name has a custom generator (see
+;;;; `metric-name' for why), and it is drawn from three names so that pairs repeat.
 ;;;; Generated histories need not look like a real backend's -- a pair may be missing from one
 ;;;; iteration or repeat within one -- and the Properties are stated for that wider domain,
 ;;;; which is what the implementation's hash-table fold actually guarantees.
@@ -16,6 +18,7 @@
 (uiop:define-package #:cl-gbdt/specs/history
   (:use #:cl)
   (:import-from #:cl-spec/main
+                #:defgenerator
                 #:defproperty
                 #:defspec
                 #:defspec-function)
@@ -41,8 +44,21 @@
 
 (in-package #:cl-gbdt/specs/history)
 
+(defgenerator metric-name-generator ()
+  ;; Three names, so that generated histories repeat (index, metric) pairs; each draw is a
+  ;; fresh string, as a backend's would be.
+  (copy-seq (nth (random 3) '("l2" "auc" "binary_logloss"))))
+
+;;; Any string validates: `(member "l2" ...)' would compare with EQL and so admit only the
+;;; string objects written here, refusing every metric name a backend actually returns.
+(defspec metric-name (type string)
+  (:generator metric-name-generator))
+
+;;; `(and (type list) ...)' because a `tuple' alone admits a vector, and the function under
+;;; test destructures each entry as a list.
 (defspec history-entry
-  (tuple (range integer 0 3) (member "l2" "auc" "binary_logloss") (nullable finite-double)))
+  (and (type list)
+       (tuple (range integer 0 3) metric-name (nullable finite-double))))
 
 (defspec evaluation-history
   (list-of (list-of history-entry :max-length 6) :max-length 6))
@@ -106,11 +122,11 @@
 
 (defproperty history-series-name-is-the-dataset-s-name
     ((history evaluation-history) (dataset-names history-dataset-names))
-  "Every series at dataset index N carries DATASET-NAMES's element N, the same object."
+  "Every series at dataset index N carries DATASET-NAMES's element N."
   (:about training-report-from-history)
   (:kind :invariant)
   (:trials (:smoke 20 :normal 200))
   (every (lambda (series)
-           (eq (training-series-name series)
-               (elt dataset-names (training-series-index series))))
+           (equal (training-series-name series)
+                  (elt dataset-names (training-series-index series))))
          (training-report-series (training-report-from-history history 0 dataset-names))))
