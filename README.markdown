@@ -197,6 +197,7 @@ every element is coerced internally.
 | `cl-gbdt/tests` | The Rove suite that needs no shared library |
 | `cl-gbdt/tests/functional` | The Rove suite that calls the real libraries; needs `./tools/fetch-libs.sh` first |
 | `cl-gbdt/specs` | Executable cl-spec contracts and Properties about the pure helpers and the training report (`specs/`). Development-only; needs cl-spec (`./tools/fetch-cl-spec.sh`), no shared library |
+| `cl-gbdt/specs/check-it` | That, plus cl-spec's check-it generator backend. Load this, not `cl-gbdt/specs` alone, before running a check -- `spec-check`, `check-function`, `run-property` all need a generator, and registering a contract does not install one |
 | `cl-gbdt/tests/specs` | Runs every one of those at a fixed seed |
 | `cl-gbdt/regen` | The binding emitter (`src/regen/`). Development-only; never in any other system's dependency graph |
 | `cl-gbdt/docgen` | The API-reference emitter (`src/docgen/`). Development-only, on the same terms |

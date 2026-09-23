@@ -42,12 +42,28 @@
                 (string= prefix name :end2 (length prefix)))))))
 
 (defun contract-verdict (name)
-  "Run NAME's Function Spec at +SEED+ and return a plist of what CI judges it by."
+  "Run NAME's Function Spec at +SEED+ and return a plist of what CI judges it by.
+
+`cl-spec:result-data' returns a plist even for a contract with no `:cases' clause, its
+:CASES and :DECLARED-CASES both NIL then -- confirmed at seed 42 for a case-less contract
+(`cl-gbdt/src/training-report:make-training-series') and a `:cases' one
+(`cl-gbdt/src/config/prediction-shape:contrib-shape') before this was written. :CASE-REPORT,
+:DECLARED-CASES and :CASE-CALLS (a (name . called) alist built straight from :CASE-REPORT's
+own :CASES entries) let a caller re-derive the never-called check from the declared case
+names and each case's own :CALLED count, rather than trusting :CASE-REPORT's :NEVER-CALLED
+key alone -- a renamed or dropped :CASE-REPORT key would otherwise leave CASE-REPORT NIL,
+:NEVER-CALLED vacuously NIL too, and the case check passing on nothing."
   (let* ((result (cl-spec:check-function name :trials +contract-trials+ :seed +seed+))
          (case-report (getf (cl-spec:result-data result) :case-report)))
     (list :status (cl-spec:property-result-status result)
           :rejected (cl-spec:function-check-result-rejected result)
-          :never-called (and (consp case-report) (getf case-report :never-called)))))
+          :never-called (and (consp case-report) (getf case-report :never-called))
+          :case-report case-report
+          :declared-cases (and (consp case-report) (getf case-report :declared-cases))
+          :case-calls (and (consp case-report)
+                            (mapcar (lambda (case)
+                                      (cons (getf case :name) (getf case :called)))
+                                    (getf case-report :cases))))))
 
 (deftest every-registered-definition-is-listed
   (testing "the registry holds nothing from this project that the lists leave out"
@@ -73,15 +89,36 @@
       (ok (plusp (length (property-names))) "the bundle lists at least one property"))))
 
 (deftest every-contract-holds-at-the-fixed-seed
-  (dolist (name (contract-names))
-    (testing (format nil "~S" name)
-      (let ((verdict (contract-verdict name)))
-        (ok (eq :passed (getf verdict :status))
-            (format nil "~S at seed ~D: ~S" name +seed+ (getf verdict :status)))
-        (ok (eql 0 (getf verdict :rejected))
-            (format nil "~S rejected ~S generated inputs" name (getf verdict :rejected)))
-        (ok (null (getf verdict :never-called))
-            (format nil "~S never called case(s) ~S" name (getf verdict :never-called)))))))
+  (let ((verdicts nil))
+    (dolist (name (contract-names))
+      (testing (format nil "~S" name)
+        (let ((verdict (contract-verdict name)))
+          (push (cons name verdict) verdicts)
+          (ok (eq :passed (getf verdict :status))
+              (format nil "~S at seed ~D: ~S" name +seed+ (getf verdict :status)))
+          (ok (eql 0 (getf verdict :rejected))
+              (format nil "~S rejected ~S generated inputs" name (getf verdict :rejected)))
+          (ok (null (getf verdict :never-called))
+              (format nil "~S never called case(s) ~S" name (getf verdict :never-called)))
+          ;; Non-vacuous even if a future cl-spec renames or drops :CASE-REPORT: that would
+          ;; leave CASE-REPORT NIL and this assertion, not just :NEVER-CALLED above, red.
+          (ok (consp (getf verdict :case-report))
+              (format nil "~S: no case report (expected a plist, even for a case-less
+contract)" name))
+          (ok (= (length (getf verdict :declared-cases)) (length (getf verdict :case-calls)))
+              (format nil "~S: ~D declared case(s) but ~D case report(s): ~S"
+                      name (length (getf verdict :declared-cases))
+                      (length (getf verdict :case-calls)) (getf verdict :case-calls)))
+          (ok (every (lambda (call) (plusp (cdr call))) (getf verdict :case-calls))
+              (format nil "~S: some declared case was called zero times: ~S"
+                      name (getf verdict :case-calls))))))
+    (testing "at least one listed contract declares cases"
+      ;; Otherwise the two case assertions above hold on every contract only because none
+      ;; of them ever has a case to check -- true of an empty set, and not what "every
+      ;; declared case was called" is meant to prove.
+      (ok (some (lambda (entry) (getf (cdr entry) :declared-cases)) verdicts)
+          "no contract in the bundle declared any :cases -- the case checks above never ran
+on a real case"))))
 
 (deftest every-property-holds-at-the-fixed-seed
   (dolist (name (property-names))

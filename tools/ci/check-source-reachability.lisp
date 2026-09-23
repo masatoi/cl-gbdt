@@ -82,7 +82,7 @@ tree added elsewhere -- `examples/', `contrib/' -- with `.lisp' sources wired to
 leaves both that check and this one green, and nothing here would say why.")
 
 (defparameter +minimum-systems+ 5
-  "Floor on how many `defsystem' forms reading `cl-gbdt.asd' must yield. Nine are declared
+  "Floor on how many `defsystem' forms reading `cl-gbdt.asd' must yield. Eleven are declared
 today. Zero would mean the read found nothing -- a moved file, a changed name -- and a check
 that walked no systems would report every source file as unreachable, which is loud, or, if the
 trees were empty too, nothing at all, which is not.")
