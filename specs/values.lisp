@@ -48,7 +48,7 @@
 
 (defspec parameter-value
   (or (range integer -100000 100000) string boolean (range real -1000 1000)
-      finite-double non-integer-ratio))
+      finite-double non-integer-ratio (member :gbdt :dart :rf :binary :multiclass)))
 
 (defun pairs-plist (pairs)
   "Return the plist whose key/value pairs are PAIRS, a list of (KEY VALUE) lists, in order."

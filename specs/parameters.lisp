@@ -5,11 +5,11 @@
 ;;;; plists: names and order, values that read back as themselves, and independence from the
 ;;;; caller's printer state.
 ;;;;
-;;;; The printer Property is scoped to numbers, strings and booleans because the
-;;;; implementation is only independent for those: a SYMBOL value is `princ'ed under the
-;;;; caller's `*print-case*', so `:gbdt' renders as "GBDT" normally and "gbdt" under
-;;;; `:downcase'. That is recorded in docs/cl-spec-dogfooding.md as a finding about cl-gbdt,
-;;;; not asserted here, since this branch changes no behaviour.
+;;;; The printer Property's domain holds symbol values and binds `*print-case*' too. It was
+;;;; first written without them, because the implementation `princ'ed a symbol under the
+;;;; caller's `*print-case*' -- `:gbdt' rendered as "GBDT" normally and "gbdt" under
+;;;; `:downcase'. That was fixed by rendering a symbol as its `symbol-name'; see
+;;;; docs/cl-spec-dogfooding.md's "Findings about cl-gbdt".
 
 (uiop:define-package #:cl-gbdt/specs/parameters
   (:use #:cl)
@@ -42,13 +42,15 @@
 (defun denotes-p (value text)
   "True when TEXT, `normalize-parameters''s rendering of VALUE, denotes VALUE.
 
-A string passes through as the same object; T and NIL are \"true\" and \"false\"; an integer
-is its decimal digits; a float or ratio carries no Lisp-only syntax -- no exponent marker other
-than `e', no `/' -- and reads back as the same number (a ratio as its `double-float')."
+A string passes through as the same object; T and NIL are \"true\" and \"false\"; any other
+symbol is its name, exactly; an integer is its decimal digits; a float or ratio carries no
+Lisp-only syntax -- no exponent marker other than `e', no `/' -- and reads back as the same
+number (a ratio as its `double-float')."
   (typecase value
     (string (eq value text))
     ((eql t) (string= text "true"))
     (null (string= text "false"))
+    (symbol (string= text (symbol-name value)))
     (integer (= value (parse-integer text)))
     ((or float ratio)
      (and (notany (lambda (char) (find char "dDfFsSlL/")) text)
@@ -108,8 +110,9 @@ than `e', no `/' -- and reads back as the same number (a ratio as its `double-fl
     ((pairs (list-of (tuple parameter-key parameter-value) :max-length 8))
      (base (range integer 2 36))
      (radix boolean)
-     (float-format (member single-float double-float short-float long-float)))
-  "Numbers, strings and booleans render the same whatever printer state the caller binds."
+     (float-format (member single-float double-float short-float long-float))
+     (print-case (member :upcase :downcase :capitalize)))
+  "Every value renders the same whatever printer state the caller binds."
   (:about normalize-parameters)
   (:kind :invariant)
   (:trials (:smoke 20 :normal 200))
@@ -117,5 +120,6 @@ than `e', no `/' -- and reads back as the same number (a ratio as its `double-fl
     (equal (with-standard-io-syntax (normalize-parameters plist))
            (let ((*print-base* base)
                  (*print-radix* radix)
-                 (*read-default-float-format* float-format))
+                 (*read-default-float-format* float-format)
+                 (*print-case* print-case))
              (normalize-parameters plist)))))

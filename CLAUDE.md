@@ -87,7 +87,7 @@ over both backends.
 **Status: functional.** Both backends implement
 all 13 generic functions of the unified API -- `make-dataset`, `train`, `predict`, and
 the rest -- against the real shared libraries, exercised by 1069 functional assertions
-across 18 test files in `cl-gbdt/tests/functional` (layer 2) on top of 707 assertions
+across 18 test files in `cl-gbdt/tests/functional` (layer 2) on top of 710 assertions
 across 23 test files that need no shared library at all (layer 1).
 
 **An optional executable-specification bundle sits beside the tests.** `specs/` holds cl-spec
@@ -99,7 +99,7 @@ at seed 42 and is a CI gate. Nothing a user loads depends on either -- only `spe
 `tests/specs/**` name a cl-spec package -- but both need cl-spec, which is not in Quicklisp:
 `./tools/fetch-cl-spec.sh` fetches it at the pinned revision. Load `cl-gbdt/specs/check-it`
 to run one with `spec-check`. What the bundle covers, what cl-spec could not yet express, and
-the `*print-case*` finding about `normalize-parameters` (open) are in
+the `*print-case*` bug the bundle found in `normalize-parameters` (fixed) are in
 `docs/cl-spec-dogfooding.md`.
 
 **Each backend is two systems.** `cl-gbdt/<backend>` is that backend's **Layer 1 alone**:

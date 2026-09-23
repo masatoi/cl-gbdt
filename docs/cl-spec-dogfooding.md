@@ -26,6 +26,9 @@ what could be specified, what could not, what was done instead, and the evidence
 cl-mcp worker, after `load-system cl-gbdt clear_fasls=true` and `load-system
 cl-gbdt/specs/check-it`, with the local cl-spec checkout at exactly the pinned revision. Where
 a number from planning did not reproduce, the entry says so and gives the re-measured one.
+The `*print-case*` fix (see [Findings about cl-gbdt](#findings-about-cl-gbdt)) widened
+`parameter-value` to hold symbols, which changed the digests of the seven definitions built on
+it and the first two mutation results; those were re-measured the same way after the fix.
 
 ## What was specified
 
@@ -39,17 +42,17 @@ and each contract call reported `input-coverage-unmeasured`.
 | Definition | Kind | Clauses used | Seed 42 result | Digest (`fnv1a64-v1:`) |
 |---|---|---|---|---|
 | `contrib-shape` | Function Spec | `:cases`, `:post`, `:args-generator` | 200/200, 0 rejected; `:derivable` 99, `:underivable` 101 | `4de05ef75c7c211a` |
-| `normalize-parameters` | Function Spec | `:cases`, `:signals`, `:post`, `:args-generator` | 200/200, 0 rejected; `:even-length` 99, `:odd-length` 101 | `30f8fecfe7ac1afb` |
+| `normalize-parameters` | Function Spec | `:cases`, `:signals`, `:post`, `:args-generator` | 200/200, 0 rejected; `:even-length` 99, `:odd-length` 101 | `2e36e7eaf93ae0eb` |
 | `objective-single-float` | Function Spec | `:cases`, `:signals`, `:post`, built-in generation | 200/200, 0 rejected; `:real` 111, `:not-real` 89 | `875553b8e348d02a` |
 | `make-training-series` | Function Spec | `object-of` return, `:post`, `:args-generator` | 200/200, 0 rejected | `726be1b6b8664d4e` |
 | `make-training-report` | Function Spec | `object-of` return, `:post`, `:args-generator` | 200/200, 0 rejected | `0c23249e1b9e10a9` |
 | `training-report-from-history` | Function Spec | `object-of` return, `:post`, built-in generation | 200/200, 0 rejected | `fee928ebb658dfc0` |
-| `normalize-parameters-keeps-order-and-renames-keys` | Property (invariant) | built-in generation | 200/200 | `4e988b21b9547e60` |
-| `normalize-parameters-values-denote-themselves` | Property (round-trip) | built-in generation | 200/200 | `62b410e4f5d30379` |
-| `normalize-parameters-ignores-the-caller-s-printer` | Property (invariant) | built-in generation | 200/200 | `6e9c3cb85c6e0766` |
-| `objective-parameters-ends-with-the-one-canonical-objective` | Property (invariant) | built-in generation | 200/200 | `56ad3b5e52570550` |
-| `objective-parameters-keeps-every-other-entry-in-order` | Property (invariant) | built-in generation | 200/200 | `ca2aaf07331bd1c1` |
-| `objective-parameters-is-idempotent` | Property (idempotence) | built-in generation | 200/200 | `f2fb350f785074c4` |
+| `normalize-parameters-keeps-order-and-renames-keys` | Property (invariant) | built-in generation | 200/200 | `c7202880eedadc97` |
+| `normalize-parameters-values-denote-themselves` | Property (round-trip) | built-in generation | 200/200 | `a8afcada9d9d6f56` |
+| `normalize-parameters-ignores-the-caller-s-printer` | Property (invariant) | built-in generation | 200/200 | `292986cea7676c83` |
+| `objective-parameters-ends-with-the-one-canonical-objective` | Property (invariant) | built-in generation | 200/200 | `76141ae1b8a0567d` |
+| `objective-parameters-keeps-every-other-entry-in-order` | Property (invariant) | built-in generation | 200/200 | `0e3876c721139e31` |
+| `objective-parameters-is-idempotent` | Property (idempotence) | built-in generation | 200/200 | `543ed97880a7a4da` |
 | `history-yields-one-series-per-pair-in-first-appearance-order` | Property (invariant) | built-in generation | 200/200 | `fa7831b1f67d89bd` |
 | `history-series-values-are-the-pair-s-values-in-order` | Property (invariant) | built-in generation | 200/200 | `1dddcb123495d8ad` |
 | `history-series-name-is-the-dataset-s-name` | Property (invariant) | built-in generation | 200/200 | `d280ffacd441c00a` |
@@ -147,9 +150,12 @@ for a gap that recurs, so an improvement line is given for those alone, kept to 
   wrapped in a named spec (`finite-double`, `non-integer-ratio`); keywords are enumerated
   with `member`.
 - **Pain:** moderate to write, and a lasting cost: **a custom value generator does not
-  shrink**. In the `objective-parameters` mutation (section 7) the counterexample shrank from
-  six pairs to one and its key from `:losses` to `:apps`, but the double `-8.15221d8` came
-  through exactly as drawn.
+  shrink**. Nor, per cl-spec's own README, does a built-in real: in the `objective-parameters`
+  mutation (section 7) the counterexample shrank from six pairs to one and its key from
+  `:applications` to `:apps`, but its value, the `(range real ...)` single-float `-271.05573`,
+  came through exactly as drawn. Before the `*print-case*` fix widened `parameter-value`, the
+  same run kept a `finite-double` (`-8.15221d8`) as drawn instead -- so neither the custom nor
+  the built-in route to a non-integer number gives a counterexample whose numbers shrink.
 - **Also:** `finite-double` excludes the ±infinity a real `best-score` can hold (the custom
   evaluation path records an overflowing value as a signed infinity), so the `best-score`
   domain in both constructors and `training-report-from-history` is narrower than the
@@ -271,8 +277,8 @@ for a gap that recurs, so an improvement line is given for those alone, kept to 
 
 ## Findings about cl-gbdt
 
-**`normalize-parameters` renders a symbol value under the caller's `*print-case*`.**
-Re-measured:
+**`normalize-parameters` rendered a symbol value under the caller's `*print-case*`. Fixed on
+this branch.** Before the fix:
 
 ```lisp
 (normalize-parameters '(:boosting :gbdt))                        ; => (("boosting" . "GBDT"))
@@ -282,13 +288,27 @@ Re-measured:
                                                                  ; => (("boosting" . "GBDT"))
 ```
 
-`parameter-value`'s docstring, which `normalize-parameters` calls for every value, says the
+`parameter-value`'s docstring, which `normalize-parameters` calls for every value, said the
 printer specials are bound locally "so the result cannot depend on bindings already in force
-in the caller". That holds for integers, floats, ratios, strings and booleans; a symbol falls
+in the caller". That held for integers, floats, ratios, strings and booleans; a symbol fell
 through to `princ-to-string` with only `*print-base*` and `*print-radix*` bound, so
-`*print-case*` leaks. **This is open, and this branch does not change it** -- no file under
-`src/` was touched. The printer Property is scoped to numbers, strings and booleans for that
-reason, and says so in its docstring and in `specs/parameters.lisp`'s header.
+`*print-case*` leaked. It was found while writing the printer Property: generating symbol
+values and binding `*print-case*` made the Property fail at once.
+
+The fix renders a symbol other than `T` and `NIL` as its `symbol-name` (`src/parameters.lisp`,
+`parameter-value`), which is what the default printer produced, so a caller that never bound
+`*print-case*` sees no change. It was made test-first:
+
+- The Property's domain was widened first -- `parameter-value` in `specs/values.lisp` gained
+  `(member :gbdt :dart :rf :binary :multiclass)`, `denotes-p` a symbol clause, and the printer
+  Property a `*print-case*` argument. Against the unfixed implementation, at seed 42, it
+  failed on trial 4 and shrank to `(pairs ((:learning-rate :gbdt)) base 2 radix t float-format
+  double-float print-case :capitalize)`.
+- A Rove regression test,
+  `tests/parameters.lisp`'s `normalize-parameters-output-is-independent-of-the-caller-s-print-case`,
+  failed under `:downcase` and `:capitalize`.
+- After the fix both pass; the Property replays at seed 42 with the same digest
+  (`292986cea7676c83`, `definition_match`, reproduction faithful) and passes 200/200.
 
 ## Mutation evidence
 
@@ -319,11 +339,12 @@ In package `cl-gbdt/specs/parameters`:
 ;; => :FAILED
 ```
 
-The same mutant and seed, reading `result-data`: failed on trial 1 of 200; counterexample
-`(pairs ((:learning-rate 6927.43d0) (:lambda-l1 nil) (:objective -396.44623) (:num-leaves
--14591/493) (:lambda-l1 -8.15221d8) (:num-leaves -15522)) base 29 radix nil float-format
-long-float)`, shrunk (`:used`) to `(pairs ((:learning-rate -10)) base 2 radix t float-format
-single-float)` -- an integer printed in binary with a radix marker.
+The same mutant and seed, reading the result's evidence: failed on trial 1 of 200;
+counterexample `(pairs ((:learning-rate 1484/73) (:num-leaves :dart) (:num-class 4459/139)
+(:lambda-l1 "P2tcg6Y1z") (:objective 309/46) (:max-depth -271.05573)) base 5 radix t
+float-format single-float print-case :upcase)`, shrunk (`:used`) to `(pairs ((:num-leaves
+309/46)) base 2 radix nil float-format double-float print-case :downcase)` -- a ratio printed
+as `"309/46"`, and in binary, instead of as a decimal.
 
 ### `objective-parameters` matching aliases by prefix
 
@@ -352,13 +373,13 @@ In package `cl-gbdt/specs/objective`:
                  (cl-spec:trial-observation-arguments
                   (cl-spec:property-result-shrunk-evidence result)))))
     (setf (fdefinition 'objective-parameters) original)))
-;; => (:FAILED (((:APPS -8.15221d8))))
+;; => (:FAILED (((:APPS -271.05573))))
 ```
 
-Failed on trial 1; the original counterexample was `(pairs ((:loss 6927.43d0) ("obj" nil)
-("objective_type" -396.44623) (:objective-type -14591/493) (:losses -8.15221d8) (:app
--15522)))`. The shrinker reached the near miss `:apps` -- which the prefix match wrongly
-drops as `app` -- and left the custom-generated double as drawn (G1).
+Failed on trial 1; the original counterexample was `(pairs ((:loss 1484/73) (:objective-type
+:dart) (:num-class 4459/139) (:losses "P2tcg6Y1z") ("App" 309/46) (:applications
+-271.05573)))`. The shrinker reached the near miss `:apps` -- which the prefix match wrongly
+drops as `app` -- and left the single-float value as drawn (G1).
 
 ### `training-report-from-history` dropping NIL values
 

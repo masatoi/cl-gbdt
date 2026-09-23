@@ -30,12 +30,17 @@ otherwise the decimal comes back carrying a `\"d0\"' marker."
 (defun parameter-value (value)
   "Return VALUE as the string a backend expects.
 
-`princ' rather than `prin1', so a string is not re-quoted and a symbol loses its
-package. Printer specials are bound locally for the duration, so the result
-cannot depend on bindings already in force in the caller: `*print-base*' 10 and
-`*print-radix*' nil, so an integer such as `:num-leaves 31' prints as plain
-decimal digits rather than, say, \"1F\", whatever the caller has bound
-`*print-base*' to.
+`princ' rather than `prin1', so a string is not re-quoted. Printer specials are
+bound locally for the duration, so the result cannot depend on bindings already
+in force in the caller: `*print-base*' 10 and `*print-radix*' nil, so an integer
+such as `:num-leaves 31' prints as plain decimal digits rather than, say, \"1F\",
+whatever the caller has bound `*print-base*' to.
+
+A symbol other than `T' and `NIL' is rendered as its `symbol-name', not printed:
+`princ' would lose the package but still apply the caller's `*print-case*', so
+`:gbdt' came out as \"GBDT\" or \"gbdt\" depending on a binding the caller may
+not know is in force. The name is what the default printer produced, so a caller
+who never bound `*print-case*' sees no change.
 
 Floats are the subtle case. A float prints with an exponent marker -- `\"0.05d0\"',
 `\"0.05f0\"' -- unless its type happens to be `*read-default-float-format*', and
@@ -53,6 +58,7 @@ and a ratio is rendered as a decimal rather than `\"1/3\"'."
       (string value)
       ((eql t) "true")
       (null "false")
+      (symbol (symbol-name value))
       (ratio (%rational-to-decimal-string value))
       (float (let ((*read-default-float-format* (type-of value)))
                (princ-to-string value)))
