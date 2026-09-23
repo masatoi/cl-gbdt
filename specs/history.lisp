@@ -70,7 +70,8 @@
   (list-of (list-of history-entry)))
 
 (defspec history-dataset-names
-  (list-of (nullable string)))
+  ;; "a sequence", per the docstring, read with `elt': a vector serves as well as a list.
+  (or (list-of (nullable string)) (vector-of (nullable string))))
 
 ;;; What the Properties sample, and so the domain their claims are checked over: small
 ;;; histories, indices 0..3 against four names, three metric names so that pairs repeat.

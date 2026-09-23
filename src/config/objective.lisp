@@ -67,6 +67,14 @@ for. A separate scan here would double a per-iteration cost purely for diagnosti
   "Return VALUE as a `single-float', signalling `unsupported-element-type' unless it is a
 real.
 
+The portable guarantee covers a real no larger in magnitude than `most-positive-single-float':
+it comes back as the nearest `single-float', subnormals included. A real beyond that has no
+single-float to become, and what `coerce' then does is decided by the floating-point traps in
+force, not by this function: an infinity where `:overflow' is masked -- which includes every
+call `train' makes, inside `with-foreign-float-traps-masked' -- and `floating-point-overflow'
+where it is trapped, as SBCL does by default on x86-64 outside that mask. specs/objective.lisp
+states the same boundary as its contract's `:pre'.
+
 Both backends write the caller's gradient and Hessian into a `const float*' buffer one
 element at a time, coercing as they go -- see `cl-gbdt/src/lightgbm/native''s
 `%update-one-iteration-custom' and `cl-gbdt/src/xgboost/native''s

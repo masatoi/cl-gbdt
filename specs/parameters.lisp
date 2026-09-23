@@ -52,12 +52,13 @@ an odd-length PLIST included -- holds a keyword or a string, as `parameter-key' 
 (defun denotes-p (value text)
   "True when TEXT, `normalize-parameters''s rendering of VALUE, denotes VALUE.
 
-A string passes through as the same object; T and NIL are \"true\" and \"false\"; any other
-symbol is its name, exactly; an integer is its decimal digits; a float or ratio carries no
-Lisp-only syntax -- no exponent marker other than `e', no `/' -- and reads back as the same
-number (a ratio as its `double-float')."
+A string passes through with the same contents -- `string=', not `eq': what reaches the
+backend is the characters, and a copy would serve as well; T and NIL are \"true\" and
+\"false\"; any other symbol is its name, exactly; an integer is its decimal digits; a float or
+ratio carries no Lisp-only syntax -- no exponent marker other than `e', no `/' -- and reads back
+as the same number (a ratio as its `double-float')."
   (typecase value
-    (string (eq value text))
+    (string (string= value text))
     ((eql t) (string= text "true"))
     (null (string= text "false"))
     (symbol (string= text (symbol-name value)))

@@ -60,10 +60,11 @@ does no floating-point arithmetic that could trap."
   "True when VALUE is not a real, or is a real no larger in magnitude than
 `most-positive-single-float'.
 
-A real beyond that has no single-float to become. What `coerce' then does depends on the
-floating-point traps in force: `floating-point-overflow' where SBCL enables the trap (x86-64),
-an infinity where it does not (aarch64, and inside `train''s own masked foreign call). That is
-not a behaviour the docstring states, so the contract leaves it out rather than pick one."
+That is the portable guarantee `objective-single-float''s own docstring states. A real beyond
+it has no single-float to become, and what `coerce' then does depends on the floating-point
+traps in force -- `floating-point-overflow' where SBCL enables the trap (x86-64), an infinity
+where it does not (aarch64, and inside `train''s own masked foreign call) -- so the contract,
+like the docstring, promises nothing there."
   (or (not (realp value))
       (<= (abs (rational value)) (rational most-positive-single-float))))
 

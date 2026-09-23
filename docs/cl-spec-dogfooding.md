@@ -48,7 +48,7 @@ and each contract call reported `input-coverage-unmeasured`.
 | `objective-single-float` | Function Spec | `:cases`, `:signals`, `:pre`, `:post`, `:args-generator` | 200/200, 0 rejected; `:real` 118, `:not-real` 82 | `c9600e0e50ce2586` |
 | `make-training-series` | Function Spec | `object-of` return, `:pre`, `:post`, `:args-generator` | 200/200, 0 rejected | `c252684cbca14d97` |
 | `make-training-report` | Function Spec | `object-of` return, `:pre`, `:post`, `:args-generator` | 200/200, 0 rejected | `398fcb500e76da74` |
-| `training-report-from-history` | Function Spec | `object-of` return, `:pre`, `:post`, `:args-generator` | 200/200, 0 rejected | `a780345b86068146` |
+| `training-report-from-history` | Function Spec | `object-of` return, `:pre`, `:post`, `:args-generator` | 200/200, 0 rejected | `48d3d4dd3f1c4407` |
 | `normalize-parameters-keeps-order-and-renames-keys` | Property (invariant) | built-in generation | 200/200 | `135e009326f8af30` |
 | `normalize-parameters-values-denote-themselves` | Property (round-trip) | built-in generation | 200/200 | `78b7f86b8c06a213` |
 | `normalize-parameters-ignores-the-caller-s-printer` | Property (invariant) | built-in generation | 200/200 | `546a8bbaae8f233b` |
@@ -350,6 +350,14 @@ for a gap that recurs, so an improvement line is given for those alone, kept to 
   The same pass found `objective-single-float`'s rounding bound wrong at the small end: a
   relative bound fails for a subnormal result (`1d-40` becomes `9.999946e-41`), which the
   sampled magnitudes, all at least `1d-8`, had never reached.
+- **Third pass, from the review after that:** one narrow domain was left. The docstring says
+  `DATASET-NAMES` is "a sequence", read with `elt`, and the history contract declared
+  `(list-of (nullable string))`; a vector of names -- which the function handles -- was
+  refused. It is now `(or (list-of ...) (vector-of ...))`, and the admitted-calls test gained
+  a vector case, which failed first. The same review caught an identity requirement left in a
+  Property: `denotes-p` checked a passed-through string with `eq`, so an equivalent
+  implementation returning a copy failed it; it now uses `string=` (checked against a mutant
+  that copies every string value: `:passed`).
 - **Pain:** nothing in a passing run points at this. cl-spec checks each generated call
   *against* `:args` -- `invalid-generated-arguments` catches a generator that strays outside
   -- but not the converse, and with `:args-generator` the declared domain is simply never
@@ -398,14 +406,20 @@ The fix renders a symbol other than `T` and `NIL` as its `symbol-name` (`src/par
   (`292986cea7676c83`, `definition_match`, reproduction faithful) and passes 200/200.
 
 **`objective-single-float` on a real beyond single-float range depends on the ambient
-floating-point traps. Open; not changed on this branch.** Its docstring says it returns a
+floating-point traps. Documented on this branch; the behaviour itself is open as
+[issue #48](https://github.com/masatoi/cl-gbdt/issues/48).** Its docstring said it returns a
 `single-float` for any real. For `1d100` it returns `single-float-positive-infinity` on this
 aarch64 host, where SBCL enables no traps; where `:overflow` is trapped, as SBCL does by
 default on x86-64, the same `coerce` signals `floating-point-overflow`. Inside `train` the call
 runs under `with-foreign-float-traps-masked`, so there it is an infinity on every platform.
 The contract admits reals within single-float range only (`within-single-range-p`, a `:pre`)
 rather than pick one of the two, and `declared-domains-exclude-what-the-targets-cannot-take`
-pins `1d100` as rejected.
+pins `1d100` as rejected. Review then pointed out that this left the source docstring ("any
+real") and the contract ("in range") saying different things, which is the one thing a
+contract read by an agent must not do. The docstring now states the same boundary: the
+portable guarantee is within single-float range, and beyond it the outcome is the trap
+state's, not the function's. Whether the function should give one answer there instead is
+issue #48.
 
 ## Mutation evidence
 

@@ -213,6 +213,9 @@ Return `:refused' when ARGUMENTS miss the contract's declared argument specs, an
                        'cl-gbdt/src/training-report:make-training-report
                        (list :num-rounds 100000 :best-iteration 99999
                              :best-score sb-ext:double-float-negative-infinity))
+                 (list "dataset names given as a vector, which the docstring's sequence allows"
+                       'cl-gbdt/src/training/history:training-report-from-history
+                       (list (list (list (list 0 (copy-seq "l2") 1d0))) 1 (vector nil)))
                  (list "a history over nine datasets and many rounds"
                        'cl-gbdt/src/training/history:training-report-from-history
                        (list (list (list (list 8 (copy-seq "ndcg@5") 0.5d0)))
