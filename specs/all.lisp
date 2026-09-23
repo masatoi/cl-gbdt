@@ -18,6 +18,7 @@
 (uiop:define-package #:cl-gbdt/specs/all
   (:use #:cl)
   (:import-from #:cl-gbdt/specs/prediction-shape)
+  (:import-from #:cl-gbdt/specs/parameters)
   (:export #:contract-names
            #:property-names))
 
@@ -25,8 +26,11 @@
 
 (defun contract-names ()
   "Return the target of every Function Spec this bundle registers."
-  (list 'cl-gbdt/src/config/prediction-shape:contrib-shape))
+  (list 'cl-gbdt/src/config/prediction-shape:contrib-shape
+        'cl-gbdt/src/parameters:normalize-parameters))
 
 (defun property-names ()
   "Return the name of every Property this bundle registers."
-  (list))
+  (list 'cl-gbdt/specs/parameters:normalize-parameters-keeps-order-and-renames-keys
+        'cl-gbdt/specs/parameters:normalize-parameters-values-denote-themselves
+        'cl-gbdt/specs/parameters:normalize-parameters-ignores-the-caller-s-printer))

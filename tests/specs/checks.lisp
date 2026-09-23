@@ -68,7 +68,9 @@
                   (set-difference (contract-names) contracts)))
       (ok (null (set-difference (property-names) properties))
           (format nil "listed but unregistered properties: ~S"
-                  (set-difference (property-names) properties))))))
+                  (set-difference (property-names) properties)))
+      (ok (plusp (length (contract-names))) "the bundle lists at least one contract")
+      (ok (plusp (length (property-names))) "the bundle lists at least one property"))))
 
 (deftest every-contract-holds-at-the-fixed-seed
   (dolist (name (contract-names))
