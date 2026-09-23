@@ -196,6 +196,9 @@ every element is coerced internally.
 | `cl-gbdt/xgboost/unified` | That, plus XGBoost's methods on all 13 unified generics, and core `cl-gbdt` with them |
 | `cl-gbdt/tests` | The Rove suite that needs no shared library |
 | `cl-gbdt/tests/functional` | The Rove suite that calls the real libraries; needs `./tools/fetch-libs.sh` first |
+| `cl-gbdt/specs` | Executable cl-spec contracts and Properties about the pure helpers and the training report (`specs/`). Development-only; needs cl-spec (`./tools/fetch-cl-spec.sh`), no shared library |
+| `cl-gbdt/specs/check-it` | That, plus cl-spec's check-it generator backend. Load this, not `cl-gbdt/specs` alone, before running a check -- `spec-check`, `check-function`, `run-property` all need a generator, and registering a contract does not install one |
+| `cl-gbdt/tests/specs` | Runs every one of those at a fixed seed |
 | `cl-gbdt/regen` | The binding emitter (`src/regen/`). Development-only; never in any other system's dependency graph |
 | `cl-gbdt/docgen` | The API-reference emitter (`src/docgen/`). Development-only, on the same terms |
 
@@ -336,8 +339,9 @@ or evaluate the earlier ones first.
 
 | Document | Answers |
 |---|---|
-| [`CONTRIBUTING.md`](CONTRIBUTING.md) | How to [run the tests](CONTRIBUTING.md#running-the-tests) and the [functional tests](CONTRIBUTING.md#running-the-functional-tests), what [CI](CONTRIBUTING.md#continuous-integration) checks, and how to regenerate the [bindings](CONTRIBUTING.md#regenerating-the-bindings) and the [API reference](CONTRIBUTING.md#regenerating-the-api-reference) |
+| [`CONTRIBUTING.md`](CONTRIBUTING.md) | How to [run the tests](CONTRIBUTING.md#running-the-tests) and the [functional tests](CONTRIBUTING.md#running-the-functional-tests) and the [executable specifications](CONTRIBUTING.md#running-the-executable-specifications), what [CI](CONTRIBUTING.md#continuous-integration) checks, and how to regenerate the [bindings](CONTRIBUTING.md#regenerating-the-bindings) and the [API reference](CONTRIBUTING.md#regenerating-the-api-reference) |
 | [`docs/cl-gbdt-layered-api-implementation-policy.md`](docs/cl-gbdt-layered-api-implementation-policy.md) | Why the API is layered the way it is: the capability model, resource safety, package boundaries, the compatibility obligation, and what is deliberately out of scope |
+| [`docs/cl-spec-dogfooding.md`](docs/cl-spec-dogfooding.md) | What the executable specifications cover, and what cl-spec could not yet express |
 | [`docs/FUNCTIONAL-COVERAGE.md`](docs/FUNCTIONAL-COVERAGE.md) | Where every published symbol stands against the functional suite -- covered, unproven, or exempt with a stated reason. Checked by CI |
 | [`ffi-spec/BINDING-COVERAGE.md`](ffi-spec/BINDING-COVERAGE.md) | The same, one layer down: every generated C binding as wrapped, planned or excluded, with the reason. Checked by CI |
 | [`ffi-spec/ABI-BLACKLIST.md`](ffi-spec/ABI-BLACKLIST.md) | Which generated C bindings must never be called -- they changed meaning upstream while keeping their names, so symbol probing cannot catch them -- why, and what to call instead. Checked by CI |

@@ -171,3 +171,26 @@ guard, and have no portable fallback."
                "cl-gbdt/tests/functional/lightgbm-standalone"
                "cl-gbdt/tests/functional/xgboost-standalone")
   :perform (test-op (op c) (symbol-call :rove :run c)))
+
+;;; The executable specifications under specs/: cl-spec contracts and Properties about
+;;; cl-gbdt's pure helpers and report objects. Optional -- nothing above depends on it, and
+;;; it is the only system here that names cl-spec. It needs cl-spec core only; the check-it
+;;; generator backend comes in through `cl-gbdt/specs/check-it', an inferred system
+;;; (specs/check-it.lisp), which is what running the checks needs.
+(defsystem "cl-gbdt/specs"
+  :description "Executable cl-spec specifications of cl-gbdt's pure helpers and report
+objects. Development only; loads without either shared library and depends on cl-spec."
+  :license "MIT"
+  :class :package-inferred-system
+  :depends-on ("cl-gbdt/specs/all"))
+
+;;; Runs every definition in `cl-gbdt/specs' at a fixed seed. Named under cl-gbdt/tests/ so
+;;; rove's prefix match finds tests/specs/checks.lisp; kept out of `cl-gbdt/tests' itself so
+;;; that the layer 1 suite never needs cl-spec.
+(defsystem "cl-gbdt/tests/specs"
+  :description "Rove suite running every cl-gbdt/specs contract and Property at a fixed
+seed. Needs cl-spec and check-it; opens no shared library."
+  :license "MIT"
+  :class :package-inferred-system
+  :depends-on ("cl-gbdt/tests/specs/checks")
+  :perform (test-op (op c) (symbol-call :rove :run c)))

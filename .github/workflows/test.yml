@@ -94,6 +94,17 @@ jobs:
           CL_GBDT_TEST_SYSTEM: cl-gbdt/tests
         run: ros run -- --non-interactive --load tools/ci/run-tests.lisp
 
+      - name: Install cl-spec
+        run: ./tools/fetch-cl-spec.sh
+
+      - name: Executable specifications - cl-spec contracts at a fixed seed
+        # Needs no shared library either, which tools/ci/run-tests.lisp asserts. Run on every
+        # platform: the contracts exercise float rendering and coercion, which is where
+        # x86-64's enabled traps and aarch64's disabled ones have disagreed before.
+        env:
+          CL_GBDT_TEST_SYSTEM: cl-gbdt/tests/specs
+        run: ros run -- --non-interactive --load tools/ci/run-tests.lisp
+
       - name: Install the OpenMP runtime (macOS only)
         # The macOS wheels link against @rpath/libomp.dylib and, unlike the manylinux
         # ones, do not vendor it -- the first run of this workflow failed with

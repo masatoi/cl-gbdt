@@ -40,6 +40,44 @@ To run a single test from the REPL:
 (rove:run-test 'cl-gbdt/tests/backend::some-test-name)
 ```
 
+### Running the executable specifications
+
+`specs/` holds an optional bundle of [cl-spec](https://github.com/masatoi/cl-spec) Function
+Specs and Properties about the pure helpers and the training report. `cl-gbdt/specs`
+registers them; `cl-gbdt/tests/specs` runs every one at seed 42 and fails if one fails,
+rejects a generated input, or leaves a `:cases` branch uncalled. Nothing a user loads depends
+on either, and neither needs a shared library -- but both need cl-spec, which is not in
+Quicklisp. Fetch it once, at the revision this repository pins:
+
+```bash
+./tools/fetch-cl-spec.sh
+```
+
+It clones into `~/.roswell/local-projects/masatoi/cl-spec` (override with `CL_SPEC_DIR`, or
+the revision with `CL_SPEC_REF`) and leaves an existing checkout there alone. Then:
+
+```bash
+CL_GBDT_TEST_SYSTEM=cl-gbdt/tests/specs ros run -- --non-interactive \
+  --load tools/ci/run-tests.lisp
+```
+
+From a cl-mcp session, load `cl-gbdt/specs/check-it` -- the bundle plus the check-it backend
+that generation needs -- and run one definition at a time:
+
+```text
+load-system  system: "cl-gbdt/specs/check-it"
+spec-check   function: "cl-gbdt/src/config/prediction-shape:contrib-shape"
+             trials: 200  seed: "42"
+spec-check   symbol: "cl-gbdt/src/parameters:normalize-parameters"  profile: "normal"
+```
+
+`function=` runs a contract only and `symbol=` the Properties about a symbol only, so run
+both. If the worker's registry lost the definitions -- `cl-spec:clear-registry`, or a freshly
+bound `cl-spec:*registry*` -- `(cl-gbdt/specs/all:register-specifications)` reloads just the
+specification files into it; do not reach for `asdf:load-system ... :force t`, which may
+recompile cl-spec itself under live objects. [`docs/cl-spec-dogfooding.md`](docs/cl-spec-dogfooding.md) lists every definition,
+its seed-42 result, and what cl-spec could not yet express.
+
 ## Running the functional tests
 
 `cl-gbdt/tests/functional` is a separate system that calls the real LightGBM and
@@ -104,8 +142,16 @@ covers a whole workflow file, not a job, which is why the two badges report inde
   LightGBM version and an XGBoost version load two independent shared libraries with no
   interaction between them, so each axis's own endpoints are varied one at a time against the
   other's pinned version, not against each other's endpoints too.
+- The same `test` job also runs the executable specifications on all three platforms:
+  after layer 1, an `Install cl-spec` step (`./tools/fetch-cl-spec.sh`) and then
+  `Executable specifications - cl-spec contracts at a fixed seed`, which runs
+  `cl-gbdt/tests/specs` through `tools/ci/run-tests.lisp` like the other two layers. See
+  [Running the executable specifications](#running-the-executable-specifications).
 - `.github/workflows/lint.yml` runs the static checks on one target, since nothing they
-  look at varies by machine.
+  look at varies by machine. It installs cl-spec too, with its own `Install cl-spec` step,
+  because the leaf-system and reachability checks load every system this repository
+  declares, and its warnings-free compile covers `cl-gbdt/specs`, `cl-gbdt/specs/check-it`
+  and `cl-gbdt/tests/specs`.
 - `.github/workflows/upstream.yml` asks PyPI once a week — and on every push to master —
   whether LightGBM or XGBoost has released, and answers in the same run whether cl-gbdt
   could take the new version. **It does not run on pull requests**, and it has no README
@@ -121,6 +167,8 @@ before opening a pull request, and add a line here whenever `tools/ci/` gains a 
 ```bash
 CL_GBDT_TEST_SYSTEM=cl-gbdt/tests ros run -- --non-interactive \
   --load tools/ci/run-tests.lisp          # layer 1
+CL_GBDT_TEST_SYSTEM=cl-gbdt/tests/specs ros run -- --non-interactive \
+  --load tools/ci/run-tests.lisp          # specifications, needs ./tools/fetch-cl-spec.sh
 CL_GBDT_TEST_SYSTEM=cl-gbdt/tests/functional ros run -- --non-interactive \
   --load tools/ci/run-tests.lisp          # layer 2, needs ./tools/fetch-libs.sh first
 ros run -- --non-interactive --load tools/ci/lint.lisp

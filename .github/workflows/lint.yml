@@ -57,6 +57,11 @@ jobs:
           git -C "$projects/trivial-glob" checkout --quiet "$TRIVIAL_GLOB_REF"
           git -C "$projects/mallet" checkout --quiet "$MALLET_REF"
 
+      - name: Install cl-spec
+        # Only the optional cl-gbdt/specs bundle needs it, but the leaf-system and
+        # reachability checks below load every system this repository declares.
+        run: ./tools/fetch-cl-spec.sh
+
       - name: Lint and column width
         # mallet does not check line length -- a 132-column file passes it -- so the
         # script checks both. See tools/ci/lint.lisp.
@@ -183,12 +188,16 @@ jobs:
                                          "cl-gbdt/lightgbm/unified"
                                          "cl-gbdt/xgboost/unified"
                                          "cl-gbdt/regen" "cl-gbdt/docgen" "cl-gbdt/tests"
-                                         "cl-gbdt/tests/functional") :silent t)' \
+                                         "cl-gbdt/tests/functional" "cl-gbdt/specs"
+                                         "cl-gbdt/specs/check-it"
+                                         "cl-gbdt/tests/specs") :silent t)' \
             --eval '(dolist (s (list "cl-gbdt" "cl-gbdt/lightgbm" "cl-gbdt/xgboost"
                                       "cl-gbdt/lightgbm/unified"
                                       "cl-gbdt/xgboost/unified"
                                       "cl-gbdt/regen" "cl-gbdt/docgen" "cl-gbdt/tests"
-                                      "cl-gbdt/tests/functional"))
+                                      "cl-gbdt/tests/functional" "cl-gbdt/specs"
+                                      "cl-gbdt/specs/check-it"
+                                      "cl-gbdt/tests/specs"))
                       (asdf:compile-system s :force t))' 2>&1 | tee /tmp/compile.log
           if grep -iE 'caught .*(WARNING|ERROR)' /tmp/compile.log; then
             echo "::error::compilation emitted warnings"

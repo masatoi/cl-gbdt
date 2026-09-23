@@ -66,3 +66,14 @@
     (let ((*print-base* 16))
       (ok (equal '(("num_leaves" . "31"))
                  (cl-gbdt:normalize-parameters '(:num-leaves 31)))))))
+
+(deftest normalize-parameters-output-is-independent-of-the-caller-s-print-case
+  ;; A symbol value used to be `princ'ed under whatever `*print-case*' the caller had bound,
+  ;; so `:gbdt' rendered as "GBDT" normally and "gbdt" under :downcase. Found by the
+  ;; printer-independence Property in specs/parameters.lisp once its domain held symbols.
+  (testing "a symbol value renders as its name whatever *print-case* the caller has bound"
+    (dolist (print-case '(:upcase :downcase :capitalize))
+      (let ((*print-case* print-case))
+        (ok (equal '(("boosting" . "GBDT"))
+                   (cl-gbdt:normalize-parameters '(:boosting :gbdt)))
+            (format nil "under *print-case* ~S" print-case))))))

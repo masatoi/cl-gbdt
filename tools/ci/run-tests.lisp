@@ -13,6 +13,7 @@
 ;;;;
 ;;;;   cl-gbdt/tests             must open NO foreign library
 ;;;;   cl-gbdt/tests/functional  must open BOTH backend libraries
+;;;;   cl-gbdt/tests/specs       must open NO foreign library
 ;;;;
 ;;;; Without that second check, a runner with no vendor/ directory would skip every
 ;;;; test and report success -- the exact outcome the functional suite exists to
@@ -41,13 +42,13 @@
 (defun check-foreign-libraries (system names)
   "Verify SYSTEM opened the foreign libraries it is supposed to. Returns a boolean."
   (cond
-    ((string= system "cl-gbdt/tests")
+    ((member system '("cl-gbdt/tests" "cl-gbdt/tests/specs") :test #'string=)
      (or (null names)
          (progn
            (format *error-output*
-                   "~&FAIL: layer 1 must open no foreign library, but opened ~S.~@
+                   "~&FAIL: ~A must open no foreign library, but opened ~S.~@
                     Something has made the library-free layer depend on a backend.~%"
-                   names)
+                   system names)
            nil)))
     ((string= system "cl-gbdt/tests/functional")
      (or (and (library-loaded-p "lightgbm" names)

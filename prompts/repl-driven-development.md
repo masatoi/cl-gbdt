@@ -16,6 +16,8 @@ EXPLORE -> EXPERIMENT -> PERSIST -> VERIFY
 |------|------|------------|
 | Find symbol | `clgrep-search` | `pattern`, `form_types` |
 | Read definition | `lisp-read-file` | `name_pattern="^func$"` |
+| Callers / impact | `code-find-references` | `symbol` (load-system first) |
+| Classes / generic functions | `clos-describe` | `symbol` (load-system first) |
 | Load system | `load-system` | `system`, `force`, `clear_fasls` |
 | Eval/test | `repl-eval` | `package`, `timeout_seconds` |
 | Edit form | `lisp-edit-form` | `form_type`, `form_name`, `operation`, `content` |
@@ -48,12 +50,24 @@ Tools run in two process types when the worker pool is enabled (default):
 
 **Worker process** (isolated, one per session):
 - `repl-eval`, `load-system`, `run-tests`, `lisp-macroexpand`
-- `code-find`, `code-describe`, `code-find-references`
+- `code-find`, `code-describe`, `code-find-references`, `clos-describe`
 - `inspect-object`
 
 `lisp-macroexpand` splits across both: the parent resolves `path`/`form_type`/`form_name`
 against the CST to locate the form's source text, then the worker expands it, because only
 the worker image has the macro's definition loaded.
+
+`clos-describe` splits the other way: the worker reads the classes and methods from its image,
+then the parent reads their source files and the worker re-resolves each token to confirm the
+definition is still the same one — only then does the entry carry a `form_type`/`form_name`.
+An entry whose source no longer matches (or could not be confirmed) carries a `source_match` of
+`"mismatched"` or `"unverified"` and a `source_match_reason` instead of the two edit fields —
+see `docs/tools.md`'s `clos-describe` section for the full three-state contract.
+A `matched` entry also prints its edit guard at the end of the line as `[guard: TOKEN]`; pass
+that token as `lisp-edit-form`'s `guard_token` argument rather than calling with just
+`form_type`/`form_name`, and re-run `clos-describe` for a fresh one on conflict. (The same guard
+is also a JSON `edit_guard` object for `lisp-edit-form`'s `guard`, but only the token appears in
+the text a client actually renders.)
 
 **Key guarantees:**
 - **Session affinity**: All calls route to the same dedicated worker. `load-system` then `code-find` works (shared state).
@@ -78,7 +92,8 @@ the worker image has the macro's definition loaded.
 - **SEARCH/EXPLORE**
   - Pattern search (project-wide) -> `clgrep-search`
   - Symbol lookup (system loaded) -> `code-find`, `code-describe`
-  - Find callers/references -> `code-find-references` (loaded) or `clgrep-search`
+  - Find callers/references, call sites and affected tests -> `code-find-references` (loaded) or `clgrep-search`
+  - Class hierarchy and slots, or a generic function's methods -> `clos-describe` (loaded)
 - **READ**
   - `.lisp`/`.asd` file -> `lisp-read-file` (`collapsed=true`, then `name_pattern`)
   - Other files -> `fs-read-file`
@@ -119,7 +134,8 @@ the worker image has the macro's definition loaded.
 
 **New Files workflow:**
 1. Create minimal file via `fs-write-file`: `(in-package ...)` + a stub `defun` as anchor
-2. Verify with `lisp-check-parens` on the written file
+2. Read `fs-write-file`'s response: if the file does not parse it says `WARNING`, shows the
+   diagnosis, and the next write to it needs `allow_unparseable_overwrite: true`
 3. Expand via `lisp-edit-form`: `replace` the stub, then `insert_after` for additional forms
 
 **File edits do not reload in the worker.** After `lisp-edit-form`, either re-evaluate the form via `repl-eval` or call `load-system` to reload from disk.
@@ -150,13 +166,25 @@ Use `repl-eval` for testing expressions, inspecting state, and verifying edits. 
 
 ## Debugging
 
-1. **Reproduce** via `repl-eval`. On error, response includes `error_context`:
-   - `condition_type`, `message`, `restarts`
+1. **Reproduce** via `repl-eval`. On error, the backtrace in the response text lists,
+   under each frame, its locals as `NAME = VALUE`:
+   - `condition_type`, `message`, `restarts` head the block
    - `frames`: stack frames with function names, source locations, local variables
-   - Locals include `object_id` for non-primitives (drill down via `inspect-object`)
-   - Local capture requires `(declare (optimize (debug 3)))` in the function
+   - Locals include `[object-id: N]` for non-primitives (drill down via `inspect-object`)
+   - Local capture requires `(declare (optimize (debug 3)))` in the function; without it
+     the frame is listed with no locals under it
+   - At most 10 locals per frame are listed; the rest are counted, and a value
+     longer than 200 characters is cut with its full length noted — `print_level`
+     and `print_length` do not bound a string, so without that one large local
+     would push the frames below it out of the response
 
-2. **Auto-expand locals**: Set `locals_preview_frames` (e.g., 3) to include variable previews in top N frames. `locals_preview_skip_internal` (default true) skips CL-MCP/SBCL/ASDF infrastructure frames.
+2. **Auto-expand locals**: Set `locals_preview_frames` (e.g., 3) to expand non-primitive locals
+   in the top N frames — a hash-table's entries, a list's elements or an instance's slots are
+   written out under the local instead of only its printed form, which is often enough to skip
+   the `inspect-object` round-trip. A child that `locals_preview_max_depth` reached is
+   expanded under its own row too, so raising the depth shows more here and not only in
+   the JSON. `locals_preview_skip_internal` (default true) skips CL-MCP/SBCL/ASDF
+   infrastructure frames when counting which frames qualify.
 
 3. **Analyze**: `code-find-references` for usage analysis, `lisp-check-parens` for syntax issues, `code-describe` to verify signatures.
 
@@ -224,7 +252,23 @@ Call `fs-set-project-root` with your working directory, or set `MCP_PROJECT_ROOT
 - Repeated crashes: circuit breaker trips after 3 crashes in 5 minutes; check server logs
 
 ### Parenthesis Mismatch
-Use `lisp-check-parens` to find exact position (line, column). Fix with `lisp-edit-form`.
+Use `lisp-check-parens` to find the position (line, column). When indentation is
+consistent it also prints `Likely fix, inferred from indentation:` with the exact
+line to change, and names the next top-level form when a form swallowed the rest of
+the file. Fix with `lisp-edit-form`.
+
+If the **file itself** no longer parses, `lisp-edit-form` and `lisp-patch-form` cannot
+locate any form in it. Recover in two steps. First confirm the reported line with
+`lisp-read-file` (`collapsed: false`, `offset: <line - 1>`, `limit: 1`; raw mode works
+on a broken file and its offset/limit are lines). Then read the whole file with
+`fs-read-file` (exact bytes; do not copy from `lisp-read-file`'s raw mode, which
+re-joins lines and may append a `[Showing lines ...]` footer), apply the likely fix by
+hand, and write the whole file back with `fs-write-file` with
+`allow_unparseable_overwrite: true` (its `path` must be relative to the project root;
+the error message prints that path) (it refuses to overwrite an existing `.lisp` file
+otherwise, and the flag never applies to a file that parses). If the file only looks
+broken because it uses custom reader syntax such as `#?"..."`, pass the `readtable`
+parameter to `lisp-edit-form` instead.
 
 ### lisp-macroexpand returns "NOT EXPANDED" or a package error
 - The macro must be **defined in the worker image**, not just present on disk. Run

@@ -17,10 +17,10 @@
 
 (require :asdf)
 
-(defparameter +leaf-roots+ '("src" "tests")
+(defparameter +leaf-roots+ '("src" "tests" "specs")
   "Directories searched, recursively, for `.lisp' files naming a leaf system.
 
-Hardcoded to these two. `leaf-systems' below is automatic only in the sense that
+Hardcoded to these three. `leaf-systems' below is automatic only in the sense that
 a new file *under one of these roots* needs no update here -- a file added under
 some other root would not be picked up at all.")
 

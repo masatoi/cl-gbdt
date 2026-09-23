@@ -70,18 +70,19 @@
   "The file whose `defsystem' forms name every system this check walks.")
 
 (defparameter +trees+
-  '(("src" . 30) ("tests" . 30))
+  '(("src" . 30) ("tests" . 30) ("specs" . 5))
   "Each tree this check scans, paired with the floor on how many `.lisp' files it must find
-there. Measured 2026-08-26: `src/' holds 42 and `tests/' 41. The floors sit well below both on
-purpose -- they catch a glob that matched nothing, not a tree that grew, and adding a file must
-never require touching them. See THE FLOORS in this file's header.
+there. Measured 2026-08-26: `src/' holds 42 and `tests/' 41. Measured 2026-09-23, when
+`specs/' arrived with the executable specifications: it held 8 files. The floors sit well
+below all three on purpose -- they catch a glob that matched nothing, not a tree that grew,
+and adding a file must never require touching them. See THE FLOORS in this file's header.
 
-Hardcoded to these two, the same as `tools/ci/check-leaf-systems.lisp''s `+leaf-roots+'. A
+Hardcoded to these three, the same as `tools/ci/check-leaf-systems.lisp''s `+leaf-roots+'. A
 tree added elsewhere -- `examples/', `contrib/' -- with `.lisp' sources wired to no system
 leaves both that check and this one green, and nothing here would say why.")
 
 (defparameter +minimum-systems+ 5
-  "Floor on how many `defsystem' forms reading `cl-gbdt.asd' must yield. Nine are declared
+  "Floor on how many `defsystem' forms reading `cl-gbdt.asd' must yield. Eleven are declared
 today. Zero would mean the read found nothing -- a moved file, a changed name -- and a check
 that walked no systems would report every source file as unreachable, which is loud, or, if the
 trees were empty too, nothing at all, which is not.")
