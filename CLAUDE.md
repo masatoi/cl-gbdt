@@ -86,9 +86,21 @@ over both backends.
 
 **Status: functional.** Both backends implement
 all 13 generic functions of the unified API -- `make-dataset`, `train`, `predict`, and
-the rest -- against the real shared libraries, exercised by 1051 functional assertions
-across 17 test files in `cl-gbdt/tests/functional` (layer 2) on top of 688 assertions
+the rest -- against the real shared libraries, exercised by 1069 functional assertions
+across 18 test files in `cl-gbdt/tests/functional` (layer 2) on top of 707 assertions
 across 23 test files that need no shared library at all (layer 1).
+
+**An optional executable-specification bundle sits beside the tests.** `specs/` holds cl-spec
+Function Specs and Properties about the pure helpers (`normalize-parameters`,
+`contrib-shape`, the custom-objective helpers) and the training report
+(`training-report-from-history` and the two report constructors, via `object-of`).
+`cl-gbdt/specs` registers them with cl-spec core alone; `cl-gbdt/tests/specs` runs every one
+at seed 42 and is a CI gate. Nothing a user loads depends on either -- only `specs/**` and
+`tests/specs/**` name a cl-spec package -- but both need cl-spec, which is not in Quicklisp:
+`./tools/fetch-cl-spec.sh` fetches it at the pinned revision. Load `cl-gbdt/specs/check-it`
+to run one with `spec-check`. What the bundle covers, what cl-spec could not yet express, and
+the `*print-case*` finding about `normalize-parameters` (open) are in
+`docs/cl-spec-dogfooding.md`.
 
 **Each backend is two systems.** `cl-gbdt/<backend>` is that backend's **Layer 1 alone**:
 `src/<backend>/native.lisp` (the `%`-functions, over raw pointers) over the generated
@@ -409,6 +421,8 @@ CL_GBDT_TEST_SYSTEM=cl-gbdt/tests ros run -- --non-interactive \
   --load tools/ci/run-tests.lisp                        # layer 1
 CL_GBDT_TEST_SYSTEM=cl-gbdt/tests/functional ros run -- --non-interactive \
   --load tools/ci/run-tests.lisp                        # layer 2
+CL_GBDT_TEST_SYSTEM=cl-gbdt/tests/specs ros run -- --non-interactive \
+  --load tools/ci/run-tests.lisp                        # specs; ./tools/fetch-cl-spec.sh
 ros run -- --non-interactive --load tools/ci/lint.lisp   # mallet + column-width check
 ros run -- --non-interactive --load tools/ci/check-leaf-systems.lisp
 ros run -- --non-interactive --load tools/ci/check-source-reachability.lisp
@@ -463,7 +477,10 @@ src/          Core implementation and the binding emitter (src/regen/), one pack
 src/docgen/   The API-reference emitter (introspect.lisp, render.lisp, emit.lisp,
               all.lisp), development-only, published as cl-gbdt/docgen
 tests/        Rove test suites, layer 1 (no shared library) plus tests/functional/,
-              layer 2 (calls the real shared libraries)
+              layer 2 (calls the real shared libraries), and tests/specs/, which runs
+              the specs/ bundle at a fixed seed
+specs/        The optional cl-spec bundle: Function Specs and Properties, one package
+              per file (cl-gbdt/specs); development-only, needs cl-spec
 tools/ci/     The scripts CI actually runs: run-tests.lisp, lint.lisp,
               check-leaf-systems.lisp, check-source-reachability.lisp,
               check-layer-separation.lisp, check-layer-1-guards.lisp,
@@ -471,14 +488,16 @@ tools/ci/     The scripts CI actually runs: run-tests.lisp, lint.lisp,
               check-api-reference.lisp, check-functional-coverage.lisp,
               check-doc-links.lisp, check-support-matrix.lisp
 tools/        regen.lisp (regenerates src/*/c-api.lisp), gen-api-reference.lisp
-              (regenerates docs/API-REFERENCE.md), and the shell scripts they and CI call
+              (regenerates docs/API-REFERENCE.md), and the shell scripts they and CI call,
+              among them fetch-cl-spec.sh, which fetches the pinned cl-spec
 ffi-spec/     Vendored C headers and the c2ffi specs generated from them;
               BINDING-COVERAGE.md classifies every generated binding as wrapped,
               planned, or excluded, and is what answers "what of the C API does this
               wrap"
 docs/         API-REFERENCE.md, generated -- never hand-edit it -- plus
               FUNCTIONAL-COVERAGE.md, which gives every published symbol a recorded
-              position against the functional suite, and
+              position against the functional suite, cl-spec-dogfooding.md, what the
+              specs/ bundle covers and what cl-spec could not yet express, and
               cl-gbdt-layered-api-implementation-policy.md, the design/policy record
 prompts/      System prompts for AI agents (imported from cl-mcp)
 ```
