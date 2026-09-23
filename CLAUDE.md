@@ -6,6 +6,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 @prompts/repl-driven-development.md
 @prompts/common-lisp-expert.md
+@prompts/cl-spec-driven-development.md
 
 ### How this project is developed
 
