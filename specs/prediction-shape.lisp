@@ -47,9 +47,11 @@ function under test do not share the arithmetic they are checked against."
 
 (defspec-function contrib-shape
   "Derive (ROWS CLASSES WIDTH) exactly when the counts admit one; otherwise NIL."
-  (:args (element-count (range integer 0 2000))
-         (num-rows (range integer -3 40))
-         (num-features (range integer -2 20)))
+  ;; Any three integers: the NIL cases include negative and zero counts. The generator draws
+  ;; small ones; that bounds what is tried, not what is promised.
+  (:args (element-count integer)
+         (num-rows integer)
+         (num-features integer))
   (:args-generator contrib-shape-arguments)
   (:cases
    (:derivable

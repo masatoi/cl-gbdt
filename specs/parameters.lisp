@@ -22,28 +22,32 @@
   (:import-from #:cl-gbdt/src/parameters
                 #:normalize-parameters)
   (:import-from #:cl-gbdt/specs/values
+                #:*parameter-keys*
                 #:pairs-plist
-                #:parameter-key
-                #:parameter-pair
-                #:parameter-value)
+                #:parameter-pair)
   (:export #:normalize-parameters-keeps-order-and-renames-keys
            #:normalize-parameters-values-denote-themselves
            #:normalize-parameters-ignores-the-caller-s-printer))
 
 (in-package #:cl-gbdt/specs/parameters)
 
-(defparameter *keys*
-  '(:num-leaves :learning-rate :min-data-in-leaf :objective :is-unbalance)
-  "Keys `normalize-parameters-arguments' draws from.")
+(defparameter *sampled-values*
+  (list 31 0.05 0.05d0 1/3 t nil "binary" :gbdt -7 1.0d-7)
+  "Values `normalize-parameters-arguments' draws from, one per rendering rule. What the
+contract admits is any value; this is only what it samples.")
 
 (defun string-pair-p (object)
   "True when OBJECT is a (NAME . VALUE) cons of two strings."
   (and (consp object) (stringp (car object)) (stringp (cdr object))))
 
-(defun keys-are-keywords-p (plist)
+(defun keys-are-parameter-keys-p (plist)
   "True when every key position of PLIST -- position 0, 2, 4 and so on, the last element of
-an odd-length PLIST included -- holds a keyword."
-  (loop :for key :in plist :by #'cddr :always (keywordp key)))
+an odd-length PLIST included -- holds a keyword or a string, as `parameter-key' states."
+  (loop :for key :in plist :by #'cddr :always (typep key '(or keyword string))))
+
+(defun parameter-name-string (key)
+  "Return KEY's name as a string key would spell it, `:num-leaves' as \"num_leaves\"."
+  (substitute #\_ #\- (string-downcase (symbol-name key))))
 
 (defun denotes-p (value text)
   "True when TEXT, `normalize-parameters''s rendering of VALUE, denotes VALUE.
@@ -70,16 +74,22 @@ number (a ratio as its `double-float')."
   (let ((length (random 10)))
     (list (loop :for position :below length
                 :collect (if (evenp position)
-                             (nth (random (length *keys*)) *keys*)
-                             (random 1000))))))
+                             (let ((key (nth (random (length *parameter-keys*))
+                                             *parameter-keys*)))
+                               ;; Now and then the string spelling of the same key.
+                               (if (zerop (random 4)) (parameter-name-string key) key))
+                             (nth (random (length *sampled-values*)) *sampled-values*))))))
 
 (defspec-function normalize-parameters
-  "A plist whose key positions hold keywords: even-length, it becomes one (NAME . VALUE)
-string pair per key; odd-length, it is refused with `data-error'."
-  (:args (plist (list-of (or parameter-key parameter-value) :max-length 9)))
+  "A plist of any values whose key positions hold keywords or strings: even-length, it
+becomes one (NAME . VALUE) string pair per key; odd-length, it is refused with `data-error'."
+  ;; Any length, any value: nothing is validated or filtered, as the docstring promises. The
+  ;; generator keeps plists short and draws from a sampling set; that bounds what is tried,
+  ;; not what is promised.
+  (:args (plist (list-of t)))
   (:args-generator normalize-parameters-arguments)
-  ;; The element spec alone would admit (42 7), which the implementation cannot name.
-  (:pre (keys-are-keywords-p plist))
+  ;; Without this, (42 7) would be admitted, and the implementation cannot name 42.
+  (:pre (keys-are-parameter-keys-p plist))
   (:cases
    (:even-length
     (:when (evenp (length plist)))
@@ -99,11 +109,13 @@ string pair per key; odd-length, it is refused with `data-error'."
     (and (= (length result) (length pairs))
          (every (lambda (pair entry)
                   (let ((name (car entry)))
+                    ;; Compared with both sides' underscores read as dashes, so a string key
+                    ;; already spelled "num_leaves" is held to the same rule as `:num-leaves'.
                     (and (stringp name)
                          (notany (lambda (char) (or (char= char #\-) (upper-case-p char)))
                                  name)
                          (string-equal (substitute #\- #\_ name)
-                                       (symbol-name (first pair))))))
+                                       (substitute #\- #\_ (string (first pair)))))))
                 pairs result))))
 
 (defproperty normalize-parameters-values-denote-themselves

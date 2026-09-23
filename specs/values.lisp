@@ -6,17 +6,25 @@
 ;;;; gradients are overwhelmingly double-floats and ratios, so those are supplied here as
 ;;;; custom generators. Custom value generators do not shrink: a counterexample keeps its
 ;;;; doubles exactly as drawn. docs/cl-spec-dogfooding.md records both facts.
+;;;;
+;;;; A spec here that a Function Spec names as an argument states what the target ACCEPTS; its
+;;;; generator, or a whole-call generator, only decides what is SAMPLED. `parameter-key' is the
+;;;; pattern: any keyword or string validates, and a fixed set is drawn. Specs used only as
+;;;; Property domains (`parameter-value', `parameter-pair') are sampling domains and say so.
 
 (uiop:define-package #:cl-gbdt/specs/values
   (:use #:cl)
   (:import-from #:cl-spec/main
                 #:defgenerator
                 #:defspec)
-  (:export #:finite-double
+  (:export #:*parameter-keys*
+           #:draw-finite-double
+           #:finite-double
            #:finite-double-generator
            #:non-integer-ratio
            #:non-integer-ratio-generator
            #:parameter-key
+           #:parameter-key-generator
            #:parameter-pair
            #:parameter-value
            #:pairs-plist
@@ -24,12 +32,20 @@
 
 (in-package #:cl-gbdt/specs/values)
 
-(defgenerator finite-double-generator ()
-  ;; A signed integer mantissa scaled by 10^-8 .. 10^8: magnitudes from 1d-8 to 1d14, well
-  ;; inside single-float range too, so coercing one never overflows on a trapping platform.
+(defun draw-finite-double ()
+  "Return a double-float drawn with `random': a signed integer mantissa scaled by 10^-8 ..
+10^8, so a magnitude from 1d-8 to 1d14 or exactly zero.
+
+Well inside single-float range too, so coercing one never overflows on a trapping platform.
+A plain function rather than only a generator body because a `defgenerator' body cannot draw
+from a registered spec, so the whole-call generators elsewhere call this directly."
   (* (float (- (random 2000001) 1000000) 1d0)
      (expt 10d0 (- (random 17) 8))))
 
+(defgenerator finite-double-generator ()
+  (draw-finite-double))
+
+;;; Validates any double-float, infinities included; only the generator is finite.
 (defspec finite-double (type double-float)
   (:generator finite-double-generator))
 
@@ -43,15 +59,31 @@
 (defspec non-integer-ratio (type ratio)
   (:generator non-integer-ratio-generator))
 
-(defspec parameter-key
-  (member :num-leaves :learning-rate :min-data-in-leaf :objective :is-unbalance
-          :bagging-fraction :max-depth :lambda-l1 :num-class :verbosity))
+(defparameter *parameter-keys*
+  '(:num-leaves :learning-rate :min-data-in-leaf :objective :is-unbalance :bagging-fraction
+    :feature-fraction :max-depth :lambda-l1 :num-class :verbosity :verbose)
+  "The keys generated plists draw from: LightGBM and XGBoost spellings, the backend-specific
+ones among them. A sampling set, not the domain -- see `parameter-key'.")
 
+(defgenerator parameter-key-generator ()
+  (nth (random (length *parameter-keys*)) *parameter-keys*))
+
+;;; Any keyword or string validates: `normalize-parameters' has no per-key allowlist -- a
+;;; backend-specific key passes through, README's Features section says so -- and a string
+;;; key is the same key to it (`objective-parameters' relies on that). Only the generator
+;;; draws from a fixed set, so that generated plists repeat keys.
+(defspec parameter-key (or keyword string)
+  (:generator parameter-key-generator))
+
+;;; A sampling domain for the Properties' generated values, not a statement of what
+;;; `normalize-parameters' accepts (any value -- see its Function Spec). The bounds keep draws
+;;; small; the types are the ones a caller writes and the ones the rendering rules differ on.
 (defspec parameter-value
   (or (range integer -100000 100000) string boolean (range real -1000 1000)
       finite-double non-integer-ratio (member :gbdt :dart :rf :binary :multiclass)))
 
-;;; A `tuple' alone admits a vector as well as a list; the helpers below destructure lists.
+;;; One (KEY VALUE) pair of a Property's sampled plist. A `tuple' alone admits a vector as
+;;; well as a list; the helpers below destructure lists.
 (defspec parameter-pair
   (and (type list) (tuple parameter-key parameter-value)))
 

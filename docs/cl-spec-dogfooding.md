@@ -35,7 +35,7 @@ declared-domain fixes from PR review (G8).
 
 Six Function Specs, each run with `spec-check function=... trials=200 seed="42"`, and nine
 Properties, each run with `spec-check property=... profile=normal seed="42"`. Every row
-passed; every contract rejected 0 generated inputs -- three have a `:pre`, which their
+passed; every contract rejected 0 generated inputs -- five have a `:pre`, which their
 generators satisfy by construction (G5, G8) -- and every `:cases` contract
 called every case. `rejected` is not measured for a Property -- each call reported
 `rejection-counts-unmeasured` and `input-coverage-unmeasured` among its `verification_gaps`,
@@ -43,30 +43,30 @@ and each contract call reported `input-coverage-unmeasured`.
 
 | Definition | Kind | Clauses used | Seed 42 result | Digest (`fnv1a64-v1:`) |
 |---|---|---|---|---|
-| `contrib-shape` | Function Spec | `:cases`, `:post`, `:args-generator` | 200/200, 0 rejected; `:derivable` 99, `:underivable` 101 | `4de05ef75c7c211a` |
-| `normalize-parameters` | Function Spec | `:cases`, `:signals`, `:pre`, `:post`, `:args-generator` | 200/200, 0 rejected; `:even-length` 99, `:odd-length` 101 | `ee2e63a910959e94` |
-| `objective-single-float` | Function Spec | `:cases`, `:signals`, `:post`, built-in generation | 200/200, 0 rejected; `:real` 111, `:not-real` 89 | `875553b8e348d02a` |
-| `make-training-series` | Function Spec | `object-of` return, `:pre`, `:post`, `:args-generator` | 200/200, 0 rejected | `9c4f12ea038c9dbd` |
-| `make-training-report` | Function Spec | `object-of` return, `:pre`, `:post`, `:args-generator` | 200/200, 0 rejected | `d6ff12b3a7478da8` |
-| `training-report-from-history` | Function Spec | `object-of` return, `:post`, built-in generation | 200/200, 0 rejected | `e213621eb87d33db` |
-| `normalize-parameters-keeps-order-and-renames-keys` | Property (invariant) | built-in generation | 200/200 | `59ccbf9dafea18e3` |
-| `normalize-parameters-values-denote-themselves` | Property (round-trip) | built-in generation | 200/200 | `d803ac1508cea629` |
-| `normalize-parameters-ignores-the-caller-s-printer` | Property (invariant) | built-in generation | 200/200 | `ec690a0043d8d5e1` |
-| `objective-parameters-ends-with-the-one-canonical-objective` | Property (invariant) | built-in generation | 200/200 | `1bb00063d8475032` |
-| `objective-parameters-keeps-every-other-entry-in-order` | Property (invariant) | built-in generation | 200/200 | `8f1ff2d0025de731` |
-| `objective-parameters-is-idempotent` | Property (idempotence) | built-in generation | 200/200 | `8dd9a5ef5f4852e4` |
-| `history-yields-one-series-per-pair-in-first-appearance-order` | Property (invariant) | built-in generation | 200/200 | `a12e3de0c035750d` |
-| `history-series-values-are-the-pair-s-values-in-order` | Property (invariant) | built-in generation | 200/200 | `edf236a43a0795cc` |
-| `history-series-name-is-the-dataset-s-name` | Property (invariant) | built-in generation | 200/200 | `63d4aba0cd71dd15` |
+| `contrib-shape` | Function Spec | `:cases`, `:post`, `:args-generator` | 200/200, 0 rejected; `:derivable` 99, `:underivable` 101 | `7f7908d25e6aed16` |
+| `normalize-parameters` | Function Spec | `:cases`, `:signals`, `:pre`, `:post`, `:args-generator` | 200/200, 0 rejected; `:even-length` 94, `:odd-length` 106 | `d7984447fe5a4857` |
+| `objective-single-float` | Function Spec | `:cases`, `:signals`, `:pre`, `:post`, `:args-generator` | 200/200, 0 rejected; `:real` 118, `:not-real` 82 | `c9600e0e50ce2586` |
+| `make-training-series` | Function Spec | `object-of` return, `:pre`, `:post`, `:args-generator` | 200/200, 0 rejected | `c252684cbca14d97` |
+| `make-training-report` | Function Spec | `object-of` return, `:pre`, `:post`, `:args-generator` | 200/200, 0 rejected | `398fcb500e76da74` |
+| `training-report-from-history` | Function Spec | `object-of` return, `:pre`, `:post`, `:args-generator` | 200/200, 0 rejected | `a780345b86068146` |
+| `normalize-parameters-keeps-order-and-renames-keys` | Property (invariant) | built-in generation | 200/200 | `135e009326f8af30` |
+| `normalize-parameters-values-denote-themselves` | Property (round-trip) | built-in generation | 200/200 | `78b7f86b8c06a213` |
+| `normalize-parameters-ignores-the-caller-s-printer` | Property (invariant) | built-in generation | 200/200 | `546a8bbaae8f233b` |
+| `objective-parameters-ends-with-the-one-canonical-objective` | Property (invariant) | built-in generation | 200/200 | `1f3c8eab3ebaaee7` |
+| `objective-parameters-keeps-every-other-entry-in-order` | Property (invariant) | built-in generation | 200/200 | `85f21d3d2c4caadc` |
+| `objective-parameters-is-idempotent` | Property (idempotence) | built-in generation | 200/200 | `678dda584e43793b` |
+| `history-yields-one-series-per-pair-in-first-appearance-order` | Property (invariant) | built-in generation | 200/200 | `e3577e4ab65cf2c2` |
+| `history-series-values-are-the-pair-s-values-in-order` | Property (invariant) | built-in generation | 200/200 | `9748758e7d1d35c3` |
+| `history-series-name-is-the-dataset-s-name` | Property (invariant) | built-in generation | 200/200 | `e31e4d1de13d265a` |
 
 "Built-in generation" means the arguments are drawn from their declared specs; several of
 those specs have custom-generator children from `specs/values.lisp` (see G1). A digest covers
 the declaration and its registered dependencies, not the function body under test.
 
-The contracts' `result-data` at seed 42 also records a `:capabilities` plist. The four
-contracts with an `:args-generator` report `:shrinking :none`; `objective-single-float` and
-`training-report-from-history`, whose arguments come from specs, report `:shrinking
-:available` (see G2).
+The contracts' `result-data` at seed 42 also records a `:capabilities` plist. All six
+contracts now draw their calls from an `:args-generator` and report `:shrinking :none`; the
+nine Properties, whose arguments come from specs, report `:shrinking :available` (see G2 and
+G8 for why the contracts moved).
 
 ## Why cl-spec rather than Rove, and what stayed Rove
 
@@ -90,7 +90,8 @@ stays in Rove *and* gets that rule written here.
   one, and then accounts for every element -- over generated counts.
 - **`tests/objective.lisp`** pins every real type `objective-single-float` coerces and the
   non-reals it refuses, and lists LightGBM's objective aliases and eight near misses by hand.
-  The contract states the coercion within one single-float rounding for any real; the three
+  The contract states the coercion within one single-float rounding for any real within
+  single-float range, subnormals included, and the refusal for any non-real; the three
   `objective-parameters` Properties state "exactly one objective survives", "every other
   entry survives in order, near misses included" and idempotence, over generated mixtures of
   aliases (keyword and string spellings, mixed case) and near misses.
@@ -170,10 +171,13 @@ for a gap that recurs, so an improvement line is given for those alone, kept to 
 
 ### G2 -- a whole-call generator turns shrinking off
 
-- **Status:** blocked (accepted, not worked around). **Recurred:** yes -- all four
-  `:args-generator` contracts (`contrib-shape`, `normalize-parameters`,
-  `make-training-series`, `make-training-report`) report `:capabilities (... :shrinking
-  :none)` at seed 42.
+- **Status:** blocked (accepted, not worked around). **Recurred:** yes -- every contract.
+  First the four that needed correlated arguments (`contrib-shape`, `normalize-parameters`,
+  `make-training-series`, `make-training-report`); then, once each contract declared its
+  documented domain rather than a sampling one (G8), `objective-single-float` and
+  `training-report-from-history` too. All six report `:capabilities (... :shrinking :none)`
+  at seed 42. Declaring the true domain and keeping shrinking cannot both be had today: the
+  true domain (`t`, unbounded integers) has no useful generator of its own.
 - **Target:** any contract whose arguments must be drawn together.
 - **Wanted:** a counterexample from a generated call shrunk the way a spec-drawn one is.
 - **Result:** re-measured with a zero-class-accepting mutant of `contrib-shape` checked
@@ -218,12 +222,15 @@ for a gap that recurs, so an improvement line is given for those alone, kept to 
   (satisfies double-or-nil-p)))`.
 - **Result (re-measured):** `cl-spec:sample` on `series-values` signals
   `generator-unavailable` ("no conjunct has an ordinary generator strategy").
-- **Fallback:** a second spec for the same domain, `series-values-input` = `(vector-of
+- **Fallback, first:** a second spec for the same domain, `series-values-input` = `(vector-of
   (nullable finite-double) :max-length 6)`, generable because `vector-of` happens to produce
-  simple-vectors (three samples at seed 42: `(simple-vector 6)`, `(simple-vector 1)`,
-  `(simple-vector 3)`). `series-values` validates results; `series-values-input` draws
-  arguments.
-- **Pain:** two names for one concept, which must be kept in step by hand.
+  simple-vectors. It was also wider than the slot -- it admitted an adjustable vector -- and
+  bounded by a sampling limit (G8).
+- **Fallback, now:** none needed. Once the constructor's contract drew its calls from a
+  whole-call generator, `series-values` itself became the argument's declared domain, with
+  `draw-values` producing the values; the second spec was deleted.
+- **Pain:** the first fallback's -- two names for one concept -- was exactly where the
+  declared domain drifted from the documented one.
 
 ### G5 -- all-`&key` targets: generated calls omit keys
 
@@ -254,17 +261,21 @@ for a gap that recurs, so an improvement line is given for those alone, kept to 
 
 ### G6 -- a generator body cannot draw from a registered spec
 
-- **Status:** would be nice. **Recurred:** no -- `draw-values` in
-  `specs/training-report.lisp`.
+- **Status:** worked around. **Recurred:** yes, once G8 moved every contract onto a
+  whole-call generator -- `draw-values`, the constructors' and the history contract's
+  generators, and `objective-single-float-arguments` all need a double.
 - **Target:** `training-series-generator` and the constructor generators, which need a
   vector of doubles and NILs.
-- **Wanted:** draw from `finite-double` (or `series-values-input`) inside a `defgenerator`.
+- **Wanted:** draw from `finite-double` inside a `defgenerator`.
 - **Result:** a `defgenerator` body is plain Lisp. `cl-spec:sample` exists, but its docstring
   describes it as "intended for inspecting what a spec admits, from the REPL or from an
   agent", with its own `:seed`, not as a composition call tied to the running generator.
-- **Fallback:** `draw-values`, a free-standing function that repeats
-  `finite-double-generator`'s scaling scheme with narrower constants.
-- **Pain:** a small duplication that can drift.
+- **Fallback:** the drawing is a plain function, `draw-finite-double` in
+  `specs/values.lisp`, which `finite-double-generator` and every whole-call generator call
+  alike (`draw-values`, `draw-metric`, `draw-name` likewise). An earlier version duplicated
+  the scaling scheme in `draw-values` instead.
+- **Pain:** low once shared; the cost is that a spec and its generator can be kept in step
+  only by hand.
 
 ### G7 -- re-registration versus editability
 
@@ -316,13 +327,29 @@ for a gap that recurs, so an improvement line is given for those alone, kept to 
   it admitted only those three string objects -- a freshly made `"l2"`, as any backend
   returns, was refused (`invalid-call-arguments`). It passed only because the generator
   handed back the very literals.
-- **Fix:** `:pre (keys-are-keywords-p plist)` for `normalize-parameters`; supplied-p
-  variables and `:pre` for the constructors' required keys (G5); `(and (type simple-vector)
-  (vector-of ...))` for `series-values-input`; `(and (type list) (tuple ...))` for every
-  tuple a helper destructures; a `metric-name` spec that validates any string and generates
-  fresh ones from three names. `tests/specs/checks.lisp`'s
-  `declared-domains-exclude-what-the-targets-cannot-take` pins each call above as refused or
-  rejected, and the fresh `"l2"` as admitted.
+- **Fix, first pass:** a key-position `:pre` for `normalize-parameters`; supplied-p
+  variables and `:pre` for the constructors' required keys (G5); `simple-vector` stated for
+  the constructor's values; `(and (type list) (tuple ...))` for every tuple a helper
+  destructures; a `metric-name` spec that validates any string and generates fresh ones from
+  three names. `tests/specs/checks.lisp`'s `declared-domains-exclude-what-the-targets-cannot-take`
+  pins each call above as refused or rejected.
+- **Second pass, from the next review -- the narrow direction everywhere:** the first pass
+  still let sampling limits stand in for the domain in most contracts, so documented calls
+  were refused. `parameter-key` was a ten-keyword `member`, refusing `:feature-fraction` --
+  the very backend-specific key the user guide's example passes, under an API with no
+  per-key allowlist. `(range integer 0 50)` refused a 100-round report; `0..20` a series at
+  index 100; `contrib-shape`'s `0..2000`, `-3..40` and `-2..20` any real-sized prediction;
+  `:max-length 6` and `:max-length 9` longer histories and plists; `(nullable finite-double)`
+  under a name that suggested finiteness. Each contract now declares the documented domain --
+  `parameter-key` any keyword or string, unbounded integers, `(list-of t)` for the plist,
+  `t` for the element `objective-single-float` refuses or coerces, `(nullable real)` for a
+  best score -- and keeps its sampling in its generator. Against the first-pass contracts,
+  `declared-domains-admit-what-the-targets-take` failed on all eight of its documented calls
+  (`(:feature-fraction 1/3 ...)`, a string key, a list value, `(930000 10000 30)`, `1d-40`,
+  index 100000, 100000 rounds with an infinite best score, nine datasets); it passes now.
+  The same pass found `objective-single-float`'s rounding bound wrong at the small end: a
+  relative bound fails for a subnormal result (`1d-40` becomes `9.999946e-41`), which the
+  sampled magnitudes, all at least `1d-8`, had never reached.
 - **Pain:** nothing in a passing run points at this. cl-spec checks each generated call
   *against* `:args` -- `invalid-generated-arguments` catches a generator that strays outside
   -- but not the converse, and with `:args-generator` the declared domain is simply never
@@ -330,7 +357,10 @@ for a gap that recurs, so an improvement line is given for those alone, kept to 
 - **Proposed improvement:** a way to sample a contract's declared domain independently of its
   `:args-generator` -- for instance, a check mode that also draws from the `:args` specs and
   reports admitted calls whose target signals or fails its return spec -- and a documentation
-  note that `member` over strings validates by identity.
+  note that `member` over strings validates by identity. Both directions were found only by
+  review and hand-written `check-call`s; the rule the bundle now follows is written into
+  `specs/values.lisp`'s header: a spec a Function Spec names states what the target accepts,
+  and a generator only decides what is sampled.
 
 ## Findings about cl-gbdt
 
@@ -367,6 +397,16 @@ The fix renders a symbol other than `T` and `NIL` as its `symbol-name` (`src/par
 - After the fix both pass; the Property replays at seed 42 with the same digest
   (`292986cea7676c83`, `definition_match`, reproduction faithful) and passes 200/200.
 
+**`objective-single-float` on a real beyond single-float range depends on the ambient
+floating-point traps. Open; not changed on this branch.** Its docstring says it returns a
+`single-float` for any real. For `1d100` it returns `single-float-positive-infinity` on this
+aarch64 host, where SBCL enables no traps; where `:overflow` is trapped, as SBCL does by
+default on x86-64, the same `coerce` signals `floating-point-overflow`. Inside `train` the call
+runs under `with-foreign-float-traps-masked`, so there it is an infinity on every platform.
+The contract admits reals within single-float range only (`within-single-range-p`, a `:pre`)
+rather than pick one of the two, and `declared-domains-exclude-what-the-targets-cannot-take`
+pins `1d100` as rejected.
+
 ## Mutation evidence
 
 A passing Property is only evidence if it can fail. Each of the three below replaces one
@@ -397,11 +437,11 @@ In package `cl-gbdt/specs/parameters`:
 ```
 
 The same mutant and seed, reading the result's evidence: failed on trial 1 of 200;
-counterexample `(pairs ((:learning-rate 1484/73) (:num-leaves :dart) (:num-class 4459/139)
-(:lambda-l1 "P2tcg6Y1z") (:objective 309/46) (:max-depth -271.05573)) base 5 radix t
-float-format single-float print-case :upcase)`, shrunk (`:used`) to `(pairs ((:num-leaves
-309/46)) base 2 radix nil float-format double-float print-case :downcase)` -- a ratio printed
-as `"309/46"`, and in binary, instead of as a decimal.
+counterexample `(pairs ((:objective 817/108) (:feature-fraction -2363/216) (:is-unbalance
+nil) (:bagging-fraction "14zLJP2tcg6") (:learning-rate -4363/317) (:lambda-l1 24243)) base
+29 radix nil float-format double-float print-case :capitalize)`, shrunk (`:used`) to `(pairs
+((:lambda-l1 10)) base 2 radix t float-format single-float print-case :upcase)` -- an
+integer printed in binary with a radix marker.
 
 ### `objective-parameters` matching aliases by prefix
 

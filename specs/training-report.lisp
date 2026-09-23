@@ -8,12 +8,13 @@
 ;;;; through `make-training-series'.
 ;;;;
 ;;;; `series-values' is the slot's documented type -- a `simple-vector' of double-floats and
-;;;; NILs -- and has no generator (an `and' of a type and a `satisfies' has no strategy).
-;;;; `series-values-input' is the generable spelling of the same domain, and states
-;;;; `simple-vector' itself rather than relying on `vector-of' happening to produce one: the
-;;;; constructor stores the vector as given, so an adjustable vector admitted here would come
-;;;; back failing `series-values'. Two specs for one concept is recorded in
-;;;; docs/cl-spec-dogfooding.md.
+;;;; NILs -- and is both the return contract's and the constructor's argument domain. It has no
+;;;; generator (an `and' of a type and a `satisfies' has no strategy), which is no loss: every
+;;;; contract here draws its calls from a whole-call generator, and those draw values with
+;;;; `draw-values'. An earlier version kept a second, generable spec for the argument, which
+;;;; admitted an adjustable vector the constructor then stored as given (G8 in
+;;;; docs/cl-spec-dogfooding.md). Declared domains here are the documented ones, unbounded;
+;;;; the generators alone keep draws small.
 ;;;;
 ;;;; The constructors take only keyword arguments, and a keyword the caller omits is NIL. So
 ;;;; each contract names, with a supplied-p variable and `:pre', the keys whose NIL no slot
@@ -44,9 +45,11 @@
                 #:training-series-name
                 #:training-series-values)
   (:import-from #:cl-gbdt/specs/values
-                #:finite-double)
-  (:export #:series-values
-           #:series-values-input
+                #:draw-finite-double)
+  (:export #:draw-metric
+           #:draw-name
+           #:draw-values
+           #:series-values
            #:training-report-object
            #:training-series-object))
 
@@ -62,9 +65,7 @@
 (defun draw-values ()
   "Return a fresh simple-vector of zero to five doubles and NILs."
   (coerce (loop :repeat (random 6)
-                :collect (if (zerop (random 3))
-                             nil
-                             (* (float (- (random 2001) 1000) 1d0) (expt 10d0 (- (random 7) 3)))))
+                :collect (if (zerop (random 3)) nil (draw-finite-double)))
           'simple-vector))
 
 (defun draw-name ()
@@ -74,12 +75,12 @@
 (defspec series-values
   (and (type simple-vector) (vector-of (satisfies double-or-nil-p))))
 
-(defspec series-values-input
-  (and (type simple-vector) (vector-of (nullable finite-double) :max-length 6)))
+(defun draw-metric ()
+  "Return a fresh copy of one of `*metrics*', as a backend's own string would be."
+  (copy-seq (nth (random (length *metrics*)) *metrics*)))
 
 (defgenerator training-series-generator ()
-  (make-training-series :index (random 4) :name (draw-name)
-                        :metric (nth (random (length *metrics*)) *metrics*)
+  (make-training-series :index (random 4) :name (draw-name) :metric (draw-metric)
                         :values (draw-values)))
 
 (defspec training-series-object
@@ -99,16 +100,19 @@
                (training-report-early-stopped-p boolean))))
 
 (defgenerator make-training-series-arguments ()
-  (list :index (random 21) :name (draw-name)
-        :metric (nth (random (length *metrics*)) *metrics*) :values (draw-values)))
+  ;; Every required key, always; NAME only sometimes, so its NIL default is exercised too.
+  (append (list :index (if (zerop (random 4)) (random 100000) (random 21))
+                :metric (draw-metric) :values (draw-values))
+          (when (zerop (random 2)) (list :name (draw-name)))))
 
 (defspec-function make-training-series
   "Given its index, metric and values, the series reports back through its readers the same
 contents it was built from."
-  (:args &key ((:index index) (range integer 0 20) index-p)
+  ;; The slots' own documented domains, unbounded; the generator keeps draws small.
+  (:args &key ((:index index) (range integer 0 *) index-p)
               ((:name name) (nullable string))
               ((:metric metric) string metric-p)
-              ((:values values) series-values-input values-p))
+              ((:values values) series-values values-p))
   (:args-generator make-training-series-arguments)
   ;; NAME may be omitted: NIL is the documented unnamed series. The other three default to
   ;; NIL too, which no series slot admits, so a call without them is outside the contract.
@@ -120,23 +124,30 @@ contents it was built from."
               (equalp (training-series-values result) values))))
 
 (defgenerator make-training-report-arguments ()
-  (list :series (loop :repeat (random 4)
-                      :collect (make-training-series
-                                :index (random 4) :name (draw-name)
-                                :metric (nth (random (length *metrics*)) *metrics*)
-                                :values (draw-values)))
-        :num-rounds (random 51)
-        :best-iteration (if (zerop (random 2)) nil (random 51))
-        :best-score (if (zerop (random 2)) nil (float (random 1000) 1d0))
-        :early-stopped-p (zerop (random 2))))
+  ;; NUM-ROUNDS always; each other key only sometimes, so their NIL defaults are exercised.
+  (let ((rounds (if (zerop (random 4)) (random 100000) (random 51))))
+    (append (list :num-rounds rounds)
+            (when (zerop (random 2))
+              (list :series (loop :repeat (random 4)
+                                  :collect (make-training-series
+                                            :index (random 4) :name (draw-name)
+                                            :metric (draw-metric) :values (draw-values)))))
+            (when (zerop (random 2))
+              (list :best-iteration (if (zerop (random 3)) nil (random (1+ rounds)))
+                    :best-score (if (zerop (random 3)) nil (draw-finite-double))))
+            (when (zerop (random 2))
+              (list :early-stopped-p (zerop (random 2)))))))
 
 (defspec-function make-training-report
   "Given its round count, the report reports back through its readers the same contents it
 was built from."
+  ;; The slots' own documented domains, unbounded -- a best score may be an infinity, which a
+  ;; custom evaluation records for a value too large for a double; the generator keeps draws
+  ;; small and finite.
   (:args &key ((:series series) (list-of training-series-object))
-              ((:num-rounds num-rounds) (range integer 0 50) num-rounds-p)
-              ((:best-iteration best-iteration) (nullable (range integer 0 50)))
-              ((:best-score best-score) (nullable finite-double))
+              ((:num-rounds num-rounds) (range integer 0 *) num-rounds-p)
+              ((:best-iteration best-iteration) (nullable (range integer 0 *)))
+              ((:best-score best-score) (nullable real))
               ((:early-stopped-p early-stopped-p) boolean))
   (:args-generator make-training-report-arguments)
   ;; Every other key may be omitted: NIL is an empty series list and "not determined" for the

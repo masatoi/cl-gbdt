@@ -160,6 +160,13 @@ Return `:refused' when ARGUMENTS miss the contract's declared argument specs, an
                        'cl-gbdt/src/training-report:make-training-series
                        (list :index 0 :metric "l2"
                              :values (make-array 1 :adjustable t :initial-element 1d0)))
+                 (list "a real beyond single-float range, whose outcome is trap-dependent"
+                       'cl-gbdt/src/config/objective:objective-single-float
+                       (list 1d100))
+                 (list "a history naming a dataset its names do not reach"
+                       'cl-gbdt/src/training/history:training-report-from-history
+                       (list (list (list (list 4 (copy-seq "l2") 1d0)))
+                             1 (list nil nil nil nil)))
                  (list "a history entry that is a vector, not a list"
                        'cl-gbdt/src/training/history:training-report-from-history
                        (list (list (list (vector 0 (copy-seq "l2") 1d0)))
@@ -178,15 +185,80 @@ Return `:refused' when ARGUMENTS miss the contract's declared argument specs, an
                                         1 (list nil nil nil nil))))
         "a fresh \"l2\" is a metric name like any other")))
 
+(deftest declared-domains-admit-what-the-targets-take
+  ;; The other direction. A contract whose declared domain is only what its generator samples
+  ;; refuses calls the API documents as valid -- a backend-specific key, a round count past a
+  ;; sampling bound -- and so would misreport correct callers. Each call below is documented
+  ;; cl-gbdt usage outside every generator's range; the contract must admit it and it must pass.
+  (dolist (case
+           (list (list "a backend-specific key, which no allowlist names"
+                       'cl-gbdt/src/parameters:normalize-parameters
+                       (list (list :feature-fraction 1/3 :min-sum-hessian-in-leaf 1d-3)))
+                 (list "a string key, the same key to the function as its keyword"
+                       'cl-gbdt/src/parameters:normalize-parameters
+                       (list (list "num_leaves" 31)))
+                 (list "a value no sampling set holds"
+                       'cl-gbdt/src/parameters:normalize-parameters
+                       (list (list :tree-learner :data :metric (list "auc" "l2"))))
+                 (list "counts far past the generator's"
+                       'cl-gbdt/src/config/prediction-shape:contrib-shape
+                       (list 930000 10000 30))
+                 (list "a subnormal single"
+                       'cl-gbdt/src/config/objective:objective-single-float
+                       (list 1d-40))
+                 (list "a series at a large index"
+                       'cl-gbdt/src/training-report:make-training-series
+                       (list :index 100000 :metric "l2" :values (vector 1d0 nil)))
+                 (list "a report of many rounds and an infinite best score"
+                       'cl-gbdt/src/training-report:make-training-report
+                       (list :num-rounds 100000 :best-iteration 99999
+                             :best-score sb-ext:double-float-negative-infinity))
+                 (list "a history over nine datasets and many rounds"
+                       'cl-gbdt/src/training/history:training-report-from-history
+                       (list (list (list (list 8 (copy-seq "ndcg@5") 0.5d0)))
+                             100000 (make-list 9)))))
+    (destructuring-bind (description name arguments) case
+      (testing description
+        (let ((verdict (call-verdict name arguments)))
+          (ok (eq :passed verdict)
+              (format nil "~S on ~S is ~S, which must be :passed" name arguments
+                      verdict)))))))
+
+(defun bundle-names (names)
+  "The subset of NAMES, registry names, this bundle defined: home package under
+CL-GBDT/SPECS/, or -- for a Function Spec, named by its target -- under CL-GBDT/SRC/."
+  (remove-if-not (lambda (name)
+                   (or (home-package-prefix-p name "CL-GBDT/SPECS/")
+                       (home-package-prefix-p name "CL-GBDT/SRC/")))
+                 names))
+
 (deftest register-specifications-fills-a-fresh-registry
-  (testing "every listed definition is registered again into an empty registry"
-    ;; After `cl-spec:clear-registry', or under a freshly bound `cl-spec:*registry*', the
-    ;; definitions are gone; this is the call that puts them back without reloading cl-spec.
-    (let ((registry (cl-spec:make-hash-table-registry)))
-      (let ((cl-spec:*registry* registry))
-        (handler-bind ((style-warning #'muffle-warning))
-          (register-specifications)))
+  ;; After `cl-spec:clear-registry', or under a freshly bound `cl-spec:*registry*', the
+  ;; definitions are gone; this is the call that puts them back without reloading cl-spec.
+  ;; Names alone would not show the contracts can run -- a Function Spec registers even when a
+  ;; spec or generator it names is missing -- so every definition is also run there.
+  (let ((registry (cl-spec:make-hash-table-registry)))
+    (let ((cl-spec:*registry* registry))
+      (handler-bind ((style-warning #'muffle-warning))
+        (register-specifications)))
+    (testing "every contract, property, spec and generator of the bundle is registered again"
       (ok (null (set-exclusive-or (cl-spec:list-function-specs registry) (contract-names)))
           "the contracts are back")
       (ok (null (set-exclusive-or (cl-spec:list-properties registry) (property-names)))
-          "the properties are back"))))
+          "the properties are back")
+      (ok (null (set-exclusive-or (bundle-names (cl-spec:list-specs registry))
+                                  (bundle-names (cl-spec:list-specs))))
+          "the named specs are back")
+      (ok (null (set-exclusive-or (bundle-names (cl-spec:list-generators registry))
+                                  (bundle-names (cl-spec:list-generators))))
+          "the generators are back"))
+    (testing "every definition runs against that registry alone"
+      (let ((cl-spec:*registry* registry))
+        (dolist (name (contract-names))
+          (ok (eq :passed (cl-spec:property-result-status
+                           (cl-spec:check-function name :trials 20 :seed +seed+)))
+              (format nil "~S runs in the fresh registry" name)))
+        (dolist (name (property-names))
+          (ok (eq :passed (cl-spec:property-result-status
+                           (cl-spec:run-property name :profile :smoke :seed +seed+)))
+              (format nil "~S runs in the fresh registry" name)))))))

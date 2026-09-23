@@ -1,7 +1,9 @@
 ;;;; objective.lisp --- Executable contracts for `train''s custom-objective helpers.
 ;;;;
 ;;;; `objective-single-float' has two outcomes, a `single-float' for a real and
-;;;; `unsupported-element-type' for anything else, stated as two exclusive cases.
+;;;; `unsupported-element-type' for anything else, stated as two exclusive cases over any
+;;;; object -- save a real beyond single-float range, whose outcome depends on the ambient
+;;;; floating-point traps (see `within-single-range-p').
 ;;;;
 ;;;; `objective-parameters' is where the enumerated-not-prefix-matched rule lives: `app' is a
 ;;;; LightGBM alias for `objective' and `apps' is not. The alias list below is restated from
@@ -13,6 +15,7 @@
 (uiop:define-package #:cl-gbdt/specs/objective
   (:use #:cl)
   (:import-from #:cl-spec/main
+                #:defgenerator
                 #:defproperty
                 #:defspec
                 #:defspec-function)
@@ -22,8 +25,7 @@
                 #:objective-parameters
                 #:objective-single-float)
   (:import-from #:cl-gbdt/specs/values
-                #:finite-double
-                #:non-integer-ratio
+                #:draw-finite-double
                 #:pairs-plist
                 #:parameter-value
                 #:plist-pairs)
@@ -46,17 +48,50 @@ them. Restated, not imported -- see this file's header.")
 (defun within-single-rounding-p (result value)
   "True when the single-float RESULT is within one single-float rounding of the real VALUE.
 
-Compared as rationals, so the check itself does no floating-point arithmetic that could trap."
+One rounding is a relative error of at most `single-float-epsilon' for a normal result, and at
+most the subnormal spacing, `least-positive-single-float', below that -- where a relative
+bound alone would fail: 1d-40 becomes 9.999946e-41. Compared as rationals, so the check itself
+does no floating-point arithmetic that could trap."
   (<= (abs (- (rational result) (rational value)))
-      (* (abs (rational value)) (rational single-float-epsilon))))
+      (max (* (abs (rational value)) (rational single-float-epsilon))
+           (rational least-positive-single-float))))
 
-(defspec element-value
-  (or (range integer -1000000 1000000) (range real -1000000 1000000) finite-double
-      non-integer-ratio string boolean (member :gradient #\x)))
+(defun within-single-range-p (value)
+  "True when VALUE is not a real, or is a real no larger in magnitude than
+`most-positive-single-float'.
+
+A real beyond that has no single-float to become. What `coerce' then does depends on the
+floating-point traps in force: `floating-point-overflow' where SBCL enables the trap (x86-64),
+an infinity where it does not (aarch64, and inside `train''s own masked foreign call). That is
+not a behaviour the docstring states, so the contract leaves it out rather than pick one."
+  (or (not (realp value))
+      (<= (abs (rational value)) (rational most-positive-single-float))))
+
+(defgenerator objective-single-float-arguments ()
+  (list (case (random 12)
+          (0 (- (random 2000001) 1000000))
+          ((1 2) (draw-finite-double))
+          (3 (- (random 2000.0) 1000.0))
+          (4 (/ (1+ (random 1000)) (+ 2 (random 999))))
+          ;; A subnormal single, and the largest single, as doubles: the two ends of the range.
+          (5 (* (1+ (random 1000)) 1d-42))
+          (6 (if (zerop (random 2))
+                 (coerce most-positive-single-float 'double-float)
+                 (coerce most-negative-single-float 'double-float)))
+          (7 (format nil "~D" (random 100)))
+          (8 (zerop (random 2)))
+          (9 :gradient)
+          (10 #\x)
+          (t (list (random 10))))))
 
 (defspec-function objective-single-float
-  "A real becomes the nearest single-float; anything else is refused."
-  (:args (value element-value))
+  "A real within single-float range becomes the nearest single-float; anything that is not a
+real is refused."
+  ;; Any object at all. The generator samples every branch, both ends of the single-float
+  ;; range included; that bounds what is tried, not what is promised.
+  (:args (value t))
+  (:args-generator objective-single-float-arguments)
+  (:pre (within-single-range-p value))
   (:cases
    (:real
     (:when (realp value))
