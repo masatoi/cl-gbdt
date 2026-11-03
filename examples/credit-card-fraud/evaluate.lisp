@@ -37,7 +37,7 @@
 (defun write-pr-path (out labels scores color)
   (let* ((order (stable-sort (coerce (loop for i below (length labels) collect i) 'vector)
                              #'> :key (lambda (i) (aref scores i))))
-         (positives (count 1 labels)) (tp 0) (seen 0))
+         (positives (count 1 labels)) (tp 0) (seen 0) (previous-x 80d0))
     (format out "<polyline fill='none' stroke='~A' stroke-width='2' points='80,30 " color)
     (loop for start = 0 then end
           for score = (aref scores (aref order start))
@@ -45,8 +45,10 @@
                                      order :start start) (length order))
           do (loop for j from start below end
                    do (incf seen) (incf tp (aref labels (aref order j))))
-             (format out "~,2F,~,2F " (+ 80 (* 720 (/ tp positives 1d0)))
-                     (- 500 (* 470 (/ tp seen 1d0))))
+             (let ((x (+ 80 (* 720 (/ tp positives 1d0))))
+                   (y (- 500 (* 470 (/ tp seen 1d0)))))
+               (format out "~,2F,~,2F ~,2F,~,2F " previous-x y x y)
+               (setf previous-x x))
           when (= end (length order)) do (return))
     (format out "'/>~%")))
 
@@ -58,13 +60,22 @@
             "<path d='M80 30V500H800' fill='none' stroke='black'/>")
     (format out "<text x='280' y='20'>Credit card fraud: test precision-recall</text>~%")
     (format out "<text x='400' y='545'>Recall</text><text x='8' y='25'>Precision</text>~%")
-    (loop for scores in scores-list for color in '("#ed8b36" "#2265ae")
-          for model in '("LightGBM" "XGBoost") for m in metrics for y from 45 by 20
-          do (write-pr-path out labels scores color)
-             (format out "<circle cx='~,2F' cy='~,2F' r='5' fill='~A'/>~%"
-                     (+ 80 (* 720 (getf m :recall))) (- 500 (* 470 (getf m :precision))) color)
-             (format out "<text x='510' y='~D' fill='~A'>~A AP=~,3F</text>~%"
-                     y color model (getf m :average-precision)))
+    (let ((prevalence (/ (count 1 labels) (length labels) 1d0)))
+      (format out "<path d='M80 ~,2F H800' stroke='#6b7280' stroke-dasharray='5 5'/>~%"
+              (- 500 (* 470 prevalence)))
+      (loop for scores in scores-list for color in '("#ed8b36" "#2265ae") for m in metrics
+            do (write-pr-path out labels scores color)
+               (format out "<circle cx='~,2F' cy='~,2F' r='5' fill='~A'/>~%"
+                       (+ 80 (* 720 (getf m :recall)))
+                       (- 500 (* 470 (getf m :precision))) color))
+      (format out "~A~A~%" "<rect x='96' y='380' width='215' height='78' fill='white' "
+              "stroke='#e5e7eb'/>")
+      (loop for color in '("#ed8b36" "#2265ae") for model in '("LightGBM" "XGBoost")
+            for m in metrics for y from 400 by 20
+            do (format out "<text x='108' y='~D' fill='~A'>~A AP=~,3F</text>~%"
+                       y color model (getf m :average-precision)))
+      (format out "<text x='108' y='440' fill='#6b7280'>Random baseline: ~,4F</text>~%"
+              prevalence))
     (format out "<text x='70' y='520'>0</text><text x='790' y='520'>1</text>")
     (format out "<text x='55' y='505'>0</text><text x='55' y='35'>1</text></svg>~%")))
 
