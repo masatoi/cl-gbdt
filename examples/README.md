@@ -7,6 +7,12 @@ that either backend is generally more accurate. The runnable examples are:
 - [`toy-data/`](toy-data/README.md): three small classification and regression datasets.
 - [`credit-card-fraud/`](credit-card-fraud/README.md): a larger, imbalanced binary
   classification dataset, with chronological splits and threshold selection.
+- [`adult/`](adult/README.md): categorical features, contributions and model save/load.
+- [`movielens-ranking/`](movielens-ranking/README.md): grouped ranking and NDCG.
+- [`mslr-web10k/`](mslr-web10k/README.md): ranking-fold preparation; tested only on synthetic data.
+- [`household-power/`](household-power/README.md): minute-level forecasting and a custom metric.
+- [`online-retail/`](online-retail/README.md): customer snapshots and row weights.
+- [`kasandr-sparse/`](kasandr-sparse/README.md): large-scale sampled input and sparse CSR matrices.
 
 The runs used cl-gbdt commit `9b7a6ac5d3a6f39399f466a56a7a2d8417289e9a`, SBCL 2.2.9,
 ASDF 3.3.7.4, LightGBM 4.7.0 and XGBoost 3.4.1 on Linux x86-64. Data preparation and

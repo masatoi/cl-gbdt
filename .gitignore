@@ -27,4 +27,16 @@
 /examples/toy-data/data/
 /examples/credit-card-fraud/data/
 /examples/credit-card-fraud/output/
+/examples/adult/data/
+/examples/adult/output/
+/examples/movielens-ranking/data/
+/examples/movielens-ranking/output/
+/examples/household-power/data/
+/examples/household-power/output/
+/examples/online-retail/data/
+/examples/online-retail/output/
+/examples/kasandr-sparse/data/
+/examples/kasandr-sparse/output/
+/examples/mslr-web10k/data/
+/examples/mslr-web10k/output/
 /examples/**/__pycache__/
