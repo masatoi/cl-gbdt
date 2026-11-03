@@ -18,7 +18,7 @@ for split, filename in (("train", "train.txt"), ("valid", "vali.txt"), ("test", 
     matrix, labels, qids = load_svmlight_file(args.fold / filename, n_features=136,
                                                zero_based=False, query_id=True,
                                                dtype=np.float32)
-    if (len(qids) == 0 or (qids < 0).any() or (labels < 0).any() or
+    if (len(qids) == 0 or len(qids) != len(labels) or (qids < 0).any() or (labels < 0).any() or
             (labels > 4).any() or not np.equal(labels, np.floor(labels)).all()):
         raise ValueError(f"Invalid or empty {split} ranking data")
     if not np.isfinite(matrix.data).all():
