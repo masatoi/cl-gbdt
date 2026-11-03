@@ -113,6 +113,9 @@ Only the backend you actually intend to open needs its library present; loading 
 
 ## Quick start
 
+For results from the unified API on public classification and regression data, see
+[`examples/README.md`](examples/README.md).
+
 Load the core system and one backend's `/unified` system -- `cl-gbdt/lightgbm` alone carries
 no `cl-gbdt:train`; see [Systems](#systems) -- open the backend, build a dataset from a
 `double-float` matrix and its labels, train, predict, and free everything.

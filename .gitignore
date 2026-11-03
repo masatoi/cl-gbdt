@@ -22,3 +22,9 @@
 
 # Subagent-driven development scratch (ledger, briefs, review packages)
 /.superpowers/
+
+# Generated inputs, predictions and plots for the open-data examples
+/examples/toy-data/data/
+/examples/credit-card-fraud/data/
+/examples/credit-card-fraud/output/
+/examples/**/__pycache__/
