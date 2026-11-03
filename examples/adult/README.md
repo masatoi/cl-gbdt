@@ -1,64 +1,40 @@
 # Adult: categorical classification and model interpretation
 
-Predict whether income exceeds $50,000/year from the [UCI Adult dataset](https://archive.ics.uci.edu/dataset/2/adult).
-This educational example uses both `cl-gbdt` backends with native categorical splits,
-feature importance, contribution predictions, early stopping, and model save/load.
+Predict whether income exceeds $50,000/year using the [UCI Adult dataset](https://archive.ics.uci.edu/dataset/2/adult).
+The example exercises native categorical splits, feature importance, contributions,
+early stopping and model save/load with both backends.
 
-Requires the shared libraries and Lisp systems described in the
-[project README](../../README.markdown#installation), SBCL on a little-endian machine,
-CFFI, Python 3.11+, NumPy, pandas and scikit-learn. Python prepares matrices and metrics;
-the Lisp program trains, predicts, and checks model round-trips. Data and outputs are ignored.
+After the [common setup](../README.md#setup), run from the repository root:
 
-## Run
-
-From the repository root:
-
-```sh
-mkdir -p examples/adult/data
-curl -L --fail https://archive.ics.uci.edu/ml/machine-learning-databases/adult/adult.data \
-  -o examples/adult/data/adult.data
-curl -L --fail https://archive.ics.uci.edu/ml/machine-learning-databases/adult/adult.test \
-  -o examples/adult/data/adult.test
-python3 -m venv /tmp/cl-gbdt-adult-venv
-/tmp/cl-gbdt-adult-venv/bin/pip install 'numpy==2.3.5' 'pandas==2.2.3' 'scikit-learn==1.8.0'
-/tmp/cl-gbdt-adult-venv/bin/python examples/adult/prepare.py
-ros run -- --non-interactive \
-  --eval '(ql:quickload (quote (:cl-gbdt :cl-gbdt/lightgbm/unified :cl-gbdt/xgboost/unified)) :silent t)' \
-  --load examples/adult/train.lisp
-/tmp/cl-gbdt-adult-venv/bin/python examples/adult/evaluate.py
+```lisp
+(cl-gbdt-examples:fetch-example-data :adult)
+(load "examples/adult/prepare.lisp")
+(load "examples/adult/train.lisp")
+(load "examples/adult/evaluate.lisp")
 ```
 
-Alternatively, load both `/unified` systems in a REPL, then load `train.lisp`.
-The preparation and Lisp output formats assume little-endian IEEE-754 single floats.
+Preparation splits the original `adult.data` 80/20 by label with the example's
+deterministic xorshift32 generator: 26,049 training and 6,512 validation rows.
+`adult.test` is the separate 16,281-row test set. Category dictionaries are fitted on
+training rows only and saved in `data/categories.sexp`; 0 represents a missing value
+and 1 an unseen value. The same 14 features are used by both models. XGBoost uses
+`tree_method=hist` for categorical splits.
 
-## Design and recorded run
-
-The original `adult.data` is split 80/20, stratified by label with seed 42, into 26,048
-training and 6,513 validation rows. `adult.test` supplies the separate 16,281-row test
-set. Category dictionaries are fitted on training data alone: category code 0 means a
-missing value and 1 an unseen value. Thus missing categories are represented explicitly,
-not through a backend's native NaN handling. XGBoost uses `tree_method=hist` as required
-for its categorical splits. The same 14 columns are used by both models.
-
-Both models select the best validation-log-loss iteration and predict the test set at
-that iteration. The contribution and feature-importance examples use the full model,
-as does the model save/reload check; they need not match the best-iteration predictions.
-The final contribution value is the bias term, and all values sum to the raw margin.
-The script checks that the reloaded full model reproduces full-model test predictions.
+Validation log loss selects the best iteration for test predictions. Contributions,
+feature importance and model round-trip checks use the full model. Contributions include
+a bias term and sum to the raw margin.
 
 | Test metric | LightGBM | XGBoost |
 |---|---:|---:|
-| Accuracy at 0.5 | 0.8737 | 0.8735 |
-| ROC-AUC | 0.9269 | 0.9261 |
-| Average precision | 0.8240 | 0.8228 |
+| Accuracy at 0.5 | 0.8727 | 0.8708 |
+| ROC-AUC | 0.9266 | 0.9256 |
+| Average precision | 0.8244 | 0.8216 |
 
-The recorded input SHA-256 values were `5b00264637dbfec36bdeaab5676b0b309ff9eb788d63554ca0a249491c86603d`
+The recorded run used SBCL 2.2.9, LightGBM 4.7.0 and XGBoost 3.4.1. Input SHA-256
+values were `5b00264637dbfec36bdeaab5676b0b309ff9eb788d63554ca0a249491c86603d`
 for `adult.data` and `a2a9044bc167a35b2361efbabec64e89d69ce82d9790d2980119aac5fd7e9c05`
-for `adult.test`. The results use SBCL 2.2.9, LightGBM 4.7.0 and XGBoost 3.4.1.
-Parameters were not tuned; these values are not a benchmark of the backends.
+for `adult.test`. These untuned results are from one split, not a backend benchmark.
 
-The 1994 data include sensitive attributes such as race and sex, which are used as
-features here. The evaluator also reports descriptive results by sex; these are not a
-fairness certification or causal explanation. This is an educational example, not a model
-for real decisions about individuals. Feature contributions describe model predictions,
-not causal effects.
+The 1994 data include sensitive attributes, including race and sex, as features. The
+evaluator reports descriptive results by sex, not a fairness certification or causal
+explanation. The example is not suitable for real decisions about individuals.

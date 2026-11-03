@@ -1,0 +1,105 @@
+(in-package #:cl-user)
+
+(load (merge-pathnames "../common.lisp" *load-truename*))
+(in-package #:cl-gbdt-examples)
+
+(defparameter *kasandr-root* (uiop:pathname-directory-pathname *load-truename*))
+
+(defstruct click-row indices date label)
+
+(defun parse-click-row (line)
+  "Validate a selected row and retain only hashed IDs, date and label."
+  (let ((fields (split-fields line #\Tab)))
+    (unless (= (length fields) 7) (error "Invalid KASANDR row width"))
+    (let* ((label (parse-integer (seventh fields)))
+           (ids (mapcar (lambda (index) (nth index fields)) '(0 1 3 4)))
+           (date (sixth fields))
+           (indices (make-array 4 :element-type '(unsigned-byte 16))))
+      (unless (and (member label '(0 1))
+                   (every (lambda (s) (plusp (length s))) ids)
+                   (plusp (length date)))
+        (error "Invalid KASANDR row"))
+      (loop for field in ids for column from 0
+            do (setf (aref indices column) (+ (* column 2048) (mod (fnv1a field) 2048))))
+      (make-click-row :indices indices :date (coerce date 'simple-base-string) :label label))))
+
+(defun read-click-sample (path count seed &optional expected-rows)
+  "Reservoir-sample the entire TSV without retaining raw source rows."
+  (let ((sample (make-array count :initial-element nil))
+        (total 0) (state seed))
+    (labels ((random-below (bound)
+               (let ((limit (- #xffffffff (mod #xffffffff bound))))
+                 (loop
+                   (setf state (logand #xffffffff (logxor state (ash state 13)))
+                         state (logand #xffffffff (logxor state (ash state -17)))
+                         state (logand #xffffffff (logxor state (ash state 5))))
+                   (let ((value (1- state)))
+                     (when (< value limit) (return (mod value bound))))))))
+      (with-open-file (in path)
+        (unless (equal (split-fields (read-line in) #\Tab)
+                       '("userid" "offerid" "countrycode" "category"
+                         "merchant" "utcdate" "rating"))
+          (error "Unexpected KASANDR columns in ~A" path))
+        (loop for line = (read-line in nil nil) while line
+              for j = (if (< total count) total (random-below (1+ total)))
+              do (when (< j count) (setf (aref sample j) (parse-click-row line)))
+                 (incf total))))
+    (when (< total count) (error "Expected at least ~D rows, got ~D" count total))
+    (when (and expected-rows (/= total expected-rows))
+      (error "Incomplete or unexpected KASANDR file ~A: expected ~D rows, found ~D"
+             path expected-rows total))
+    (format t "~A: sampled ~D of ~D rows~%" path count total)
+    (stable-sort sample #'string< :key #'click-row-date)))
+
+(defun write-click-part (name rows)
+  (let ((data (merge-pathnames "data/" *kasandr-root*))
+        (positives 0))
+    (with-open-file (indices (merge-pathnames (format nil "~A-indices.i32" name) data)
+                             :direction :output :if-exists :supersede
+                             :element-type '(unsigned-byte 8))
+      (with-open-file (indptr (merge-pathnames (format nil "~A-indptr.i32" name) data)
+                             :direction :output :if-exists :supersede
+                             :element-type '(unsigned-byte 8))
+        (with-open-file (labels (merge-pathnames (format nil "~A-y.f32" name) data)
+                                :direction :output :if-exists :supersede
+                                :element-type '(unsigned-byte 8))
+          (write-i32 indptr 0)
+          (loop for row across rows for index from 1
+                do (loop for column across (click-row-indices row)
+                         do (write-i32 indices column))
+                   (write-i32 indptr (* index 4))
+                   (write-f32 labels (click-row-label row))
+                   (incf positives (click-row-label row))))))
+    (format t "~A: rows=~D positives=~D dates=~A..~A~%" name (length rows) positives
+            (click-row-date (aref rows 0)) (click-row-date (aref rows (1- (length rows)))))))
+
+(defun prepare-clicks ()
+  (ensure-example-directories *kasandr-root*)
+  (let* ((data (merge-pathnames "data/" *kasandr-root*))
+         (raw (merge-pathnames "de/" data))
+         (train-size (parse-integer (or (uiop:getenv "CL_GBDT_KASANDR_TRAIN_SAMPLE") "500000")))
+         (test-size (parse-integer (or (uiop:getenv "CL_GBDT_KASANDR_TEST_SAMPLE") "100000"))))
+    (unless (and (>= train-size 5) (plusp test-size))
+      (error "KASANDR sample sizes must be at least five and one"))
+    (let* ((source (read-click-sample (merge-pathnames "train_de.csv" raw)
+                                      train-size 42 15844717))
+           (test (read-click-sample (merge-pathnames "test_de.csv" raw)
+                                    test-size 43 1919561))
+           (cutoff (click-row-date (aref source (floor (* 0.8d0 train-size)))))
+           (index (or (position-if (lambda (row) (not (string< (click-row-date row) cutoff)))
+                                   source)
+                      (error "No validation rows")))
+           (train (subseq source 0 index))
+           (valid (subseq source index)))
+      (unless (and (plusp (length train)) (plusp (length valid))
+                   (string< (click-row-date (aref source (1- (length source))))
+                            (click-row-date (aref test 0))))
+        (error "Empty or overlapping time partitions"))
+      (write-click-part "train" train)
+      (write-click-part "valid" valid)
+      (write-click-part "test" test)
+      (write-sizes (merge-pathnames "sizes.lisp" data)
+                   :train (length train) :valid (length valid) :test (length test)
+                   :features 8192 :nonzeros-per-row 4))))
+
+(prepare-clicks)

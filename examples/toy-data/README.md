@@ -1,54 +1,40 @@
 # Small public datasets
 
 Train and evaluate both backends on Iris (multiclass), Breast Cancer Wisconsin
-(binary classification), and Diabetes (regression). Python prepares the input data;
-Common Lisp trains, predicts, evaluates, and reports permutation importance.
+(binary classification) and Diabetes (regression). The dataset files are loaded
+directly; no Python runtime is required.
 
-## Requirements
+After the [common setup](../README.md#setup), run:
 
-- The cl-gbdt checkout, both backend shared libraries and Roswell/Quicklisp, installed
-  as described in the [project README](../../README.markdown#installation).
-- Python 3.11 or newer with scikit-learn. The recorded run used scikit-learn 1.8.0.
-
-Commands below start at the **repository root**:
-
-```sh
-python3 -m venv /tmp/cl-gbdt-examples-venv
-/tmp/cl-gbdt-examples-venv/bin/pip install 'scikit-learn==1.8.0'
-/tmp/cl-gbdt-examples-venv/bin/python examples/toy-data/prepare_data.py
-
-ros run -- --non-interactive \
-  --eval '(ql:quickload (quote (:cl-gbdt :cl-gbdt/lightgbm/unified :cl-gbdt/xgboost/unified)) :silent t)' \
-  --load examples/toy-data/analysis.lisp
+```lisp
+(cl-gbdt-examples:fetch-example-data :toy-data)
+(load "examples/toy-data/prepare.lisp")
+(load "examples/toy-data/analysis.lisp")
 ```
 
-`prepare_data.py` writes the split data to the ignored `examples/toy-data/data/`
-directory; it does not need a separate dataset download. Loading `analysis.lisp` runs
-all three datasets on both backends. For an existing Lisp image, load those same three
-systems before loading `analysis.lisp`. From a REPL with cl-mcp, use `load-system` for
-each system, then `repl-eval` to load the example by absolute path.
+The downloader gets the original numeric files from scikit-learn's `1.8.0` source
+tree. The Diabetes feature file contains unscaled values. Preparation uses a fixed
+xorshift32 shuffle, with class-stratified approximately 60:20:20 splits for
+classification. Validation loss selects the iteration; the held-out test set is
+scored at that iteration. The breast-cancer labels are reversed so malignant is 1.
 
-## Method
+| Test metric | Train / valid / test | LightGBM | XGBoost | Baseline |
+|---|---:|---:|---:|---:|
+| Iris accuracy | 90 / 30 / 30 | 0.9333 | 0.9333 | 0.3333 |
+| Breast cancer accuracy | 341 / 113 / 115 | 0.9826 | 0.9913 | 0.6261 |
+| Diabetes RMSE | 265 / 88 / 89 | 59.064 | 57.469 | 74.791 |
 
-- A fixed random seed of 42 creates training, validation and test sets of approximately
-  60:20:20; classification splits are stratified. Validation loss selects the best
-  iteration through early stopping, and the held-out test set is scored at that iteration.
-- Classification reports a confusion matrix and a majority-class baseline. In the breast
-  cancer data, the original scikit-learn labels are reversed: 1 means malignant, 0 benign.
-  The threshold is 0.5.
-- Diabetes uses `scaled=False` to avoid scaling all rows before the split. It predicts a
-  quantitative measure of disease progression after one year, not the presence of
-  diabetes or a blood-glucose reading. Regression reports RMSE, MAE, R² and the
-  training-mean baseline.
-- Permutation importance is measured on the test set by shuffling one column once with
-  a fixed seed. It reports the resulting increase in log loss or MSE. It is an
-  exploratory diagnostic, not a causal effect; correlated features and the chosen
-  permutation affect it. Do not use these test-set values to tune a model and then
-  report the same test set as a final unbiased evaluation.
+The classification baseline predicts the majority training class; the regression
+baseline predicts the training mean. The models identified 42/43 and 43/43 malignant
+test cases respectively. These small, single-split results are not evidence suitable
+for medical use.
 
-See the [experiment index](../README.md) for the observed results and limitations.
-Iris and Breast Cancer Wisconsin (Diagnostic) come from the UCI Machine Learning
-Repository, both under CC BY 4.0: Fisher (1936), [Iris](https://doi.org/10.24432/C56C76);
-Wolberg et al. (1993), [Breast Cancer Wisconsin](https://doi.org/10.24432/C5DW2B).
-Diabetes is provided by [scikit-learn](https://scikit-learn.org/stable/modules/generated/sklearn.datasets.load_diabetes.html),
-with its original reference to Efron et al., “Least Angle Regression” (2004).
+Permutation importance shuffles each test feature once with a fixed seed and reports
+the resulting increase in log loss or MSE. It is exploratory, not causal; correlated
+features and the permutation affect it. Do not use the same test importance to tune a
+model and then report that test set as an unbiased final evaluation.
+
+Iris and Breast Cancer Wisconsin (Diagnostic) originate from the UCI Machine Learning
+Repository: [Iris](https://doi.org/10.24432/C56C76), [Breast Cancer Wisconsin](https://doi.org/10.24432/C5DW2B).
+The [Diabetes dataset](https://scikit-learn.org/stable/modules/generated/sklearn.datasets.load_diabetes.html)
+predicts disease progression after one year, not blood glucose or diabetes presence.

@@ -1,76 +1,46 @@
 # Credit card fraud detection
 
-Train LightGBM and XGBoost through the unified API on all 284,807 transactions in the
-Credit Card Fraud Detection dataset. The Lisp code trains and predicts; Python prepares
-the data, chooses a threshold from the validation set, calculates metrics and plots a
-precision-recall curve. No raw dataset, binary matrices, predictions or plots are tracked.
+Analyze all 284,807 transactions in the [Credit Card Fraud Detection dataset](https://www.kaggle.com/datasets/mlg-ulb/creditcardfraud),
+created by the ULB Machine Learning Group and Worldline. Preparation, training, threshold
+selection, metrics and the precision–recall visualization are implemented in Common Lisp.
 
-## Requirements and data
+After the [common setup](../README.md#setup), run:
 
-- The cl-gbdt checkout and both shared libraries, installed as in the
-  [project README](../../README.markdown#installation).
-- SBCL on a little-endian machine. `train.lisp` uses SBCL array pinning, CFFI and C
-  `fread` to load the prepared little-endian float32 matrices efficiently.
-- Python 3.11 or newer, NumPy, pandas, scikit-learn and matplotlib. The recorded run used
-  Python 3.12, NumPy 2.3.5, pandas 2.2.3, scikit-learn 1.8.0 and matplotlib 3.10.8.
-
-The original dataset is [Credit Card Fraud Detection](https://www.kaggle.com/datasets/mlg-ulb/creditcardfraud),
-by the ULB Machine Learning Group and Worldline. Provide its `creditcard.csv` yourself.
-The recorded run used the public [STAT 432 teaching mirror](https://github.com/stat432/credit-analysis)
-at commit `125090b731479d1566bdd8b7ad1cf674fdb2bb1e`. That mirror's CSV had SHA-256
-`76274b691b16a6c49d3f159c883398e03ccd6d1ee12d9d8ee38f4b4b98551a89`; byte-for-byte
-identity with Kaggle's copy was not checked.
-
-One way to retrieve that mirror, without putting the dataset in this repository:
-
-```sh
-git clone https://github.com/stat432/credit-analysis.git /tmp/cl-gbdt-credit-data
-git -C /tmp/cl-gbdt-credit-data checkout 125090b731479d1566bdd8b7ad1cf674fdb2bb1e
-unzip -p /tmp/cl-gbdt-credit-data/data-raw/creditcard.csv.zip creditcard.csv \
-  > /tmp/cl-gbdt-creditcard.csv
-sha256sum /tmp/cl-gbdt-creditcard.csv
+```lisp
+(cl-gbdt-examples:fetch-example-data :credit-card-fraud)
+(load "examples/credit-card-fraud/prepare.lisp")
+(load "examples/credit-card-fraud/train.lisp")
+(load "examples/credit-card-fraud/evaluate.lisp")
 ```
 
-## Run
+The downloader uses the public [STAT 432 teaching mirror](https://github.com/stat432/credit-analysis)
+at commit `125090b731479d1566bdd8b7ad1cf674fdb2bb1e`. The recorded CSV's SHA-256 was
+`76274b691b16a6c49d3f159c883398e03ccd6d1ee12d9d8ee38f4b4b98551a89`; identity with
+Kaggle's copy was not checked. To supply your own file, put it at `data/creditcard.csv`
+or set `CL_GBDT_CREDIT_CSV` to its pathname before loading `prepare.lisp`.
 
-From the **repository root**:
+Evaluation writes `output/metrics.sexp` and `output/precision-recall.svg`. The latter
+shows test precision–recall curves and the points selected using validation F1. Data and
+generated outputs are ignored by Git. Preparation records split counts and hash-based
+duplicate diagnostics in `data/metadata.sexp`.
 
-```sh
-python3 -m venv /tmp/cl-gbdt-fraud-venv
-/tmp/cl-gbdt-fraud-venv/bin/pip install \
-  'numpy==2.3.5' 'pandas==2.2.3' 'scikit-learn==1.8.0' 'matplotlib==3.10.8'
-/tmp/cl-gbdt-fraud-venv/bin/python examples/credit-card-fraud/prepare.py \
-  /tmp/cl-gbdt-creditcard.csv
+Rows are sorted by `Time`, with equal timestamps kept together. Training, validation
+and test have 170,888, 56,958 and 56,961 rows; validation and test contain 57 and 75
+frauds. `Time` is excluded from the 29 model features. Validation log loss selects the
+iteration; the F1-maximizing threshold is chosen on validation only. Feature-vector
+matches with earlier partitions are detected using deterministic 64-bit FNV-1a hashes
+of the source fields; hash collisions and different textual representations can affect
+this diagnostic. Repeated vectors need not be duplicate transactions.
 
-ros run -- --non-interactive \
-  --eval '(ql:quickload (quote (:cl-gbdt :cl-gbdt/lightgbm/unified :cl-gbdt/xgboost/unified)) :silent t)' \
-  --load examples/credit-card-fraud/train.lisp
+| Test metric | LightGBM | XGBoost |
+|---|---:|---:|
+| Average precision | 0.7404 | 0.7961 |
+| ROC-AUC | 0.8775 | 0.9814 |
+| Precision | 0.9783 | 0.9167 |
+| Recall | 0.6000 | 0.7333 |
+| True positives / false positives | 45 / 1 | 55 / 5 |
 
-/tmp/cl-gbdt-fraud-venv/bin/python examples/credit-card-fraud/evaluate.py
-/tmp/cl-gbdt-fraud-venv/bin/python examples/credit-card-fraud/plot.py
-```
-
-The scripts write to the ignored `data/` and `output/` directories here. `evaluate.py`
-writes metrics as `output/metrics.json`; `plot.py` writes `output/precision-recall.png`.
-The Lisp script runs both backends when loaded. In an existing REPL, load both `/unified`
-systems first. With cl-mcp, use `load-system` and then `repl-eval` to load the script.
-
-## Evaluation and limits
-
-Rows are sorted by transaction time, with equal timestamps kept together at split
-boundaries. Training, validation and test contain 170,888, 56,958 and 56,961 rows;
-the latter two contain 57 and 75 frauds. `Time` is used for splitting but excluded from
-the 29 model features. Validation log loss determines the best training iteration;
-the threshold maximizing validation F1 is then applied to the test set. The evaluation
-reports average precision, ROC-AUC, precision, recall, confusion counts and top-100
-performance. [Recorded results](../README.md#credit-card-fraud-detection) are from a
-single split and should not be interpreted as a production estimate.
-
-The original data already contains PCA-transformed features; the population used to fit
-that PCA is unknown. The preparation script also reports hash-based matches of feature
-vectors across time splits; these may be repeated transactions and are not necessarily
-identical records. The evaluator reports test metrics both with and without rows whose
-feature hashes appeared in earlier splits. Hashes can collide.
-
-The backends use different, untuned parameter vocabularies. This example does not calibrate
-probabilities or optimize fraud losses against the operational costs of false alarms.
+The LightGBM best iteration was 1, the XGBoost best iteration 159. Probabilities are not
+calibrated. The source covers only about two days, and the original PCA fit population
+is unknown. This single temporal split is not a production estimate or general backend
+comparison.

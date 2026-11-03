@@ -1,71 +1,59 @@
 # Open-data experiments
 
-These are observations from running the unified API against public data, using both the
-LightGBM and XGBoost backends. They document individual runs, not a benchmark or a claim
-that either backend is generally more accurate. The runnable examples are:
+These examples use `cl-gbdt` with both the LightGBM and XGBoost backends. Dataset
+retrieval, decompression, preprocessing, model training and evaluation are implemented
+in Common Lisp. Generated data, models and predictions are not committed.
 
-- [`toy-data/`](toy-data/README.md): three small classification and regression datasets.
-- [`credit-card-fraud/`](credit-card-fraud/README.md): a larger, imbalanced binary
-  classification dataset, with chronological splits and threshold selection.
-- [`adult/`](adult/README.md): categorical features, contributions and model save/load.
-- [`movielens-ranking/`](movielens-ranking/README.md): grouped ranking and NDCG.
-- [`mslr-web10k/`](mslr-web10k/README.md): ranking-fold preparation; tested only on synthetic data.
-- [`household-power/`](household-power/README.md): minute-level forecasting and a custom metric.
-- [`online-retail/`](online-retail/README.md): customer snapshots and row weights.
-- [`kasandr-sparse/`](kasandr-sparse/README.md): large-scale sampled input and sparse CSR matrices.
+| Example | Techniques |
+|---|---|
+| [Small datasets](toy-data/README.md) | Multiclass and binary classification, regression, permutation importance |
+| [Credit card fraud](credit-card-fraud/README.md) | Chronological split, imbalanced classification, threshold selection |
+| [Adult](adult/README.md) | Categorical features, feature contributions, model persistence |
+| [MovieLens](movielens-ranking/README.md) | User-disjoint learning to rank, grouped NDCG |
+| [MSLR-WEB10K](mslr-web10k/README.md) | Ranking-fold adapter; synthetic data only |
+| [Household power](household-power/README.md) | Time-series features, custom metric and objective |
+| [Online Retail](online-retail/README.md) | Excel input, temporal snapshots, categorical features and weights |
+| [KASANDR](kasandr-sparse/README.md) | Sampling large files, feature hashing and sparse CSR matrices |
 
-The runs used cl-gbdt commit `9b7a6ac5d3a6f39399f466a56a7a2d8417289e9a`, SBCL 2.2.9,
-ASDF 3.3.7.4, LightGBM 4.7.0 and XGBoost 3.4.1 on Linux x86-64. Data preparation and
-metric calculation used Python and scikit-learn 1.8.0; training and prediction used
-`cl-gbdt`. Backend parameters differed and were not tuned. No data or trained models are
-committed here.
+## Setup
 
-## Small datasets
+Install `cl-gbdt` and the two backend shared libraries. If the libraries are already
+installed, set `CL_GBDT_LIGHTGBM_LIB` and `CL_GBDT_XGBOOST_LIB` to their paths; see
+[backend discovery](../docs/user-guide/backends.md#finding-the-shared-library). The
+project's optional `tools/fetch-libs.sh` uses Python, but it is not needed when the
+shared libraries are installed separately. The examples use SBCL, CFFI and
+little-endian IEEE-754 single floats. Dataset retrieval additionally uses the Common
+Lisp systems `dexador`, `zip`, `semz.decompress` and `archive`, available through Quicklisp.
+MovieLens and MSLR have their own usage terms; read their respective guides first.
 
-The Iris, Breast Cancer Wisconsin (Diagnostic), and Diabetes datasets were loaded from
-scikit-learn, split approximately 60:20:20 into training, validation and test sets with
-seed 42, and stratified for classification. Validation loss drove early stopping; test
-scores were computed from the best iteration. The Diabetes input used `scaled=False`.
+From a REPL whose working directory is the repository root:
 
-| Dataset and test metric | Training / validation / test rows | LightGBM | XGBoost | Baseline |
-|---|---:|---:|---:|---:|
-| [Iris](https://archive.ics.uci.edu/dataset/53/iris), accuracy | 90 / 30 / 30 | 0.9667 | 0.9000 | 0.3333 |
-| [Breast Cancer Wisconsin (Diagnostic)](https://archive.ics.uci.edu/dataset/17/breast+cancer+wisconsin+diagnostic), accuracy | 341 / 114 / 114 | 0.9649 | 0.9737 | 0.6316 |
-| [Diabetes](https://scikit-learn.org/stable/modules/generated/sklearn.datasets.load_diabetes.html), RMSE | 265 / 88 / 89 | 57.622 | 55.369 | 76.906 |
+```lisp
+(ql:quickload '(:dexador :zip :semz.decompress :archive
+                :cl-gbdt :cl-gbdt/lightgbm/unified :cl-gbdt/xgboost/unified))
+(load "examples/fetch-data.lisp")
 
-The classification baseline predicts the majority class in the training set; the
-regression baseline predicts the training-set mean. For the breast-cancer example the
-scikit-learn labels were reversed so that malignant is 1. Both models identified 39 of
-the 42 malignant test cases. These are small, single-split results, not evidence suitable
-for medical use.
+;; For example, download, preprocess, train and evaluate Adult:
+(cl-gbdt-examples:fetch-example-data :adult)
+(load "examples/adult/prepare.lisp")
+(load "examples/adult/train.lisp")
+(load "examples/adult/evaluate.lisp")
+```
 
-## Credit card fraud detection
+The downloader streams files to disk, supports `HTTPS_PROXY` through Dexador, checks
+HTTP failures, and extracts only explicitly named archive members. It retains existing
+files; remove a corrupt or incomplete cached file before downloading it again. MSLR
+must be acquired separately after accepting the publisher's agreement. The Online
+Retail guide includes an additional step to load its pinned Excel reader.
 
-The [Credit Card Fraud Detection](https://www.kaggle.com/datasets/mlg-ulb/creditcardfraud)
-dataset contains 284,807 transactions, 492 of them fraudulent. The run obtained the CSV
-from the [STAT 432 teaching mirror](https://github.com/stat432/credit-analysis) at commit
-`125090b731479d1566bdd8b7ad1cf674fdb2bb1e`; the CSV's SHA-256 was
-`76274b691b16a6c49d3f159c883398e03ccd6d1ee12d9d8ee38f4b4b98551a89`. Its contents were not
-verified byte-for-byte against Kaggle's copy.
+To run the shared utility checks:
 
-Rows were sorted by `Time` and split about 60:20:20, keeping identical timestamps on the
-same side of each boundary. `Time` was used only for splitting; the model received `V1`
-through `V28` and `Amount`. A validation-loss early stopping rule selected the iteration,
-then the validation set selected the probability threshold maximizing F1. The held-out
-test set had 56,961 transactions, including 75 frauds.
+```lisp
+(load "examples/tests.lisp")
+(load "examples/tests-fetch.lisp")
+```
 
-| Test metric | LightGBM | XGBoost |
-|---|---:|---:|
-| Average precision | 0.7404 | 0.7961 |
-| ROC-AUC | 0.8775 | 0.9814 |
-| Precision | 0.9783 | 0.9167 |
-| Recall | 0.6000 | 0.7333 |
-| True positives | 45 | 55 |
-| False positives | 1 | 5 |
-| False negatives | 30 | 20 |
-
-LightGBM's best validation-loss iteration was 1, while XGBoost's was 159; the LightGBM
-threshold selected on validation was approximately 0.99999576. Neither model's scores were
-calibrated. The dataset covers only about two days, and its PCA features were already
-provided; the scope of the original PCA fit is unknown. These findings should not be
-interpreted as a production-ready fraud detector or a general comparison of backends.
+The examples are reproducible within their stated dependencies, but are not a benchmark.
+Randomized splits now use the specified xorshift32 generator in Common Lisp; they are
+not the same splits previously generated by scikit-learn. Backend parameters differ and
+are not tuned. See each example for its data source, method, results and limitations.

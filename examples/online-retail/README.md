@@ -1,53 +1,40 @@
 # Online Retail: repeat purchase prediction
 
-Use the [UCI Online Retail dataset](https://archive.ics.uci.edu/dataset/352/online-retail)
-to predict whether a customer with a purchase in the previous 90 days will make a
-qualifying purchase in the next 30 days. This example demonstrates time-based snapshots,
-native categorical features and per-row sample weights in `cl-gbdt`.
+Predict whether a customer with a purchase in the previous 90 days will purchase in the
+next 30 days using the [UCI Online Retail dataset](https://archive.ics.uci.edu/dataset/352/online-retail).
+This example uses temporal snapshots, native categorical features and row weights.
 
-Requirements match [Adult](../adult/README.md), plus `openpyxl` for the input workbook.
-No workbook, prepared matrices or predictions are committed.
+After the [common setup](../README.md#setup), run:
 
-## Run
-
-From the repository root:
-
-```sh
-mkdir -p examples/online-retail/data
-curl -L --fail 'https://archive.ics.uci.edu/static/public/352/online+retail.zip' \
-  -o examples/online-retail/data/source.zip
-unzip -q examples/online-retail/data/source.zip -d examples/online-retail/data
-python3 -m venv /tmp/cl-gbdt-retail-venv
-/tmp/cl-gbdt-retail-venv/bin/pip install \
-  'numpy==2.3.5' 'pandas==2.2.3' 'scikit-learn==1.8.0' 'openpyxl==3.1.5'
-/tmp/cl-gbdt-retail-venv/bin/python examples/online-retail/prepare.py
-ros run -- --non-interactive \
-  --eval '(ql:quickload (quote (:cl-gbdt :cl-gbdt/lightgbm/unified :cl-gbdt/xgboost/unified)) :silent t)' \
-  --load examples/online-retail/train.lisp
-/tmp/cl-gbdt-retail-venv/bin/python examples/online-retail/evaluate.py
+```lisp
+(cl-gbdt-examples:fetch-example-data :online-retail)
+;; Downloads a pinned lisp-xl source revision if it is not already installed.
+(cl-gbdt-examples:ensure-retail-reader)
+(load "examples/online-retail/prepare.lisp")
+(load "examples/online-retail/train.lisp")
+(load "examples/online-retail/evaluate.lisp")
 ```
 
-The recorded archive SHA-256 is
+The Lisp [lisp-xl](https://github.com/defunkydrummer/lisp-xl) reader streams rows
+from the original workbook. Its pinned source is installed into ignored example data;
+Quicklisp supplies its dependencies. The workbook, prepared data and predictions are
+not committed. The recorded source ZIP SHA-256 was
 `f5385cbb54bbebf7196389109c6b0621faab0c304e3702548165e71c84aede8b`.
 
-## Method and result
+Rows missing a required customer, date, invoice, country or product, cancellations,
+and rows with nonpositive quantities or prices are removed, leaving 397,884 positive
+transaction lines. Each observation date uses only the preceding 90 days for features
+and the next 30 days for the label. Features include recency, distinct invoices and
+products, spending, units, mean price, recent spending and the last country. Country
+codes are fitted on training snapshots only. Cancellations and returns are excluded,
+not netted against purchases.
 
-Remove rows without customer ID, date, country or product, cancellations, nonpositive
-quantities and nonpositive prices. This leaves 397,884 positive transaction lines. For
-each observation date, build customers' 90-day histories using only preceding records;
-the label is whether they appear in the next 30 days. Features include recency, number
-of invoices, spending, units, distinct products, mean unit price, last country and
-30-day spending. Country dictionaries are fitted on training snapshots only; 0 denotes
-an unseen country. Cancellations and returns are excluded, not netted against purchases.
-
-April–August 2011 snapshots form the 9,620 training rows, September the 1,923 validation
-rows and November the 2,461 test rows. The last training and validation label horizons
-end before the following split's observation date. A customer can occur in multiple
-snapshots and splits; the task models returning customers rather than generalization to
-entirely new customers. During training, each customer's total weight across training
-snapshots is equal, and weights are normalized to mean one. Validation and test metrics
-are unweighted. Best iteration uses validation log loss; the F1-maximizing threshold is
-chosen on validation only.
+April–August 2011 snapshots form 9,620 training rows, September 1,923 validation
+rows, and November 2,461 test rows. Label horizons do not cross the next split's
+observation date. A customer may occur in several snapshots and splits. Each
+customer's total training weight is equal, normalized to mean one; evaluation is
+unweighted. Validation log loss selects the iteration and validation F1 selects the
+threshold.
 
 | Test metric | LightGBM | XGBoost |
 |---|---:|---:|
@@ -56,6 +43,5 @@ chosen on validation only.
 | Precision | 0.5347 | 0.5159 |
 | Recall | 0.7292 | 0.7689 |
 
-The test positive rate is 0.4291. The example has untuned parameters, one temporal test
-window, and no probability calibration. Its transaction data cover only one retailer;
-these figures are not estimates for another business.
+Test prevalence is 0.4291. These untuned, uncalibrated results cover one retailer and
+one temporal test window; they should not be generalized to another business.
