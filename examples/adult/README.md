@@ -13,6 +13,20 @@ After the [common setup](../README.md#setup), run from the repository root:
 (load "examples/adult/evaluate.lisp")
 ```
 
+Preparation, training and evaluation take a nonblocking lock on this example's
+directory. Preparation invalidates earlier predictions; evaluation requires both
+backends to finish training on the current prepared data. If preparation fails, rerun it
+before training. If training fails, rerun training before evaluation. Data prepared
+before generation tracking was added must be prepared and trained again. These scripts
+use Unix `flock` and `/dev/urandom`. Leave `output/.example.lock` in place
+while these scripts are running; the lock is released when the process exits.
+
+Both models write to a private staging directory before publication. Ordinary errors
+or nonlocal exits during publication restore the prior outputs; if recovery itself fails,
+the error reports the staging directory containing the backups. If a process is killed
+mid-publication, inspect `output/.example-training-*` before removing it. Manual
+changes to generated files are outside this coordination.
+
 Preparation splits the original `adult.data` 80/20 by label with the example's
 deterministic xorshift32 generator: 26,049 training and 6,512 validation rows.
 `adult.test` is the separate 16,281-row test set. Category dictionaries are fitted on

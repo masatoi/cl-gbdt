@@ -15,6 +15,24 @@ After the [common setup](../README.md#setup), run:
 (load "examples/household-power/evaluate.lisp")
 ```
 
+Preparation, training and evaluation take a nonblocking lock on this example's
+directory. Preparation invalidates earlier predictions; evaluation requires both
+backends to finish training on the current prepared data. If preparation fails, rerun it
+before training. If training fails, rerun training before evaluation. Data prepared
+before generation tracking was added must be prepared and trained again. These scripts
+use Unix `flock` and `/dev/urandom`. Leave `output/.example.lock` in place
+while these scripts are running; the lock is released when the process exits.
+
+Both models write to a private staging directory before publication. Ordinary errors
+or nonlocal exits during publication restore the prior outputs; if recovery itself fails,
+the error reports the staging directory containing the backups. If a process is killed
+mid-publication, inspect `output/.example-training-*` before removing it. Manual
+changes to generated files are outside this coordination.
+
+Optional custom-objective predictions are shown only after both custom backends finish
+for the current prepared data. Existing custom CSVs from another preparation are kept,
+but are not evaluated.
+
 The source ZIP SHA-256 in the recorded run was
 `9f84b46ade8a2d8e1286ec4b2b6c2987a45a755c59f263be3b3b3d10dfbda3ff`.
 At minute `t`, the target is power at `t+60`; features are current power, lags of 1, 60

@@ -3,7 +3,10 @@
 (load (merge-pathnames "../common.lisp" *load-truename*))
 (in-package #:cl-gbdt-examples)
 
-(defparameter *mslr-root* (uiop:pathname-directory-pathname *load-truename*))
+(load (merge-pathnames "state.lisp" *load-truename*))
+
+(defvar *mslr-root* nil "The MSLR example directory for this preparation.")
+
 (defstruct mslr-row qid label features)
 
 (defun read-mslr (path split query-owner)
@@ -14,7 +17,7 @@
             for parts = (remove "" (split-fields (substitute #\Space #\Tab useful) #\Space)
                                 :test #'string=)
             unless (null parts)
-              do (let* ((label (parse-number (first parts)))
+              do (let ((label (parse-number (first parts)))
                         (features (make-array 136 :element-type 'single-float :initial-element 0f0))
                         (seen (make-hash-table))
                         (qid nil))
@@ -71,17 +74,22 @@
     (format t "~(~A~): rows=~D~%" split (length rows))))
 
 (defun prepare-mslr ()
-  (ensure-example-directories *mslr-root*)
-  (let* ((fold (or (uiop:getenv "CL_GBDT_MSLR_FOLD")
-                   (error "Set CL_GBDT_MSLR_FOLD to the extracted fold directory")))
-         (directory (uiop:ensure-directory-pathname fold))
-         (owners (make-hash-table))
-         (counts nil))
-    (dolist (entry '((:train . "train.txt") (:valid . "vali.txt") (:test . "test.txt")))
-      (let ((rows (read-mslr (merge-pathnames (cdr entry) directory) (car entry) owners)))
-        (write-mslr (car entry) rows)
-        (setf counts (append counts (list (car entry) (length rows))))))
-    (apply #'write-sizes (merge-pathnames "data/sizes.lisp" *mslr-root*)
-           (append counts (list :features 136)))))
+  (let ((*mslr-root* (cl-gbdt-example-lifecycle:example-root *mslr-root*)))
+    (call-with-ranking-preparation
+     *mslr-root*
+     (lambda ()
+       (let* ((fold (or (uiop:getenv "CL_GBDT_MSLR_FOLD")
+                        (error "Set CL_GBDT_MSLR_FOLD to the extracted fold directory")))
+              ;; An environment variable holds an operating-system file name.
+              (directory (uiop:parse-native-namestring fold :ensure-directory t))
+              (owners (make-hash-table))
+              (counts nil))
+         (dolist (entry '((:train . "train.txt") (:valid . "vali.txt") (:test . "test.txt")))
+           (let ((rows (read-mslr (merge-pathnames (cdr entry) directory) (car entry) owners)))
+             (write-mslr (car entry) rows)
+             (setf counts (append counts (list (car entry) (length rows))))))
+         (append counts (list :features 136))))
+     :name "MSLR" :prefix "mslr")))
 
-(prepare-mslr)
+(let ((*mslr-root* (uiop:pathname-directory-pathname *load-truename*)))
+  (prepare-mslr))

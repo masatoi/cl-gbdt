@@ -1,9 +1,12 @@
 (in-package #:cl-user)
 
 (load (merge-pathnames "../common.lisp" *load-truename*))
+
+(load (merge-pathnames "../lifecycle.lisp" *load-truename*))
+
 (in-package #:cl-gbdt-examples)
 
-(defparameter *fraud-root* (uiop:pathname-directory-pathname *load-truename*))
+(defvar *fraud-root* (uiop:pathname-directory-pathname *load-truename*))
 
 (defstruct fraud-row time values label hash)
 
@@ -86,29 +89,35 @@
           :prior-feature-matches seen-count :prior-feature-match-frauds seen-frauds)))
 
 (defun prepare-fraud ()
-  (ensure-example-directories *fraud-root*)
-  (let* ((data (merge-pathnames "data/" *fraud-root*))
-         (source (or (uiop:getenv "CL_GBDT_CREDIT_CSV")
-                     (namestring (merge-pathnames "creditcard.csv" data))))
-         (rows (read-fraud-data source))
-         (duplicates (fraud-duplicate-count rows))
-         (i (fraud-boundary rows 0.6d0))
-         (j (fraud-boundary rows 0.8d0))
-         (train (subseq rows 0 i)) (valid (subseq rows i j)) (test (subseq rows j))
-         (prior (make-hash-table :test #'eql))
-         (train-info (write-fraud-partition "train" train prior))
-         (valid-info (write-fraud-partition "valid" valid prior))
-         (test-info (write-fraud-partition "test" test prior)))
-    (write-sizes (merge-pathnames "sizes.lisp" data)
-                 :train (length train) :valid (length valid) :test (length test) :features 29)
-    (with-open-file (out (merge-pathnames "metadata.sexp" data)
-                         :direction :output :if-exists :supersede :if-does-not-exist :create)
-      (let ((*print-readably* t) (*print-case* :downcase))
-        (write (list :source source :rows (length rows) :frauds 492 :features 29
-                     :duplicate-full-row-hashes duplicates
-                     :train train-info :valid valid-info :test test-info)
-               :stream out)
-        (terpri out)))
-    (format t "full-row hash matches: ~D~%" duplicates)))
+  (cl-gbdt-example-lifecycle:with-preparation (*fraud-root*)
+    (ensure-example-directories *fraud-root*)
+    (let* ((data (merge-pathnames "data/" *fraud-root*))
+           ;; An environment variable holds an operating-system file name.
+           (source (let ((override (uiop:getenv "CL_GBDT_CREDIT_CSV")))
+                     (if override
+                         (uiop:parse-native-namestring override)
+                         (merge-pathnames "creditcard.csv" data))))
+           (rows (read-fraud-data source))
+           (duplicates (fraud-duplicate-count rows))
+           (i (fraud-boundary rows 0.6d0))
+           (j (fraud-boundary rows 0.8d0))
+           (train (subseq rows 0 i)) (valid (subseq rows i j)) (test (subseq rows j))
+           (prior (make-hash-table :test #'eql))
+           (train-info (write-fraud-partition "train" train prior))
+           (valid-info (write-fraud-partition "valid" valid prior))
+           (test-info (write-fraud-partition "test" test prior)))
+      (write-sizes (merge-pathnames "sizes.lisp" data)
+                   :train (length train) :valid (length valid) :test (length test) :features 29)
+      (with-open-file (out (merge-pathnames "metadata.sexp" data)
+                           :direction :output :if-exists :supersede :if-does-not-exist :create)
+        (let ((*print-readably* t) (*print-case* :downcase))
+          (write (list :source (uiop:native-namestring source)
+                       :rows (length rows) :frauds 492 :features 29
+                       :duplicate-full-row-hashes duplicates
+                       :train train-info :valid valid-info :test test-info)
+                 :stream out)
+          (terpri out)))
+      (format t "full-row hash matches: ~D~%" duplicates))))
 
-(prepare-fraud)
+(let ((*fraud-root* (uiop:pathname-directory-pathname *load-truename*)))
+  (prepare-fraud))

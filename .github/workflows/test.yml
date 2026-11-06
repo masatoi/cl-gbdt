@@ -120,6 +120,13 @@ jobs:
           CL_GBDT_TEST_SYSTEM: cl-gbdt/tests/functional
         run: ros run -- --non-interactive --load tools/ci/run-tests.lisp
 
+      - name: Examples - every open-data example suite
+        # examples/ holds plain files that users LOAD, which no rove suite reaches. Each
+        # examples/tests*.lisp runs its body in a child SBCL that needs ASDF 3.3.7; the
+        # script hands the children the asdf.lisp `Install a current ASDF' left under
+        # ~/.roswell/lisp/asdf/. Several suites train, so this follows the library fetch.
+        run: ros run -- --non-interactive --load tools/ci/run-example-tests.lisp
+
   version-matrix:
     # Task 4: turns src/version.lisp's recorded compatible-version range from a claim
     # inferred by comparing C headers (tools/check-upstream.lisp) into one actually

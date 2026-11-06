@@ -26,7 +26,7 @@ CLAUDE.md.")
   '("src/*.lisp" "src/regen/*.lisp" "src/training/*.lisp" "src/config/*.lisp"
     "src/lightgbm/*.lisp" "src/xgboost/*.lisp" "src/docgen/*.lisp" "tests/*.lisp"
     "tests/functional/*.lisp" "tests/specs/*.lisp" "tools/ci/*.lisp" "tools/*.lisp"
-    "specs/*.lisp")
+    "specs/*.lisp" "examples/*.lisp" "examples/*/*.lisp")
   "Hand-written Lisp sources, relative to the repository root.
 
 The per-backend patterns were added once a backend's first hand-written file
@@ -48,7 +48,12 @@ does not cross the `ci/' subdirectory, so this does not overlap `tools/ci/*.lisp
 
 `specs/*.lisp' and `tests/specs/*.lisp' arrived with the executable specifications, for
 the same wildcard reason: CL's `*.lisp' does not cross a subdirectory it was not asked
-to.")
+to.
+
+`examples/*.lisp' and `examples/*/*.lisp' cover the open-data examples: the shared files
+at the top and each example's own directory. They stop one level down on purpose, so a
+downloaded source tree an example keeps under its ignored `data/' directory (lisp-xl's,
+for one) is never linted as if it were ours.")
 
 (defun hand-written-sources ()
   "Return the pathnames of every hand-written Lisp source, generated files excluded."

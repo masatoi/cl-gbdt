@@ -1,9 +1,13 @@
 (in-package #:cl-user)
 
 (load (merge-pathnames "../common.lisp" *load-truename*))
+
+(load (merge-pathnames "../lifecycle.lisp" *load-truename*))
+
 (in-package #:cl-gbdt-examples)
 
-(defparameter *adult-root* (uiop:pathname-directory-pathname *load-truename*))
+(defvar *adult-root* (uiop:pathname-directory-pathname *load-truename*))
+
 (defparameter *adult-categorical* '(1 3 5 6 7 8 9 13))
 
 (defun read-adult (path)
@@ -98,18 +102,20 @@
             (count 1 rows :key #'adult-label))))
 
 (defun prepare-adult ()
-  (ensure-example-directories *adult-root*)
-  (let* ((data (merge-pathnames "data/" *adult-root*))
-         (source (read-adult (merge-pathnames "adult.data" data)))
-         (test (read-adult (merge-pathnames "adult.test" data))))
-    (multiple-value-bind (train valid) (adult-split source)
-      (let ((maps (adult-category-maps train)))
-        (write-adult-categories maps data)
-        (write-adult-split "train" train maps)
-        (write-adult-split "valid" valid maps)
-        (write-adult-split "test" test maps)
-        (write-sizes (merge-pathnames "sizes.lisp" data)
-                     :train (length train) :valid (length valid) :test (length test)
-                     :features 14 :categorical *adult-categorical*)))))
+  (cl-gbdt-example-lifecycle:with-preparation (*adult-root*)
+    (ensure-example-directories *adult-root*)
+    (let* ((data (merge-pathnames "data/" *adult-root*))
+           (source (read-adult (merge-pathnames "adult.data" data)))
+           (test (read-adult (merge-pathnames "adult.test" data))))
+      (multiple-value-bind (train valid) (adult-split source)
+        (let ((maps (adult-category-maps train)))
+          (write-adult-categories maps data)
+          (write-adult-split "train" train maps)
+          (write-adult-split "valid" valid maps)
+          (write-adult-split "test" test maps)
+          (write-sizes (merge-pathnames "sizes.lisp" data)
+                       :train (length train) :valid (length valid) :test (length test)
+                       :features 14 :categorical *adult-categorical*))))))
 
-(prepare-adult)
+(let ((*adult-root* (uiop:pathname-directory-pathname *load-truename*)))
+  (prepare-adult))

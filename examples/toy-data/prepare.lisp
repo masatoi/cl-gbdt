@@ -3,7 +3,10 @@
 (load (merge-pathnames "../common.lisp" *load-truename*))
 (in-package #:cl-gbdt-examples)
 
-(defparameter *toy-root* (uiop:pathname-directory-pathname *load-truename*))
+(load (merge-pathnames "state.lisp" *load-truename*))
+
+(defvar *toy-root* (uiop:pathname-directory-pathname *load-truename*))
+
 (defparameter *iris-names*
   '("sepal length (cm)" "sepal width (cm)" "petal length (cm)" "petal width (cm)"))
 (defparameter *cancer-names*
@@ -22,9 +25,9 @@
       (unless (= (parse-integer (second header)) nfeatures) (error "Unexpected feature count"))
       (loop for fields = (read-csv-row in) while fields
             do (unless (= (length fields) (1+ nfeatures)) (error "Unexpected row width"))
-               (let* ((label (parse-integer (car (last fields))))
-                      (features (mapcar (lambda (s) (coerce (parse-number s) 'double-float))
-                                        (butlast fields))))
+               (let ((label (parse-integer (car (last fields))))
+                     (features (mapcar (lambda (s) (coerce (parse-number s) 'double-float))
+                                       (butlast fields))))
                  (vector-push-extend
                   (cons (if reverse-labels (- 1 label) label) features) rows)))
       (unless (= (length rows) expected) (error "Unexpected dataset length"))
@@ -67,7 +70,8 @@
               collect (shuffle-vector (coerce part 'vector) seed)))))
 
 (defun write-toy (name rows names classification)
-  (let* ((data (merge-pathnames "data/" *toy-root*))
+  (let* ((data (or cl-gbdt-toy-state:*staging-directory*
+                   (error "Toy splits must be written during preparation")))
          (parts (toy-partitions rows classification))
          (path (merge-pathnames (format nil "~A.sexp" name) data)))
     (with-open-file (out path :direction :output :if-exists :supersede)
@@ -85,13 +89,17 @@
             (length names))))
 
 (defun prepare-toy ()
-  (ensure-example-directories *toy-root*)
-  (let ((data (merge-pathnames "data/" *toy-root*)))
-    (write-toy "iris" (read-toy-classification (merge-pathnames "iris.csv" data) 4 nil)
-               *iris-names* t)
-    (write-toy "breast_cancer"
-               (read-toy-classification (merge-pathnames "breast_cancer.csv" data) 30 t)
-               *cancer-names* t)
-    (write-toy "diabetes" (read-toy-diabetes data) *diabetes-names* nil)))
+  (cl-gbdt-toy-state:call-with-preparation
+   *toy-root*
+   (lambda ()
+     (ensure-example-directories *toy-root*)
+     (let ((data (merge-pathnames "data/" *toy-root*)))
+       (write-toy "iris" (read-toy-classification (merge-pathnames "iris.csv" data) 4 nil)
+                  *iris-names* t)
+       (write-toy "breast_cancer"
+                  (read-toy-classification (merge-pathnames "breast_cancer.csv" data) 30 t)
+                  *cancer-names* t)
+       (write-toy "diabetes" (read-toy-diabetes data) *diabetes-names* nil)))))
 
-(prepare-toy)
+(let ((*toy-root* (uiop:pathname-directory-pathname *load-truename*)))
+  (prepare-toy))

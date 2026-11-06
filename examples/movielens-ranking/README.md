@@ -15,6 +15,11 @@ Review those terms before acquiring and using it. After the [common setup](../RE
 (load "examples/movielens-ranking/evaluate.lisp")
 ```
 
+Each script works on its own directory, the one it is loaded from. The trainer and
+evaluator themselves live in `train-core.lisp` and `evaluate-core.lisp` and take the
+directory as an argument; the [MSLR scripts](../mslr-web10k/README.md) reuse them that way
+for their own directory, so both examples can run in one image without mixing outputs.
+
 The recorded source ZIP SHA-256 was
 `50d2a982c66986937beb9ffb3aa76efe955bf3d5c6b761f4e3a7cd717c6a3229`.
 Users are assigned with the reproducible xorshift32 generator, keeping them disjoint:
@@ -23,7 +28,27 @@ each split rows are contiguous by user. Labels are the original 1–5 ratings sh
 to 0–4; features are age, sex, release year and movie genres. Missing release years
 are replaced by the median. The baseline ranks movies by mean training-user rating,
 falling back to the global training mean. NDCG uses `2^label - 1` gain and assigns
-zero to a group with zero ideal DCG.
+zero to a group with zero ideal DCG. Evaluation requires finite integer relevance
+values from 0 through 4. Equal prediction scores keep their input order. Within each
+user, preparation orders ratings by timestamp from earliest to latest, then by movie ID
+when timestamps are equal, so ties in score follow that order.
+
+Preparation invalidates previous predictions before replacing the split files and writes
+completion metadata only after all splits are ready. Train again after preparation or a
+failed training attempt. Training stages both backend predictions and attempts to restore
+the previous files if publication fails. Evaluation checks that the predictions and data
+belong to the same preparation before it prints results. Folds prepared before generation
+tracking was added must be prepared again.
+
+Both ranking examples use [`ranking-state.lisp`](../ranking-state.lisp), which keeps their
+state with the other examples' [`lifecycle.lisp`](../lifecycle.lisp) under ranking file
+names. They require Unix `flock` and `/dev/urandom`. Preparation, training
+and evaluation take a nonblocking lock on the example directory; an overlapping operation
+fails immediately. Keep `output/.ranking.lock` in place while an operation is running.
+Evaluation can use an existing read-only lock file and output directory; preparation and
+training require write access.
+After an interrupted publication, `output/.movielens-training-*` may hold
+`.previous-*-test.csv` backups; inspect them before deleting that directory.
 
 | Test mean NDCG@10 | Value |
 |---|---:|

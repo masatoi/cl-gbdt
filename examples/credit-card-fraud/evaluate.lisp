@@ -1,6 +1,9 @@
 (in-package #:cl-user)
 
 (load (merge-pathnames "../common.lisp" *load-truename*))
+
+(load (merge-pathnames "../lifecycle.lisp" *load-truename*))
+
 (in-package #:cl-gbdt-examples)
 
 (defun fraud-labels (path)
@@ -16,12 +19,30 @@
       values)))
 
 (defun fraud-top-k (labels scores k)
+  "Count frauds among the K highest SCORES, independently of row order.
+Rows tied with the score at the cut share its remaining places: they contribute the
+expected number of frauds under a uniformly random tie break, so :FRAUDS-FOUND,
+:PRECISION and :RECALL can be fractional. :TIED-AT-CUTOFF is the size of a tied
+group straddling the cut, or 0. :RECALL is NIL when there is no fraud."
+  (unless (and (integerp k) (plusp k)) (error "Top-k cutoff must be a positive integer"))
+  (unless (= (length labels) (length scores)) (error "Mismatched label and score counts"))
   (let* ((n (min k (length labels)))
-         (order (stable-sort (coerce (loop for i below (length labels) collect i) 'vector)
-                             #'> :key (lambda (i) (aref scores i))))
-         (hits (loop for j below n sum (aref labels (aref order j)))))
-    (list :k n :frauds-found hits :precision (/ hits n 1d0)
-          :recall (/ hits (count 1 labels) 1d0))))
+         (positives (count 1 labels))
+         (cut (when (plusp n)
+                (aref (sort (copy-seq scores) #'>) (1- n))))
+         (above 0) (above-hits 0) (tied 0) (tied-hits 0))
+    (dotimes (i (length labels))
+      (let ((score (aref scores i)) (label (aref labels i)))
+        (cond ((null cut))
+              ((> score cut) (incf above) (incf above-hits label))
+              ((= score cut) (incf tied) (incf tied-hits label)))))
+    (let ((found (if (plusp tied)
+                     (+ above-hits (* (- n above) (/ tied-hits tied)))
+                     above-hits)))
+      (list :k n :frauds-found (coerce found 'double-float)
+            :precision (when (plusp n) (/ found n 1d0))
+            :recall (when (plusp positives) (/ found positives 1d0))
+            :tied-at-cutoff (if (> (+ above tied) n) tied 0)))))
 
 (defun fraud-unseen (labels scores seen)
   (unless (= (length labels) (length scores) (length seen)) (error "Unseen mask length mismatch"))
@@ -35,7 +56,7 @@
     (values ys ps)))
 
 (defun write-pr-path (out labels scores color)
-  (let* ((order (stable-sort (coerce (loop for i below (length labels) collect i) 'vector)
+  (let ((order (stable-sort (coerce (loop for i below (length labels) collect i) 'vector)
                              #'> :key (lambda (i) (aref scores i))))
          (positives (count 1 labels)) (tp 0) (seen 0) (previous-x 80d0))
     (format out "<polyline fill='none' stroke='~A' stroke-width='2' points='80,30 " color)
@@ -80,41 +101,56 @@
     (format out "<text x='55' y='505'>0</text><text x='55' y='35'>1</text></svg>~%")))
 
 (defun evaluate-fraud (root)
-  (let* ((data (merge-pathnames "data/" root)) (out (merge-pathnames "output/" root))
-         (yv (fraud-labels (merge-pathnames "valid-y.f32" data)))
-         (yt (fraud-labels (merge-pathnames "test-y.f32" data)))
-         (seen (read-bytes-vector (merge-pathnames "test-seen.u8" data)))
-         (results nil) (scores-list nil) (test-metrics nil))
-    (dolist (model '("lightgbm" "xgboost"))
-      (let* ((pv (read-scores (merge-pathnames (format nil "~A-valid.csv" model) out)))
-             (pt (read-scores (merge-pathnames (format nil "~A-test.csv" model) out)))
-             (threshold (best-threshold yv pv))
-             (validation (binary-metrics yv pv threshold))
-             (test (binary-metrics yt pt threshold))
-             (default (binary-metrics yt pt 0.5d0)))
-        (multiple-value-bind (uy up) (fraud-unseen yt pt seen)
-          (let ((unseen (binary-metrics uy up threshold)))
-            (push (list model :validation validation :test-tuned test :test-default default
-                        :test-top100 (fraud-top-k yt pt 100) :test-unseen-features unseen)
-                  results)
-            (format t "~%== ~A == threshold from validation: ~,8F~%" model threshold)
-            (dolist (pair (list (cons "validation" validation) (cons "test_tuned" test)
-                                (cons "test_default" default) (cons "test_unseen" unseen)))
-              (let ((m (cdr pair)))
-                (format t (concatenate 'string "~A: n=~D fraud=~D AP=~,5F AUC=~,5F "
-                                       "P=~,4F R=~,4F F1=~,4F TP=~D FP=~D FN=~D TN=~D~%")
-                        (car pair) (getf m :rows) (getf m :positives)
-                        (getf m :average-precision) (getf m :roc-auc)
-                        (getf m :precision) (getf m :recall) (getf m :f1)
-                        (getf m :tp) (getf m :fp) (getf m :fn) (getf m :tn))))
-            (format t "test_top100: ~S~%" (fraud-top-k yt pt 100))))
-        (push pt scores-list)
-        (push test test-metrics)))
-    (with-open-file (stream (merge-pathnames "metrics.sexp" out)
-                            :direction :output :if-exists :supersede)
-      (let ((*print-readably* t) (*print-case* :downcase))
-        (write (nreverse results) :stream stream) (terpri stream)))
-    (write-fraud-plot (merge-pathnames "precision-recall.svg" out) yt
-                      (nreverse scores-list) (nreverse test-metrics))))
+  (cl-gbdt-example-lifecycle:with-evaluation (root)
+    (cl-gbdt-example-lifecycle:with-report-outputs
+        (root '("metrics.sexp" "precision-recall.svg"))
+      (let* ((data (merge-pathnames "data/" root)) (out (merge-pathnames "output/" root))
+             (yv (fraud-labels (merge-pathnames "valid-y.f32" data)))
+             (yt (fraud-labels (merge-pathnames "test-y.f32" data)))
+             (seen (read-bytes-vector (merge-pathnames "test-seen.u8" data)))
+             (results nil) (scores-list nil) (test-metrics nil))
+        (dolist (model '("lightgbm" "xgboost"))
+          (let* ((pv (read-scores (merge-pathnames (format nil "~A-valid.csv" model) out)))
+                 (pt (read-scores (merge-pathnames (format nil "~A-test.csv" model) out)))
+                 (threshold (best-threshold yv pv))
+                 (validation (binary-metrics yv pv threshold))
+                 (test (binary-metrics yt pt threshold))
+                 (default (binary-metrics yt pt 0.5d0)))
+            (multiple-value-bind (uy up) (fraud-unseen yt pt seen)
+              ;; The unseen-feature subset may lack fraud, or rows, altogether; its
+              ;; undefined metrics are reported as NIL rather than ending the run.
+              (let ((unseen (when (plusp (length uy)) (binary-metrics uy up threshold t)))
+                    (top (fraud-top-k yt pt 100)))
+                (push (list model :validation validation :test-tuned test :test-default default
+                            :test-top100 top :test-unseen-features unseen)
+                      results)
+                (format t "~%== ~A == threshold from validation: ~,8F~%" model threshold)
+                (flet ((text (value digits)
+                         (if value (format nil "~,vF" digits value) "undefined")))
+                  (dolist (pair (list (cons "validation" validation) (cons "test_tuned" test)
+                                      (cons "test_default" default) (cons "test_unseen" unseen)))
+                    (let ((m (cdr pair)))
+                      (if m
+                          (format t (concatenate 'string "~A: n=~D fraud=~D AP=~A AUC=~A "
+                                                 "P=~A R=~A F1=~A TP=~D FP=~D FN=~D TN=~D~%")
+                                  (car pair) (getf m :rows) (getf m :positives)
+                                  (text (getf m :average-precision) 5)
+                                  (text (getf m :roc-auc) 5) (text (getf m :precision) 4)
+                                  (text (getf m :recall) 4) (text (getf m :f1) 4)
+                                  (getf m :tp) (getf m :fp) (getf m :fn) (getf m :tn))
+                          (format t "~A: no rows~%" (car pair)))))
+                  (format t "test_top100: k=~D frauds=~,2F P=~A R=~A tied_at_cutoff=~D~%"
+                          (getf top :k) (getf top :frauds-found) (text (getf top :precision) 4)
+                          (text (getf top :recall) 4) (getf top :tied-at-cutoff)))))
+            (push pt scores-list)
+            (push test test-metrics)))
+        (with-open-file (stream (merge-pathnames "metrics.sexp"
+                                         cl-gbdt-example-lifecycle:*report-output-directory*)
+                                :direction :output :if-exists :supersede)
+          (let ((*print-readably* t) (*print-case* :downcase))
+            (write (nreverse results) :stream stream) (terpri stream)))
+        (write-fraud-plot (merge-pathnames "precision-recall.svg"
+                                            cl-gbdt-example-lifecycle:*report-output-directory*) yt
+                          (nreverse scores-list) (nreverse test-metrics))))))
 
 (evaluate-fraud (uiop:pathname-directory-pathname *load-truename*))

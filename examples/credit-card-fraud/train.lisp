@@ -1,47 +1,45 @@
-;;;; SBCL x86-64: read NumPy's little-endian float32 buffers directly into simple arrays.
+(in-package #:cl-user)
+
+(load (merge-pathnames "../lifecycle.lisp" *load-truename*))
+
+(load (merge-pathnames "../train-io.lisp" *load-truename*))
+
+;;;; SBCL: ../train-io.lisp reads prepare.lisp's little-endian float32 files (written by
+;;;; common.lisp's WRITE-F32) directly into simple arrays.
 ;;;; Load CFFI, cl-gbdt and both unified backends before loading this file.
 (defpackage #:fraud-analysis (:use #:cl))
 (in-package #:fraud-analysis)
-(unless (member :little-endian *features*)
-  (error "This example expects little-endian float32 binary data."))
-(defparameter *root* (uiop:pathname-directory-pathname *load-truename*))
-(cffi:defcfun ("fopen" c-fopen) :pointer (name :string) (mode :string))
-(cffi:defcfun ("fread" c-fread) :size
-  (buffer :pointer) (size :size) (nmemb :size) (stream :pointer))
-(cffi:defcfun ("fclose" c-fclose) :int (stream :pointer))
 
-(defun load-f32 (filename dimensions)
-  (let* ((pathname (merge-pathnames (format nil "data/~A" filename) *root*))
-         (array (make-array dimensions :element-type 'single-float))
-         (storage (sb-ext:array-storage-vector array))
-         (file (c-fopen (namestring pathname) "rb")))
-    (when (cffi:null-pointer-p file) (error "Cannot open ~A" pathname))
-    (unwind-protect
-         (sb-sys:with-pinned-objects (array storage)
-           (let ((count (c-fread (cffi:make-pointer (sb-sys:sap-int (sb-sys:vector-sap storage)))
-                                 4 (array-total-size array) file)))
-             (unless (= count (array-total-size array))
-               (error "Short read from ~A: ~D/~D floats" pathname count (array-total-size array)))))
-      (c-fclose file))
-    array))
+(defvar *root* (uiop:pathname-directory-pathname *load-truename*))
 
 (defun seconds () (/ (get-internal-real-time) internal-time-units-per-second 1d0))
-(defun write-scores (booster x name)
-  (let ((p (cl-gbdt:predict booster x :num-iteration :best)))
-    (unless (equal (array-dimensions p) (list (array-dimension x 0) 1))
-      (error "Unexpected prediction dimensions ~S" (array-dimensions p)))
-    (with-open-file (out (merge-pathnames (format nil "output/~A.csv" name) *root*)
-                         :direction :output :if-exists :supersede)
-      (loop for i below (array-dimension x 0) do (format out "~,15F~%" (aref p i 0))))))
 
-(defun run (backend sizes)
-  (let* ((n (getf sizes :train)) (v (getf sizes :valid)) (nt (getf sizes :test))
-         (cols (getf sizes :features))
-         (train-x (load-f32 "train-x.f32" (list n cols)))
-         (train-y (load-f32 "train-y.f32" (list n)))
-         (valid-x (load-f32 "valid-x.f32" (list v cols)))
-         (valid-y (load-f32 "valid-y.f32" (list v)))
-         (test-x (load-f32 "test-x.f32" (list nt cols)))
+(defun write-best-scores (booster x name)
+  (cl-gbdt-examples:write-scores
+   (merge-pathnames (format nil "~A.csv" name)
+                    (or cl-gbdt-example-lifecycle:*training-output-directory*
+                        (merge-pathnames "output/" *root*)))
+   (cl-gbdt:predict booster x :num-iteration :best)
+   :rows (array-dimension x 0)))
+
+(defun load-inputs (sizes)
+  "Read every input matrix once; both backends train on the same arrays."
+  (flet ((f32 (name &rest dimensions)
+           (cl-gbdt-examples:load-f32 (merge-pathnames name (merge-pathnames "data/" *root*))
+                                      dimensions)))
+    (let ((cols (getf sizes :features)))
+      (list :train-x (f32 "train-x.f32" (getf sizes :train) cols)
+            :train-y (f32 "train-y.f32" (getf sizes :train))
+            :valid-x (f32 "valid-x.f32" (getf sizes :valid) cols)
+            :valid-y (f32 "valid-y.f32" (getf sizes :valid))
+            :test-x (f32 "test-x.f32" (getf sizes :test) cols)))))
+
+(defun run (backend inputs)
+  (let ((train-x (getf inputs :train-x))
+         (train-y (getf inputs :train-y))
+         (valid-x (getf inputs :valid-x))
+         (valid-y (getf inputs :valid-y))
+         (test-x (getf inputs :test-x))
          (start (seconds)))
     (format t "~&== ~A ==~%" backend)
     (cl-gbdt:with-backend (be (cl-gbdt:open-backend backend))
@@ -71,12 +69,16 @@
                            (cl-gbdt:training-report-best-iteration report)
                            (cl-gbdt:training-report-early-stopped-p report)
                            (- training-end start))
-                   (write-scores booster valid-x (format nil "~(~A~)-valid" backend))
-                   (write-scores booster test-x (format nil "~(~A~)-test" backend))
+                   (write-best-scores booster valid-x (format nil "~(~A~)-valid" backend))
+                   (write-best-scores booster test-x (format nil "~(~A~)-test" backend))
                    (format t "total-seconds=~,3F~%" (- (seconds) start)))
               (cl-gbdt:free-booster booster))))))))
 
-(ensure-directories-exist (merge-pathnames "output/" *root*))
-(let ((sizes (with-open-file (in (merge-pathnames "data/sizes.lisp" *root*))
-               (let ((*read-eval* nil)) (read in)))))
-  (dolist (backend '(:lightgbm :xgboost)) (run backend sizes)))
+(let ((*root* (uiop:pathname-directory-pathname *load-truename*)))
+  (cl-gbdt-example-lifecycle:with-training (*root* :standard
+                                             '("lightgbm-valid.csv" "lightgbm-test.csv"
+                                             "xgboost-valid.csv" "xgboost-test.csv"))
+    (let* ((sizes (with-open-file (in (merge-pathnames "data/sizes.lisp" *root*))
+                    (let ((*read-eval* nil)) (read in))))
+           (inputs (load-inputs sizes)))
+      (dolist (backend '(:lightgbm :xgboost)) (run backend inputs)))))

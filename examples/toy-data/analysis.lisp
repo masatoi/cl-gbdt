@@ -1,12 +1,19 @@
+(in-package #:cl-user)
+
 ;;;; cl-gbdt hands-on: classification and regression on open datasets.
 ;;;; Load cl-gbdt and both /unified systems before loading this file.
 (defpackage #:cl-gbdt-open-data (:use #:cl))
+
+(load (merge-pathnames "../common.lisp" *load-truename*))
+
 (in-package #:cl-gbdt-open-data)
 
-(defparameter *root* (uiop:pathname-directory-pathname *load-truename*))
+(load (merge-pathnames "state.lisp" *load-truename*))
+
+(defvar *root* (uiop:pathname-directory-pathname *load-truename*))
 
 (defun read-splits (name)
-  ;; Input is generated locally by prepare_data.py; no reader evaluation is permitted.
+  ;; Input is generated locally by prepare.lisp; no reader evaluation is permitted.
   (with-open-file (in (merge-pathnames (format nil "data/~A.sexp" name) *root*))
     (let ((*read-eval* nil)) (read in))))
 
@@ -50,7 +57,18 @@
             when (> (aref prediction row j) (aref prediction row best)) do (setf best j)
             finally (return best))))
 
+(defun validate-class-labels (labels classes)
+  "Reject non-finite, fractional, or out-of-range classification labels."
+  (loop for value across labels
+        unless (and (cl-gbdt-examples:finite-real-p value)
+                    (loop for class below classes thereis (= value class)))
+          do (error "Invalid classification label ~S; expected an integer from 0 to ~D"
+                    value (1- classes)))
+  labels)
+
 (defun evaluate-classification (train-y y prediction classes)
+  (validate-class-labels train-y classes)
+  (validate-class-labels y classes)
   (let ((train-counts (make-array classes :initial-element 0)))
     (loop for value across train-y do (incf (aref train-counts (round value))))
     (let ((majority (loop with best = 0 for j from 1 below classes
@@ -75,7 +93,7 @@
 (defun mean-of (v) (/ (reduce #'+ v) (length v) 1.0d0))
 
 (defun evaluate-regression (train-y test-y prediction)
-  (let* ((n (length test-y)) (avg (mean-of test-y)) (train-avg (mean-of train-y))
+  (let ((n (length test-y)) (avg (mean-of test-y)) (train-avg (mean-of train-y))
          (se 0d0) (ae 0d0) (total 0d0) (base-se 0d0))
     (loop for i below n for actual = (aref test-y i)
           for predicted = (aref prediction i 0) do
@@ -88,6 +106,9 @@
             (sqrt (/ base-se n)) train-avg)))
 
 (defun loss (dataset labels prediction)
+  (case dataset
+    (:iris (validate-class-labels labels 3))
+    (:breast-cancer (validate-class-labels labels 2)))
   (let ((sum 0d0) (n (length labels)))
     (loop for i below n for actual = (aref labels i) do
       (incf sum
@@ -95,7 +116,7 @@
               (:diabetes (expt (- (aref prediction i 0) actual) 2))
               (:iris (- (log (max 1d-15 (min 1d0 (aref prediction i (round actual)))))))
               (:breast-cancer
-               (let* ((p (max 1d-15 (min (- 1d0 1d-15) (aref prediction i 0)))))
+               (let ((p (max 1d-15 (min (- 1d0 1d-15) (aref prediction i 0)))))
                  (- (+ (* actual (log p)) (* (- 1 actual) (log (- 1 p))))))))))
     (/ sum n)))
 
@@ -127,6 +148,11 @@
       (format t "    ~A: ~,5F~%" name score))))
 
 (defun run-example (dataset backend splits)
+  (let ((classes (ecase dataset (:iris 3) (:breast-cancer 2) (:diabetes nil))))
+    (when classes
+      ;; Check the original values before converting labels to single floats.
+      (dolist (split '(:train :valid :test))
+        (validate-class-labels (map 'vector #'first (getf splits split)) classes))))
   (multiple-value-bind (train-x train-y) (rows->arrays (getf splits :train))
     (multiple-value-bind (valid-x valid-y) (rows->arrays (getf splits :valid))
       (multiple-value-bind (test-x test-y) (rows->arrays (getf splits :test))
@@ -162,7 +188,11 @@
                                                     (getf splits :feature-names) predictions))
                   (cl-gbdt:free-booster booster))))))))))
 
-(dolist (entry '((:iris . "iris") (:breast-cancer . "breast_cancer") (:diabetes . "diabetes")))
-  (let ((splits (read-splits (cdr entry))))
-    (dolist (backend '(:lightgbm :xgboost))
-      (run-example (car entry) backend splits))))
+(let ((*root* (uiop:pathname-directory-pathname *load-truename*)))
+  (cl-gbdt-toy-state:call-with-analysis
+   *root*
+   (lambda ()
+     (dolist (entry '((:iris . "iris") (:breast-cancer . "breast_cancer") (:diabetes . "diabetes")))
+       (let ((splits (read-splits (cdr entry))))
+         (dolist (backend '(:lightgbm :xgboost))
+           (run-example (car entry) backend splits)))))))

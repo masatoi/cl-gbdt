@@ -15,11 +15,40 @@ After the [common setup](../README.md#setup), run:
 (load "examples/online-retail/evaluate.lisp")
 ```
 
+Preparation, training and evaluation take a nonblocking lock on this example's
+directory. Preparation invalidates earlier predictions; evaluation requires both
+backends to finish training on the current prepared data. If preparation fails, rerun it
+before training. If training fails, rerun training before evaluation. Data prepared
+before generation tracking was added must be prepared and trained again. These scripts
+use Unix `flock` and `/dev/urandom`. Leave `output/.example.lock` in place
+while these scripts are running; the lock is released when the process exits.
+
+Both models write to a private staging directory before publication. Ordinary errors
+or nonlocal exits during publication restore the prior outputs; if recovery itself fails,
+the error reports the staging directory containing the backups. If a process is killed
+mid-publication, inspect `output/.example-training-*` before removing it. Manual
+changes to generated files are outside this coordination.
+
 The Lisp [lisp-xl](https://github.com/defunkydrummer/lisp-xl) reader streams rows
-from the original workbook. Its pinned source is installed into ignored example data;
-Quicklisp supplies its dependencies. The workbook, prepared data and predictions are
-not committed. The recorded source ZIP SHA-256 was
+from the original workbook; Quicklisp supplies its dependencies. The workbook, prepared
+data and predictions are not committed. The recorded source ZIP SHA-256 was
 `f5385cbb54bbebf7196389109c6b0621faab0c304e3702548165e71c84aede8b`.
+
+`ensure-retail-reader` chooses the reader in this order:
+
+1. If this checkout's managed cache, `examples/online-retail/data/lisp-xl/`, exists, every
+   file of the pinned revision in it is checked against its recorded SHA-256, any missing
+   file is downloaded and checked, and only then is that `lisp-xl.asd` loaded. ASDF can
+   rediscover the cache on its own, so it is never loaded unchecked, and it is preferred
+   to any other installation. A mismatched file is kept and reported; remove it before
+   retrying. A `lisp-xl.asd` that is a link to a file outside the cache is refused.
+2. Otherwise an installation already registered with ASDF, or one ASDF can find, is used
+   as supplied. If it is available only through a custom ASDF searcher, load it before
+   calling `ensure-retail-reader`.
+3. Otherwise the pinned revision is downloaded into the managed cache and loaded as in
+   step 1.
+
+To use your own installation instead of a managed cache, remove that directory.
 
 Rows missing a required customer, date, invoice, country or product, cancellations,
 and rows with nonpositive quantities or prices are removed, leaving 397,884 positive

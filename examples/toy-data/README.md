@@ -18,6 +18,15 @@ xorshift32 shuffle, with class-stratified approximately 60:20:20 splits for
 classification. Validation loss selects the iteration; the held-out test set is
 scored at that iteration. The breast-cancer labels are reversed so malignant is 1.
 
+Preparation and analysis take an exclusive, nonblocking lock in
+`output/.example.lock`; wait for the other run to finish if the directory is
+busy. Do not remove the lock file while a run is active. Preparation writes all
+three splits privately before publishing them. Splits made before this state
+tracking was added need to be prepared again. If preparation fails or is
+interrupted, rerun it successfully before analysis. Earlier splits are kept on
+ordinary failures; if recovery itself fails, the error identifies the backup
+directory under `data/.toy-preparation-*` so it can be recovered manually.
+
 | Test metric | Train / valid / test | LightGBM | XGBoost | Baseline |
 |---|---:|---:|---:|---:|
 | Iris accuracy | 90 / 30 / 30 | 0.9333 | 0.9333 | 0.3333 |
