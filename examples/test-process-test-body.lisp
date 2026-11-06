@@ -29,6 +29,33 @@
 
 (test-example-process-bootstrap-environment)
 
+(defun test-example-process-without-user-init ()
+  "A child runs when no user init file loads Quicklisp for it, as on a fresh CI runner.
+Roswell's Quicklisp has a local-init file that needs Roswell's own package, so a child of a
+Roswell image must load Roswell's init.lisp before Quicklisp."
+  (let* ((home (sb-posix:getenv "HOME"))
+         (empty (uiop:ensure-directory-pathname
+                 (format nil "~Acl-gbdt-empty-home-~36R"
+                         (uiop:native-namestring (uiop:temporary-directory))
+                         (random most-positive-fixnum (make-random-state t)))))
+         (body (merge-pathnames "body.lisp" empty)))
+    (ensure-directories-exist body)
+    (with-open-file (out body :direction :output)
+      (write-line "(format t \"child without user init ran~%\")" out))
+    (unwind-protect
+         (progn
+           ;; SBCL finds the user init file through HOME; an empty HOME has none.
+           (sb-posix:setenv "HOME" (uiop:native-namestring empty) 1)
+           (multiple-value-bind (out err status)
+               (cl-gbdt-example-test-process:run-test-in-child
+                body :output nil :error-output nil :ignore-error-status t)
+             (unless (and (zerop status) (search "child without user init ran" out))
+               (error "A child without a user init file failed (status ~D):~%~A" status err))))
+      (if home (sb-posix:setenv "HOME" home 1) (sb-posix:unsetenv "HOME"))
+      (uiop:delete-directory-tree empty :validate t :if-does-not-exist :ignore))))
+
+(test-example-process-without-user-init)
+
 (defun test-example-process-local-system ()
   "A parent-registered local dependency remains discoverable in the child."
   (let* ((root (uiop:ensure-directory-pathname

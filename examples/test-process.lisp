@@ -123,6 +123,17 @@ IGNORE-ERROR-STATUS."
          (helper (truename (merge-pathnames "examples/test-process.lisp"
                                             (uiop:pathname-directory-pathname asd))))
          (bootstrap (and asdf-bootstrap (truename asdf-bootstrap)))
+         ;; Roswell starts SBCL by loading its own init.lisp, which defines the ROSWELL
+         ;; package; Roswell's Quicklisp has a local-init file that needs that package.
+         ;; A bare SBCL child must do the same before Quicklisp, or it cannot load it.
+         (roswell-package (find-package "ROSWELL"))
+         (roswell-include (and roswell-package
+                               (find-symbol "*INCLUDE-PATH*" roswell-package)))
+         (roswell-init (and roswell-include (boundp roswell-include)
+                            (symbol-value roswell-include)
+                            (probe-file (make-pathname :name "init" :type "lisp"
+                                                       :defaults (symbol-value
+                                                                  roswell-include)))))
          (ql-package (find-package "QL"))
          (ql-home-symbol (and ql-package (find-symbol "*QUICKLISP-HOME*" ql-package)))
          (ql-home (and ql-home-symbol (boundp ql-home-symbol) (symbol-value ql-home-symbol)))
@@ -182,6 +193,10 @@ IGNORE-ERROR-STATUS."
                  (list "--eval"
                        (format nil "(let ((*error-output* (make-broadcast-stream))) (load #P~S))"
                                (namestring bootstrap))))
+               (when (and ql-setup roswell-init)
+                 (list "--eval"
+                       (format nil "(unless (find-package \"ROSWELL\") (load #P~S))"
+                               (namestring roswell-init))))
                (when ql-setup
                  (list "--eval"
                        (format nil
