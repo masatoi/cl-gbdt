@@ -258,57 +258,30 @@ A file that does not exist yet, such as a shared reader the trainer will load, i
     (loop while (read-line in nil nil) count t)))
 
 (defun test-evaluate-consumes-root ()
-  ;; Pause the actual MSLR evaluator at its first score file, then reenter
-  ;; MovieLens from the ranking callback on the evaluator's own thread.
+  ;; Reenter MovieLens from the actual MSLR evaluator's first ranking callback, on
+  ;; the evaluator's own thread. The evaluator reloads RANKING-NDCG, so the hook is
+  ;; an encapsulation, which survives redefinition. A FIFO cannot pause the evaluator
+  ;; portably instead: SBCL on Darwin never sees end of file on one.
   (let ((tree (make-ranking-test-tree)))
     (unwind-protect
-         (let* ((mslr (merge-pathnames "mslr-web10k/" tree))
-                (movie (merge-pathnames "movielens-ranking/" tree))
-                (score (merge-pathnames "output/lightgbm-test.csv" mslr))
-                (backup (merge-pathnames "output/lightgbm-test.csv.backup" mslr))
-                (original nil)
-                (nested nil)
-                (worker nil)
-                (worker-error nil))
+         (let ((mslr (merge-pathnames "mslr-web10k/" tree))
+               (movie (merge-pathnames "movielens-ranking/" tree))
+               (nested nil))
            (write-evaluate-fixture mslr '(2f0 1f0 0f0) '(3d0 2d0 1d0))
            (write-evaluate-fixture movie '(2f0 1f0 0f0) '(1d0 2d0 3d0))
-           (let ((text (uiop:read-file-string score)))
-             (rename-file score backup)
-             (unwind-protect
-                  (progn
-                    (sb-posix:mkfifo (namestring score) #o600)
-                    (setf worker
-                          (sb-thread:make-thread
-                           (lambda ()
-                             (handler-case
-                                 (with-open-file (out score :direction :output
-                                                            :if-exists :overwrite)
-                                   (setf original (symbol-function 'ranking-ndcg))
-                                   (setf (symbol-function 'ranking-ndcg)
-                                         (lambda (&rest args)
-                                           (unless nested
-                                             (setf nested :running)
-                                             (setf nested
-                                                   (load-quietly
-                                                    (merge-pathnames "evaluate.lisp" movie))))
-                                           (apply original args)))
-                                   (write-string text out)
-                                   (finish-output out)
-                                   (delete-file score)
-                                   (rename-file backup score))
-                               (error (condition) (setf worker-error condition))))))
-                    (let ((outer (load-quietly (merge-pathnames "evaluate.lisp" mslr))))
-                      (sb-thread:join-thread worker :timeout 10)
-                      (when worker-error (error worker-error))
-                      (assert (search "lightgbm: NDCG@10=1.0000" outer))
-                      (assert (and (stringp nested)
-                                   (search "lightgbm: NDCG@10=0.5869" nested)))))
-               (when (and worker (sb-thread:thread-alive-p worker))
-                 (sb-thread:terminate-thread worker))
-               (when original (setf (symbol-function 'ranking-ndcg) original))
-               (when (probe-file backup)
-                 (when (probe-file score) (delete-file score))
-                 (rename-file backup score)))))
+           (sb-int:encapsulate
+            'ranking-ndcg 'consumes-root
+            (lambda (ndcg &rest args)
+              (unless nested
+                (setf nested :running)
+                (setf nested (load-quietly (merge-pathnames "evaluate.lisp" movie))))
+              (apply ndcg args)))
+           (unwind-protect
+                (let ((outer (load-quietly (merge-pathnames "evaluate.lisp" mslr))))
+                  (assert (search "lightgbm: NDCG@10=1.0000" outer))
+                  (assert (and (stringp nested)
+                               (search "lightgbm: NDCG@10=0.5869" nested))))
+             (sb-int:unencapsulate 'ranking-ndcg 'consumes-root)))
       (uiop:delete-directory-tree tree :validate t))))
 
 (defun exercise-ranking-warning-reentry (operation movie-locked)
@@ -676,49 +649,38 @@ A file that does not exist yet, such as a shared reader the trainer will load, i
       (uiop:delete-directory-tree tree :validate t))))
 
 (defun test-movie-evaluation-generation-change ()
+  ;; Change the metadata as the real evaluator opens its second score file. See
+  ;; TEST-EVALUATE-CONSUMES-ROOT for why this is an encapsulation and not a FIFO.
   (let ((tree (make-ranking-test-tree)))
     (unwind-protect
          (let* ((root (merge-pathnames "movielens-ranking/" tree))
                 (sizes (merge-pathnames "data/sizes.lisp" root))
-                (score (merge-pathnames "output/xgboost-test.csv" root))
-                (backup (merge-pathnames "output/xgboost-test.csv.backup" root))
                 (captured (make-string-output-stream))
-                (worker nil)
-                (worker-error nil)
+                (changed nil)
                 (failed nil))
            (write-evaluate-fixture root '(2f0 1f0 0f0) '(3d0 2d0 1d0))
-           (let ((sizes-text (uiop:read-file-string sizes))
-                 (scores-text (uiop:read-file-string score)))
-             (rename-file score backup)
+           (let ((sizes-text (uiop:read-file-string sizes)))
+             (sb-int:encapsulate
+              'read-scores 'movie-generation-change
+              (lambda (read path)
+                (when (and (not changed) (string= "xgboost-test" (pathname-name path)))
+                  (setf changed t)
+                  (let ((metadata (with-open-file (in sizes)
+                                    (let ((*read-eval* nil)) (read in)))))
+                    (setf (getf metadata :generation) "00000000000000000000000000000002")
+                    (apply #'write-sizes sizes metadata)))
+                (funcall read path)))
              (unwind-protect
                   (progn
-                    (sb-posix:mkfifo (namestring score) #o600)
-                    (setf worker
-                          (sb-thread:make-thread
-                           (lambda ()
-                             (handler-case
-                                 (with-open-file (out score :direction :output
-                                                            :if-exists :overwrite)
-                                   (let ((metadata (with-open-file (in sizes)
-                                                     (let ((*read-eval* nil)) (read in)))))
-                                     (setf (getf metadata :generation)
-                                           "00000000000000000000000000000002")
-                                     (apply #'write-sizes sizes metadata))
-                                   (write-string scores-text out))
-                               (error (condition) (setf worker-error condition))))))
                     (handler-case
                         (let ((*standard-output* captured)
                               (*error-output* (make-string-output-stream)))
                           (load (merge-pathnames "evaluate.lisp" root)))
                       (error () (setf failed t)))
-                    (sb-thread:join-thread worker :timeout 10)
-                    (when worker-error (error worker-error))
+                    (assert changed)
                     (assert failed)
                     (assert (not (search "NDCG@10" (get-output-stream-string captured)))))
-               (when (and worker (sb-thread:thread-alive-p worker))
-                 (sb-thread:terminate-thread worker))
-               (when (probe-file score) (delete-file score))
-               (rename-file backup score)
+               (sb-int:unencapsulate 'read-scores 'movie-generation-change)
                (with-open-file (out sizes :direction :output :if-exists :supersede)
                  (write-string sizes-text out)))))
       (uiop:delete-directory-tree tree :validate t))))

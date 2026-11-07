@@ -57,43 +57,35 @@
       (assert (equal '(2 0 1) (loop for row across rows collect (mslr-row-label row)))))))
 
 (defun test-mslr-evaluation-generation-change (root)
-  ;; The FIFO stops the real evaluator while another thread changes its metadata.
+  ;; Change the metadata as the real evaluator opens its second score file. The
+  ;; evaluator reloads READ-SCORES, so this wraps it with an encapsulation, which
+  ;; survives redefinition; a FIFO cannot pause it portably, because SBCL on Darwin
+  ;; never sees end of file on one.
   (let* ((sizes (merge-pathnames "data/sizes.lisp" root))
          (sizes-text (uiop:read-file-string sizes))
-         (score (merge-pathnames "output/xgboost-test.csv" root))
-         (scores-text (uiop:read-file-string score))
-         (backup (merge-pathnames "output/xgboost-test.csv.backup" root))
          (captured (make-string-output-stream))
-         (worker nil)
-         (worker-error nil)
+         (changed nil)
          (failed nil))
-    (rename-file score backup)
+    (sb-int:encapsulate
+     'read-scores 'mslr-generation-change
+     (lambda (read path)
+       (when (and (not changed) (string= "xgboost-test" (pathname-name path)))
+         (setf changed t)
+         (let ((metadata (read-mslr-test-sexp sizes)))
+           (setf (getf metadata :generation) "changed-during-evaluation")
+           (apply #'write-sizes sizes metadata)))
+       (funcall read path)))
     (unwind-protect
          (progn
-           (sb-posix:mkfifo (namestring score) #o600)
-           (setf worker
-                 (sb-thread:make-thread
-                  (lambda ()
-                    (handler-case
-                        (with-open-file (out score :direction :output :if-exists :overwrite)
-                          (let ((metadata (read-mslr-test-sexp sizes)))
-                            (setf (getf metadata :generation) "changed-during-evaluation")
-                            (apply #'write-sizes sizes metadata))
-                          (write-string scores-text out))
-                      (error (condition) (setf worker-error condition))))))
            (handler-case
                (let ((*standard-output* captured)
                      (*error-output* (make-string-output-stream)))
                  (load (merge-pathnames "evaluate.lisp" root)))
              (error () (setf failed t)))
-           (sb-thread:join-thread worker :timeout 10)
-           (when worker-error (error worker-error))
+           (assert changed)
            (assert failed)
            (assert (not (search "NDCG@10" (get-output-stream-string captured)))))
-      (when (and worker (sb-thread:thread-alive-p worker))
-        (sb-thread:terminate-thread worker))
-      (when (probe-file score) (delete-file score))
-      (rename-file backup score)
+      (sb-int:unencapsulate 'read-scores 'mslr-generation-change)
       (with-open-file (out sizes :direction :output :if-exists :supersede)
         (write-string sizes-text out)))))
 
