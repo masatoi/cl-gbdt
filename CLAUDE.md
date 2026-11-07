@@ -435,11 +435,15 @@ ros run -- --non-interactive --load tools/ci/check-api-reference.lisp
 ros run -- --non-interactive --load tools/ci/check-functional-coverage.lisp
 ros run -- --non-interactive --load tools/ci/check-doc-links.lisp
 ros run -- --non-interactive --load tools/ci/check-support-matrix.lisp
+ros run -- --non-interactive --load tools/ci/run-example-tests.lisp   # after fetch-libs.sh
 ```
 
-Twelve of those have no MCP equivalent at all — leaf systems, source reachability, float
+Thirteen of those have no MCP equivalent at all — leaf systems, source reachability, float
 traps, layer-1 guards, layer separation, ABI blacklist, binding coverage, API reference,
-functional coverage, doc links, support matrix, lint. Run the whole block before
+functional coverage, doc links, support matrix, lint, example suites.
+`run-example-tests.lisp` runs every `examples/tests*.lisp`, each in a child SBCL that needs
+ASDF 3.3.7: it uses `CL_GBDT_ASDF_BOOTSTRAP`, else the newest `asdf.lisp` that
+`ros install asdf` left under `~/.roswell/lisp/asdf/`. Run the whole block before
 committing, and at the end of any task whose plan states numbers. **Add a line here
 whenever `tools/ci/` gains a script**: `check-layer-1-guards.lisp` arrived in PR #28 and
 was missing from this list until 2026-08-12.
@@ -486,7 +490,7 @@ tools/ci/     The scripts CI actually runs: run-tests.lisp, lint.lisp,
               check-layer-separation.lisp, check-layer-1-guards.lisp,
               check-float-traps.lisp, check-abi-blacklist.lisp, check-binding-coverage.lisp,
               check-api-reference.lisp, check-functional-coverage.lisp,
-              check-doc-links.lisp, check-support-matrix.lisp
+              check-doc-links.lisp, check-support-matrix.lisp, run-example-tests.lisp
 tools/        regen.lisp (regenerates src/*/c-api.lisp), gen-api-reference.lisp
               (regenerates docs/API-REFERENCE.md), and the shell scripts they and CI call,
               among them fetch-cl-spec.sh, which fetches the pinned cl-spec

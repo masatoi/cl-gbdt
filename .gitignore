@@ -22,3 +22,20 @@
 
 # Subagent-driven development scratch (ledger, briefs, review packages)
 /.superpowers/
+
+# Generated inputs, predictions and plots for the open-data examples
+/examples/toy-data/data/
+/examples/credit-card-fraud/data/
+/examples/credit-card-fraud/output/
+/examples/adult/data/
+/examples/adult/output/
+/examples/movielens-ranking/data/
+/examples/movielens-ranking/output/
+/examples/household-power/data/
+/examples/household-power/output/
+/examples/online-retail/data/
+/examples/online-retail/output/
+/examples/kasandr-sparse/data/
+/examples/kasandr-sparse/output/
+/examples/mslr-web10k/data/
+/examples/mslr-web10k/output/
